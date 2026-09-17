@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "relay", "tools/wasm-size"]
+members = ["core", "relay", "tools/wasm-size", "app/rust"]
 
 [workspace.package]
 version = "0.1.0"

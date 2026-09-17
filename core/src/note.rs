@@ -367,6 +367,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.store.put_snapshot(id, &env.encode())
     }
 
+    /// Re-send the current view to everyone watching, without changing anything.
+    ///
+    /// This exists so a watcher blocked on the channel can be woken and told to
+    /// stop. Without it a watcher parks until the next edit, which may never
+    /// come — and anything waiting for it to finish parks too.
+    pub fn touch(&self, id: NoteId) -> Result<()> {
+        let note = self.note(id)?;
+        let _ = note.watch.send(note.doc.view());
+        Ok(())
+    }
+
     /// Forget every in-memory document, keeping the store and keyring. Used by
     /// tests to simulate the app being killed.
     pub fn close_all(&mut self) {

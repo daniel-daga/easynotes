@@ -297,3 +297,44 @@ pub mod file_keyring {
 
 #[cfg(feature = "file-store")]
 pub use file_keyring::FileKeyring;
+
+// ---------------------------------------------------------------------------
+// Boxed stores
+// ---------------------------------------------------------------------------
+
+// So a caller can decide at runtime which store to use — the Flutter bridge picks
+// the filesystem on a desktop or phone and memory in a browser, from the same
+// `NoteCore` type.
+
+impl OpStore for Box<dyn OpStore + Send> {
+    fn append(&mut self, note: NoteId, envelope: &[u8]) -> Result<()> {
+        (**self).append(note, envelope)
+    }
+    fn load(&self, note: NoteId) -> Result<Vec<Vec<u8>>> {
+        (**self).load(note)
+    }
+    fn put_snapshot(&mut self, note: NoteId, snapshot: &[u8]) -> Result<()> {
+        (**self).put_snapshot(note, snapshot)
+    }
+    fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
+        (**self).get_snapshot(note)
+    }
+    fn notes(&self) -> Result<Vec<NoteId>> {
+        (**self).notes()
+    }
+}
+
+impl Keyring for Box<dyn Keyring + Send> {
+    fn device_seed(&self) -> Result<Option<crate::crypto::DeviceSeed>> {
+        (**self).device_seed()
+    }
+    fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()> {
+        (**self).put_device_seed(seed)
+    }
+    fn note_key(&self, note: NoteId) -> Result<Option<crate::crypto::NoteKey>> {
+        (**self).note_key(note)
+    }
+    fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()> {
+        (**self).put_note_key(note, key)
+    }
+}
