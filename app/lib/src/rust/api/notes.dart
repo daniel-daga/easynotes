@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `boxed_keyring`, `boxed_store`, `item_id`, `offline`, `publish`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `boxed_keyring`, `boxed_store`, `item_id`, `offline`, `on_disk`, `publish`, `wrap`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>>
@@ -38,8 +38,12 @@ abstract class Note implements RustOpaqueInterface {
 
   /// Open the note stored in `dir`, creating it on first run.
   ///
-  /// Slice 1 has exactly one note and no note list; Slice 2 brings the real
-  /// local store and everything above it.
+  /// `dir` holds the SQLite database, the keyring and — until the app can reach
+  /// the OS keychain — the master key that seals the second. Slice 1's
+  /// directory of files is carried into it the first time this runs.
+  ///
+  /// There is still exactly one note and no note list: that is item 5 of the
+  /// Slice 2 plan, and it is what replaces the marker file below.
   static Note open({required String dir}) =>
       RustLib.instance.api.crateApiNotesNoteOpen(dir: dir);
 
