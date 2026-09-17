@@ -12,14 +12,8 @@ import 'package:easynotes/ui/checklist_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Future<void> pumpScreen(
-  WidgetTester tester,
-  FakeNoteCore core, {
-  Future<void> Function(String blob)? onJoin,
-}) async {
-  await tester.pumpWidget(
-    MaterialApp(home: ChecklistScreen(core: core, onJoin: onJoin)),
-  );
+Future<void> pumpScreen(WidgetTester tester, FakeNoteCore core) async {
+  await tester.pumpWidget(MaterialApp(home: ChecklistScreen(core: core)));
   await tester.pumpAndSettle();
 }
 
@@ -276,9 +270,7 @@ void main() {
     final core = FakeNoteCore(items: const ['milk']);
     await pumpScreen(tester, core);
 
-    core.pushStatus(
-      const SyncStatus(state: SyncState.offline, pending: 2),
-    );
+    core.pushStatus(const SyncStatus(state: SyncState.offline, pending: 2));
     await tester.pumpAndSettle();
 
     expect(
@@ -313,45 +305,5 @@ void main() {
       findsOneWidget,
       reason: 'a user who cannot sync should be able to see why',
     );
-  });
-
-  // -- joining ---------------------------------------------------------------
-
-  testWidgets('pasting a share blob asks to join with it', (tester) async {
-    String? joined;
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core, onJoin: (blob) async => joined = blob);
-
-    await tester.tap(find.byKey(const Key('join-button')));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('join-blob-field')),
-      '  AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCk  ',
-    );
-    await tester.tap(find.byKey(const Key('join-confirm')));
-    await tester.pumpAndSettle();
-
-    expect(joined, 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCk');
-  });
-
-  testWidgets('an empty paste joins nothing', (tester) async {
-    var calls = 0;
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core, onJoin: (blob) async => calls++);
-
-    await tester.tap(find.byKey(const Key('join-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('join-confirm')));
-    await tester.pumpAndSettle();
-
-    expect(calls, 0);
-  });
-
-  testWidgets('there is no join button where joining is not possible', (
-    tester,
-  ) async {
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core);
-    expect(find.byKey(const Key('join-button')), findsNothing);
   });
 }

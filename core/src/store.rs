@@ -49,15 +49,21 @@ pub trait OpStore {
         Ok(self.load(note)?.len())
     }
 
+    /// Every note this store holds anything for, in a stable order.
+    ///
+    /// "Anything" is the whole of it: a log, a snapshot, or only the metadata a
+    /// note gets when it is created. A note made and not yet edited has nothing
+    /// but that row, and a note list that dropped it would show a note until the
+    /// app restarted and then lose it.
     fn notes(&self) -> Result<Vec<NoteId>>;
 
-    /// Small per-note bookkeeping that is not part of the log. Today that is the
-    /// sync cursor and nothing else.
+    /// Small per-note bookkeeping that is not part of the log: the sync cursor,
+    /// and where the note sits in this device's list.
     ///
     /// It lives beside the log rather than in it because it is *local*: it
-    /// records what this device has sent and received, it is meaningless on
-    /// another device, and it must never be handed to the relay. `key` is an
-    /// internal name, not user data.
+    /// records what this device has sent, received and shows first, it is
+    /// meaningless on another device, and it must never be handed to the relay.
+    /// `key` is an internal name, not user data.
     fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()>;
 
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>>;
@@ -122,7 +128,11 @@ impl OpStore for MemoryStore {
 
     fn notes(&self) -> Result<Vec<NoteId>> {
         let mut ids: Vec<NoteId> = self.logs.keys().copied().collect();
-        for id in self.snapshots.keys() {
+        for id in self
+            .snapshots
+            .keys()
+            .chain(self.meta.keys().map(|(id, _)| id))
+        {
             if !ids.contains(id) {
                 ids.push(*id);
             }
@@ -257,18 +267,26 @@ pub mod file {
         }
 
         fn notes(&self) -> Result<Vec<NoteId>> {
-            // Both suffixes: a note compacted to a snapshot has no log left, and
-            // listing only `.log` would make it disappear from the note list
-            // while its content is still right there. The conformance suite in
-            // `tests/store.rs` caught this by holding all three stores to the
-            // same answer.
+            // Every suffix, not just `.log`: a note compacted to a snapshot has
+            // no log left, and a note that was created and not yet edited has
+            // only its metadata. Listing one of the three would make such a note
+            // disappear while it is still right there. The conformance suite in
+            // `tests/store.rs` caught the first of those by holding all three
+            // stores to the same answer.
             let mut ids = Vec::new();
             for entry in fs::read_dir(&self.root).map_err(io)? {
                 let entry = entry.map_err(io)?;
                 let name = entry.file_name().to_string_lossy().into_owned();
+                // A meta file is `{note}.{key}.meta`, so the note is what is
+                // left once both suffixes are off.
                 let stem = name
                     .strip_suffix(".log")
-                    .or_else(|| name.strip_suffix(".snap"));
+                    .or_else(|| name.strip_suffix(".snap"))
+                    .or_else(|| {
+                        name.strip_suffix(".meta")
+                            .and_then(|rest| rest.rsplit_once('.'))
+                            .map(|(note, _)| note)
+                    });
                 if let Some(stem) = stem {
                     if let Ok(id) = NoteId::decode(stem) {
                         if !ids.contains(&id) {

@@ -267,7 +267,12 @@ impl OpStore for SqliteStore {
     fn notes(&self) -> Result<Vec<NoteId>> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT note FROM ops UNION SELECT note FROM snapshots ORDER BY note")
+            .prepare_cached(
+                "SELECT note FROM ops \
+                 UNION SELECT note FROM snapshots \
+                 UNION SELECT note FROM meta \
+                 ORDER BY note",
+            )
             .map_err(db)?;
         let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(db)?;
         let mut out = Vec::new();
@@ -427,7 +432,7 @@ pub fn open_local(root: impl AsRef<Path>) -> Result<(SqliteStore, SqliteKeyring)
             &old_keys,
             &mut store,
             &mut keyring,
-            &[crate::note::SYNC_CURSOR],
+            &[crate::note::SYNC_CURSOR, crate::note::ADDED],
         )?;
     }
 

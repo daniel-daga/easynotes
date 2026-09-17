@@ -6,7 +6,7 @@
 //! as a type with two implementations and one shape, rather than as `#[cfg]`
 //! scattered through the API.
 
-use crate::api::notes::SyncStatus;
+use crate::api::notes::Statuses;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
@@ -14,7 +14,6 @@ mod native {
     use easynotes_core::ids::NoteId;
     use easynotes_core::sync::{RelayEndpoint, SyncEngine, SyncHandle};
     use std::sync::{Arc, OnceLock};
-    use tokio::sync::watch;
 
     /// The engine needs a reactor and the bridge does not provide one: its own
     /// executor runs the `async fn`s in the generated API, and nothing there
@@ -42,16 +41,18 @@ mod native {
     }
 
     impl Connection {
-        /// Start an engine for `note` and forward its status into `status`.
+        /// Start an engine for `note` and report its status to `statuses`.
         ///
-        /// The channel belongs to the note rather than to the connection, so the
-        /// UI subscribes once and keeps seeing the truth across a disconnect, a
-        /// reconnect, or a move to a different relay.
+        /// The report goes to the library rather than to a channel of this
+        /// connection's own, so the UI subscribes once and keeps seeing the
+        /// truth across a disconnect, a reconnect, or a move to a different
+        /// relay — and so that the device's one status button can be the sum of
+        /// every note's.
         pub fn open<P>(
             peer: P,
             note: NoteId,
             relay: &str,
-            status: Arc<watch::Sender<SyncStatus>>,
+            statuses: Arc<Statuses>,
         ) -> Result<Self, String>
         where
             P: easynotes_core::sync::SyncPeer,
@@ -65,10 +66,7 @@ mod native {
             runtime.spawn(async move {
                 loop {
                     let next = updates.borrow_and_update().clone();
-                    // `send_replace`, not `send`: with nobody subscribed yet the
-                    // latter reports failure, and dropping the forwarder then
-                    // would leave a later subscriber watching a dead channel.
-                    status.send_replace(next.into());
+                    statuses.report(note, next.into());
                     if updates.changed().await.is_err() {
                         break; // the engine has finished
                     }
@@ -93,7 +91,6 @@ mod web {
     use super::*;
     use easynotes_core::ids::NoteId;
     use std::sync::Arc;
-    use tokio::sync::watch;
 
     /// A connection that is never made.
     ///
@@ -116,7 +113,7 @@ mod web {
             _peer: P,
             _note: NoteId,
             _relay: &str,
-            _status: Arc<watch::Sender<SyncStatus>>,
+            _statuses: Arc<Statuses>,
         ) -> Result<Self, String> {
             Err(
                 "the web build cannot reach a relay yet: its notes stay in this \

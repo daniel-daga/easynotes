@@ -6,56 +6,89 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `boxed_keyring`, `boxed_store`, `item_id`, `offline`, `on_disk`, `publish`, `wrap`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Shared`, `Statuses`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `cmp`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `partial_cmp`
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>
+abstract class Library implements RustOpaqueInterface {
+  /// Start syncing every note with the relay at `relay` (`http://host:port`
+  /// or `wss://host`), and every note made or joined after this.
+  ///
+  /// Returns as soon as the engines are started, not when they are connected:
+  /// there may be no network, and the app is not allowed to care. Watch
+  /// [`Library::watch_sync`] to find out how it goes. Calling this again moves
+  /// the device to a different relay.
+  Future<void> connect({required String relay});
+
+  /// Make a new, empty note and return its ID.
+  Future<String> createNote();
+
+  /// Stop syncing everything. Edits still work and still queue; nothing is
+  /// lost.
+  Future<void> disconnect();
+
+  /// Accept a share blob and add the note it describes to this device.
+  ///
+  /// An addition, not a replacement — which is the whole difference between
+  /// this and Slice 1's one-note join. A blob for a note this device already
+  /// has is not an error and does not make a second copy.
+  Future<String> join({required String blob});
+
+  /// A handle to one note, for a screen that is showing it.
+  ///
+  /// Cheap, and there may be several: they share the library's core, so two
+  /// handles to one note are two views of the same document rather than two
+  /// documents.
+  Note note({required String id});
+
+  List<NoteSummaryView> notes();
+
+  /// Open the notes stored in `dir`, on a device that has a disk.
+  ///
+  /// `dir` holds the SQLite database, the keyring and — until the app can
+  /// reach the OS keychain — the master key that seals the second. Slice 1's
+  /// directory of files is carried into it the first time this runs.
+  static Library open({required String dir}) =>
+      RustLib.instance.api.crateApiNotesLibraryOpen(dir: dir);
+
+  /// Notes that live only in memory and are gone when the tab closes.
+  ///
+  /// This is what the web build uses today. A browser has no filesystem, and
+  /// the op log's IndexedDB backing is item 4 of the Slice 2 plan — see
+  /// `docs/adr/0002-web-core.md`. Everything above the store is the same code
+  /// the native build runs, which is what makes this a stepping stone rather
+  /// than a mock.
+  static Library openEphemeral() =>
+      RustLib.instance.api.crateApiNotesLibraryOpenEphemeral();
+
+  /// End the watchers started above and let their tasks finish.
+  ///
+  /// Necessary rather than tidy: a watcher is parked on a channel, so without
+  /// a wake it waits forever, the task leaks, and anything waiting for the
+  /// stream to close — such as Dart cancelling its subscription — waits
+  /// forever too.
+  Future<void> stopWatching();
+
+  /// Where this device stands with the relay, over all its notes.
+  SyncStatus syncStatus();
+
+  /// The note list now, and every version of it after that.
+  ///
+  /// Every edit reaches it, whether it was made here or arrived from another
+  /// device, because both go through the core's one refresh.
+  Stream<List<NoteSummaryView>> watchNotes();
+
+  Stream<SyncStatus> watchSync();
+}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>>
 abstract class Note implements RustOpaqueInterface {
   Future<String> addItem({required String text});
 
-  /// Start syncing this note with the relay at `relay` (`http://host:port` or
-  /// `wss://host`).
-  ///
-  /// Returns as soon as the engine is started, not when it is connected: there
-  /// may be no network, and the app is not allowed to care. Watch
-  /// [`Note::watch_sync`] to find out how it goes. Calling this again replaces
-  /// the connection, which is how the app moves to a different relay.
-  Future<void> connect({required String relay});
-
-  /// Stop syncing. Edits still work and still queue; nothing is lost.
-  Future<void> disconnect();
-
-  /// Open the note a share blob describes, and make it this device's note.
-  ///
-  /// The blob carries the note's ID and its key, so this is the join half of
-  /// demo step 2. It replaces whatever note the directory pointed at before,
-  /// which is all Slice 1's one-note model can mean by "join"; a note list
-  /// makes it an addition instead.
-  static Note join({required String dir, required String blob}) =>
-      RustLib.instance.api.crateApiNotesNoteJoin(dir: dir, blob: blob);
+  String id();
 
   Future<void> moveItem({required String item, required int toIndex});
-
-  /// Open the note stored in `dir`, creating it on first run.
-  ///
-  /// `dir` holds the SQLite database, the keyring and — until the app can reach
-  /// the OS keychain — the master key that seals the second. Slice 1's
-  /// directory of files is carried into it the first time this runs.
-  ///
-  /// There is still exactly one note and no note list: that is item 5 of the
-  /// Slice 2 plan, and it is what replaces the marker file below.
-  static Note open({required String dir}) =>
-      RustLib.instance.api.crateApiNotesNoteOpen(dir: dir);
-
-  /// A note that lives only in memory and is gone when the tab closes.
-  ///
-  /// This is what the web build uses today. A browser has no filesystem, and
-  /// the op log's IndexedDB backing is M4 work this slice did not finish — see
-  /// `docs/adr/0002-web-core.md`. Everything above the store is the same code
-  /// the native build runs, which is what makes this a stepping stone rather
-  /// than a mock.
-  static Note openEphemeral() =>
-      RustLib.instance.api.crateApiNotesNoteOpenEphemeral();
 
   Future<void> removeItem({required String item});
 
@@ -69,14 +102,11 @@ abstract class Note implements RustOpaqueInterface {
   /// link's fragment without changing the bytes.
   String shareBlob();
 
-  /// End the watcher started by [`Note::watch`] and let its task finish.
-  ///
-  /// Necessary rather than tidy: the watcher is parked on the view channel, so
-  /// without a wake it waits forever, the task leaks, and anything waiting for
-  /// the stream to close — such as Dart cancelling its subscription — waits
-  /// forever too.
+  /// End this handle's watchers and let their tasks finish. The note stays
+  /// open in the library, because another screen may be showing it.
   Future<void> stopWatching();
 
+  /// Where this note stands with the relay.
   SyncStatus syncStatus();
 
   NoteView view();
@@ -88,7 +118,6 @@ abstract class Note implements RustOpaqueInterface {
   /// one-device and two-device cases identical.
   Stream<NoteView> watch();
 
-  /// The sync status now, and every change to it.
   Stream<SyncStatus> watchSync();
 }
 
@@ -119,6 +148,45 @@ class ItemView {
           text == other.text &&
           checked == other.checked &&
           order == other.order;
+}
+
+/// One card in the grid: enough to draw a note without opening it.
+class NoteSummaryView {
+  final String id;
+  final String title;
+  final int items;
+  final int checked;
+
+  /// The first few items, in display order. A card shows these when the note
+  /// has no title, which most shopping lists do not.
+  final List<String> preview;
+
+  const NoteSummaryView({
+    required this.id,
+    required this.title,
+    required this.items,
+    required this.checked,
+    required this.preview,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      title.hashCode ^
+      items.hashCode ^
+      checked.hashCode ^
+      preview.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NoteSummaryView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          title == other.title &&
+          items == other.items &&
+          checked == other.checked &&
+          preview == other.preview;
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
