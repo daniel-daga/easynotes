@@ -248,6 +248,11 @@ impl Statuses {
 
     /// An engine said something. Tell that note's watchers, then everyone
     /// watching the device as a whole.
+    ///
+    /// Nothing calls it in a browser: the web `Connection` is a connection that
+    /// is never made, so there is no engine there to have an opinion. The
+    /// allowance goes away when the browser transport lands.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn report(&self, note: NoteId, epoch: u64, status: SyncStatus) {
         let current = self.entry(note, |note| {
             if note.epoch == epoch {
