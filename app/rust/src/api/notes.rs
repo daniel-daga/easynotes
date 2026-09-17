@@ -188,13 +188,27 @@ impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
 // Where sync status goes
 // ---------------------------------------------------------------------------
 
+/// One note's status channel, and which connection is allowed to write to it.
+struct NoteStatus {
+    tx: Arc<watch::Sender<SyncStatus>>,
+    /// Bumped every time a connection is started or stopped for this note. A
+    /// report from an older one is dropped.
+    ///
+    /// Without this, replacing a connection is a race the stale engine can win:
+    /// it says `Offline` with no error as its task ends, *after* the engine that
+    /// replaced it has already said why it could not connect, and the button
+    /// then shows a device that is quietly offline for no reason. The epoch is
+    /// checked and the value written under one lock, so there is no window.
+    epoch: u64,
+}
+
 /// Every note's sync status, and the one-line answer for all of them.
 ///
 /// Separate from [`Shared`] on purpose: an engine's forwarder task holds this,
 /// and if it held the connections too, a connection would keep alive the task
 /// that keeps alive the connection, and a closed library would never let go.
 pub(crate) struct Statuses {
-    per_note: Mutex<HashMap<NoteId, Arc<watch::Sender<SyncStatus>>>>,
+    per_note: Mutex<HashMap<NoteId, NoteStatus>>,
     overall: Arc<watch::Sender<SyncStatus>>,
 }
 
@@ -206,39 +220,64 @@ impl Statuses {
         }
     }
 
+    fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
+        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        f(per_note.entry(note).or_insert_with(|| NoteStatus {
+            tx: Arc::new(watch::channel(SyncStatus::offline()).0),
+            epoch: 0,
+        }))
+    }
+
     /// The channel for one note, created on first use.
     ///
     /// It belongs to the note rather than to a connection, so the UI subscribes
     /// once and keeps seeing the truth across a disconnect, a reconnect, or a
     /// move to a different relay.
     fn channel(&self, note: NoteId) -> Arc<watch::Sender<SyncStatus>> {
-        let mut per_note = self.per_note.lock().expect("status lock poisoned");
-        per_note
-            .entry(note)
-            .or_insert_with(|| Arc::new(watch::channel(SyncStatus::offline()).0))
-            .clone()
+        self.entry(note, |status| status.tx.clone())
+    }
+
+    /// Start an epoch for a note: the connection about to be made owns its
+    /// status, and whatever was there before no longer does.
+    fn begin(&self, note: NoteId) -> u64 {
+        self.entry(note, |status| {
+            status.epoch += 1;
+            status.epoch
+        })
     }
 
     /// An engine said something. Tell that note's watchers, then everyone
     /// watching the device as a whole.
-    pub(crate) fn report(&self, note: NoteId, status: SyncStatus) {
-        self.channel(note).send_replace(status);
-        self.refresh();
+    pub(crate) fn report(&self, note: NoteId, epoch: u64, status: SyncStatus) {
+        let current = self.entry(note, |note| {
+            if note.epoch == epoch {
+                note.tx.send_replace(status);
+            }
+            note.epoch
+        });
+        if current == epoch {
+            self.refresh();
+        }
     }
 
     fn refresh(&self) {
         let per_note = self.per_note.lock().expect("status lock poisoned");
-        let each: Vec<SyncStatus> = per_note.values().map(|tx| tx.borrow().clone()).collect();
+        let each: Vec<SyncStatus> = per_note
+            .values()
+            .map(|status| status.tx.borrow().clone())
+            .collect();
         drop(per_note);
         self.overall.send_replace(SyncStatus::combined(each.iter()));
     }
 
     /// Nothing is connected any more. Said here rather than left to the engines,
-    /// whose last word may not arrive before their tasks are gone.
+    /// whose last word may not arrive before their tasks are gone — and whose
+    /// last word is now ignored, because ending an epoch is what this is.
     fn all_offline(&self) {
-        let per_note = self.per_note.lock().expect("status lock poisoned");
-        for tx in per_note.values() {
-            tx.send_replace(SyncStatus::offline());
+        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        for status in per_note.values_mut() {
+            status.epoch += 1;
+            status.tx.send_replace(SyncStatus::offline());
         }
         drop(per_note);
         self.refresh();
@@ -284,7 +323,14 @@ impl Shared {
                 None => return Ok(()),
             }
         };
-        let connection = Connection::open(self.core.clone(), note, &relay, self.statuses.clone())?;
+        let epoch = self.statuses.begin(note);
+        let connection = Connection::open(
+            self.core.clone(),
+            note,
+            &relay,
+            self.statuses.clone(),
+            epoch,
+        )?;
         let previous = self
             .connections
             .lock()

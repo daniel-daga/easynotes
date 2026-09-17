@@ -13,7 +13,6 @@ library;
 import 'dart:io';
 
 import 'package:easynotes/core/note_core.dart';
-import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -62,19 +61,28 @@ void main() {
         // The whole architecture rests on this: the UI never mutates state, it
         // waits to be told. If the stream does not fire, the app renders nothing.
         final core = await openInTempDir();
-        final views = <NoteView>[];
-        final subscription = core.watch().listen(views.add);
-        addTearDown(subscription.cancel);
+        // Subscribed before the edits, so nothing is missed, and awaited rather
+        // than pumped: the watcher is a Rust task, and how soon it runs is the
+        // machine's business rather than this test's.
+        final arrived = core
+            .watch()
+            .firstWhere(
+              (view) =>
+                  view.title == 'Groceries' &&
+                  view.items.map((i) => i.text).join(',') == 'milk,bread',
+            )
+            .timeout(
+              const Duration(seconds: 10),
+              onTimeout: () => fail('the watch stream never caught up'),
+            );
 
         await core.setTitle('Groceries');
         await core.addItem('milk');
         await core.addItem('bread');
-        await pumpEventQueue();
 
-        expect(views, isNotEmpty, reason: 'the watch stream never fired');
-        final last = views.last;
-        expect(last.title, 'Groceries');
-        expect(last.items.map((i) => i.text), ['milk', 'bread']);
+        // A watch channel keeps only the latest value, so an intermediate view
+        // may or may not be delivered. The last one may not be skipped.
+        await arrived;
       });
 
       test('items keep the order they were added in', () async {
@@ -175,19 +183,21 @@ void main() {
 
       test('the note list arrives on its own stream', () async {
         final library = await openLibraryInTempDir();
-        final lists = <List<String>>[];
-        final subscription = library.watchNotes().listen(
-          (notes) => lists.add([for (final n in notes) n.title]),
-        );
-        addTearDown(subscription.cancel);
+        final arrived = library
+            .watchNotes()
+            .firstWhere(
+              (notes) => notes.length == 1 && notes.single.title == 'Groceries',
+            )
+            .timeout(
+              const Duration(seconds: 10),
+              onTimeout: () => fail('the note list stream never fired'),
+            );
 
         final note = library.openNote(await library.createNote());
         addTearDown(note.dispose);
         await note.setTitle('Groceries');
-        await pumpEventQueue();
 
-        expect(lists, isNotEmpty, reason: 'the note list stream never fired');
-        expect(lists.last, ['Groceries']);
+        await arrived;
       });
 
       test('joining adds a note rather than replacing one', () async {

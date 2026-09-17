@@ -119,6 +119,15 @@ class RustNoteCore implements NoteCore {
   }
 
   /// Shared with [RustNoteLibrary], whose status comes over the same wire.
+  ///
+  /// `lastSeq` is narrowed here, and this is the only place it could be. The
+  /// bridge gives an `i64` as a `PlatformInt64`, which is an `int` natively and
+  /// a `BigInt` in a browser, so one Dart `int` field cannot take both — and
+  /// widening [SyncStatus] to `PlatformInt64` would put a generated type in the
+  /// layer this file exists to keep them out of. Narrowing is safe because the
+  /// value is a relay sequence number the app only ever shows: a note would need
+  /// nine quadrillion envelopes to reach the edge of a browser's integers, and
+  /// `toInt` clamps rather than wraps if one ever did.
   static SyncStatus toStatus(rust.SyncStatus s) => SyncStatus(
     state: switch (s.state) {
       rust.SyncState.offline => SyncState.offline,
@@ -127,7 +136,7 @@ class RustNoteCore implements NoteCore {
       rust.SyncState.synced => SyncState.synced,
     },
     pending: s.pending,
-    lastSeq: s.lastSeq,
+    lastSeq: s.lastSeq.toInt(),
     lastError: s.lastError,
   );
 

@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Shared`, `Statuses`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `entry`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `cmp`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `partial_cmp`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>

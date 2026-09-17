@@ -53,6 +53,7 @@ mod native {
             note: NoteId,
             relay: &str,
             statuses: Arc<Statuses>,
+            epoch: u64,
         ) -> Result<Self, String>
         where
             P: easynotes_core::sync::SyncPeer,
@@ -66,7 +67,7 @@ mod native {
             runtime.spawn(async move {
                 loop {
                     let next = updates.borrow_and_update().clone();
-                    statuses.report(note, next.into());
+                    statuses.report(note, epoch, next.into());
                     if updates.changed().await.is_err() {
                         break; // the engine has finished
                     }
@@ -114,6 +115,7 @@ mod web {
             _note: NoteId,
             _relay: &str,
             _statuses: Arc<Statuses>,
+            _epoch: u64,
         ) -> Result<Self, String> {
             Err(
                 "the web build cannot reach a relay yet: its notes stay in this \
