@@ -9,6 +9,16 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 flutter_rust_bridge = "=2.13.0"
 easynotes-core = { path = "../../core" }
+# Only the synchronisation primitives here; the runtime that drives the sync
+# engine is native-only and is pulled in below.
+tokio = { version = "1", default-features = false, features = ["sync"] }
+
+# The relay client needs a reactor, and a browser tab cannot have one. The web
+# build therefore gets the same core without `sync-native`, and `src/relay.rs`
+# carries the one type whose implementation differs.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+easynotes-core = { path = "../../core", features = ["sync-native"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time", "net"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

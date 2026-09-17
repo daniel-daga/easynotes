@@ -11,6 +11,7 @@
 library;
 
 import 'note_view.dart';
+import 'sync_status.dart';
 
 abstract class NoteCore {
   /// The current view, then every subsequent one. Emits immediately on listen.
@@ -36,6 +37,22 @@ abstract class NoteCore {
   /// The blob another device scans or pastes to join this note. In Slice 3 this
   /// becomes the fragment of an invite link, with the same bytes.
   Future<String> exportShareBlob();
+
+  /// Start syncing with the relay at [url].
+  ///
+  /// Returns when the attempt has *started*, not when it has succeeded: there
+  /// may be no network, and nothing above this is allowed to wait for one.
+  /// [watchSync] is where it says how it went.
+  Future<void> connect(String url);
+
+  /// Stop syncing. Edits still work and still queue.
+  Future<void> disconnect();
+
+  /// The sync status now, and every change to it.
+  Stream<SyncStatus> watchSync();
+
+  /// The status right now, for the first frame.
+  SyncStatus get syncStatus;
 
   /// Stop watching and release whatever the implementation holds.
   Future<void> dispose();

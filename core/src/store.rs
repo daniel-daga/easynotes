@@ -26,6 +26,17 @@ pub trait OpStore {
     fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>>;
 
     fn notes(&self) -> Result<Vec<NoteId>>;
+
+    /// Small per-note bookkeeping that is not part of the log. Today that is the
+    /// sync cursor and nothing else.
+    ///
+    /// It lives beside the log rather than in it because it is *local*: it
+    /// records what this device has sent and received, it is meaningless on
+    /// another device, and it must never be handed to the relay. `key` is an
+    /// internal name, not user data.
+    fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()>;
+
+    fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>>;
 }
 
 /// In-memory store, for tests and for the headless cores in the integration test.
@@ -33,6 +44,7 @@ pub trait OpStore {
 pub struct MemoryStore {
     logs: HashMap<NoteId, Vec<Vec<u8>>>,
     snapshots: HashMap<NoteId, Vec<u8>>,
+    meta: HashMap<(NoteId, String), Vec<u8>>,
 }
 
 impl MemoryStore {
@@ -68,6 +80,15 @@ impl OpStore for MemoryStore {
 
     fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
         Ok(self.snapshots.get(&note).cloned())
+    }
+
+    fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()> {
+        self.meta.insert((note, key.to_string()), value.to_vec());
+        Ok(())
+    }
+
+    fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.meta.get(&(note, key.to_string())).cloned())
     }
 
     fn notes(&self) -> Result<Vec<NoteId>> {
@@ -113,6 +134,10 @@ pub mod file {
 
         fn snapshot_path(&self, note: NoteId) -> PathBuf {
             self.root.join(format!("{}.snap", note.encode()))
+        }
+
+        fn meta_path(&self, note: NoteId, key: &str) -> PathBuf {
+            self.root.join(format!("{}.{key}.meta", note.encode()))
         }
     }
 
@@ -160,6 +185,24 @@ pub mod file {
 
         fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
             let path = self.snapshot_path(note);
+            if !path.exists() {
+                return Ok(None);
+            }
+            Ok(Some(fs::read(&path).map_err(io)?))
+        }
+
+        fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()> {
+            // Written through a temporary file and renamed, because a half-written
+            // cursor is worse than no cursor: it would make the client replay from
+            // a sequence number the relay never issued.
+            let path = self.meta_path(note, key);
+            let tmp = path.with_extension("meta.tmp");
+            fs::write(&tmp, value).map_err(io)?;
+            fs::rename(&tmp, &path).map_err(io)
+        }
+
+        fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
+            let path = self.meta_path(note, key);
             if !path.exists() {
                 return Ok(None);
             }
@@ -321,6 +364,12 @@ impl OpStore for Box<dyn OpStore + Send> {
     }
     fn notes(&self) -> Result<Vec<NoteId>> {
         (**self).notes()
+    }
+    fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()> {
+        (**self).put_meta(note, key, value)
+    }
+    fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
+        (**self).get_meta(note, key)
     }
 }
 

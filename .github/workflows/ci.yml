@@ -56,16 +56,22 @@ jobs:
 
       # The core must stay free of anything native, or the web build dies later
       # and further from the cause. Both backends, because D1 is reversible.
-      - name: Build the core for WebAssembly
+      #
+      # The bridge crate too, since the sync engine made it the one crate whose
+      # code differs per target: this catches a broken `#[cfg]` split here in
+      # half a minute instead of ten minutes into the web job.
+      - name: Build for WebAssembly
         run: |
           rustup target add wasm32-unknown-unknown
           cargo build -p easynotes-core --target wasm32-unknown-unknown \
             --no-default-features --features yrs-backend
           cargo build -p easynotes-core --target wasm32-unknown-unknown \
             --no-default-features --features automerge-backend
+          cargo build -p rust_lib_easynotes --target wasm32-unknown-unknown
 
-  # The Flutter app: widget tests against a fake core, and tests that drive the
-  # real core across the bridge.
+  # The Flutter app: widget tests against a fake core, tests that drive the real
+  # core across the bridge, and the demo run from the app's own API through a
+  # relay process.
   flutter:
     name: Flutter
     runs-on: ubuntu-latest
@@ -90,15 +96,17 @@ jobs:
       - run: flutter analyze
         working-directory: app
 
-      # Built first: the bridge tests skip without it, and a skipped test that
-      # looks green is worse than no test.
-      - name: Build the native library
-        run: cargo build -p rust_lib_easynotes
+      # Built first: the bridge tests skip without the library and the relay
+      # tests skip without the binary, and a skipped test that looks green is
+      # worse than no test.
+      - name: Build the native library and the relay
+        run: cargo build -p rust_lib_easynotes -p easynotes-relay
 
       - name: Test
         working-directory: app
         env:
           EASYNOTES_NATIVE_LIB: ${{ github.workspace }}/target/debug/librust_lib_easynotes.so
+          EASYNOTES_RELAY_BIN: ${{ github.workspace }}/target/debug/easynotes-relay
         run: flutter test
 
       - name: Build for Linux desktop

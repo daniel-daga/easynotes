@@ -13,6 +13,7 @@ import '../src/rust/api/notes.dart' as rust;
 import '../src/rust/frb_generated.dart';
 import 'note_core.dart';
 import 'note_view.dart';
+import 'sync_status.dart';
 
 class RustNoteCore implements NoteCore {
   RustNoteCore._(this._note) {
@@ -28,6 +29,11 @@ class RustNoteCore implements NoteCore {
     _upstream = _note.watch().listen(
       (view) => _controller.add(_toView(view)),
       onError: _controller.addError,
+    );
+    // Same reasoning for the sync status: one Rust watcher, fanned out here.
+    _syncUpstream = _note.watchSync().listen(
+      (status) => _sync.add(_toStatus(status)),
+      onError: _sync.addError,
     );
   }
 
@@ -48,6 +54,16 @@ class RustNoteCore implements NoteCore {
     return RustNoteCore._(rust.Note.open(dir: directory));
   }
 
+  /// Open the note a share blob describes, replacing this device's note with it.
+  ///
+  /// Slice 1's model has exactly one note per device, so joining a shared list
+  /// means becoming a member of that one. A note list turns this into an
+  /// addition rather than a replacement.
+  static Future<RustNoteCore> join(String directory, String blob) async {
+    await ensureInitialized();
+    return RustNoteCore._(rust.Note.join(dir: directory, blob: blob));
+  }
+
   /// Open a note that lives only in memory.
   ///
   /// The web build uses this: a browser has no filesystem, and backing the op
@@ -63,6 +79,8 @@ class RustNoteCore implements NoteCore {
   final rust.Note _note;
   final _controller = StreamController<NoteView>.broadcast();
   late final StreamSubscription<rust.NoteView> _upstream;
+  final _sync = StreamController<SyncStatus>.broadcast();
+  late final StreamSubscription<rust.SyncStatus> _syncUpstream;
 
   /// Read straight through to Rust rather than caching. A cached copy is only
   /// fresh while something is listening to [watch], and a caller that reads
@@ -101,13 +119,45 @@ class RustNoteCore implements NoteCore {
   Future<String> exportShareBlob() async => _note.shareBlob();
 
   @override
+  Future<void> connect(String url) => _note.connect(relay: url);
+
+  @override
+  Future<void> disconnect() => _note.disconnect();
+
+  @override
+  SyncStatus get syncStatus => _toStatus(_note.syncStatus());
+
+  @override
+  Stream<SyncStatus> watchSync() async* {
+    yield syncStatus;
+    yield* _sync.stream;
+  }
+
+  @override
   Future<void> dispose() async {
-    // Stop the Rust watcher first: cancelling the upstream subscription waits
-    // for that stream to close, and it will not close on its own.
+    // The relay connection goes first: its engine holds a reference to the core
+    // and would otherwise keep applying updates to a note nothing is watching.
+    await _note.disconnect();
+    // Then stop the Rust watchers: cancelling an upstream subscription waits for
+    // that stream to close, and neither closes on its own.
     await _note.stopWatching();
     await _upstream.cancel();
+    await _syncUpstream.cancel();
     await _controller.close();
+    await _sync.close();
   }
+
+  static SyncStatus _toStatus(rust.SyncStatus s) => SyncStatus(
+        state: switch (s.state) {
+          rust.SyncState.offline => SyncState.offline,
+          rust.SyncState.connecting => SyncState.connecting,
+          rust.SyncState.online => SyncState.online,
+          rust.SyncState.synced => SyncState.synced,
+        },
+        pending: s.pending,
+        lastSeq: s.lastSeq,
+        lastError: s.lastError,
+      );
 
   static NoteView _toView(rust.NoteView v) => NoteView(
         title: v.title,

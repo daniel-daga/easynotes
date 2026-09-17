@@ -8,6 +8,7 @@
 //! to see plain structs it can generate Dart for.
 
 use crate::frb_generated::StreamSink;
+use crate::relay::Connection;
 use easynotes_core::crdt::DefaultNoteDoc;
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
@@ -15,6 +16,7 @@ use easynotes_core::store::{FileKeyring, FileStore, Keyring, MemoryKeyring, Memo
 use flutter_rust_bridge::frb;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 /// The store and keyring are boxed so one `Note` type serves every platform:
 /// the filesystem on desktop and mobile, memory in a browser, and — once Slice 2
@@ -58,6 +60,59 @@ impl From<easynotes_core::crdt::NoteView> for NoteView {
     }
 }
 
+/// Where this note's sync stands, as Dart sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncState {
+    /// Not connected. Everything still works; the relay just has not heard it yet.
+    Offline,
+    Connecting,
+    /// Connected, still catching up on what arrived while we were away.
+    Online,
+    /// Connected and caught up.
+    Synced,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncStatus {
+    pub state: SyncState,
+    /// Our own edits the relay has not acknowledged yet.
+    pub pending: u32,
+    pub last_seq: i64,
+    /// Why the last attempt failed, if it did. Shown to the user verbatim, so it
+    /// is the relay's or the network's words, not ours.
+    pub last_error: Option<String>,
+}
+
+impl SyncStatus {
+    /// What to show before anything has been connected.
+    pub(crate) fn offline() -> Self {
+        Self {
+            state: SyncState::Offline,
+            pending: 0,
+            last_seq: 0,
+            last_error: None,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
+    fn from(s: easynotes_core::sync::SyncStatus) -> Self {
+        use easynotes_core::sync::SyncState as Core;
+        Self {
+            state: match s.state {
+                Core::Offline => SyncState::Offline,
+                Core::Connecting => SyncState::Connecting,
+                Core::Online => SyncState::Online,
+                Core::Synced => SyncState::Synced,
+            },
+            pending: s.pending as u32,
+            last_seq: s.last_seq,
+            last_error: s.last_error,
+        }
+    }
+}
+
 /// A handle to one open note.
 ///
 /// `Mutex` because the bridge hands Dart a shared reference and dispatches calls
@@ -70,6 +125,11 @@ pub struct Note {
     /// Set by [`Note::stop_watching`]. The watcher thread checks it every time
     /// it wakes.
     stop: Arc<AtomicBool>,
+    /// The relay connection, once [`Note::connect`] has made one.
+    sync: Mutex<Option<Connection>>,
+    /// Sync status for the life of the note, not of one connection, so that the
+    /// UI subscribes once and keeps seeing the truth across a reconnect.
+    status: Arc<watch::Sender<SyncStatus>>,
 }
 
 fn boxed_store(s: impl OpStore + Send + 'static) -> Box<dyn OpStore + Send> {
@@ -138,11 +198,113 @@ impl Note {
         Ok(Note::wrap(core, id))
     }
 
+    /// Open the note a share blob describes, and make it this device's note.
+    ///
+    /// The blob carries the note's ID and its key, so this is the join half of
+    /// demo step 2. It replaces whatever note the directory pointed at before,
+    /// which is all Slice 1's one-note model can mean by "join"; a note list
+    /// makes it an addition instead.
+    #[frb(sync)]
+    pub fn join(dir: String, blob: String) -> Result<Note, String> {
+        let root = std::path::PathBuf::from(dir);
+        let store = FileStore::open(root.join("log")).map_err(|e| e.to_string())?;
+        let keyring = FileKeyring::open(root.join("keys")).map_err(|e| e.to_string())?;
+        let mut core: Core = NoteCore::open(boxed_store(store), boxed_keyring(keyring))
+            .map_err(|e| e.to_string())?;
+
+        let id = core.import_share_blob(&blob).map_err(|e| e.to_string())?;
+        // `import_share_blob` opens an empty document, which is right for a first
+        // join and wrong for a second one: this device may already hold the log.
+        // Closing and reopening replays whatever is on disk under the key the
+        // blob just supplied.
+        core.close_all();
+        core.open_note(id).map_err(|e| e.to_string())?;
+
+        std::fs::write(root.join("note-id"), id.encode()).map_err(|e| e.to_string())?;
+        Ok(Note::wrap(core, id))
+    }
+
     fn wrap(core: Core, id: NoteId) -> Note {
         Note {
             core: Arc::new(Mutex::new(core)),
             id,
             stop: Arc::new(AtomicBool::new(false)),
+            sync: Mutex::new(None),
+            status: Arc::new(watch::channel(SyncStatus::offline()).0),
+        }
+    }
+
+    // -- sync ---------------------------------------------------------------
+
+    /// Start syncing this note with the relay at `relay` (`http://host:port` or
+    /// `wss://host`).
+    ///
+    /// Returns as soon as the engine is started, not when it is connected: there
+    /// may be no network, and the app is not allowed to care. Watch
+    /// [`Note::watch_sync`] to find out how it goes. Calling this again replaces
+    /// the connection, which is how the app moves to a different relay.
+    pub fn connect(&self, relay: String) -> Result<(), String> {
+        let connection = Connection::open(self.core.clone(), self.id, &relay, self.status.clone())?;
+        if let Some(previous) = self
+            .sync
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .replace(connection)
+        {
+            previous.shutdown();
+        }
+        Ok(())
+    }
+
+    /// Stop syncing. Edits still work and still queue; nothing is lost.
+    pub fn disconnect(&self) -> Result<(), String> {
+        let previous = self
+            .sync
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .take();
+        if let Some(connection) = previous {
+            connection.shutdown();
+        }
+        // The engine's own last word may not arrive before its task is gone, so
+        // say it here: nothing is connected any more.
+        self.status.send_replace(SyncStatus::offline());
+        Ok(())
+    }
+
+    #[frb(sync)]
+    pub fn sync_status(&self) -> SyncStatus {
+        self.status.borrow().clone()
+    }
+
+    /// The sync status now, and every change to it.
+    pub async fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
+        let mut updates = self.status.subscribe();
+        let stop = self.stop.clone();
+        if sink.add(updates.borrow_and_update().clone()).is_err() {
+            return Ok(());
+        }
+        loop {
+            if updates.changed().await.is_err() {
+                return Ok(()); // the note was dropped
+            }
+            if stop.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if sink.add(updates.borrow_and_update().clone()).is_err() {
+                return Ok(()); // Dart stopped listening
+            }
+        }
+    }
+
+    /// Hand a sealed envelope to the relay, if there is a connection to hand it
+    /// to. There being none is not an error: the edit is already in the log, and
+    /// the next connection finds it there.
+    fn publish(&self, envelope: Vec<u8>) {
+        if let Ok(sync) = self.sync.lock() {
+            if let Some(connection) = sync.as_ref() {
+                connection.publish(envelope);
+            }
         }
     }
 
@@ -205,6 +367,13 @@ impl Note {
     /// forever too.
     pub fn stop_watching(&self) -> Result<(), String> {
         self.stop.store(true, Ordering::SeqCst);
+        // The same wake for the sync watcher, which is parked on its own channel
+        // and would otherwise outlive the screen that asked for it. The clone is
+        // bound first on purpose: `borrow()` holds a read guard until the end of
+        // the statement, and a send inside that statement would wait for a lock
+        // the same expression is holding.
+        let unchanged = self.status.borrow().clone();
+        self.status.send_replace(unchanged);
         let core = self
             .core
             .lock()
@@ -225,18 +394,20 @@ impl Note {
 
     // -- edits --------------------------------------------------------------
     //
-    // Each returns the sealed envelope, which the caller hands to the relay.
-    // Slice 1's app has no relay connection yet, so Dart discards it; the shape
-    // is here so that adding sync does not change the API.
+    // Each one applies the edit locally and hands the sealed envelope to the
+    // relay. The local half is what the UI sees, and it never waits for the
+    // remote half: the edit is in the log before `publish` is called, and stays
+    // there whether or not there is a network.
 
     pub fn set_title(&self, title: String) -> Result<(), String> {
         let mut core = self
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.set_title(self.id, title)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let envelope = core.set_title(self.id, title).map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(())
     }
 
     pub fn add_item(&self, text: String) -> Result<String, String> {
@@ -244,9 +415,10 @@ impl Note {
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.add_item(self.id, text)
-            .map(|(id, _)| id.encode())
-            .map_err(|e| e.to_string())
+        let (id, envelope) = core.add_item(self.id, text).map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(id.encode())
     }
 
     pub fn set_item_text(&self, item: String, text: String) -> Result<(), String> {
@@ -254,9 +426,12 @@ impl Note {
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.set_item_text(self.id, item_id(&item)?, text)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let envelope = core
+            .set_item_text(self.id, item_id(&item)?, text)
+            .map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(())
     }
 
     pub fn set_checked(&self, item: String, checked: bool) -> Result<(), String> {
@@ -264,9 +439,12 @@ impl Note {
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.set_checked(self.id, item_id(&item)?, checked)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let envelope = core
+            .set_checked(self.id, item_id(&item)?, checked)
+            .map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(())
     }
 
     pub fn move_item(&self, item: String, to_index: u32) -> Result<(), String> {
@@ -274,9 +452,12 @@ impl Note {
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.move_item(self.id, item_id(&item)?, to_index as usize)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let envelope = core
+            .move_item(self.id, item_id(&item)?, to_index as usize)
+            .map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(())
     }
 
     pub fn remove_item(&self, item: String) -> Result<(), String> {
@@ -284,8 +465,11 @@ impl Note {
             .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
-        core.remove_item(self.id, item_id(&item)?)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let envelope = core
+            .remove_item(self.id, item_id(&item)?)
+            .map_err(|e| e.to_string())?;
+        drop(core);
+        self.publish(envelope);
+        Ok(())
     }
 }

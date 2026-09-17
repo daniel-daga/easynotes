@@ -1,4 +1,4 @@
-# EasyNotes — Slice 1
+# EasyNotes
 #
 # Every command here is one CI runs too, so "works on my machine" and "passes in
 # CI" are the same claim. `just --list` shows them all.
@@ -10,6 +10,7 @@
 wasm_rustflags := "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-args=--shared-memory -C link-args=--max-memory=1073741824 -C link-args=--import-memory -C link-args=--export=__heap_base -C link-args=--export=__wasm_init_tls -C link-args=--export=__tls_size -C link-args=--export=__tls_align -C link-args=--export=__tls_base --cfg getrandom_backend=\"wasm_js\""
 
 native_lib := justfile_directory() / "target/debug/librust_lib_easynotes.so"
+relay_bin := justfile_directory() / "target/debug/easynotes-relay"
 
 default:
     @just --list
@@ -63,11 +64,13 @@ test-core:
 test-relay:
     cargo test -p easynotes-relay
 
-# Widget tests against a fake core, plus tests driving the real core across the
-# bridge. The second group skips unless the native library is built.
+# Widget tests against a fake core, tests driving the real core across the
+# bridge, and the demo run from the app's own API through a real relay. The last
+# two groups skip unless the binaries below are built, so they are built here.
 test-app:
     cargo build -p rust_lib_easynotes
-    cd app && EASYNOTES_NATIVE_LIB={{native_lib}} flutter test
+    cargo build -p easynotes-relay
+    cd app && EASYNOTES_NATIVE_LIB={{native_lib}} EASYNOTES_RELAY_BIN={{relay_bin}} flutter test
 
 lint:
     cargo fmt --all --check
@@ -86,8 +89,11 @@ fmt:
 run-relay:
     RUST_LOG=easynotes_relay=debug cargo run -p easynotes-relay
 
-run-linux: bridge
-    cd app && flutter run -d linux
+# The app on Linux desktop. It syncs with the relay at EASYNOTES_RELAY, which
+# defaults to the one `just run-relay` starts — so the two-device demo is this
+# in one terminal and `just run-relay` in another.
+run-linux relay="http://127.0.0.1:8080": bridge
+    cd app && flutter run -d linux --dart-define=EASYNOTES_RELAY={{relay}}
 
 # ---------------------------------------------------------------------------
 # Measure — decision D1

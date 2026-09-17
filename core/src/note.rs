@@ -17,8 +17,28 @@ use crate::error::{CoreError, Result};
 use crate::ids::{ItemId, NoteId};
 use crate::order;
 use crate::store::{Keyring, OpStore};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::watch;
+
+/// Where the sync cursor is kept in the store's per-note metadata.
+const SYNC_CURSOR: &str = "sync";
+
+/// What this device has sent to, and received from, the relay for one note.
+///
+/// Purely local bookkeeping: it never travels, and another device's copy would be
+/// meaningless. It buys two things. `last_seq` makes a relaunch cheap — the client
+/// resubscribes from where it left off instead of replaying the note's whole relay
+/// log. `sent_upto` is what stops an edit made offline from being re-sent on every
+/// launch for ever, which without it is the price of not losing it at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncCursor {
+    /// The highest relay sequence number applied to this note.
+    pub last_seq: i64,
+    /// The highest counter of our own envelopes the relay has echoed back.
+    /// `None` means the relay has acknowledged nothing from this device.
+    pub sent_upto: Option<u64>,
+}
 
 /// Slice 1 builds checklists. `Text` is here because the design doc's data model
 /// has both and the share blob format should not change when text notes land.
@@ -376,6 +396,49 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let note = self.note(id)?;
         let _ = note.watch.send(note.doc.view());
         Ok(())
+    }
+
+    // -- sync bookkeeping ---------------------------------------------------
+    //
+    // The sync engine drives these; they are here rather than in the engine
+    // because the store is here, and because they have to work for a note that
+    // is not open — a relaunch reads the cursor before it decides what to ask
+    // the relay for.
+
+    pub fn sync_cursor(&self, id: NoteId) -> Result<SyncCursor> {
+        match self.store.get_meta(id, SYNC_CURSOR)? {
+            Some(raw) => serde_json::from_slice(&raw)
+                .map_err(|e| CoreError::Storage(format!("unreadable sync cursor: {e}"))),
+            None => Ok(SyncCursor::default()),
+        }
+    }
+
+    pub fn set_sync_cursor(&mut self, id: NoteId, cursor: SyncCursor) -> Result<()> {
+        let raw = serde_json::to_vec(&cursor)
+            .map_err(|e| CoreError::Storage(format!("unwritable sync cursor: {e}")))?;
+        self.store.put_meta(id, SYNC_CURSOR, &raw)
+    }
+
+    /// Our own envelopes, oldest first, that the relay has not acknowledged.
+    ///
+    /// This is the outbox, and it is derived rather than kept: the log already
+    /// holds every edit this device made, so an app that is killed between an
+    /// offline edit and the next connection has lost nothing.
+    pub fn unsent(&self, id: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
+        let me = self.identity.public_key();
+        let mut out = Vec::new();
+        for raw in self.store.load(id)? {
+            let env = Envelope::decode(&raw)?;
+            if env.author != me {
+                continue;
+            }
+            if after.is_some_and(|sent| env.counter <= sent) {
+                continue;
+            }
+            out.push((env.counter, raw));
+        }
+        out.sort_by_key(|(counter, _)| *counter);
+        Ok(out)
     }
 
     /// Forget every in-memory document, keeping the store and keyring. Used by
