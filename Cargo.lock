@@ -1932,6 +1932,7 @@ version = "0.1.0"
 dependencies = [
  "easynotes-core",
  "flutter_rust_bridge",
+ "tokio",
 ]
 
 [[package]]

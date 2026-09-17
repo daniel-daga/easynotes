@@ -1,9 +1,10 @@
-//! The client half of the relay protocol.
+//! The wire: one connection to one note, and the handshake that opens it.
 //!
-//! Native only for Slice 1. The web build will implement the same two methods —
-//! `connect` and `run` — over the browser's own WebSocket; the message shapes and
-//! the `since` bookkeeping do not change, which is the point of keeping this
-//! module thin.
+//! Native only. The web build will implement the same two methods — `connect` and
+//! `next` — over the browser's own WebSocket; the message shapes and the `since`
+//! bookkeeping do not change, which is the point of keeping this module thin.
+//! [`super::engine`] is what drives this, and holds everything that is policy
+//! rather than protocol.
 //!
 //! The client is deliberately dumb in the opposite direction from the relay: it
 //! trusts the relay for *ordering and delivery* and for nothing else. Every
@@ -11,7 +12,7 @@
 //! the document, so a hostile relay can withhold updates or reorder them, but it
 //! cannot forge one.
 
-use crate::crypto::DeviceIdentity;
+use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -67,8 +68,11 @@ fn net(e: impl std::fmt::Display) -> CoreError {
 ///
 /// There is no account here and nothing to register: the relay learns a public
 /// key, and that is the whole of the identity.
-pub async fn authenticate(http_base: &str, identity: &DeviceIdentity) -> Result<String> {
-    let device = identity.public_key().encode();
+///
+/// Takes a [`DeviceSigner`] rather than the identity itself, so the engine can
+/// authenticate against a core held behind a lock without the seed leaving it.
+pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result<String> {
+    let device = signer.device_key()?.encode();
     let http = reqwest::Client::new();
 
     let challenge: ChallengeResponse = http
@@ -86,7 +90,7 @@ pub async fn authenticate(http_base: &str, identity: &DeviceIdentity) -> Result<
     let nonce = URL_SAFE_NO_PAD
         .decode(&challenge.nonce)
         .map_err(|_| CoreError::Storage("relay sent a malformed nonce".into()))?;
-    let signature = URL_SAFE_NO_PAD.encode(identity.sign(&nonce));
+    let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
     let token: TokenResponse = http
         .post(format!("{http_base}/v1/token"))

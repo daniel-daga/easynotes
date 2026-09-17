@@ -3,14 +3,20 @@
 A Google Keep–style notes and lists app where every note is end-to-end
 encrypted, lists can be edited live by several people, and sharing needs no
 email account. See [`docs/design.md`](docs/design.md) for the product and
-architecture, and [`docs/plan-slice-01-spike.md`](docs/plan-slice-01-spike.md)
-for what the first slice set out to prove.
+architecture.
 
-**Status: Slice 1 complete.** The vertical spike works — one Rust core for
-crypto, CRDT, storage and sync, driving a Flutter UI on Linux desktop and in a
-browser, with a relay that stores and forwards ciphertext and nothing else.
-[`docs/slice-01-results.md`](docs/slice-01-results.md) is the honest account,
-including what is not done.
+**Status: Slice 1 complete, Slice 2 in progress.** The vertical spike works —
+one Rust core for crypto, CRDT, storage and sync, driving a Flutter UI on Linux
+desktop and in a browser, with a relay that stores and forwards ciphertext and
+nothing else. [`docs/slice-01-results.md`](docs/slice-01-results.md) is the
+honest account of that, including what it did not do;
+[`docs/plan-slice-02.md`](docs/plan-slice-02.md) is what happens next and how
+far it has got.
+
+The app now syncs: edits go to a relay as they are made, an edit made with no
+network waits in the local log and goes when there is one, and the app says
+which of the two it is. Android and iOS have still never been built — that is
+the largest open gap and the next thing to do.
 
 ## Layout
 
@@ -38,6 +44,20 @@ just run-linux        # the app on Linux desktop, over the real core
 just --list           # everything else
 ```
 
+The two-device demo is `just run-relay` in one terminal and `just run-linux` in
+another — twice, if you want two devices. The app syncs with the relay at
+`EASYNOTES_RELAY`, which defaults to the one `just run-relay` starts:
+
+```sh
+just run-linux https://relay.example     # or wherever yours is
+```
+
+With no relay there, nothing breaks: the app is a local notes app and the status
+button in the app bar says so, with the count of edits that have not left the
+device. To share a list, press the share button on one device and paste the blob
+into the join button on the other. It carries the note's key, so it is as
+sensitive as the list itself.
+
 The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
 run without it is a run that skipped the tests that matter there.
@@ -55,6 +75,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0001](docs/adr/0001-crdt.md) | CRDT: Yrs, with items in a map and fractional order keys |
 | [ADR 0002](docs/adr/0002-web-core.md) | One Rust core everywhere, including the web |
 | [ADR 0003](docs/adr/0003-relay.md) | Relay: Rust and axum, Postgres for the log |
+| [ADR 0004](docs/adr/0004-sync-engine.md) | Sync: an outbox derived from the log, acknowledged by echo |
 
 ## Security, in one paragraph
 
@@ -65,7 +86,9 @@ envelope cannot be moved between notes or re-attributed. The relay holds no keys
 It may check a token, a size, and that an envelope's note ID matches the path it
 arrived on — it may not check anything else, and it never sees plaintext.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
-wire rather than trusting the claim.
+wire rather than trusting the claim. The sync engine that moves those envelopes
+holds no keys and cannot read one: it hands every arrival to the core, which
+verifies before it decrypts.
 
 This has **not** been audited. The design doc schedules an external review before
 1.0, and nothing here should be relied on until then.

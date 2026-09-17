@@ -6,12 +6,33 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `boxed_keyring`, `boxed_store`, `item_id`, `wrap`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+// These functions are ignored because they are not marked as `pub`: `boxed_keyring`, `boxed_store`, `item_id`, `offline`, `publish`, `wrap`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>>
 abstract class Note implements RustOpaqueInterface {
   Future<String> addItem({required String text});
+
+  /// Start syncing this note with the relay at `relay` (`http://host:port` or
+  /// `wss://host`).
+  ///
+  /// Returns as soon as the engine is started, not when it is connected: there
+  /// may be no network, and the app is not allowed to care. Watch
+  /// [`Note::watch_sync`] to find out how it goes. Calling this again replaces
+  /// the connection, which is how the app moves to a different relay.
+  Future<void> connect({required String relay});
+
+  /// Stop syncing. Edits still work and still queue; nothing is lost.
+  Future<void> disconnect();
+
+  /// Open the note a share blob describes, and make it this device's note.
+  ///
+  /// The blob carries the note's ID and its key, so this is the join half of
+  /// demo step 2. It replaces whatever note the directory pointed at before,
+  /// which is all Slice 1's one-note model can mean by "join"; a note list
+  /// makes it an addition instead.
+  static Note join({required String dir, required String blob}) =>
+      RustLib.instance.api.crateApiNotesNoteJoin(dir: dir, blob: blob);
 
   Future<void> moveItem({required String item, required int toIndex});
 
@@ -52,6 +73,8 @@ abstract class Note implements RustOpaqueInterface {
   /// forever too.
   Future<void> stopWatching();
 
+  SyncStatus syncStatus();
+
   NoteView view();
 
   /// Every view from now on, starting with the current one.
@@ -60,6 +83,9 @@ abstract class Note implements RustOpaqueInterface {
   /// arriving from another device both come out here, which is what keeps the
   /// one-device and two-device cases identical.
   Stream<NoteView> watch();
+
+  /// The sync status now, and every change to it.
+  Stream<SyncStatus> watchSync();
 }
 
 /// One checklist item, as Dart sees it.
@@ -108,4 +134,50 @@ class NoteView {
           runtimeType == other.runtimeType &&
           title == other.title &&
           items == other.items;
+}
+
+/// Where this note's sync stands, as Dart sees it.
+enum SyncState {
+  /// Not connected. Everything still works; the relay just has not heard it yet.
+  offline,
+  connecting,
+
+  /// Connected, still catching up on what arrived while we were away.
+  online,
+
+  /// Connected and caught up.
+  synced,
+}
+
+class SyncStatus {
+  final SyncState state;
+
+  /// Our own edits the relay has not acknowledged yet.
+  final int pending;
+  final PlatformInt64 lastSeq;
+
+  /// Why the last attempt failed, if it did. Shown to the user verbatim, so it
+  /// is the relay's or the network's words, not ours.
+  final String? lastError;
+
+  const SyncStatus({
+    required this.state,
+    required this.pending,
+    required this.lastSeq,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      state.hashCode ^ pending.hashCode ^ lastSeq.hashCode ^ lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SyncStatus &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          pending == other.pending &&
+          lastSeq == other.lastSeq &&
+          lastError == other.lastError;
 }

@@ -98,6 +98,30 @@ impl DeviceIdentity {
     }
 }
 
+/// What the relay handshake needs from a device: the public key it authenticates,
+/// and a signature over the nonce it hands back.
+///
+/// A trait rather than a `&DeviceIdentity` so that the sync engine can run against
+/// a core behind a lock without a copy of the secret escaping to it. The seed stays
+/// exactly where it was.
+pub trait DeviceSigner: Send + Sync {
+    fn device_key(&self) -> Result<AuthorKey>;
+
+    /// Sign a relay challenge. Deliberately not a general-purpose signing method:
+    /// the only thing a caller outside this module gets to sign is a nonce.
+    fn sign_challenge(&self, nonce: &[u8]) -> Result<[u8; SIG_LEN]>;
+}
+
+impl DeviceSigner for DeviceIdentity {
+    fn device_key(&self) -> Result<AuthorKey> {
+        Ok(self.public_key())
+    }
+
+    fn sign_challenge(&self, nonce: &[u8]) -> Result<[u8; SIG_LEN]> {
+        Ok(self.sign(nonce))
+    }
+}
+
 /// An Ed25519 public key, used as the author of an update.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AuthorKey(pub [u8; PUBKEY_LEN]);

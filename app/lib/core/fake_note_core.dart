@@ -10,6 +10,7 @@ import 'dart:async';
 
 import 'note_core.dart';
 import 'note_view.dart';
+import 'sync_status.dart';
 
 class FakeNoteCore implements NoteCore {
   FakeNoteCore({String title = '', List<String> items = const []}) {
@@ -21,6 +22,7 @@ class FakeNoteCore implements NoteCore {
   }
 
   final _controller = StreamController<NoteView>.broadcast();
+  final _sync = StreamController<SyncStatus>.broadcast();
   final List<_Item> _items = [];
   String _title = '';
   int _counter = 0;
@@ -30,9 +32,13 @@ class FakeNoteCore implements NoteCore {
   final List<String> edits = [];
 
   NoteView _view = const NoteView.empty();
+  SyncStatus _status = const SyncStatus.offline();
 
   @override
   NoteView get current => _view;
+
+  @override
+  SyncStatus get syncStatus => _status;
 
   @override
   Stream<NoteView> watch() async* {
@@ -98,7 +104,35 @@ class FakeNoteCore implements NoteCore {
   }
 
   @override
-  Future<void> dispose() async => _controller.close();
+  Future<void> connect(String url) async {
+    edits.add('connect($url)');
+    pushStatus(const SyncStatus(state: SyncState.connecting));
+  }
+
+  @override
+  Future<void> disconnect() async {
+    edits.add('disconnect()');
+    pushStatus(const SyncStatus.offline());
+  }
+
+  @override
+  Stream<SyncStatus> watchSync() async* {
+    yield _status;
+    yield* _sync.stream;
+  }
+
+  /// Say what the engine would say. Tests use it to put the screen in a state
+  /// the real core would take a network outage to reach.
+  void pushStatus(SyncStatus status) {
+    _status = status;
+    _sync.add(status);
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _controller.close();
+    await _sync.close();
+  }
 
   /// Push a view the screen did not ask for, as a remote edit from the relay
   /// would. Tests use it to prove the screen really does render from the stream.

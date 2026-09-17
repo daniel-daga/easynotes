@@ -7,12 +7,19 @@ library;
 
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/note_view.dart';
+import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/checklist_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Future<void> pumpScreen(WidgetTester tester, FakeNoteCore core) async {
-  await tester.pumpWidget(MaterialApp(home: ChecklistScreen(core: core)));
+Future<void> pumpScreen(
+  WidgetTester tester,
+  FakeNoteCore core, {
+  Future<void> Function(String blob)? onJoin,
+}) async {
+  await tester.pumpWidget(
+    MaterialApp(home: ChecklistScreen(core: core, onJoin: onJoin)),
+  );
   await tester.pumpAndSettle();
 }
 
@@ -216,8 +223,10 @@ void main() {
     );
     expect(state, isNotNull);
 
-    // Dragging item 0 down past item 2 arrives as (oldIndex: 0, newIndex: 3).
-    list.onReorder(0, 3);
+    // Dragging item 0 down past item 2 arrives as (oldIndex: 0, newIndex: 2):
+    // `onReorderItem` reports the target slot in the list without the dragged
+    // item, which is the index the core wants.
+    list.onReorderItem!(0, 2);
     await tester.pumpAndSettle();
 
     expect(core.edits, contains('moveItem($id, 2)'));
@@ -234,10 +243,115 @@ void main() {
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
-    list.onReorder(2, 0);
+    list.onReorderItem!(2, 0);
     await tester.pumpAndSettle();
 
     expect(core.edits, contains('moveItem($id, 0)'));
     expect(visibleItems(tester), ['three', 'one', 'two']);
+  });
+
+  // -- sync ------------------------------------------------------------------
+
+  testWidgets('the sync button follows the status stream', (tester) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+
+    // Nothing has connected yet.
+    expect(
+      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
+      'Not syncing',
+    );
+
+    core.pushStatus(const SyncStatus(state: SyncState.synced));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
+      'Up to date',
+    );
+  });
+
+  testWidgets('waiting edits are counted where the user can see them', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+
+    core.pushStatus(
+      const SyncStatus(state: SyncState.offline, pending: 2),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
+      'Not syncing, 2 edits waiting',
+    );
+    // The badge is the at-a-glance version of the same fact.
+    expect(find.widgetWithText(Badge, '2'), findsOneWidget);
+  });
+
+  testWidgets('the relay\'s own words are available, not just ours', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+
+    core.pushStatus(
+      const SyncStatus(
+        state: SyncState.offline,
+        pending: 1,
+        lastError: 'relay: Connection refused (os error 111)',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('sync-status')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Not syncing, 1 edit waiting'), findsOneWidget);
+    expect(
+      find.byKey(const Key('sync-error')),
+      findsOneWidget,
+      reason: 'a user who cannot sync should be able to see why',
+    );
+  });
+
+  // -- joining ---------------------------------------------------------------
+
+  testWidgets('pasting a share blob asks to join with it', (tester) async {
+    String? joined;
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core, onJoin: (blob) async => joined = blob);
+
+    await tester.tap(find.byKey(const Key('join-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('join-blob-field')),
+      '  AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCk  ',
+    );
+    await tester.tap(find.byKey(const Key('join-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(joined, 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCk');
+  });
+
+  testWidgets('an empty paste joins nothing', (tester) async {
+    var calls = 0;
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core, onJoin: (blob) async => calls++);
+
+    await tester.tap(find.byKey(const Key('join-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('join-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(calls, 0);
+  });
+
+  testWidgets('there is no join button where joining is not possible', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    expect(find.byKey(const Key('join-button')), findsNothing);
   });
 }

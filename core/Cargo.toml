@@ -43,7 +43,7 @@ file-store = []
 # The WebSocket sync client. Native only: the web build talks to the relay through
 # the browser's own WebSocket, which is M4 work and a different transport behind
 # the same `SyncClient` shape.
-sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "tokio/rt", "tokio/macros"]
+sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "tokio/rt", "tokio/macros", "tokio/time"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
