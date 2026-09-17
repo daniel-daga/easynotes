@@ -1,0 +1,57 @@
+[package]
+name = "easynotes-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Crypto, CRDT, op log and sync client for EasyNotes. No UI, no platform policy."
+
+[lib]
+name = "easynotes_core"
+
+[dependencies]
+automerge = { version = "0.7", optional = true }
+base64 = "0.23.1"
+chacha20poly1305 = "0.10.1"
+ed25519-dalek = "2.2.0"
+futures-util = { version = "0.3.34", optional = true }
+getrandom = "0.3.4"
+hex = "0.4.3"
+rand = "0.9.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-native-roots"], optional = true }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+# Pinned: yrs 0.27.0 and later publish a manifest declaring edition 2018 while the
+# source uses `if let` guards, which are edition-2024-only. They do not compile on
+# stable Rust at all. See docs/adr/0001-crdt.md.
+yrs = { version = "=0.26.0", optional = true, features = ["sync"] }
+zeroize = "1.8.2"
+
+[features]
+default = ["automerge-backend", "yrs-backend", "file-store"]
+# The CRDT backends. Decision D1 picks one; both stay behind the `NoteDoc` trait
+# until it is made, and the benchmark needs both present at once.
+automerge-backend = ["dep:automerge"]
+yrs-backend = ["dep:yrs"]
+# Native filesystem op log. Off for wasm32 and for the relay, which needs only
+# the wire format.
+file-store = []
+# The WebSocket sync client. Native only: the web build talks to the relay through
+# the browser's own WebSocket, which is M4 work and a different transport behind
+# the same `SyncClient` shape.
+sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "tokio/rt", "tokio/macros"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# WebAssembly needs to be told where randomness comes from. Two versions of
+# `getrandom` are in the tree — 0.3 directly, and 0.2 via RustCrypto's `rand_core`
+# — and each needs its own opt-in for the browser. The `--cfg getrandom_backend`
+# that 0.3 also requires lives in `.cargo/config.toml`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }

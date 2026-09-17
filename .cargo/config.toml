@@ -1,0 +1,5 @@
+# `getrandom` 0.3 refuses to pick a WebAssembly backend implicitly, because a
+# silently-wrong RNG is worse than a build error. This says: on the web, use
+# `crypto.getRandomValues`.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
