@@ -96,12 +96,17 @@ run-linux relay="http://127.0.0.1:8080": bridge
     cd app && flutter run -d linux --dart-define=EASYNOTES_RELAY={{relay}}
 
 # ---------------------------------------------------------------------------
-# Measure — decision D1
+# Measure
 # ---------------------------------------------------------------------------
 
 # Automerge against Yrs on the same workload. Prints the table in ADR 0001.
 bench-crdt:
     cargo run --release -p easynotes-core --example bench_crdt
+
+# What compaction saves, in bytes on the disk and milliseconds on an open.
+# Prints the tables in ADR 0006.
+bench-compaction:
+    cargo run --release -p easynotes-core --example bench_compaction
 
 # What each CRDT backend adds to a WebAssembly bundle.
 bench-wasm:

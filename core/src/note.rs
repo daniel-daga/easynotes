@@ -48,10 +48,12 @@ pub struct SyncCursor {
 /// A number, not a science: 256 envelopes is a few weeks of a household's
 /// shopping list and replays in well under a millisecond on the Yrs backend
 /// ([ADR 0001](../../docs/adr/0001-crdt.md) measures 1 000 inserts at 10.7 ms).
-/// What makes it safe to pick roughly is that the trade is not close: a 20-item
-/// list with 256 toggles is a 56 KiB log and a 5 KiB snapshot on Yrs, 49 KiB
-/// against 1 KiB on Automerge, and the ratio only improves with age
-/// ([ADR 0006](../../docs/adr/0006-compaction.md)).
+/// What makes it safe to pick roughly is that the trade is not close. A 20-item
+/// list with 256 toggles is a 55 KiB log against a 5 KiB snapshot on Yrs, and
+/// opening it costs 18 ms from the log against 0.3 ms from the snapshot —
+/// because replay verifies a signature per envelope, at 68 µs each, whichever
+/// backend is underneath. `just bench-compaction` measures it, and
+/// [ADR 0006](../../docs/adr/0006-compaction.md) reads it.
 pub const COMPACT_AFTER: usize = 256;
 
 /// Slice 1 builds checklists. `Text` is here because the design doc's data model
@@ -437,6 +439,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// leaves a note that replays a log it already has a snapshot of, which costs
     /// milliseconds and changes nothing; the other order would lose edits.
     pub fn compact(&mut self, id: NoteId) -> Result<usize> {
+        // Up front, so that compacting a note that is not open fails the same way
+        // whether or not there turns out to be anything to drop.
+        self.note(id)?;
+
         let sent_upto = self.sync_cursor(id)?.sent_upto;
         let me = self.identity.public_key();
 
