@@ -216,8 +216,10 @@ void main() {
     );
     expect(state, isNotNull);
 
-    // Dragging item 0 down past item 2 arrives as (oldIndex: 0, newIndex: 3).
-    list.onReorder(0, 3);
+    // Dragging item 0 down past item 2 arrives as (oldIndex: 0, newIndex: 2):
+    // `onReorderItem` reports the target slot in the list without the dragged
+    // item, which is the index the core wants.
+    list.onReorderItem!(0, 2);
     await tester.pumpAndSettle();
 
     expect(core.edits, contains('moveItem($id, 2)'));
@@ -234,7 +236,7 @@ void main() {
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
-    list.onReorder(2, 0);
+    list.onReorderItem!(2, 0);
     await tester.pumpAndSettle();
 
     expect(core.edits, contains('moveItem($id, 0)'));

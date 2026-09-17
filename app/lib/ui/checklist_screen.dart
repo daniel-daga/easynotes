@@ -109,14 +109,17 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                       )
                     : ReorderableListView.builder(
                         itemCount: note.items.length,
-                        onReorder: (oldIndex, newIndex) {
-                          // ReorderableListView reports the target index in the
-                          // list *including* the item being dragged; the core
-                          // wants it excluding.
-                          final to = newIndex > oldIndex
-                              ? newIndex - 1
-                              : newIndex;
-                          widget.core.moveItem(note.items[oldIndex].id, to);
+                        // `onReorderItem`, not the deprecated `onReorder`:
+                        // it reports the target index with the dragged item
+                        // already taken out of the list, which is exactly what
+                        // the core means by "move to index N". The old callback
+                        // counted the dragged item too and needed adjusting
+                        // here, which is a subtle off-by-one to keep owning.
+                        onReorderItem: (oldIndex, newIndex) {
+                          widget.core.moveItem(
+                            note.items[oldIndex].id,
+                            newIndex,
+                          );
                         },
                         itemBuilder: (context, index) {
                           final item = note.items[index];
