@@ -130,6 +130,12 @@ impl App {
         self.handle.as_ref().map_or(0, |h| h.status().pending)
     }
 
+    /// Throw the log away and keep the snapshot, as opening a long-lived note
+    /// does. Returns how many envelopes went.
+    fn compact(&self) -> usize {
+        self.core.lock().unwrap().compact(self.note).unwrap()
+    }
+
     // -- edits, exactly as the bridge makes them ----------------------------
 
     fn add_item(&self, text: &str) {
@@ -389,6 +395,89 @@ async fn a_relaunch_does_not_resend_what_the_relay_already_has() {
     };
     // The note ID is opaque to the relay; this just shows the test used one.
     assert_eq!(note.encode().len(), 22);
+}
+
+/// Compaction and the outbox share the log, and compaction runs while the network
+/// is down as readily as when it is up. The edits the relay has never seen have to
+/// survive it — they exist nowhere else.
+#[tokio::test]
+async fn a_compacted_note_still_sends_what_the_relay_never_got() {
+    let (relay, log, _) = relay().await;
+    let wire = Wire::to(relay.addr, "127.0.0.1:0".parse().unwrap()).await;
+    let through_the_wire = wire.endpoint();
+
+    let mut a = App::owner("A");
+    a.connect(&through_the_wire);
+    a.add_item("milk");
+    a.wait_until_synced().await;
+
+    wire.cut();
+    for item in ["bread", "eggs"] {
+        a.add_item(item);
+    }
+    a.wait_until("an unacknowledged outbox", || a.pending() >= 2)
+        .await;
+
+    // The acknowledged envelope goes; the two the relay has never seen stay.
+    assert_eq!(a.compact(), 1, "compaction dropped the wrong number");
+    assert_eq!(a.log_len(), 2);
+    assert_eq!(
+        a.texts(),
+        ["milk", "bread", "eggs"],
+        "compaction changed the list it was compacting"
+    );
+
+    drop(wire);
+    let _wire = Wire::to(relay.addr, through_the_wire_addr(&through_the_wire)).await;
+    a.wait_until_synced().await;
+
+    assert_eq!(
+        log.head(&a.note.encode()).await.unwrap(),
+        3,
+        "the relay did not get the edits that only existed in the compacted log"
+    );
+
+    // And a guest who has never seen this note gets all of it, including the
+    // envelope this device no longer holds.
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&through_the_wire);
+    b.wait_for_items(&["milk", "bread", "eggs"]).await;
+}
+
+/// A compacted note is still the same author with the same counters, and a
+/// relaunch of one still tells the relay nothing it already knows.
+#[tokio::test]
+async fn a_relaunch_after_a_compaction_resends_nothing() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    for item in ["milk", "bread", "eggs"] {
+        a.add_item(item);
+    }
+    a.wait_until_synced().await;
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 3);
+
+    assert_eq!(a.compact(), 3, "an acknowledged log should compact away");
+    assert_eq!(a.log_len(), 0);
+
+    a.relaunch();
+    a.connect(&endpoint);
+    a.wait_until_synced().await;
+    a.add_item("coffee");
+
+    // Waited for on the guest rather than on A's own status: "synced with
+    // nothing pending" is also what A looks like in the instant between the edit
+    // and the engine noticing it.
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk", "bread", "eggs", "coffee"]).await;
+
+    assert_eq!(
+        log.head(&a.note.encode()).await.unwrap(),
+        4,
+        "a relaunched, compacted note re-sent what the relay already had"
+    );
 }
 
 /// Shutting an engine down stops it talking to the relay, and the app carries on.

@@ -19,6 +19,9 @@ getrandom = "0.3.4"
 hex = "0.4.3"
 rand = "0.9.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# `bundled` compiles the SQLite amalgamation, so there is no system library to
+# find and no version to be surprised by on any of the six targets.
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -32,7 +35,7 @@ yrs = { version = "=0.26.0", optional = true, features = ["sync"] }
 zeroize = "1.8.2"
 
 [features]
-default = ["automerge-backend", "yrs-backend", "file-store"]
+default = ["automerge-backend", "yrs-backend", "file-store", "sqlite-store"]
 # The CRDT backends. Decision D1 picks one; both stay behind the `NoteDoc` trait
 # until it is made, and the benchmark needs both present at once.
 automerge-backend = ["dep:automerge"]
@@ -40,12 +43,18 @@ yrs-backend = ["dep:yrs"]
 # Native filesystem op log. Off for wasm32 and for the relay, which needs only
 # the wire format.
 file-store = []
+# The real local store: SQLite for the log and the wrapped keys. Native only —
+# a browser has no filesystem, and the web store is IndexedDB behind the same
+# `OpStore` trait. On by default so `cargo test` cannot quietly skip it.
+sqlite-store = ["dep:rusqlite", "file-store"]
 # The WebSocket sync client. Native only: the web build talks to the relay through
 # the browser's own WebSocket, which is M4 work and a different transport behind
 # the same `SyncClient` shape.
 sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "tokio/rt", "tokio/macros", "tokio/time"]
 
 [dev-dependencies]
+# The store tests reach past the trait to check what is actually in the file.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"
 
 # WebAssembly needs to be told where randomness comes from. Two versions of

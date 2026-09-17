@@ -8,7 +8,6 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.13.0"
-easynotes-core = { path = "../../core" }
 # Only the synchronisation primitives here; the runtime that drives the sync
 # engine is native-only and is pulled in below.
 tokio = { version = "1", default-features = false, features = ["sync"] }
@@ -19,6 +18,13 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 easynotes-core = { path = "../../core", features = ["sync-native"] }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time", "net"] }
+
+# The browser gets the CRDT and the crypto and nothing that touches a disk: the
+# SQLite store compiles C, which has no business in a WebAssembly bundle, and the
+# filesystem store would be a directory a tab does not have. What the web build
+# needs instead is the IndexedDB store, which is item 4 of the Slice 2 plan.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+easynotes-core = { path = "../../core", default-features = false, features = ["automerge-backend", "yrs-backend"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

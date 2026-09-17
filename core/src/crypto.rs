@@ -400,3 +400,121 @@ pub fn import_share_blob(blob: &str) -> Result<(NoteId, NoteKey)> {
     raw.zeroize();
     Ok((note_id, NoteKey(key)))
 }
+
+// ---------------------------------------------------------------------------
+// Master key
+// ---------------------------------------------------------------------------
+
+/// Domain tag for everything sealed under the master key. Bound into the AAD, so
+/// a local blob and a relay envelope can never be mistaken for one another even
+/// when the two keys happen to be the same bytes.
+const LOCAL_DOMAIN: &[u8] = b"easynotes/local/v1";
+
+pub const MASTER_KEY_LEN: usize = 32;
+
+/// Format of a sealed local blob: `version | nonce | ciphertext`.
+pub const LOCAL_BLOB_VERSION: u8 = 1;
+pub const LOCAL_BLOB_HEADER_LEN: usize = 1 + NONCE_LEN;
+
+/// The key that encrypts what this device keeps for itself.
+///
+/// It is not a note key and it never travels: it wraps the device seed and every
+/// note key, and it seals the local-only rows — the sync cursor today, the search
+/// index and the account document later — that are not already envelopes. One
+/// device, one master key; losing it costs this device's local copy and nothing
+/// that is on the relay.
+///
+/// In the shipping app it lives in the OS keychain. Until the bridge can ask Dart
+/// for it, the native build keeps it in a file beside the database, which is the
+/// same stand-in Slice 1 used for the device seed and no worse than what it
+/// replaces.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct MasterKey(pub [u8; MASTER_KEY_LEN]);
+
+impl MasterKey {
+    pub fn random() -> Self {
+        let mut k = [0u8; MASTER_KEY_LEN];
+        random_bytes(&mut k);
+        Self(k)
+    }
+
+    pub fn from_slice(raw: &[u8]) -> Result<Self> {
+        let k: [u8; MASTER_KEY_LEN] = raw
+            .try_into()
+            .map_err(|_| CoreError::Crypto("a master key is 32 bytes"))?;
+        Ok(Self(k))
+    }
+
+    fn cipher(&self) -> XChaCha20Poly1305 {
+        XChaCha20Poly1305::new((&self.0).into())
+    }
+
+    /// Encrypt a local blob. `context` says what the blob is and where it lives —
+    /// for a sync cursor, the word `cursor` and the note it belongs to.
+    ///
+    /// The context is authenticated, not hidden, and that is the point: a row
+    /// cannot be lifted out of the database and put back somewhere else. A cursor
+    /// moved to another note, or a note key presented as the device seed, fails to
+    /// open rather than being believed.
+    pub fn seal(&self, context: &[&[u8]], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let mut nonce = [0u8; NONCE_LEN];
+        random_bytes(&mut nonce);
+        let ciphertext = self
+            .cipher()
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &local_aad(context),
+                },
+            )
+            .map_err(|_| CoreError::Crypto("encryption failed"))?;
+
+        let mut out = Vec::with_capacity(LOCAL_BLOB_HEADER_LEN + ciphertext.len());
+        out.push(LOCAL_BLOB_VERSION);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Decrypt a local blob sealed with the same key and the same context.
+    pub fn open(&self, context: &[&[u8]], sealed: &[u8]) -> Result<Vec<u8>> {
+        if sealed.len() < LOCAL_BLOB_HEADER_LEN + 16 {
+            return Err(CoreError::MalformedEnvelope(
+                "local blob shorter than the header plus a tag",
+            ));
+        }
+        if sealed[0] != LOCAL_BLOB_VERSION {
+            return Err(CoreError::MalformedEnvelope("unknown local blob version"));
+        }
+        let nonce: [u8; NONCE_LEN] = sealed[1..LOCAL_BLOB_HEADER_LEN].try_into().unwrap();
+        self.cipher()
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &sealed[LOCAL_BLOB_HEADER_LEN..],
+                    aad: &local_aad(context),
+                },
+            )
+            .map_err(|_| CoreError::Crypto("decryption failed"))
+    }
+}
+
+impl std::fmt::Debug for MasterKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MasterKey(redacted)")
+    }
+}
+
+/// The domain tag, then each context part with its length in front. The lengths
+/// are what stop `["note", "key"]` and `["notek", "ey"]` from producing the same
+/// AAD.
+fn local_aad(context: &[&[u8]]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(LOCAL_DOMAIN.len() + 8 * context.len());
+    aad.extend_from_slice(LOCAL_DOMAIN);
+    for part in context {
+        aad.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        aad.extend_from_slice(part);
+    }
+    aad
+}
