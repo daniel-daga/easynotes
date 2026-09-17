@@ -259,6 +259,7 @@ impl<P: SyncPeer> SyncEngine<P> {
                 current: SyncStatus::default(),
                 outbox: Vec::new(),
                 cursor: SyncCursor::default(),
+                saved: SyncCursor::default(),
             },
         };
         let handle = SyncHandle {
@@ -296,13 +297,19 @@ impl<P: SyncPeer> SyncEngine<P> {
             live.set_state(SyncState::Connecting);
             match session(&peer, note, &endpoint, &me, &mut commands, &mut live).await {
                 Ended::ShutDown => break,
-                Ended::Connected(reason) => {
-                    // The connection worked and then went away. Retry quickly:
-                    // this is a dropped socket, not a relay that is not there.
+                // A connection that worked and then went away deserves a quick
+                // retry: this is a dropped socket, not a relay that is not
+                // there. One that was accepted and never caught up does not —
+                // otherwise a relay that flaps is a relay we hammer every 250 ms
+                // for as long as it keeps flapping.
+                Ended::Connected {
+                    caught: true,
+                    reason,
+                } => {
                     live.fail(reason);
                     backoff = FIRST_RETRY;
                 }
-                Ended::Failed(reason) => {
+                Ended::Connected { reason, .. } | Ended::Failed(reason) => {
                     live.fail(reason);
                     backoff = (backoff * 2).min(MAX_RETRY);
                 }
@@ -318,8 +325,10 @@ impl<P: SyncPeer> SyncEngine<P> {
 enum Ended {
     /// The handle asked us to stop, or was dropped.
     ShutDown,
-    /// We were connected and lost it.
-    Connected(String),
+    /// We were connected and lost it. `caught` says whether we ever got as far
+    /// as being up to date, which is the difference between a connection that
+    /// worked and one that was accepted and then fell over.
+    Connected { caught: bool, reason: String },
     /// We never got connected.
     Failed(String),
 }
@@ -343,7 +352,10 @@ async fn session<P: SyncPeer>(
     // Re-read rather than trust what we remember: the core has been editing and
     // persisting while we were away.
     match peer.cursor(note) {
-        Ok(cursor) => live.cursor = cursor,
+        Ok(cursor) => {
+            live.cursor = cursor;
+            live.saved = cursor;
+        }
         Err(e) => return Ended::Failed(e.to_string()),
     }
 
@@ -365,13 +377,21 @@ async fn session<P: SyncPeer>(
                 }
             }
         }
-        Err(e) => return Ended::Connected(e.to_string()),
+        Err(e) => {
+            return Ended::Connected {
+                caught: false,
+                reason: e.to_string(),
+            }
+        }
     }
     live.publish();
 
+    let mut caught = false;
+    let lost = |caught: bool, reason: String| Ended::Connected { caught, reason };
+
     for envelope in live.outbox.clone() {
         if let Err(e) = sync.append(&envelope).await {
-            return Ended::Connected(e.to_string());
+            return lost(caught, e.to_string());
         }
     }
 
@@ -394,7 +414,7 @@ async fn session<P: SyncPeer>(
                     }
                     live.queue(envelope.clone());
                     if let Err(e) = sync.append(&envelope).await {
-                        return Ended::Connected(e.to_string());
+                        return lost(caught, e.to_string());
                     }
                 }
             },
@@ -406,6 +426,7 @@ async fn session<P: SyncPeer>(
                     live.receive(peer, note, me, seq, &envelope);
                 }
                 Ok(Some(Incoming::Caught { seq })) => {
+                    caught = true;
                     live.advance(peer, note, seq);
                     live.set_state(SyncState::Synced);
                 }
@@ -414,8 +435,8 @@ async fn session<P: SyncPeer>(
                     // the rest of the outbox still goes.
                     live.note_error(message);
                 }
-                Ok(None) => return Ended::Connected("the relay closed the connection".into()),
-                Err(e) => return Ended::Connected(e.to_string()),
+                Ok(None) => return lost(caught, "the relay closed the connection".into()),
+                Err(e) => return lost(caught, e.to_string()),
             },
         }
     }
@@ -451,6 +472,8 @@ struct Live {
     /// Sealed envelopes the relay has not echoed back, in the order they were made.
     outbox: Vec<Vec<u8>>,
     cursor: SyncCursor,
+    /// What the store holds, so a cursor that has not moved is not written again.
+    saved: SyncCursor,
 }
 
 impl Live {
@@ -522,13 +545,16 @@ impl Live {
     }
 
     fn advance<P: SyncPeer>(&mut self, peer: &P, note: NoteId, seq: i64) {
-        let moved = seq > self.cursor.last_seq;
-        if moved {
+        if seq > self.cursor.last_seq {
             self.cursor.last_seq = seq;
         }
-        if moved || self.cursor.sent_upto.is_some() {
-            if let Err(e) = peer.save_cursor(note, self.cursor) {
-                self.current.last_error = Some(e.to_string());
+        // Only when it moved. Comparing against what is on disk rather than
+        // tracking a dirty flag: it is one comparison, and it cannot get out of
+        // step with what was actually written.
+        if self.cursor != self.saved {
+            match peer.save_cursor(note, self.cursor) {
+                Ok(()) => self.saved = self.cursor,
+                Err(e) => self.current.last_error = Some(e.to_string()),
             }
         }
         self.publish();
