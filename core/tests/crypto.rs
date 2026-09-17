@@ -233,3 +233,99 @@ fn note_key_is_not_printed_by_its_debug_impl() {
     let key = NoteKey([0xAB; 32]);
     assert_eq!(format!("{key:?}"), "NoteKey(redacted)");
 }
+
+// ---------------------------------------------------------------------------
+// The master key: what this device seals for itself
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_local_blob_round_trips() {
+    let master = MasterKey::random();
+    let sealed = master
+        .seal(&[b"cursor", b"note-1"], b"{\"last_seq\":7}")
+        .unwrap();
+    assert_eq!(
+        master.open(&[b"cursor", b"note-1"], &sealed).unwrap(),
+        b"{\"last_seq\":7}"
+    );
+}
+
+#[test]
+fn a_local_blob_never_contains_its_plaintext() {
+    let master = MasterKey::random();
+    let sealed = master.seal(&[b"note-key"], b"asparagus").unwrap();
+    assert!(
+        !sealed.windows(9).any(|w| w == b"asparagus"),
+        "plaintext leaked into a local blob"
+    );
+}
+
+#[test]
+fn a_local_blob_does_not_open_in_another_context() {
+    // The row cannot be lifted out of the database and put back somewhere else:
+    // a cursor moved to another note, or a note key offered as the device seed,
+    // fails rather than being believed.
+    let master = MasterKey::random();
+    let sealed = master.seal(&[b"cursor", b"note-1"], b"7").unwrap();
+    assert!(master.open(&[b"cursor", b"note-2"], &sealed).is_err());
+    assert!(master.open(&[b"device-seed", b"note-1"], &sealed).is_err());
+    assert!(master.open(&[b"cursor"], &sealed).is_err());
+}
+
+#[test]
+fn context_parts_cannot_be_reflowed() {
+    // Without a length in front of each part, ["note", "key"] and ["notek", "ey"]
+    // would authenticate the same bytes and mean the same thing.
+    let master = MasterKey::random();
+    let sealed = master.seal(&[b"note", b"key"], b"x").unwrap();
+    assert!(master.open(&[b"notek", b"ey"], &sealed).is_err());
+}
+
+#[test]
+fn a_local_blob_does_not_open_under_another_master_key() {
+    let sealed = MasterKey::random().seal(&[b"cursor"], b"7").unwrap();
+    assert!(MasterKey::random().open(&[b"cursor"], &sealed).is_err());
+}
+
+#[test]
+fn rejects_a_tampered_local_blob() {
+    let master = MasterKey::random();
+    let mut sealed = master.seal(&[b"cursor"], b"7").unwrap();
+    let last = sealed.len() - 1;
+    sealed[last] ^= 0x01;
+    assert!(master.open(&[b"cursor"], &sealed).is_err());
+    assert!(master
+        .open(&[b"cursor"], &sealed[..LOCAL_BLOB_HEADER_LEN])
+        .is_err());
+    assert!(master.open(&[b"cursor"], b"").is_err());
+}
+
+#[test]
+fn a_relay_envelope_is_not_a_local_blob() {
+    // Same key bytes on purpose: the domain tag in the AAD is what keeps the two
+    // apart, not the accident of their being different keys.
+    let raw = [9u8; 32];
+    let master = MasterKey(raw);
+    let note_key = NoteKey(raw);
+    let envelope = Envelope::seal(
+        &DeviceIdentity::generate(),
+        NoteId::random(),
+        &note_key,
+        0,
+        b"milk",
+    )
+    .unwrap()
+    .encode();
+    assert!(master.open(&[b"op"], &envelope).is_err());
+
+    let sealed = master.seal(&[b"op"], b"milk").unwrap();
+    assert!(Envelope::decode(&sealed).is_err());
+}
+
+#[test]
+fn master_key_is_not_printed_by_its_debug_impl() {
+    assert_eq!(
+        format!("{:?}", MasterKey([0xAB; 32])),
+        "MasterKey(redacted)"
+    );
+}

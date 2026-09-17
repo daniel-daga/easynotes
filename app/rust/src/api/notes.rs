@@ -12,16 +12,19 @@ use crate::relay::Connection;
 use easynotes_core::crdt::DefaultNoteDoc;
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
-use easynotes_core::store::{FileKeyring, FileStore, Keyring, MemoryKeyring, MemoryStore, OpStore};
+use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
 use flutter_rust_bridge::frb;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 /// The store and keyring are boxed so one `Note` type serves every platform:
-/// the filesystem on desktop and mobile, memory in a browser, and — once Slice 2
-/// lands the real local store — IndexedDB, without this file changing.
+/// SQLite on desktop and mobile, memory in a browser, and — once item 4 of the
+/// Slice 2 plan lands — IndexedDB, without this file changing.
 type Core = NoteCore<DefaultNoteDoc, Box<dyn OpStore + Send>, Box<dyn Keyring + Send>>;
+
+/// What a platform offers a core to write into: a log and the keys for it.
+type Backing = (Box<dyn OpStore + Send>, Box<dyn Keyring + Send>);
 
 #[frb(init)]
 pub fn init_app() {
@@ -140,6 +143,27 @@ fn boxed_keyring(k: impl Keyring + Send + 'static) -> Box<dyn Keyring + Send> {
     Box::new(k)
 }
 
+/// The store a device with a disk gets: SQLite for the log, SQLite for the
+/// wrapped keys, and a master key that seals the second one.
+///
+/// All of it is `easynotes_core::store::open_local`, including the one-time
+/// carry-over from the directory of files Slice 1 wrote, so that a `cargo test`
+/// with no Flutter in the loop can cover what an app update does to a device
+/// that already has notes on it.
+#[cfg(not(target_arch = "wasm32"))]
+fn on_disk(root: &std::path::Path) -> Result<Backing, String> {
+    let (store, keyring) = easynotes_core::store::open_local(root).map_err(|e| e.to_string())?;
+    Ok((boxed_store(store), boxed_keyring(keyring)))
+}
+
+/// A browser has no disk. It says so, rather than opening something that fails
+/// on the first write: the web build's note is [`Note::open_ephemeral`] until the
+/// IndexedDB store lands.
+#[cfg(target_arch = "wasm32")]
+fn on_disk(_root: &std::path::Path) -> Result<Backing, String> {
+    Err("this platform has no local database yet; open the note in memory instead".to_string())
+}
+
 fn item_id(s: &str) -> Result<ItemId, String> {
     ItemId::decode(s).map_err(|e| e.to_string())
 }
@@ -147,15 +171,17 @@ fn item_id(s: &str) -> Result<ItemId, String> {
 impl Note {
     /// Open the note stored in `dir`, creating it on first run.
     ///
-    /// Slice 1 has exactly one note and no note list; Slice 2 brings the real
-    /// local store and everything above it.
+    /// `dir` holds the SQLite database, the keyring and — until the app can reach
+    /// the OS keychain — the master key that seals the second. Slice 1's
+    /// directory of files is carried into it the first time this runs.
+    ///
+    /// There is still exactly one note and no note list: that is item 5 of the
+    /// Slice 2 plan, and it is what replaces the marker file below.
     #[frb(sync)]
     pub fn open(dir: String) -> Result<Note, String> {
         let root = std::path::PathBuf::from(dir);
-        let store = FileStore::open(root.join("log")).map_err(|e| e.to_string())?;
-        let keyring = FileKeyring::open(root.join("keys")).map_err(|e| e.to_string())?;
-        let mut core: Core = NoteCore::open(boxed_store(store), boxed_keyring(keyring))
-            .map_err(|e| e.to_string())?;
+        let (store, keyring) = on_disk(&root)?;
+        let mut core: Core = NoteCore::open(store, keyring).map_err(|e| e.to_string())?;
 
         // The note ID is written beside the log so a relaunch reopens the same
         // note. A real note list replaces this in Slice 2.
@@ -207,10 +233,8 @@ impl Note {
     #[frb(sync)]
     pub fn join(dir: String, blob: String) -> Result<Note, String> {
         let root = std::path::PathBuf::from(dir);
-        let store = FileStore::open(root.join("log")).map_err(|e| e.to_string())?;
-        let keyring = FileKeyring::open(root.join("keys")).map_err(|e| e.to_string())?;
-        let mut core: Core = NoteCore::open(boxed_store(store), boxed_keyring(keyring))
-            .map_err(|e| e.to_string())?;
+        let (store, keyring) = on_disk(&root)?;
+        let mut core: Core = NoteCore::open(store, keyring).map_err(|e| e.to_string())?;
 
         let id = core.import_share_blob(&blob).map_err(|e| e.to_string())?;
         // `import_share_blob` opens an empty document, which is right for a first

@@ -1,12 +1,18 @@
 //! Where the encrypted op log lives.
 //!
-//! Slice 1 persists the *encrypted* log plus an encrypted snapshot and keeps the
-//! decrypted CRDT in memory only. That sidesteps SQLCipher and OPFS key management
-//! for now without ever writing plaintext to disk. The real local store, encrypted
-//! at rest with the master key, is Slice 2.
+//! Every store here holds the *encrypted* log plus an encrypted snapshot and keeps
+//! the decrypted CRDT in memory only, so no store has ever been handed plaintext
+//! to write. What the real one adds is the master key: the rows that are not
+//! already envelopes — the device seed, the note keys, the sync cursor — are
+//! sealed rather than lying beside the log in the clear.
 //!
 //! The trait is here so the web build can back it with IndexedDB without anything
 //! above it changing.
+//!
+//! Three implementations today: [`MemoryStore`] for tests and the browser,
+//! [`FileStore`] from Slice 1, and [`SqliteStore`] — the real one, which is what
+//! the native app now opens. [ADR 0005](../../docs/adr/0005-local-store.md) says
+//! why the last one is plain SQLite with sealed values rather than SQLCipher.
 
 use crate::error::Result;
 use crate::ids::NoteId;
@@ -210,13 +216,23 @@ pub mod file {
         }
 
         fn notes(&self) -> Result<Vec<NoteId>> {
+            // Both suffixes: a note compacted to a snapshot has no log left, and
+            // listing only `.log` would make it disappear from the note list
+            // while its content is still right there. The conformance suite in
+            // `tests/store.rs` caught this by holding all three stores to the
+            // same answer.
             let mut ids = Vec::new();
             for entry in fs::read_dir(&self.root).map_err(io)? {
                 let entry = entry.map_err(io)?;
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if let Some(stem) = name.strip_suffix(".log") {
+                let stem = name
+                    .strip_suffix(".log")
+                    .or_else(|| name.strip_suffix(".snap"));
+                if let Some(stem) = stem {
                     if let Ok(id) = NoteId::decode(stem) {
-                        ids.push(id);
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
                 }
             }
@@ -228,6 +244,12 @@ pub mod file {
 
 #[cfg(feature = "file-store")]
 pub use file::FileStore;
+
+#[cfg(feature = "sqlite-store")]
+pub mod sqlite;
+
+#[cfg(feature = "sqlite-store")]
+pub use sqlite::{open_local, SqliteKeyring, SqliteStore};
 
 // ---------------------------------------------------------------------------
 // Keyring
@@ -340,6 +362,107 @@ pub mod file_keyring {
 
 #[cfg(feature = "file-store")]
 pub use file_keyring::FileKeyring;
+
+/// Read the master key from `path`, generating one on first run.
+///
+/// **The stand-in for the OS keychain.** It is worth being exact about what that
+/// is worth: a key in a file beside the database it unlocks protects against
+/// almost nothing, because anyone who has the one has the other. What it buys is
+/// that there is now exactly one secret, in one place, with one way in and out —
+/// so moving it into Keystore, Keychain or libsecret is a change to this function
+/// and its caller and to nothing else. Item 3b of the Slice 2 plan.
+#[cfg(feature = "file-store")]
+pub fn master_key_from_file(path: impl AsRef<std::path::Path>) -> Result<crate::crypto::MasterKey> {
+    use crate::crypto::MasterKey;
+    use crate::error::CoreError;
+
+    let path = path.as_ref();
+    let io = |e: std::io::Error| CoreError::Storage(e.to_string());
+
+    if path.exists() {
+        return MasterKey::from_slice(&std::fs::read(path).map_err(io)?);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+
+    // Written to a private temporary file and linked into place, which does two
+    // things at once. A reader never sees a half-written key, and a second
+    // process that got here at the same moment does not overwrite the key the
+    // first one has already sealed a database with: the link fails, and it reads
+    // that key instead of minting a rival.
+    let key = MasterKey::random();
+    let mut unique = [0u8; 8];
+    crate::crypto::random_bytes(&mut unique);
+    let tmp = path.with_extension(format!("tmp.{}", hex::encode(unique)));
+    std::fs::write(&tmp, key.0).map_err(io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
+    }
+    let linked = std::fs::hard_link(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(key),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            MasterKey::from_slice(&std::fs::read(path).map_err(io)?)
+        }
+        Err(e) => Err(io(e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Moving between stores
+// ---------------------------------------------------------------------------
+
+/// Copy every note from one store into another, and the keys that go with them.
+///
+/// A device changes store when the app does — Slice 1's files to Slice 2's
+/// database, and the browser's memory to IndexedDB after that. What it must not
+/// do is lose the notes that were there, so the move is a copy the core can make
+/// through the same trait both sides implement, and neither store needs to know
+/// about the other.
+///
+/// `meta` names the local rows worth carrying; the only one today is the sync
+/// cursor ([`crate::note::SYNC_CURSOR`]). Leaving it behind would be correct but
+/// expensive: the device would re-send its whole log to the relay once, which
+/// the relay deduplicates into nothing while storing a second copy of it.
+///
+/// The source is left exactly as it was. A migration that deletes the only copy
+/// of the data before anyone has opened the new one is not a migration.
+pub fn copy_store(
+    from: &dyn OpStore,
+    from_keys: &dyn Keyring,
+    to: &mut dyn OpStore,
+    to_keys: &mut dyn Keyring,
+    meta: &[&str],
+) -> Result<usize> {
+    if let Some(seed) = from_keys.device_seed()? {
+        // The identity first: a half-copied device that mints a new one would be
+        // a different author to every peer, and its own log would look forged.
+        to_keys.put_device_seed(&seed)?;
+    }
+
+    let notes = from.notes()?;
+    for note in &notes {
+        if let Some(key) = from_keys.note_key(*note)? {
+            to_keys.put_note_key(*note, &key)?;
+        }
+        if let Some(snapshot) = from.get_snapshot(*note)? {
+            to.put_snapshot(*note, &snapshot)?;
+        }
+        for envelope in from.load(*note)? {
+            to.append(*note, &envelope)?;
+        }
+        for key in meta {
+            if let Some(value) = from.get_meta(*note, key)? {
+                to.put_meta(*note, key, &value)?;
+            }
+        }
+    }
+    Ok(notes.len())
+}
 
 // ---------------------------------------------------------------------------
 // Boxed stores

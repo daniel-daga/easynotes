@@ -22,7 +22,10 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::watch;
 
 /// Where the sync cursor is kept in the store's per-note metadata.
-const SYNC_CURSOR: &str = "sync";
+///
+/// Public because moving a device from one store to another has to carry it:
+/// see [`crate::store::copy_store`].
+pub const SYNC_CURSOR: &str = "sync";
 
 /// What this device has sent to, and received from, the relay for one note.
 ///
