@@ -13,14 +13,23 @@ honest account of that, including what it did not do;
 [`docs/plan-slice-02.md`](docs/plan-slice-02.md) is what happens next and how
 far it has got.
 
-The app now syncs: edits go to a relay as they are made, an edit made with no
-network waits in the local log and goes when there is one, and the app says
+The app now opens on a grid of lists rather than on the single note Slice 1
+had: make one, join someone else's and it is added rather than swapped in, and
+every one of them syncs. Edits go to a relay as they are made, an edit made with
+no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
 log, and a device that has a Slice 1 directory is carried into the database the
 first time it opens. A log that has grown past a few hundred edits is compacted
 to a snapshot when the note is opened, minus whatever the relay has not
 acknowledged yet — which is the only copy of those edits anywhere.
+
+Listing notes means opening them, because a title is ciphertext until a key
+opens it. `just bench-library` says what that costs: a household's ten lists open
+in a couple of milliseconds, two hundred take most of a second, and
+[ADR 0007](docs/adr/0007-note-list.md) says what to do about it when someone has
+two hundred. Colours, pins, archive and trash are not there yet — they are
+personal placements and they need the account document.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -61,9 +70,9 @@ just run-linux https://relay.example     # or wherever yours is
 
 With no relay there, nothing breaks: the app is a local notes app and the status
 button in the app bar says so, with the count of edits that have not left the
-device. To share a list, press the share button on one device and paste the blob
-into the join button on the other. It carries the note's key, so it is as
-sensitive as the list itself.
+device. To share a list, open it and press the share button, then paste the blob
+into the join button on the note list of the other device. It carries the note's
+key, so it is as sensitive as the list itself.
 
 The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
@@ -85,6 +94,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0004](docs/adr/0004-sync-engine.md) | Sync: an outbox derived from the log, acknowledged by echo |
 | [ADR 0005](docs/adr/0005-local-store.md) | Local store: SQLite with sealed values, not SQLCipher |
 | [ADR 0006](docs/adr/0006-compaction.md) | Compaction: the log keeps what the relay has not acknowledged |
+| [ADR 0007](docs/adr/0007-note-list.md) | The note list: listing notes means opening them |
 
 ## Security, in one paragraph
 
