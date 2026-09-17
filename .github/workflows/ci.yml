@@ -59,7 +59,9 @@ jobs:
       #
       # The bridge crate too, since the sync engine made it the one crate whose
       # code differs per target: this catches a broken `#[cfg]` split here in
-      # half a minute instead of ten minutes into the web job.
+      # half a minute instead of ten minutes into the web job. It is also what
+      # keeps SQLite's C out of a browser bundle — the bridge names the core's
+      # features per target (ADR 0005), and nothing but this step proves it.
       - name: Build for WebAssembly
         run: |
           rustup target add wasm32-unknown-unknown

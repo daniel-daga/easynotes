@@ -15,13 +15,18 @@ far it has got.
 
 The app now syncs: edits go to a relay as they are made, an edit made with no
 network waits in the local log and goes when there is one, and the app says
-which of the two it is. Android and iOS have still never been built — that is
-the largest open gap and the next thing to do.
+which of the two it is. It keeps them in SQLite, with the note keys and the
+device identity wrapped by a master key rather than sitting in files beside the
+log, and a device that has a Slice 1 directory is carried into the database the
+first time it opens.
+
+Android and iOS have still never been built — that is the largest open gap and
+the next thing to do on a machine that has an Android SDK and a Mac.
 
 ## Layout
 
 ```
-core/    Rust: crypto, CRDT, op log, sync client. No Flutter, no platform policy.
+core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform policy.
 relay/   Rust (axum): WebSocket relay over Postgres. Ciphertext only.
 app/     Flutter app, plus the thin bridge crate in app/rust.
 docs/    Design, plans, and the decision records.
@@ -76,17 +81,20 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0002](docs/adr/0002-web-core.md) | One Rust core everywhere, including the web |
 | [ADR 0003](docs/adr/0003-relay.md) | Relay: Rust and axum, Postgres for the log |
 | [ADR 0004](docs/adr/0004-sync-engine.md) | Sync: an outbox derived from the log, acknowledged by echo |
+| [ADR 0005](docs/adr/0005-local-store.md) | Local store: SQLite with sealed values, not SQLCipher |
 
 ## Security, in one paragraph
 
-Each note has its own key. Every update is encrypted with XChaCha20-Poly1305 and
+Each note has its own key, and a master key wraps those and the device seed on
+this device. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
 It may check a token, a size, and that an envelope's note ID matches the path it
 arrived on — it may not check anything else, and it never sees plaintext.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
-wire rather than trusting the claim. The sync engine that moves those envelopes
+wire rather than trusting the claim, and the same check runs against the local
+database and its write-ahead log. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.
 
