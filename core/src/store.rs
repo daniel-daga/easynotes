@@ -25,11 +25,29 @@ pub trait OpStore {
     /// Every envelope for a note, oldest first.
     fn load(&self, note: NoteId) -> Result<Vec<Vec<u8>>>;
 
-    /// Replace a note's log with a single encrypted snapshot blob. Log compaction
-    /// (Slice 2) will use this; Slice 1 only reads it back.
+    /// Write a note's encrypted snapshot, replacing any previous one. It does not
+    /// touch the log: compaction is a snapshot *and then* a shorter log, in that
+    /// order, so that a crash between the two costs replay time and never an
+    /// edit.
     fn put_snapshot(&mut self, note: NoteId, snapshot: &[u8]) -> Result<()>;
 
     fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>>;
+
+    /// Replace a note's log with exactly `envelopes`, in this order.
+    ///
+    /// The second half of compaction, and one call rather than a clear followed
+    /// by appends because those two can be interrupted between each other and
+    /// this cannot.
+    fn replace_log(&mut self, note: NoteId, envelopes: &[Vec<u8>]) -> Result<()>;
+
+    /// How many envelopes a note's log holds.
+    ///
+    /// The default answer reads the log to count it, which is what deciding
+    /// whether to compact would otherwise cost. A store that can answer without
+    /// reading should.
+    fn log_len(&self, note: NoteId) -> Result<usize> {
+        Ok(self.load(note)?.len())
+    }
 
     fn notes(&self) -> Result<Vec<NoteId>>;
 
@@ -81,6 +99,11 @@ impl OpStore for MemoryStore {
 
     fn put_snapshot(&mut self, note: NoteId, snapshot: &[u8]) -> Result<()> {
         self.snapshots.insert(note, snapshot.to_vec());
+        Ok(())
+    }
+
+    fn replace_log(&mut self, note: NoteId, envelopes: &[Vec<u8>]) -> Result<()> {
+        self.logs.insert(note, envelopes.to_vec());
         Ok(())
     }
 
@@ -187,6 +210,24 @@ pub mod file {
 
         fn put_snapshot(&mut self, note: NoteId, snapshot: &[u8]) -> Result<()> {
             fs::write(self.snapshot_path(note), snapshot).map_err(io)
+        }
+
+        fn replace_log(&mut self, note: NoteId, envelopes: &[Vec<u8>]) -> Result<()> {
+            // Built whole and renamed over the old one, so a crash mid-compaction
+            // leaves the log that was there rather than half of the one replacing
+            // it.
+            let path = self.log_path(note);
+            let tmp = path.with_extension("log.tmp");
+            let mut out = Vec::new();
+            for envelope in envelopes {
+                let len = u32::try_from(envelope.len()).map_err(|_| CoreError::TooLarge {
+                    limit: u32::MAX as usize,
+                })?;
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(envelope);
+            }
+            fs::write(&tmp, &out).map_err(io)?;
+            fs::rename(&tmp, &path).map_err(io)
         }
 
         fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
@@ -484,6 +525,12 @@ impl OpStore for Box<dyn OpStore + Send> {
     }
     fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
         (**self).get_snapshot(note)
+    }
+    fn replace_log(&mut self, note: NoteId, envelopes: &[Vec<u8>]) -> Result<()> {
+        (**self).replace_log(note, envelopes)
+    }
+    fn log_len(&self, note: NoteId) -> Result<usize> {
+        (**self).log_len(note)
     }
     fn notes(&self) -> Result<Vec<NoteId>> {
         (**self).notes()

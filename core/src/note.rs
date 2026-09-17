@@ -43,6 +43,17 @@ pub struct SyncCursor {
     pub sent_upto: Option<u64>,
 }
 
+/// How long a note's log may get before opening it compacts the log away.
+///
+/// A number, not a science: 256 envelopes is a few weeks of a household's
+/// shopping list and replays in well under a millisecond on the Yrs backend
+/// ([ADR 0001](../../docs/adr/0001-crdt.md) measures 1 000 inserts at 10.7 ms).
+/// What makes it safe to pick roughly is that the trade is not close: a 20-item
+/// list with 256 toggles is a 56 KiB log and a 5 KiB snapshot on Yrs, 49 KiB
+/// against 1 KiB on Automerge, and the ratio only improves with age
+/// ([ADR 0006](../../docs/adr/0006-compaction.md)).
+pub const COMPACT_AFTER: usize = 256;
+
 /// Slice 1 builds checklists. `Text` is here because the design doc's data model
 /// has both and the share blob format should not change when text notes land.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,19 +150,28 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .note_key(id)?
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
 
+        let me = self.identity.public_key();
+        let mut next_counter = 0u64;
+
         let mut doc = match self.store.get_snapshot(id)? {
             Some(blob) => {
                 let env = Envelope::decode(&blob)?;
                 let plain = env.open(&key)?;
+                // A snapshot is sealed with a counter from this device's own
+                // sequence, which is what lets the counter survive a compaction
+                // that removed every envelope it could otherwise be read from.
+                if env.author == me {
+                    next_counter = env.counter + 1;
+                }
                 D::load(&self.actor, &plain)?
             }
             None => D::create(&self.actor),
         };
 
         let mut seen = HashSet::new();
-        let mut next_counter = 0u64;
-        let me = self.identity.public_key();
+        let mut length = 0usize;
         for raw in self.store.load(id)? {
+            length += 1;
             let env = Envelope::decode(&raw)?;
             if env.note_id != id {
                 return Err(CoreError::WrongNote {
@@ -180,6 +200,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 watch: tx,
             },
         );
+
+        // The one place where opening a note writes to the store, and the right
+        // one: the document has just been rebuilt, so the snapshot costs nothing
+        // to produce, and the replay that made compaction worth doing has just
+        // been paid for the last time.
+        if length > COMPACT_AFTER {
+            self.compact(id)?;
+            return self.view(id);
+        }
         Ok(view)
     }
 
@@ -388,6 +417,49 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         note.next_counter += 1;
         let env = Envelope::seal(identity_ref, id, &note.key, counter, &blob)?;
         self.store.put_snapshot(id, &env.encode())
+    }
+
+    /// Replace a note's log with a snapshot plus whatever the relay has not
+    /// acknowledged. Returns how many envelopes were dropped.
+    ///
+    /// **What compaction may not drop** is the outbox. [ADR 0004](../../docs/adr/0004-sync-engine.md)
+    /// derives it from the log rather than keeping it beside one, so this
+    /// device's own envelopes are the only copy of any edit the relay has not
+    /// confirmed. Two cases follow from that, and both are the same rule:
+    ///
+    /// * A note that syncs loses its peers' envelopes and its own acknowledged
+    ///   ones, which is nearly all of them.
+    /// * A note that has never reached a relay keeps its whole log, because that
+    ///   log *is* how its content would reach one — and how a guest joining later
+    ///   would ever see it. There is no path that sends a snapshot instead.
+    ///
+    /// The snapshot is written before the log is shortened. A crash in between
+    /// leaves a note that replays a log it already has a snapshot of, which costs
+    /// milliseconds and changes nothing; the other order would lose edits.
+    pub fn compact(&mut self, id: NoteId) -> Result<usize> {
+        let sent_upto = self.sync_cursor(id)?.sent_upto;
+        let me = self.identity.public_key();
+
+        let log = self.store.load(id)?;
+        let before = log.len();
+        let mut keep = Vec::with_capacity(before);
+        for raw in log {
+            let env = Envelope::decode(&raw)?;
+            if env.author == me && sent_upto.is_none_or(|sent| env.counter > sent) {
+                keep.push(raw);
+            }
+        }
+
+        let dropped = before - keep.len();
+        if dropped == 0 {
+            // Nothing to gain, and a snapshot of a document that is already
+            // wholly in its own log is work for its own sake.
+            return Ok(0);
+        }
+
+        self.save_snapshot(id)?;
+        self.store.replace_log(id, &keep)?;
+        Ok(dropped)
     }
 
     /// Re-send the current view to everyone watching, without changing anything.

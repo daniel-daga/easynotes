@@ -18,7 +18,9 @@ network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
 log, and a device that has a Slice 1 directory is carried into the database the
-first time it opens.
+first time it opens. A log that has grown past a few hundred edits is compacted
+to a snapshot when the note is opened, minus whatever the relay has not
+acknowledged yet — which is the only copy of those edits anywhere.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -82,6 +84,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0003](docs/adr/0003-relay.md) | Relay: Rust and axum, Postgres for the log |
 | [ADR 0004](docs/adr/0004-sync-engine.md) | Sync: an outbox derived from the log, acknowledged by echo |
 | [ADR 0005](docs/adr/0005-local-store.md) | Local store: SQLite with sealed values, not SQLCipher |
+| [ADR 0006](docs/adr/0006-compaction.md) | Compaction: the log keeps what the relay has not acknowledged |
 
 ## Security, in one paragraph
 

@@ -181,6 +181,48 @@ impl OpStore for SqliteStore {
         Ok(())
     }
 
+    fn replace_log(&mut self, note: NoteId, envelopes: &[Vec<u8>]) -> Result<()> {
+        // In one transaction: a compaction that deleted the log and then failed
+        // to write back what the relay has not acknowledged would lose exactly
+        // the edits nothing else has a copy of.
+        let tx = self.conn.transaction().map_err(db)?;
+        tx.execute(
+            "DELETE FROM ops WHERE note = ?1",
+            [note.as_bytes().as_slice()],
+        )
+        .map_err(db)?;
+        {
+            let mut insert = tx
+                .prepare("INSERT INTO ops (note, seq, envelope) VALUES (?1, ?2, ?3)")
+                .map_err(db)?;
+            for (seq, envelope) in envelopes.iter().enumerate() {
+                insert
+                    .execute(rusqlite::params![
+                        note.as_bytes().as_slice(),
+                        seq as i64 + 1,
+                        envelope
+                    ])
+                    .map_err(db)?;
+            }
+        }
+        tx.commit().map_err(db)
+    }
+
+    fn log_len(&self, note: NoteId) -> Result<usize> {
+        // The one question a database can answer without handing back the answer
+        // to a different one: deciding whether to compact should not cost a read
+        // of everything compaction would remove.
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE note = ?1",
+                [note.as_bytes().as_slice()],
+                |r| r.get(0),
+            )
+            .map_err(db)?;
+        Ok(count as usize)
+    }
+
     fn get_snapshot(&self, note: NoteId) -> Result<Option<Vec<u8>>> {
         self.conn
             .query_row(
