@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The core, the relay, and the tests that need neither Flutter nor a browser.
+  # This is the job that has to stay fast: it is what a contributor waits on.
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: easynotes
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # `-D warnings` here rather than in RUSTFLAGS: as an environment variable it
+      # applies to every dependency too, and one upstream deprecation would fail
+      # a build that has nothing wrong with it.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # With DATABASE_URL set, the Postgres tests run instead of skipping. They
+      # are the only cover for the concurrency in the relay's sequence
+      # allocation, which an in-memory store cannot exercise.
+      - name: Test
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/easynotes
+        run: cargo test --workspace
+
+      # The core must stay free of anything native, or the web build dies later
+      # and further from the cause. Both backends, because D1 is reversible.
+      - name: Build the core for WebAssembly
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build -p easynotes-core --target wasm32-unknown-unknown \
+            --no-default-features --features yrs-backend
+          cargo build -p easynotes-core --target wasm32-unknown-unknown \
+            --no-default-features --features automerge-backend
+
+  # The Flutter app: widget tests against a fake core, and tests that drive the
+  # real core across the bridge.
+  flutter:
+    name: Flutter
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install the Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev clang cmake ninja-build pkg-config liblzma-dev
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter analyze
+        working-directory: app
+
+      # Built first: the bridge tests skip without it, and a skipped test that
+      # looks green is worse than no test.
+      - name: Build the native library
+        run: cargo build -p rust_lib_easynotes
+
+      - name: Test
+        working-directory: app
+        env:
+          EASYNOTES_NATIVE_LIB: ${{ github.workspace }}/target/debug/librust_lib_easynotes.so
+        run: flutter test
+
+      - name: Build for Linux desktop
+        working-directory: app
+        run: flutter build linux --release
+
+  # The web build, kept separate because it needs a nightly toolchain and
+  # `-Z build-std` and so is both slower and more fragile than the rest.
+  # ADR 0002 records why it is worth having in CI anyway.
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install the web toolchain
+        run: |
+          cargo install wasm-pack --locked
+          # Pre-installed so that wasm-pack does not build it itself with the
+          # WebAssembly RUSTFLAGS still set, which cannot link for the host.
+          cargo install wasm-bindgen-cli --version 0.2.128 --locked
+          cargo install flutter_rust_bridge_codegen --version ^2 --locked
+
+      - run: flutter pub get
+        working-directory: app
+
+      - name: Build the core for the web
+        working-directory: app
+        run: |
+          flutter_rust_bridge_codegen build-web --release --wasm-pack-rustflags \
+            '-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-args=--shared-memory -C link-args=--max-memory=1073741824 -C link-args=--import-memory -C link-args=--export=__heap_base -C link-args=--export=__wasm_init_tls -C link-args=--export=__tls_size -C link-args=--export=__tls_align -C link-args=--export=__tls_base --cfg getrandom_backend="wasm_js"'
+
+      - name: Build the web app
+        working-directory: app
+        run: flutter build web --release
+
+      # A size that grows quietly is a size nobody notices until launch.
+      - name: Report the bundle size
+        working-directory: app
+        run: |
+          wasm=web/pkg/rust_lib_easynotes_bg.wasm
+          echo "### Web bundle" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| File | Raw | Gzipped |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Rust core (wasm) | $(numfmt --to=iec < <(stat -c%s $wasm)) | $(gzip -9 -c $wasm | wc -c | numfmt --to=iec) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| main.dart.js | $(numfmt --to=iec < <(stat -c%s build/web/main.dart.js)) | $(gzip -9 -c build/web/main.dart.js | wc -c | numfmt --to=iec) |" >> "$GITHUB_STEP_SUMMARY"

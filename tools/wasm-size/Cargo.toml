@@ -1,0 +1,18 @@
+[package]
+name = "easynotes-wasm-size"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Measures what each CRDT backend adds to a WebAssembly bundle (decision D1)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+easynotes-core = { path = "../../core", default-features = false }
+
+[features]
+default = []
+automerge-backend = ["easynotes-core/automerge-backend"]
+yrs-backend = ["easynotes-core/yrs-backend"]
