@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/rust_note_library.dart';
 import 'ui/note_list_screen.dart';
@@ -37,9 +38,12 @@ Future<NoteLibrary> openLibrary() async {
     // holds.
     return RustNoteLibrary.openEphemeral();
   }
-  final library = await RustNoteLibrary.open(
-    (await getApplicationSupportDirectory()).path,
-  );
+  final directory = (await getApplicationSupportDirectory()).path;
+  // The keychain first, because it is what says whether this device has a key
+  // at all — and because a device that updated into this version has one in a
+  // file that has to be adopted rather than replaced.
+  final masterKey = await MasterKeyStore().forDirectory(directory);
+  final library = await RustNoteLibrary.open(directory, masterKey);
   // Connecting cannot fail loudly enough to matter: with no relay the app is a
   // local notes app, which is what it is designed to be when the network is
   // gone.

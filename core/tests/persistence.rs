@@ -467,16 +467,18 @@ fn moving_to_the_new_store_keeps_the_notes<D: NoteDoc>() {
         (id, core.device_key(), core.sync_cursor(id).unwrap())
     };
 
-    // What the app itself runs on the first launch after the update.
+    // What the app itself runs on the first launch after the update, with the
+    // key the app would have taken out of the keychain.
+    let master = Sqlite::master(dir.path());
     let log_length = {
-        let (store, _) = easynotes_core::store::open_local(dir.path()).unwrap();
+        let (store, _) = easynotes_core::store::open_local(dir.path(), master.clone()).unwrap();
         store.load(id).unwrap().len()
     };
     assert!(log_length > 0, "the migration copied no envelopes");
 
     // And on the second launch, which must not copy the log in again.
     {
-        let (store, _) = easynotes_core::store::open_local(dir.path()).unwrap();
+        let (store, _) = easynotes_core::store::open_local(dir.path(), master).unwrap();
         assert_eq!(
             store.load(id).unwrap().len(),
             log_length,

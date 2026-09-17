@@ -12,9 +12,11 @@ library;
 
 import 'dart:io';
 
+import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -29,10 +31,21 @@ void main() {
   });
 
   /// A library on a fresh directory, torn down with it.
-  Future<RustNoteLibrary> openLibraryInTempDir([Directory? existing]) async {
+  ///
+  /// The master key is made here rather than read from a keychain, which is
+  /// what makes the store openable from a test at all — and which is the shape
+  /// the app has too: the key comes from outside the core, and reopening the
+  /// same directory means handing back the same key.
+  Future<RustNoteLibrary> openLibraryInTempDir([
+    Directory? existing,
+    Uint8List? key,
+  ]) async {
     final dir =
         existing ?? await Directory.systemTemp.createTemp('easynotes-test');
-    final library = await RustNoteLibrary.open(dir.path);
+    final library = await RustNoteLibrary.open(
+      dir.path,
+      key ?? MasterKeyStore.newKey(),
+    );
     addTearDown(() async {
       await library.dispose();
       if (existing == null) await dir.delete(recursive: true);
@@ -140,8 +153,10 @@ void main() {
         // on a restart would be a different grid.
         final dir = await Directory.systemTemp.createTemp('easynotes-restart');
         addTearDown(() => dir.delete(recursive: true));
+        // The same key both times, as a keychain would give.
+        final key = MasterKeyStore.newKey();
 
-        final first = await RustNoteLibrary.open(dir.path);
+        final first = await RustNoteLibrary.open(dir.path, key);
         final id = await first.createNote();
         final note = first.openNote(id);
         await note.setTitle('Groceries');
@@ -151,7 +166,7 @@ void main() {
         await note.dispose();
         await first.dispose();
 
-        final second = await openLibraryInTempDir(dir);
+        final second = await openLibraryInTempDir(dir, key);
         expect(second.notes.map((n) => n.id), [id]);
         expect(second.notes.single.title, 'Groceries');
         expect(second.notes.single.items, 3);
@@ -216,6 +231,81 @@ void main() {
         expect(guest.notes, hasLength(2));
         expect(guest.notes.map((n) => n.id), contains(joined));
         expect(guest.notes.map((n) => n.title), contains('Mine'));
+      });
+
+      // -- the master key ----------------------------------------------------
+      //
+      // Item 3b of the Slice 2 plan: the key that seals everything local lives in
+      // the OS keychain, and Dart is what can reach one. These run against the
+      // plugin's own test double — what they are about is the order of
+      // preference, which is the part that would cost someone their notes.
+
+      test('a device that had its key in a file keeps using that key', () async {
+        FlutterSecureStorage.setMockInitialValues({});
+        final dir = await Directory.systemTemp.createTemp('easynotes-adopt');
+        addTearDown(() => dir.delete(recursive: true));
+
+        // A device as it was before the keychain: a key in a file, and a database
+        // that opens with that key and no other.
+        final existing = MasterKeyStore.newKey();
+        await File('${dir.path}/master.key').writeAsBytes(existing);
+        final before = await RustNoteLibrary.open(dir.path, existing);
+        final note = before.openNote(await before.createNote());
+        await note.setTitle('Groceries');
+        await note.dispose();
+        await before.dispose();
+
+        // What the first launch after the update does.
+        final adopted = await MasterKeyStore().forDirectory(dir.path);
+        expect(
+          adopted,
+          existing,
+          reason: 'the key beside the database was not adopted',
+        );
+
+        final after = await RustNoteLibrary.open(dir.path, adopted);
+        addTearDown(after.dispose);
+        expect(after.notes.single.title, 'Groceries');
+      });
+
+      test('a device with no key gets one, and finds it again', () async {
+        FlutterSecureStorage.setMockInitialValues({});
+        final dir = await Directory.systemTemp.createTemp('easynotes-newkey');
+        addTearDown(() => dir.delete(recursive: true));
+
+        final store = MasterKeyStore();
+        final first = await store.forDirectory(dir.path);
+        expect(first, hasLength(masterKeyBytes));
+        // The second launch reads the keychain rather than minting another key,
+        // which is the difference between an app that keeps notes and one that
+        // loses them every time it starts.
+        expect(await store.forDirectory(dir.path), first);
+        expect(
+          File('${dir.path}/master.key').existsSync(),
+          isFalse,
+          reason: 'the key was written beside the database after all',
+        );
+      });
+
+      test('the wrong key does not quietly open an empty device', () async {
+        final dir = await Directory.systemTemp.createTemp('easynotes-wrongkey');
+        addTearDown(() => dir.delete(recursive: true));
+
+        final right = await RustNoteLibrary.open(
+          dir.path,
+          MasterKeyStore.newKey(),
+        );
+        final note = right.openNote(await right.createNote());
+        await note.setTitle('Groceries');
+        await note.dispose();
+        await right.dispose();
+
+        // Someone whose notes are right there on the disk should be told that
+        // this key does not open them, not shown an app with nothing in it.
+        expect(
+          () => RustNoteLibrary.open(dir.path, MasterKeyStore.newKey()),
+          throwsA(anything),
+        );
       });
 
       test('nothing readable is written to disk', () async {

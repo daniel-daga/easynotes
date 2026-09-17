@@ -98,8 +98,8 @@ threaded and will not start without cross-origin isolation.
 
 ## Security, in one paragraph
 
-Each note has its own key, and a master key wraps those and the device seed on
-this device. Every update is encrypted with XChaCha20-Poly1305 and
+Each note has its own key, and a master key — kept in the OS keychain — wraps
+those and the device seed on this device. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.

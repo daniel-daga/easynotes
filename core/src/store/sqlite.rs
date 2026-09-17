@@ -407,20 +407,28 @@ impl Keyring for SqliteKeyring {
 /// Open the local store a device keeps in `root`, whatever it had there before.
 ///
 /// This is the whole of "where does this app keep things", in one place the
-/// tests can reach without a Flutter toolchain: the master key, the database,
-/// the keyring, and the one-time carry-over from the directory of files Slice 1
-/// wrote. A user who updates the app has not agreed to lose their list.
+/// tests can reach without a Flutter toolchain: the database, the keyring, and
+/// the one-time carry-over from the directory of files Slice 1 wrote. A user
+/// who updates the app has not agreed to lose their list.
+///
+/// `master` comes from the caller and is not read from anywhere near here. On a
+/// device that is the OS keychain, reached by Dart; in a test it is whatever the
+/// test made. The core does not choose where a key lives, which is what lets the
+/// same code run under `cargo test` and on a phone.
 ///
 /// The old files are left where they are. Deleting the only copy of the data on
 /// the same launch that first writes the new one is how a migration turns a bug
 /// into a loss; they can go in a release that has been out for a while.
-pub fn open_local(root: impl AsRef<Path>) -> Result<(SqliteStore, SqliteKeyring)> {
+pub fn open_local(
+    root: impl AsRef<Path>,
+    master: MasterKey,
+) -> Result<(SqliteStore, SqliteKeyring)> {
     let root = root.as_ref();
     let database = root.join("notes.db");
     // Decided before the database is created, or it would never be true.
     let carry_over = !database.exists() && root.join("log").is_dir();
 
-    let master = super::master_key_from_file(root.join("master.key"))?;
+    std::fs::create_dir_all(root).map_err(|e| CoreError::Storage(e.to_string()))?;
     let mut store = SqliteStore::open(&database, master.clone())?;
     let mut keyring = SqliteKeyring::open(root.join("keys.db"), master)?;
 

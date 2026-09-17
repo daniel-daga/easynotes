@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/rust_note_core.dart';
@@ -66,7 +67,10 @@ void main() {
   /// way the app connects one.
   Future<RustNoteLibrary> device() async {
     final dir = await Directory.systemTemp.createTemp('easynotes-relay-test');
-    final library = await RustNoteLibrary.open(dir.path);
+    final library = await RustNoteLibrary.open(
+      dir.path,
+      MasterKeyStore.newKey(),
+    );
     addTearDown(() async {
       await library.dispose();
       await dir.delete(recursive: true);

@@ -10,6 +10,19 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `cmp`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `partial_cmp`
 
+/// The master key a device wrote beside its database before the app could reach
+/// the OS keychain, if it has one.
+///
+/// Dart calls this once, when the keychain has nothing: a device that updated
+/// into this version is unlocked by that file and by nothing else, so the key
+/// has to be adopted rather than replaced. The file is left where it is.
+///
+/// It hands a master key to Dart, which is the point of item 3b rather than a
+/// lapse in it: the key lives in the keychain now, and Dart is what can reach
+/// one. What the core keeps is that it never chooses where the key is kept.
+Uint8List? masterKeyBesideTheDatabase({required String dir}) =>
+    RustLib.instance.api.crateApiNotesMasterKeyBesideTheDatabase(dir: dir);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>
 abstract class Library implements RustOpaqueInterface {
   /// Start syncing every note with the relay at `relay` (`http://host:port`
@@ -44,13 +57,25 @@ abstract class Library implements RustOpaqueInterface {
 
   List<NoteSummaryView> notes();
 
-  /// Open the notes stored in `dir`, on a device that has a disk.
+  /// Open the notes stored in `dir`, on a device that has a disk, unlocked by
+  /// `master_key`.
   ///
-  /// `dir` holds the SQLite database, the keyring and — until the app can
-  /// reach the OS keychain — the master key that seals the second. Slice 1's
-  /// directory of files is carried into it the first time this runs.
-  static Library open({required String dir}) =>
-      RustLib.instance.api.crateApiNotesLibraryOpen(dir: dir);
+  /// `dir` holds the SQLite database and the keyring; `master_key` is the 32
+  /// bytes that seal everything in them which is not already an envelope, and
+  /// it comes from the OS keychain by way of Dart — the core does not know or
+  /// care where it was kept. Slice 1's directory of files is carried into the
+  /// database the first time this runs, and a device that has the key in a
+  /// file beside it is carried over by
+  /// [`master_key_beside_the_database`].
+  ///
+  /// The wrong key is not a soft failure: nothing in the database opens, and
+  /// this says so rather than presenting an empty device to someone whose
+  /// notes are right there.
+  static Library open({required String dir, required List<int> masterKey}) =>
+      RustLib.instance.api.crateApiNotesLibraryOpen(
+        dir: dir,
+        masterKey: masterKey,
+      );
 
   /// Notes that live only in memory and are gone when the tab closes.
   ///

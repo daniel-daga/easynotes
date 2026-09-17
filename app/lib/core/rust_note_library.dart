@@ -6,6 +6,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../src/rust/api/notes.dart' as rust;
 import 'note_core.dart';
@@ -30,10 +31,21 @@ class RustNoteLibrary implements NoteLibrary {
     );
   }
 
-  /// Open the notes stored under [directory], on a device with a disk.
-  static Future<RustNoteLibrary> open(String directory) async {
+  /// Open the notes stored under [directory], unlocked by [masterKey].
+  ///
+  /// The key comes from [MasterKeyStore], which is to say from the OS keychain.
+  /// It is a parameter rather than something this reads for itself so that a
+  /// test can open a library without a keychain to put a key in — and because
+  /// the one place that decides where the key lives should be easy to find.
+  static Future<RustNoteLibrary> open(
+    String directory,
+    Uint8List masterKey,
+  ) async {
     await RustNoteCore.ensureInitialized();
-    return RustNoteLibrary._(rust.Library.open(dir: directory), canJoin: true);
+    return RustNoteLibrary._(
+      rust.Library.open(dir: directory, masterKey: masterKey),
+      canJoin: true,
+    );
   }
 
   /// Open notes that live only in memory and are gone when the tab closes.

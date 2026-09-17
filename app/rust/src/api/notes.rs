@@ -370,16 +370,45 @@ fn boxed_keyring(k: impl Keyring + Send + 'static) -> Box<dyn Keyring + Send> {
 /// with no Flutter in the loop can cover what an app update does to a device
 /// that already has notes on it.
 #[cfg(not(target_arch = "wasm32"))]
-fn on_disk(root: &std::path::Path) -> Result<Backing, String> {
-    let (store, keyring) = easynotes_core::store::open_local(root).map_err(|e| e.to_string())?;
+fn on_disk(root: &std::path::Path, master: Vec<u8>) -> Result<Backing, String> {
+    let master =
+        easynotes_core::crypto::MasterKey::from_slice(&master).map_err(|e| e.to_string())?;
+    let (store, keyring) =
+        easynotes_core::store::open_local(root, master).map_err(|e| e.to_string())?;
     Ok((boxed_store(store), boxed_keyring(keyring)))
+}
+
+/// The master key a device wrote beside its database before the app could reach
+/// the OS keychain, if it has one.
+///
+/// Dart calls this once, when the keychain has nothing: a device that updated
+/// into this version is unlocked by that file and by nothing else, so the key
+/// has to be adopted rather than replaced. The file is left where it is.
+///
+/// It hands a master key to Dart, which is the point of item 3b rather than a
+/// lapse in it: the key lives in the keychain now, and Dart is what can reach
+/// one. What the core keeps is that it never chooses where the key is kept.
+#[cfg(not(target_arch = "wasm32"))]
+#[frb(sync)]
+pub fn master_key_beside_the_database(dir: String) -> Result<Option<Vec<u8>>, String> {
+    let path = std::path::PathBuf::from(dir).join("master.key");
+    Ok(easynotes_core::store::existing_master_key(path)
+        .map_err(|e| e.to_string())?
+        .map(|key| key.0.to_vec()))
+}
+
+/// A browser has no such file, and no database beside it either.
+#[cfg(target_arch = "wasm32")]
+#[frb(sync)]
+pub fn master_key_beside_the_database(_dir: String) -> Result<Option<Vec<u8>>, String> {
+    Ok(None)
 }
 
 /// A browser has no disk. It says so, rather than opening something that fails
 /// on the first write: the web build's library is [`Library::open_ephemeral`]
 /// until the IndexedDB store lands.
 #[cfg(target_arch = "wasm32")]
-fn on_disk(_root: &std::path::Path) -> Result<Backing, String> {
+fn on_disk(_root: &std::path::Path, _master: Vec<u8>) -> Result<Backing, String> {
     Err("this platform has no local database yet; open the notes in memory instead".to_string())
 }
 
@@ -404,15 +433,24 @@ pub struct Library {
 }
 
 impl Library {
-    /// Open the notes stored in `dir`, on a device that has a disk.
+    /// Open the notes stored in `dir`, on a device that has a disk, unlocked by
+    /// `master_key`.
     ///
-    /// `dir` holds the SQLite database, the keyring and — until the app can
-    /// reach the OS keychain — the master key that seals the second. Slice 1's
-    /// directory of files is carried into it the first time this runs.
+    /// `dir` holds the SQLite database and the keyring; `master_key` is the 32
+    /// bytes that seal everything in them which is not already an envelope, and
+    /// it comes from the OS keychain by way of Dart — the core does not know or
+    /// care where it was kept. Slice 1's directory of files is carried into the
+    /// database the first time this runs, and a device that has the key in a
+    /// file beside it is carried over by
+    /// [`master_key_beside_the_database`].
+    ///
+    /// The wrong key is not a soft failure: nothing in the database opens, and
+    /// this says so rather than presenting an empty device to someone whose
+    /// notes are right there.
     #[frb(sync)]
-    pub fn open(dir: String) -> Result<Library, String> {
+    pub fn open(dir: String, master_key: Vec<u8>) -> Result<Library, String> {
         let root = std::path::PathBuf::from(dir);
-        let (store, keyring) = on_disk(&root)?;
+        let (store, keyring) = on_disk(&root, master_key)?;
         Self::wrap(NoteCore::open(store, keyring).map_err(|e| e.to_string())?)
     }
 
