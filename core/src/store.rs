@@ -375,6 +375,36 @@ pub mod sqlite;
 #[cfg(feature = "sqlite-store")]
 pub use sqlite::{open_local, SqliteKeyring, SqliteStore};
 
+#[cfg(feature = "web-store")]
+pub mod web;
+
+#[cfg(feature = "web-store")]
+pub use web::{Change, ChangeSink, WebKeyring, WebStore};
+
+// ---------------------------------------------------------------------------
+// What the master key is asked to seal, and against what
+// ---------------------------------------------------------------------------
+//
+// Here rather than in one store, because two stores now hold the same rows and a
+// device can be carried from either to the other. A context that differed
+// between them would make that carry-over produce a database whose rows are all
+// individually valid and none of which open.
+
+/// A metadata row is sealed against the note it belongs to and the name it is
+/// filed under, so that a row cannot be moved to another note or another name
+/// and still open.
+pub(crate) fn meta_context<'a>(note: &'a NoteId, key: &'a str) -> [&'a [u8]; 3] {
+    [b"meta", note.as_bytes(), key.as_bytes()]
+}
+
+/// A keyring row is sealed against what kind of secret it is and which note it
+/// is for, so a note key cannot be handed back as the device seed by rewriting
+/// one column. The device seed is the one row with no note, and passes an empty
+/// ID.
+pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
+    [kind.as_bytes(), id]
+}
+
 // ---------------------------------------------------------------------------
 // Keyring
 // ---------------------------------------------------------------------------
