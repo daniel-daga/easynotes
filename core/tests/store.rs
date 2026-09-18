@@ -564,6 +564,55 @@ mod web_rows {
         );
     }
 
+    #[test]
+    fn a_device_moved_between_the_two_stores_opens() {
+        // The sealing contexts moved up into `store.rs` when a second store
+        // started writing the same rows, and this is the claim that made it
+        // worth doing: two stores that sealed a row differently would produce
+        // a carried-over device whose rows are each valid and none of which
+        // open. Nothing in the app moves a device between a browser and a
+        // phone today — there is no such thing as one person's two devices
+        // before accounts — so this holds the property rather than the
+        // feature.
+        let master = MasterKey::random();
+        let note = NoteId::random();
+
+        let mut sqlite = easynotes_core::store::SqliteStore::in_memory(master.clone()).unwrap();
+        let mut sqlite_keys =
+            easynotes_core::store::SqliteKeyring::in_memory(master.clone()).unwrap();
+        sqlite.append(note, b"envelope").unwrap();
+        sqlite.put_meta(note, "index", b"asparagus").unwrap();
+        sqlite_keys.put_device_seed(&DeviceSeed([7u8; 64])).unwrap();
+        sqlite_keys.put_note_key(note, &NoteKey([9u8; 32])).unwrap();
+
+        let rows = Rows::default();
+        let keys = Rows::default();
+        let mut web = WebStore::new(master.clone(), Box::new(rows.clone()));
+        let mut web_keys = WebKeyring::new(master.clone(), Box::new(keys.clone()));
+        easynotes_core::store::copy_store(
+            &sqlite,
+            &sqlite_keys,
+            &mut web,
+            &mut web_keys,
+            &["index"],
+        )
+        .unwrap();
+
+        // Through the database and out again, which is the part a plain copy
+        // would not have exercised.
+        let moved = WebStore::from_rows(master.clone(), Box::new(Rows::default()), rows.snapshot())
+            .unwrap();
+        let moved_keys =
+            WebKeyring::from_rows(master, Box::new(Rows::default()), keys.snapshot()).unwrap();
+        assert_eq!(moved.load(note).unwrap(), vec![b"envelope".to_vec()]);
+        assert_eq!(
+            moved.get_meta(note, "index").unwrap().unwrap(),
+            b"asparagus"
+        );
+        assert_eq!(moved_keys.device_seed().unwrap().unwrap().0, [7u8; 64]);
+        assert_eq!(moved_keys.note_key(note).unwrap().unwrap().0, [9u8; 32]);
+    }
+
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
