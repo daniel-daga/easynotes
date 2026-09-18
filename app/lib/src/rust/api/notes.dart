@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `entry`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `cmp`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `partial_cmp`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -48,6 +48,9 @@ abstract class Library implements RustOpaqueInterface {
   /// has is not an error and does not make a second copy.
   Future<String> join({required String blob});
 
+  /// Whether the grid is a masonry or one column, as this person last left it.
+  NoteLayout layout();
+
   /// A handle to one note, for a screen that is showing it.
   ///
   /// Cheap, and there may be several: they share the library's core, so two
@@ -86,6 +89,20 @@ abstract class Library implements RustOpaqueInterface {
   /// than a mock.
   static Library openEphemeral() =>
       RustLib.instance.api.crateApiNotesLibraryOpenEphemeral();
+
+  Future<void> setArchived({required String id, required bool archived});
+
+  Future<void> setColour({required String id, NoteColour? colour});
+
+  Future<void> setLayout({required NoteLayout layout});
+
+  Future<void> setPinned({required String id, required bool pinned});
+
+  /// Throw a note away, or take it back out of the trash.
+  ///
+  /// The note is still on the disk and still syncing; what has changed is that
+  /// this person does not see it. There is no way to delete one for good yet.
+  Future<void> setTrashed({required String id, required bool trashed});
 
   /// End the watchers started above and let their tasks finish.
   ///
@@ -175,6 +192,27 @@ class ItemView {
           order == other.order;
 }
 
+/// A note's colour, as Dart sees it. A fixed palette rather than a number,
+/// because what a colour has to look like is a question for the theme on the
+/// device drawing it — the same name is one thing in daylight and another in
+/// dark mode.
+enum NoteColour {
+  red,
+  orange,
+  yellow,
+  green,
+  teal,
+  blue,
+  purple,
+  pink,
+  brown,
+  grey,
+}
+
+/// Whether the note list is a masonry grid or one column. A view setting, and
+/// so a personal one: it lives in the account document with the placements.
+enum NoteLayout { grid, list }
+
 /// One card in the grid: enough to draw a note without opening it.
 class NoteSummaryView {
   final String id;
@@ -186,12 +224,27 @@ class NoteSummaryView {
   /// has no title, which most shopping lists do not.
   final List<String> preview;
 
+  /// What this person has done with the note. From the account document, so
+  /// none of it is shared with whoever else is on the note.
+  ///
+  /// Archived and trashed notes are in the list: which of them a screen draws
+  /// is the screen's question, and the grid, the archive and the trash are
+  /// three answers to it.
+  final NoteColour? colour;
+  final bool pinned;
+  final bool archived;
+  final bool trashed;
+
   const NoteSummaryView({
     required this.id,
     required this.title,
     required this.items,
     required this.checked,
     required this.preview,
+    this.colour,
+    required this.pinned,
+    required this.archived,
+    required this.trashed,
   });
 
   @override
@@ -200,7 +253,11 @@ class NoteSummaryView {
       title.hashCode ^
       items.hashCode ^
       checked.hashCode ^
-      preview.hashCode;
+      preview.hashCode ^
+      colour.hashCode ^
+      pinned.hashCode ^
+      archived.hashCode ^
+      trashed.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -211,7 +268,11 @@ class NoteSummaryView {
           title == other.title &&
           items == other.items &&
           checked == other.checked &&
-          preview == other.preview;
+          preview == other.preview &&
+          colour == other.colour &&
+          pinned == other.pinned &&
+          archived == other.archived &&
+          trashed == other.trashed;
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.

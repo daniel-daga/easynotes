@@ -15,7 +15,7 @@
 //! Unlike `bench_compaction` this runs against SQLite in a real directory,
 //! because a launch reads a disk and that read is part of the answer.
 
-use easynotes_core::crdt::{DefaultNoteDoc, Edit, NoteDoc};
+use easynotes_core::crdt::{Colour, DefaultNoteDoc, Edit, NoteDoc};
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::ids::NoteId;
 use easynotes_core::note::{NoteCore, NoteKind, SyncCursor};
@@ -65,6 +65,20 @@ fn fill(core: &mut Core, notes: usize) -> Vec<NoteId> {
         }
         made.push(id);
     }
+    // What the account document holds by the time a device looks like this: a
+    // placement for every note, because creating one writes where it goes, plus
+    // the colours and pins somebody has actually chosen. A third and a seventh
+    // is a guess at how many people bother, and it is the shape that matters —
+    // the account document grows with the notes, not with the edits on them.
+    for (n, id) in made.iter().enumerate() {
+        if n % 3 == 0 {
+            core.set_colour(*id, Some(Colour::ALL[n % Colour::ALL.len()]))
+                .unwrap();
+        }
+        if n % 7 == 0 {
+            core.set_pinned(*id, true).unwrap();
+        }
+    }
     made
 }
 
@@ -92,6 +106,7 @@ fn time(mut f: impl FnMut()) -> Duration {
 
 struct Row {
     notes: usize,
+    account: Duration,
     from_logs: Duration,
     from_snapshots: Duration,
 }
@@ -118,6 +133,13 @@ fn measure(notes: usize) -> Row {
     }
     drop(core);
 
+    // Opening the device is opening the account document: its log is replayed
+    // before the first note is, because a note cannot be placed in a grid whose
+    // order is not known yet. Nothing compacts it, so this is the whole of it.
+    let account = time(|| {
+        drop(open(dir.path()));
+    });
+
     let mut core = open(dir.path());
     let from_snapshots = time(|| {
         core.notes().unwrap();
@@ -126,6 +148,7 @@ fn measure(notes: usize) -> Row {
 
     Row {
         notes,
+        account,
         from_logs,
         from_snapshots,
     }
@@ -137,17 +160,18 @@ fn main() {
         DefaultNoteDoc::backend_name()
     );
     println!(
-        "{:>6}  {:>16}  {:>16}  {:>14}",
-        "notes", "open from logs", "from snapshots", "per note"
+        "{:>6}  {:>16}  {:>16}  {:>14}  {:>16}",
+        "notes", "open from logs", "from snapshots", "per note", "account document"
     );
     for &count in COUNTS {
         let row = measure(count);
         println!(
-            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>11.2} ms",
+            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>11.2} ms  {:>13.1} ms",
             row.notes,
             row.from_logs.as_secs_f64() * 1e3,
             row.from_snapshots.as_secs_f64() * 1e3,
             row.from_snapshots.as_secs_f64() * 1e3 / row.notes as f64,
+            row.account.as_secs_f64() * 1e3,
         );
     }
 }

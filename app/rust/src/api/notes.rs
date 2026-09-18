@@ -16,7 +16,7 @@
 
 use crate::frb_generated::StreamSink;
 use crate::relay::Connection;
-use easynotes_core::crdt::DefaultNoteDoc;
+use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
@@ -84,6 +84,16 @@ pub struct NoteSummaryView {
     /// The first few items, in display order. A card shows these when the note
     /// has no title, which most shopping lists do not.
     pub preview: Vec<String>,
+    /// What this person has done with the note. From the account document, so
+    /// none of it is shared with whoever else is on the note.
+    ///
+    /// Archived and trashed notes are in the list: which of them a screen draws
+    /// is the screen's question, and the grid, the archive and the trash are
+    /// three answers to it.
+    pub colour: Option<NoteColour>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub trashed: bool,
 }
 
 impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
@@ -94,6 +104,88 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
             items: s.items as u32,
             checked: s.checked as u32,
             preview: s.preview,
+            colour: s.placement.colour.map(Into::into),
+            pinned: s.placement.pinned,
+            archived: s.placement.archived,
+            trashed: s.placement.trashed,
+        }
+    }
+}
+
+/// A note's colour, as Dart sees it. A fixed palette rather than a number,
+/// because what a colour has to look like is a question for the theme on the
+/// device drawing it — the same name is one thing in daylight and another in
+/// dark mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteColour {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    Brown,
+    Grey,
+}
+
+impl From<Colour> for NoteColour {
+    fn from(c: Colour) -> Self {
+        match c {
+            Colour::Red => NoteColour::Red,
+            Colour::Orange => NoteColour::Orange,
+            Colour::Yellow => NoteColour::Yellow,
+            Colour::Green => NoteColour::Green,
+            Colour::Teal => NoteColour::Teal,
+            Colour::Blue => NoteColour::Blue,
+            Colour::Purple => NoteColour::Purple,
+            Colour::Pink => NoteColour::Pink,
+            Colour::Brown => NoteColour::Brown,
+            Colour::Grey => NoteColour::Grey,
+        }
+    }
+}
+
+impl From<NoteColour> for Colour {
+    fn from(c: NoteColour) -> Self {
+        match c {
+            NoteColour::Red => Colour::Red,
+            NoteColour::Orange => Colour::Orange,
+            NoteColour::Yellow => Colour::Yellow,
+            NoteColour::Green => Colour::Green,
+            NoteColour::Teal => Colour::Teal,
+            NoteColour::Blue => Colour::Blue,
+            NoteColour::Purple => Colour::Purple,
+            NoteColour::Pink => Colour::Pink,
+            NoteColour::Brown => Colour::Brown,
+            NoteColour::Grey => Colour::Grey,
+        }
+    }
+}
+
+/// Whether the note list is a masonry grid or one column. A view setting, and
+/// so a personal one: it lives in the account document with the placements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteLayout {
+    Grid,
+    List,
+}
+
+impl From<Layout> for NoteLayout {
+    fn from(l: Layout) -> Self {
+        match l {
+            Layout::Grid => NoteLayout::Grid,
+            Layout::List => NoteLayout::List,
+        }
+    }
+}
+
+impl From<NoteLayout> for Layout {
+    fn from(l: NoteLayout) -> Self {
+        match l {
+            NoteLayout::Grid => Layout::Grid,
+            NoteLayout::List => Layout::List,
         }
     }
 }
@@ -585,6 +677,65 @@ impl Library {
             status: self.shared.statuses.channel(id),
             stop: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    // -- what this person thinks of their notes ------------------------------
+    //
+    // Placements and settings, from the account document. They are on the
+    // library rather than on a note for the reason the relay address is: they
+    // belong to the device's view of the whole set, and a note that is not open
+    // on any screen can still be pinned from the grid.
+    //
+    // None of this reaches the note, so none of it reaches whoever else is on
+    // it — see `docs/adr/0008-account-document.md`.
+
+    pub fn set_colour(&self, id: String, colour: Option<NoteColour>) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .set_colour(id, colour.map(Into::into))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_pinned(&self, id: String, pinned: bool) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .set_pinned(id, pinned)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_archived(&self, id: String, archived: bool) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .set_archived(id, archived)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Throw a note away, or take it back out of the trash.
+    ///
+    /// The note is still on the disk and still syncing; what has changed is that
+    /// this person does not see it. There is no way to delete one for good yet.
+    pub fn set_trashed(&self, id: String, trashed: bool) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .set_trashed(id, trashed)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether the grid is a masonry or one column, as this person last left it.
+    #[frb(sync)]
+    pub fn layout(&self) -> Result<NoteLayout, String> {
+        Ok(self.shared.locked()?.layout().into())
+    }
+
+    pub fn set_layout(&self, layout: NoteLayout) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_layout(layout.into())
+            .map_err(|e| e.to_string())
     }
 
     // -- sync ---------------------------------------------------------------
