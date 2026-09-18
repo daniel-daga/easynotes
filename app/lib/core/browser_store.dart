@@ -57,15 +57,15 @@ Future<BrowserStore> openBrowserStore(String name) =>
 /// the real one and forgets everything when the tab closes, which is what the
 /// web build did before any of this.
 class MemoryBrowserStore implements BrowserStore {
-  final _areas = <rust.StorageArea, Map<String, List<int>>>{};
+  final _areas = <rust.StorageArea, Map<String, Uint8List>>{};
 
-  Map<String, List<int>> _area(rust.StorageArea area) =>
+  Map<String, Uint8List> _area(rust.StorageArea area) =>
       _areas.putIfAbsent(area, () => {});
 
   @override
   Future<List<rust.StorageRow>> rows(rust.StorageArea area) async => [
     for (final entry in _area(area).entries)
-      rust.StorageRow(key: entry.key, value: _bytes(entry.value)),
+      rust.StorageRow(key: entry.key, value: entry.value),
   ];
 
   @override
@@ -85,6 +85,4 @@ class MemoryBrowserStore implements BrowserStore {
 
   @override
   Future<void> close() async {}
-
-  static Uint8List _bytes(List<int> value) => Uint8List.fromList(value);
 }

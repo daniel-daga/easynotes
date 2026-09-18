@@ -10,7 +10,6 @@ library;
 
 import 'dart:async';
 import 'dart:js_interop';
-import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
@@ -68,7 +67,7 @@ class IndexedDbStore implements BrowserStore {
     for (final write in batch.writes) {
       switch (write.kind) {
         case rust.StorageWriteKind.put:
-          store.put(Uint8List.fromList(write.value).toJS, write.key.toJS);
+          store.put(write.value.toJS, write.key.toJS);
         case rust.StorageWriteKind.delete:
           store.delete(write.key.toJS);
         case rust.StorageWriteKind.deletePrefix:

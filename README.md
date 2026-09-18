@@ -23,7 +23,12 @@ no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
 log, and a device that has a Slice 1 directory is carried into the database the
-first time it opens. A log that has grown past a few hundred edits is compacted
+first time it opens. In a browser the same rows, sealed the same way, go into
+IndexedDB — so a tab that is closed and opened again has the list it had, which
+until now it did not. [ADR 0011](docs/adr/0011-the-web-store.md) says what it
+took to fit an asynchronous database behind a synchronous trait, and the one
+promise a browser makes more weakly than a phone: an edit is kept shortly after
+it is made rather than by the time it returns. A log that has grown past a few hundred edits is compacted
 to a snapshot when the note is opened, minus whatever the relay has not
 acknowledged yet — which is the only copy of those edits anywhere.
 
@@ -48,7 +53,8 @@ otherwise be making.
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
 accounts land. Tags and reminders are the rest of that document's remit and are
-not built.
+not built. A browser still cannot reach a relay either — it keeps what it holds
+and cannot share it — which is the last thing on the web build's list.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -117,11 +123,13 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
 | [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
 | [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
+| [ADR 0011](docs/adr/0011-the-web-store.md) | The store a browser gets: reads from memory, writes through Dart |
 
 ## Security, in one paragraph
 
-Each note has its own key, and a master key — kept in the OS keychain — wraps
-those and the device seed on this device. Every update is encrypted with XChaCha20-Poly1305 and
+Each note has its own key, and a master key — kept in the OS keychain, or in a
+browser in the nearest thing one has — wraps those and the device seed on this
+device. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
@@ -135,7 +143,11 @@ note's own key, so it cannot be read by anything that could not already read the
 note, and cannot outlive access to it. Deleting a note removes all of that and
 overwrites it rather than unlinking it, which
 `a_forgotten_note_is_not_in_the_database_or_its_wal` checks against the actual
-bytes of both databases; it is this device's copy and no other, and a note that
+bytes of both databases; in a browser it is one range delete over the rows a
+note has, and what a browser does with the freed space is the browser's, which
+[ADR 0011](docs/adr/0011-the-web-store.md) says along with the rest of what the
+web is weaker at —  the master key there is obfuscation over `localStorage` and
+is not claimed to be more; it is this device's copy and no other, and a note that
 was shared stays with whoever holds its key until Slice 3 brings revocation. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.

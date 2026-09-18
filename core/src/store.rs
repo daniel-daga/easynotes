@@ -9,10 +9,13 @@
 //! The trait is here so the web build can back it with IndexedDB without anything
 //! above it changing.
 //!
-//! Three implementations today: [`MemoryStore`] for tests and the browser,
-//! [`FileStore`] from Slice 1, and [`SqliteStore`] — the real one, which is what
-//! the native app now opens. [ADR 0005](../../docs/adr/0005-local-store.md) says
-//! why the last one is plain SQLite with sealed values rather than SQLCipher.
+//! Four implementations today: [`MemoryStore`] for tests and for a tab with
+//! nowhere to keep anything, [`FileStore`] from Slice 1, [`SqliteStore`] — what
+//! the native app opens — and [`WebStore`], which is what a browser gets.
+//! [ADR 0005](../../docs/adr/0005-local-store.md) says why the third is plain
+//! SQLite with sealed values rather than SQLCipher, and
+//! [ADR 0011](../../docs/adr/0011-the-web-store.md) why the fourth cannot write
+//! for itself.
 
 use crate::error::Result;
 use crate::ids::NoteId;
@@ -411,10 +414,13 @@ pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
 
 /// Where note keys and the device seed live.
 ///
-/// **Slice 1 stand-in.** In the shipping app this is the OS keychain (Keystore,
-/// Keychain, or a passphrase-wrapped blob on web and desktop) and never a file
-/// next to the op log. It is a separate trait from [`OpStore`] precisely so that
-/// "the log holds only ciphertext" stays true: key material never goes near it.
+/// A separate trait from [`OpStore`] precisely so that "the log holds only
+/// ciphertext" stays true: key material never goes near it. What each
+/// implementation keeps is already wrapped under a master key, and the master
+/// key itself is the platform's business — the OS keychain on a device, and in
+/// a browser the nearest thing one has
+/// ([ADR 0011](../../docs/adr/0011-the-web-store.md)). [`FileKeyring`] is the
+/// Slice 1 stand-in that wrapped nothing, and is kept for the migration off it.
 pub trait Keyring {
     fn device_seed(&self) -> Result<Option<crate::crypto::DeviceSeed>>;
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()>;
