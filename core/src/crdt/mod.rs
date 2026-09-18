@@ -20,13 +20,25 @@
 use crate::error::Result;
 use crate::ids::ItemId;
 
+pub mod account;
+
+#[cfg(feature = "automerge-backend")]
+pub mod automerge_account;
 #[cfg(feature = "automerge-backend")]
 pub mod automerge_doc;
 #[cfg(feature = "yrs-backend")]
+pub mod yrs_account;
+#[cfg(feature = "yrs-backend")]
 pub mod yrs_doc;
 
+pub use account::{AccountDoc, AccountEdit, AccountView, Colour, Layout, Placement};
+
+#[cfg(feature = "automerge-backend")]
+pub use automerge_account::AutomergeAccount;
 #[cfg(feature = "automerge-backend")]
 pub use automerge_doc::AutomergeNote;
+#[cfg(feature = "yrs-backend")]
+pub use yrs_account::YrsAccount;
 #[cfg(feature = "yrs-backend")]
 pub use yrs_doc::YrsNote;
 
@@ -101,6 +113,15 @@ pub enum Edit {
 /// same set of updates, in any order and with any duplicates, must produce equal
 /// [`NoteView`]s. `tests/convergence.rs` holds that to account for both backends.
 pub trait NoteDoc: Sized {
+    /// The account document from the same backend.
+    ///
+    /// An associated type rather than a second parameter on
+    /// [`crate::note::NoteCore`]: a device runs one CRDT implementation, and
+    /// picking Yrs for its notes and Automerge for its placements is not a
+    /// choice anyone should be able to express. It also means the suites that
+    /// run over both note backends run over both account backends for free.
+    type Account: AccountDoc;
+
     /// A stable, short identity for this device's edits. Lives inside the
     /// encrypted payload, so the relay never sees it.
     fn create(actor: &[u8; 16]) -> Self;
@@ -133,7 +154,8 @@ pub(crate) fn sort_items(items: &mut [ItemView]) {
 /// The backend the app uses. See [ADR 0001](../../../docs/adr/0001-crdt.md).
 ///
 /// Everything outside this module refers to the alias, never the concrete type,
-/// so revisiting D1 means changing this line and re-running the suite.
+/// so revisiting D1 means changing this line and re-running the suite. The
+/// account document follows it, through [`NoteDoc::Account`].
 #[cfg(feature = "yrs-backend")]
 pub type DefaultNoteDoc = YrsNote;
 #[cfg(all(not(feature = "yrs-backend"), feature = "automerge-backend"))]
