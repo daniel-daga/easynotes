@@ -88,6 +88,15 @@ class RustNoteLibrary implements NoteLibrary {
   Future<String> join(String blob) => _library.join(blob: blob);
 
   @override
+  Future<List<SearchHit>> search(String query) async {
+    final hits = await _library.search(query: query);
+    return [
+      for (final hit in hits)
+        SearchHit(note: _toSummary(hit.note), matched: hit.matched),
+    ];
+  }
+
+  @override
   NoteCore openNote(String noteId) => RustNoteCore(_library.note(id: noteId));
 
   @override

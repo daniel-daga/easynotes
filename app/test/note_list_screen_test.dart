@@ -336,12 +336,142 @@ void main() {
     );
   });
 
+  // -- search ---------------------------------------------------------------
+
+  /// A list long enough that the interesting item is off the card, which is the
+  /// case the matched line exists for.
+  FakeNoteLibrary aLongList() => FakeNoteLibrary(
+    notes: {
+      'hardware': FakeNoteCore(title: 'Hardware', items: const ['screws']),
+      'groceries': FakeNoteCore(
+        title: 'Groceries',
+        items: const ['milk', 'bread', 'eggs', 'coffee', 'asparagus'],
+      ),
+    },
+  );
+
+  Future<void> searchFor(WidgetTester tester, String query) async {
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('search-field')), query);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('searching keeps the notes that match and drops the rest', (
+    tester,
+  ) async {
+    final library = aLongList();
+    await pumpList(tester, library);
+
+    await searchFor(tester, 'groc');
+
+    expect(library.calls, contains('search(groc)'));
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    // Nothing is made from inside a search: it would not match it.
+    expect(find.byKey(const Key('new-note-button')), findsNothing);
+  });
+
+  testWidgets('a match the card does not show is shown', (tester) async {
+    await pumpList(tester, aLongList());
+    await searchFor(tester, 'aspara');
+
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    // The preview stops at four items and asparagus is the fifth, so without
+    // this line the card would say nothing about why it is a result.
+    expect(find.text('• asparagus'), findsNothing);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('matched:groceries'))).data,
+      'asparagus',
+    );
+  });
+
+  testWidgets('a match on the title is not repeated under it', (tester) async {
+    await pumpList(tester, aLongList());
+    await searchFor(tester, 'hardware');
+
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(find.text('Hardware'), findsOneWidget);
+  });
+
+  testWidgets('a search that finds nothing says so', (tester) async {
+    await pumpList(tester, aLongList());
+    await searchFor(tester, 'cortado');
+
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsNothing);
+  });
+
+  testWidgets('closing the search brings every note back', (tester) async {
+    await pumpList(tester, aLongList());
+    await searchFor(tester, 'groc');
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('search-close')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('search-field')), findsNothing);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
+  testWidgets('a search follows an edit from another device', (tester) async {
+    // The same property the grid has, one layer further in: results are a
+    // function of the notes, not a snapshot taken when the query was typed.
+    final library = aLongList();
+    await pumpList(tester, library);
+    await searchFor(tester, 'cortado');
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+
+    library
+        .core('hardware')
+        .pushRemote(
+          const NoteView(
+            title: 'Hardware',
+            items: [
+              ItemView(id: 'a', text: 'cortado', checked: false, order: '0000'),
+            ],
+          ),
+        );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
+  testWidgets('a search is scoped to the shelf it was made on', (tester) async {
+    final library = aLongList();
+    await pumpList(tester, library);
+    await library.setArchived('groceries', true);
+    await tester.pumpAndSettle();
+
+    // Archived, so not in the grid — and so not in a search of the grid.
+    await searchFor(tester, 'groc');
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('search-close')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('shelf-archive')));
+    await tester.pumpAndSettle();
+    await searchFor(tester, 'groc');
+
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
   test('a summary is a value', () {
     const a = NoteSummary(id: 'a', title: 'x', items: 1, checked: 0);
     const b = NoteSummary(id: 'a', title: 'x', items: 1, checked: 0);
     expect(a, b);
     expect(
-      a == const NoteSummary(id: 'a', title: 'x', items: 1, checked: 0, pinned: true),
+      a ==
+          const NoteSummary(
+            id: 'a',
+            title: 'x',
+            items: 1,
+            checked: 0,
+            pinned: true,
+          ),
       isFalse,
       reason: 'a placement is part of what a card shows',
     );

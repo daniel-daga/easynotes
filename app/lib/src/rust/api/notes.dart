@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `entry`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -89,6 +89,15 @@ abstract class Library implements RustOpaqueInterface {
   /// than a mock.
   static Library openEphemeral() =>
       RustLib.instance.api.crateApiNotesLibraryOpenEphemeral();
+
+  /// Every note whose text contains all of the query's words.
+  ///
+  /// Local, and local in the strong sense: it reads the same sealed index the
+  /// grid is drawn from, so it works with no network and never asks a relay
+  /// anything. Archived and trashed notes come back too, with their placements
+  /// on them — which of them to show is the screen's question, as it is for
+  /// the list.
+  Future<List<SearchHitView>> search({required String query});
 
   Future<void> setArchived({required String id, required bool archived});
 
@@ -292,6 +301,30 @@ class NoteView {
           runtimeType == other.runtimeType &&
           title == other.title &&
           items == other.items;
+}
+
+/// One note a search found, and the line it was found on.
+///
+/// The line is carried because a card shows four items and a shopping list has
+/// twenty: a result with nothing on it to say why it is a result reads as a bug.
+class SearchHitView {
+  final NoteSummaryView note;
+
+  /// The title, or the item, that the query matched.
+  final String matched;
+
+  const SearchHitView({required this.note, required this.matched});
+
+  @override
+  int get hashCode => note.hashCode ^ matched.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SearchHitView &&
+          runtimeType == other.runtimeType &&
+          note == other.note &&
+          matched == other.matched;
 }
 
 /// Where this note's sync stands, as Dart sees it.

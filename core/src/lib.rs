@@ -7,6 +7,7 @@ pub mod crdt;
 pub mod crypto;
 pub mod error;
 pub mod ids;
+pub mod index;
 pub mod note;
 pub mod order;
 pub mod store;

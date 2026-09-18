@@ -27,17 +27,20 @@ first time it opens. A log that has grown past a few hundred edits is compacted
 to a snapshot when the note is opened, minus whatever the relay has not
 acknowledged yet — which is the only copy of those edits anywhere.
 
-Listing notes means opening them, because a title is ciphertext until a key
-opens it. `just bench-library` says what that costs: a household's ten lists open
-in a couple of milliseconds, two hundred take most of a second, and
-[ADR 0007](docs/adr/0007-note-list.md) says what to do about it when someone has
-two hundred.
+There is a search box, and it reads a sealed index of every note's title and
+text rather than a network: type a word and the lists holding it come back, with
+the line that matched on them, in an aeroplane. That index is also what the grid
+is drawn from, so listing notes no longer means opening them — a household's ten
+lists appear in under a millisecond and two hundred in nine, where two hundred
+used to take most of a second. [ADR 0009](docs/adr/0009-search-index.md) says how
+it stays honest about a note it has not opened, and what is now the slowest thing
+a launch does.
 
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
 accounts land. Nor is there a way to delete a note for good — the trash keeps it,
-out of sight and still on the disk. Tags, reminders and search are the rest of
-that document's remit and are not built.
+out of sight and still on the disk. Tags and reminders are the rest of that
+document's remit and are not built.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -104,6 +107,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0006](docs/adr/0006-compaction.md) | Compaction: the log keeps what the relay has not acknowledged |
 | [ADR 0007](docs/adr/0007-note-list.md) | The note list: listing notes means opening them |
 | [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
+| [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
 
 ## Security, in one paragraph
 
@@ -116,7 +120,10 @@ It may check a token, a size, and that an envelope's note ID matches the path it
 arrived on — it may not check anything else, and it never sees plaintext.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire rather than trusting the claim, and the same check runs against the local
-database and its write-ahead log. The sync engine that moves those envelopes
+database and its write-ahead log. The one thing on this device that holds a note
+in a form the CRDT did not produce — the search index — is sealed under that
+note's own key, so it cannot be read by anything that could not already read the
+note, and cannot outlive access to it. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.
 

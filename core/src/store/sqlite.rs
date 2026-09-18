@@ -440,7 +440,11 @@ pub fn open_local(
             &old_keys,
             &mut store,
             &mut keyring,
-            &[crate::note::SYNC_CURSOR, crate::note::ADDED],
+            &[
+                crate::note::SYNC_CURSOR,
+                crate::note::ADDED,
+                crate::note::INDEX,
+            ],
         )?;
     }
 

@@ -234,6 +234,67 @@ void main() {
         expect(guest.notes.map((n) => n.title), contains('Mine'));
       });
 
+      // -- search ------------------------------------------------------------
+      //
+      // Item 7 of the Slice 2 plan, over the real index: the text is inside an
+      // envelope inside the CRDT, so these are the only tests that prove the
+      // whole path from a query typed on a screen to a note found on a disk.
+
+      test('a search finds a note by something on it', () async {
+        final library = await openLibraryInTempDir();
+        final groceries = library.openNote(await library.createNote());
+        addTearDown(groceries.dispose);
+        await groceries.setTitle('Groceries');
+        for (final item in ['milk', 'bread', 'eggs', 'coffee', 'asparagus']) {
+          await groceries.addItem(item);
+        }
+        final hardware = library.openNote(await library.createNote());
+        addTearDown(hardware.dispose);
+        await hardware.setTitle('Hardware');
+        await hardware.addItem('screws');
+
+        final hits = await library.search('aspara');
+        expect(hits, hasLength(1));
+        expect(hits.single.note.title, 'Groceries');
+        // The fifth item, which the four-item preview does not show — so the
+        // line has to come back with the hit or the card says nothing.
+        expect(hits.single.matched, 'asparagus');
+        expect(hits.single.note.preview, isNot(contains('asparagus')));
+
+        // Both words, and they need not be on the same line.
+        expect(await library.search('groceries milk'), hasLength(1));
+        expect(await library.search('screws asparagus'), isEmpty);
+        expect(await library.search('cortado'), isEmpty);
+      });
+
+      test('a relaunch can search a note it has not opened', () async {
+        final dir = await Directory.systemTemp.createTemp('easynotes-search');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        {
+          final library = await openLibraryInTempDir(dir, key);
+          final core = library.openNote(await library.createNote());
+          addTearDown(core.dispose);
+          await core.setTitle('Groceries');
+          await core.addItem('asparagus');
+        } // the app is killed here
+
+        // Nothing has opened the note in this process, which is the whole
+        // point: the title and the items are read out of the sealed index.
+        final library = await openLibraryInTempDir(dir, key);
+        expect(library.notes.map((n) => n.title), ['Groceries']);
+        final hits = await library.search('aspara');
+        expect(hits, hasLength(1));
+        expect(hits.single.matched, 'asparagus');
+
+        // And the note still opens, with everything that was on it.
+        final core = library.openNote(hits.single.note.id);
+        addTearDown(core.dispose);
+        expect(core.current.title, 'Groceries');
+        expect(core.current.items.map((i) => i.text), ['asparagus']);
+      });
+
       // -- the master key ----------------------------------------------------
       //
       // Item 3b of the Slice 2 plan: the key that seals everything local lives in
@@ -312,7 +373,9 @@ void main() {
       test('a colour, a pin and the trash survive a relaunch', () async {
         // Across the bridge and onto the disk: the account document is a real
         // document, so what it holds has to come back the way a note's items do.
-        final dir = await Directory.systemTemp.createTemp('easynotes-placement');
+        final dir = await Directory.systemTemp.createTemp(
+          'easynotes-placement',
+        );
         addTearDown(() => dir.delete(recursive: true));
         final key = MasterKeyStore.newKey();
 

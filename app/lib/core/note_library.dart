@@ -22,7 +22,18 @@ import 'sync_status.dart';
 /// "teal" has to look like is a question for the theme of whichever device is
 /// drawing it, and the answer differs between daylight and dark mode. The map
 /// from one to the other is in the note list screen, where the theme is.
-enum NoteColour { red, orange, yellow, green, teal, blue, purple, pink, brown, grey }
+enum NoteColour {
+  red,
+  orange,
+  yellow,
+  green,
+  teal,
+  blue,
+  purple,
+  pink,
+  brown,
+  grey,
+}
 
 /// Whether the note list is a masonry grid or one column. A view setting, and so
 /// a personal one: it lives in the account document beside the colours.
@@ -97,6 +108,31 @@ class NoteSummary {
   String toString() => 'NoteSummary($id, "$title", $checked/$items)';
 }
 
+/// One note a search found, and the line it was found on.
+///
+/// The line is here because a card shows four items and a shopping list has
+/// twenty: a result with nothing on it to say why it matched reads as a bug
+/// rather than as a match.
+@immutable
+class SearchHit {
+  const SearchHit({required this.note, required this.matched});
+
+  final NoteSummary note;
+
+  /// The title, or the item, that the query matched.
+  final String matched;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SearchHit && other.note == note && other.matched == matched;
+
+  @override
+  int get hashCode => Object.hash(note, matched);
+
+  @override
+  String toString() => 'SearchHit(${note.id}, "$matched")';
+}
+
 abstract class NoteLibrary {
   /// The notes right now, newest first, for the first frame.
   List<NoteSummary> get notes;
@@ -116,6 +152,15 @@ abstract class NoteLibrary {
 
   /// Add the note a share blob describes. Returns its ID.
   Future<String> join(String blob);
+
+  /// Every note whose text contains all of the query's words.
+  ///
+  /// Local, and local in the strong sense: it reads a sealed index this device
+  /// keeps, so it works with no network and asks no relay anything. It searches
+  /// the whole device, archive and trash included, with each hit carrying the
+  /// note's placement — which of them to show is the screen's question, as it is
+  /// for the list.
+  Future<List<SearchHit>> search(String query);
 
   /// A handle to one note, for a screen that is about to show it.
   ///

@@ -108,6 +108,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<SearchHitView> dco_decode_list_search_hit_view(dynamic raw);
+
+  @protected
   NoteColour dco_decode_note_colour(dynamic raw);
 
   @protected
@@ -127,6 +130,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  SearchHitView dco_decode_search_hit_view(dynamic raw);
 
   @protected
   SyncState dco_decode_sync_state(dynamic raw);
@@ -237,6 +243,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<SearchHitView> sse_decode_list_search_hit_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   NoteColour sse_decode_note_colour(SseDeserializer deserializer);
 
   @protected
@@ -258,6 +269,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  SearchHitView sse_decode_search_hit_view(SseDeserializer deserializer);
 
   @protected
   SyncState sse_decode_sync_state(SseDeserializer deserializer);
@@ -386,6 +400,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_search_hit_view(
+    List<SearchHitView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_note_colour(NoteColour self, SseSerializer serializer);
 
   @protected
@@ -414,6 +434,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     Uint8List? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_search_hit_view(SearchHitView self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_state(SyncState self, SseSerializer serializer);

@@ -147,6 +147,12 @@ impl std::fmt::Debug for AuthorKey {
 // Note key
 // ---------------------------------------------------------------------------
 
+/// Domain tag for a note's row in the local search index. Bound into the AAD
+/// exactly as [`LOCAL_DOMAIN`] is, and distinct from it and from the envelope's
+/// own AAD so that the three uses of a key can never be confused for one
+/// another.
+const INDEX_DOMAIN: &[u8] = b"easynotes/index/v1";
+
 /// The symmetric key for one note. Everyone who can read the note has it;
 /// revocation (Slice 3) means rotating it.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -161,6 +167,38 @@ impl NoteKey {
 
     fn cipher(&self) -> XChaCha20Poly1305 {
         XChaCha20Poly1305::new((&self.0).into())
+    }
+
+    /// Seal this note's row in the local search index, bound to the note it
+    /// summarises.
+    ///
+    /// The note's own key rather than the master key, for one reason and one
+    /// consequence. The reason: the index entry is a copy of the note's title
+    /// and text, so it should be readable by exactly what can read the note and
+    /// by nothing else — a device that loses a note's key loses the note, and an
+    /// index that stayed legible would be a way back in. The consequence: an
+    /// entry travels with the note through [`crate::store::copy_store`] without
+    /// being re-sealed, because both sides hold the same key.
+    ///
+    /// [`INDEX_DOMAIN`] is what stops the two uses of that key from being
+    /// confused. An index entry and an [`Envelope`] payload are sealed under the
+    /// same bytes, and the domain tag in the AAD means neither will ever open as
+    /// the other: an entry cannot be replayed to a peer as an update, and an
+    /// update cannot be planted in the index.
+    pub fn seal_index(&self, note: &NoteId, plaintext: &[u8]) -> Result<Vec<u8>> {
+        seal_blob(
+            &self.cipher(),
+            &local_aad(INDEX_DOMAIN, &[note.as_bytes()]),
+            plaintext,
+        )
+    }
+
+    pub fn open_index(&self, note: &NoteId, sealed: &[u8]) -> Result<Vec<u8>> {
+        open_blob(
+            &self.cipher(),
+            &local_aad(INDEX_DOMAIN, &[note.as_bytes()]),
+            sealed,
+        )
     }
 }
 
@@ -457,46 +495,12 @@ impl MasterKey {
     /// moved to another note, or a note key presented as the device seed, fails to
     /// open rather than being believed.
     pub fn seal(&self, context: &[&[u8]], plaintext: &[u8]) -> Result<Vec<u8>> {
-        let mut nonce = [0u8; NONCE_LEN];
-        random_bytes(&mut nonce);
-        let ciphertext = self
-            .cipher()
-            .encrypt(
-                XNonce::from_slice(&nonce),
-                Payload {
-                    msg: plaintext,
-                    aad: &local_aad(context),
-                },
-            )
-            .map_err(|_| CoreError::Crypto("encryption failed"))?;
-
-        let mut out = Vec::with_capacity(LOCAL_BLOB_HEADER_LEN + ciphertext.len());
-        out.push(LOCAL_BLOB_VERSION);
-        out.extend_from_slice(&nonce);
-        out.extend_from_slice(&ciphertext);
-        Ok(out)
+        seal_blob(&self.cipher(), &local_aad(LOCAL_DOMAIN, context), plaintext)
     }
 
     /// Decrypt a local blob sealed with the same key and the same context.
     pub fn open(&self, context: &[&[u8]], sealed: &[u8]) -> Result<Vec<u8>> {
-        if sealed.len() < LOCAL_BLOB_HEADER_LEN + 16 {
-            return Err(CoreError::MalformedEnvelope(
-                "local blob shorter than the header plus a tag",
-            ));
-        }
-        if sealed[0] != LOCAL_BLOB_VERSION {
-            return Err(CoreError::MalformedEnvelope("unknown local blob version"));
-        }
-        let nonce: [u8; NONCE_LEN] = sealed[1..LOCAL_BLOB_HEADER_LEN].try_into().unwrap();
-        self.cipher()
-            .decrypt(
-                XNonce::from_slice(&nonce),
-                Payload {
-                    msg: &sealed[LOCAL_BLOB_HEADER_LEN..],
-                    aad: &local_aad(context),
-                },
-            )
-            .map_err(|_| CoreError::Crypto("decryption failed"))
+        open_blob(&self.cipher(), &local_aad(LOCAL_DOMAIN, context), sealed)
     }
 }
 
@@ -509,12 +513,58 @@ impl std::fmt::Debug for MasterKey {
 /// The domain tag, then each context part with its length in front. The lengths
 /// are what stop `["note", "key"]` and `["notek", "ey"]` from producing the same
 /// AAD.
-fn local_aad(context: &[&[u8]]) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(LOCAL_DOMAIN.len() + 8 * context.len());
-    aad.extend_from_slice(LOCAL_DOMAIN);
+fn local_aad(domain: &[u8], context: &[&[u8]]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(domain.len() + 8 * context.len());
+    aad.extend_from_slice(domain);
     for part in context {
         aad.extend_from_slice(&(part.len() as u32).to_be_bytes());
         aad.extend_from_slice(part);
     }
     aad
+}
+
+/// `version | nonce | ciphertext`, for everything this device seals for itself.
+///
+/// One body for both keys that do it, so the format cannot drift between them
+/// and a reader of either only has one thing to check. What differs is the AAD,
+/// and that is the whole of what keeps the uses apart.
+fn seal_blob(cipher: &XChaCha20Poly1305, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let mut nonce = [0u8; NONCE_LEN];
+    random_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CoreError::Crypto("encryption failed"))?;
+
+    let mut out = Vec::with_capacity(LOCAL_BLOB_HEADER_LEN + ciphertext.len());
+    out.push(LOCAL_BLOB_VERSION);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+fn open_blob(cipher: &XChaCha20Poly1305, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
+    if sealed.len() < LOCAL_BLOB_HEADER_LEN + 16 {
+        return Err(CoreError::MalformedEnvelope(
+            "local blob shorter than the header plus a tag",
+        ));
+    }
+    if sealed[0] != LOCAL_BLOB_VERSION {
+        return Err(CoreError::MalformedEnvelope("unknown local blob version"));
+    }
+    let nonce: [u8; NONCE_LEN] = sealed[1..LOCAL_BLOB_HEADER_LEN].try_into().unwrap();
+    cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &sealed[LOCAL_BLOB_HEADER_LEN..],
+                aad,
+            },
+        )
+        .map_err(|_| CoreError::Crypto("decryption failed"))
 }

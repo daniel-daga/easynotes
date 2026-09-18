@@ -78,6 +78,30 @@ class FakeNoteLibrary implements NoteLibrary {
     return id;
   }
 
+  /// The same rule the core follows: every whitespace-separated word has to
+  /// appear somewhere in the note, case ignored, and the line that comes back is
+  /// the first one — title, then items — holding any of them.
+  @override
+  Future<List<SearchHit>> search(String query) async {
+    calls.add('search($query)');
+    final terms = query.toLowerCase().split(RegExp(r'\s+'))
+      ..removeWhere((term) => term.isEmpty);
+    if (terms.isEmpty) return const [];
+    final hits = <SearchHit>[];
+    for (final note in _summaries) {
+      final view = _cores[note.id]!.current;
+      final lines = [view.title, for (final item in view.items) item.text];
+      bool holds(String term) =>
+          lines.any((line) => line.toLowerCase().contains(term));
+      if (!terms.every(holds)) continue;
+      final matched = lines.firstWhere(
+        (line) => terms.any((term) => line.toLowerCase().contains(term)),
+      );
+      hits.add(SearchHit(note: note, matched: matched));
+    }
+    return hits;
+  }
+
   @override
   NoteCore openNote(String noteId) {
     calls.add('openNote($noteId)');
