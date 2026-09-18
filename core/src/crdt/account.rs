@@ -218,6 +218,24 @@ pub enum AccountEdit {
         name: String,
         value: String,
     },
+    /// Drop everything this person ever said about one note, because the note
+    /// itself is gone.
+    ///
+    /// Every placement field at once, and in one transaction for the reason
+    /// [`AccountDoc::write`] takes a slice: a peer must not see half a
+    /// placement removed. Leaving them would grow this document for ever with
+    /// keys about notes nobody can open — and the document is not compacted
+    /// ([ADR 0006](../../../docs/adr/0006-compaction.md)), so every one of them
+    /// would be replayed at every launch.
+    ///
+    /// It is **not** an undo of [`AccountEdit::SetTrashed`]: a note with no keys
+    /// here reads back as the default placement, which is a note in the grid.
+    /// That is the right answer only once the note has been forgotten too, which
+    /// is why nothing reaches this except
+    /// [`NoteCore::forget_note`](crate::note::NoteCore::forget_note).
+    ForgetNote {
+        note: NoteId,
+    },
 }
 
 fn placement_key(note: NoteId, field: &str) -> String {
@@ -250,6 +268,13 @@ impl AccountEdit {
             AccountEdit::SetSetting { name, value } => {
                 vec![(format!("{SETTING}{name}"), Some(Value::Str(value.clone())))]
             }
+            // Named rather than collected from whatever the document happens to
+            // hold, so that forgetting a note is the same five keys on a device
+            // that coloured it and on one that never did.
+            AccountEdit::ForgetNote { note } => [COLOUR, PINNED, ARCHIVED, TRASHED, ORDER]
+                .into_iter()
+                .map(|field| (placement_key(*note, field), None))
+                .collect(),
         }
     }
 }
@@ -360,6 +385,33 @@ mod tests {
         ]);
         assert!(view.placements.is_empty());
         assert_eq!(view.setting("layout"), Some("list"));
+    }
+
+    #[test]
+    fn forgetting_a_note_clears_every_field_it_had() {
+        let note = NoteId::random();
+        let writes = AccountEdit::ForgetNote { note }.writes();
+        // Whatever this person had set, and not only the fields they did set:
+        // the edit is the same on a device that coloured the note and on one
+        // that never touched it.
+        assert_eq!(writes.len(), 5);
+        assert!(writes.iter().all(|(key, value)| {
+            key.starts_with(&format!("p:{}:", note.encode())) && value.is_none()
+        }));
+        // Nothing about any other note, and no setting.
+        let other = NoteId::random();
+        assert!(!writes
+            .iter()
+            .any(|(key, _)| key.contains(&other.encode()) || key.starts_with("s:")));
+    }
+
+    #[test]
+    fn a_note_with_no_placement_keys_is_a_note_in_the_grid() {
+        // Which is why forgetting a note's placement is only ever right
+        // alongside forgetting the note: on its own it would un-trash it.
+        let note = NoteId::random();
+        let view = view_of([]);
+        assert!(view.placement(note).in_grid());
     }
 
     #[test]

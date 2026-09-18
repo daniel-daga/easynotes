@@ -313,6 +313,144 @@ void main() {
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
   });
 
+  // -- deleting for good ----------------------------------------------------
+
+  /// Long-press a card and take the sheet's `key` action.
+  Future<void> holdAndTap(WidgetTester tester, String note, String key) async {
+    await tester.longPress(find.byKey(Key('note:$note')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key(key)));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> openShelf(WidgetTester tester, String shelf) async {
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('shelf-$shelf')));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('deleting for good is offered from the trash and nowhere else', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    // Not on a note in the grid: throwing it away comes first, and that is the
+    // gesture that can be taken back.
+    await tester.longPress(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('action-delete-forever')), findsNothing);
+    await tester.tap(find.byKey(const Key('action-trash')));
+    await tester.pumpAndSettle();
+
+    // Nor on an archived note, which is out of the way rather than thrown away.
+    await holdAndTap(tester, 'groceries', 'action-archive');
+    await openShelf(tester, 'archive');
+    await tester.longPress(find.byKey(const Key('note:groceries')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('action-delete-forever')), findsNothing);
+    await tester.tap(find.byKey(const Key('action-archive')));
+    await tester.pumpAndSettle();
+
+    await openShelf(tester, 'trash');
+    await tester.longPress(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('action-delete-forever')), findsOneWidget);
+  });
+
+  testWidgets(
+    'deleting for good asks first, and keeping the note means keeping '
+    'it',
+    (tester) async {
+      final library = twoLists();
+      await pumpList(tester, library);
+      await holdAndTap(tester, 'hardware', 'action-trash');
+      await openShelf(tester, 'trash');
+
+      await holdAndTap(tester, 'hardware', 'action-delete-forever');
+      expect(find.byKey(const Key('confirm-delete')), findsOneWidget);
+      // The one thing the app cannot do is said on the dialog that does it.
+      expect(
+        find.textContaining('stays with whoever you shared it with'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('confirm-keep')));
+      await tester.pumpAndSettle();
+
+      expect(library.calls, isNot(contains('forgetNote(hardware)')));
+      expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    },
+  );
+
+  testWidgets('a note deleted for good leaves the device', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'action-trash');
+    await openShelf(tester, 'trash');
+
+    await holdAndTap(tester, 'hardware', 'action-delete-forever');
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    expect(library.calls, contains('forgetNote(hardware)'));
+    expect(find.byKey(const Key('no-notes')), findsOneWidget);
+    // Gone from the whole device, not moved to another shelf: the grid it was
+    // thrown away from does not have it back.
+    await openShelf(tester, 'notes');
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
+  testWidgets('emptying the trash is offered only when there is a trash to '
+      'empty', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    // Not on the grid, where it would delete nothing that is on screen.
+    expect(find.byKey(const Key('empty-trash-button')), findsNothing);
+
+    await openShelf(tester, 'trash');
+    // An empty trash offers no button to empty it: the one gesture that cannot
+    // be undone is not worth offering for no result.
+    expect(find.byKey(const Key('empty-trash-button')), findsNothing);
+
+    await openShelf(tester, 'notes');
+    await holdAndTap(tester, 'hardware', 'action-trash');
+    await openShelf(tester, 'trash');
+    expect(find.byKey(const Key('empty-trash-button')), findsOneWidget);
+  });
+
+  testWidgets('emptying the trash takes the trash and leaves the rest', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'action-trash');
+    await holdAndTap(tester, 'old', 'action-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete all 2 lists for good?'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    expect(library.calls, contains('emptyTrash()'));
+    expect(find.byKey(const Key('no-notes')), findsOneWidget);
+    await openShelf(tester, 'notes');
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    expect(find.byKey(const Key('note:old')), findsNothing);
+  });
+
   testWidgets('each shelf says how many notes are on it', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);

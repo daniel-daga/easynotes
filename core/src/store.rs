@@ -67,6 +67,32 @@ pub trait OpStore {
     fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()>;
 
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Forget a note entirely: its log, its snapshot, and every metadata row it
+    /// has — the sync cursor, the ordinal, the sealed index entry, all of them.
+    ///
+    /// The only thing in this trait that destroys something a person would
+    /// miss, and what emptying the trash is made of. Three things follow from
+    /// that:
+    ///
+    /// * **One call, not a delete per table.** A store that can do it in one
+    ///   transaction should, because the halfway state is the dangerous one: a
+    ///   log removed with the snapshot still there has deleted the edits and
+    ///   kept the note.
+    /// * **Every metadata row, whatever it is called.** The index entry holds
+    ///   the note's whole text ([`crate::index`]), so a delete that removed the
+    ///   log and left the metadata would leave the readable copy behind and
+    ///   remove the authoritative one. No implementation here names the keys it
+    ///   knows; they all clear whatever is there.
+    /// * **Forgetting a note the store does not hold is not an error.** Emptying
+    ///   an empty trash and finishing a delete that a crash interrupted both ask
+    ///   for exactly this, and neither is a problem.
+    ///
+    /// The key is not here, because key material is not kept where the log is:
+    /// [`Keyring::forget_note_key`] is the other half, and the order the two go
+    /// in is a decision of its own —
+    /// [ADR 0010](../../docs/adr/0010-forgetting-a-note.md).
+    fn forget(&mut self, note: NoteId) -> Result<()>;
 }
 
 /// In-memory store, for tests and for the headless cores in the integration test.
@@ -130,6 +156,13 @@ impl OpStore for MemoryStore {
 
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.meta.get(&(note, key.to_string())).cloned())
+    }
+
+    fn forget(&mut self, note: NoteId) -> Result<()> {
+        self.logs.remove(&note);
+        self.snapshots.remove(&note);
+        self.meta.retain(|(id, _), _| *id != note);
+        Ok(())
     }
 
     fn notes(&self) -> Result<Vec<NoteId>> {
@@ -272,6 +305,32 @@ pub mod file {
             Ok(Some(fs::read(&path).map_err(io)?))
         }
 
+        fn forget(&mut self, note: NoteId) -> Result<()> {
+            // Every file whose name begins with the note's ID, rather than the
+            // three suffixes this store knows about. An ID is a fixed 22
+            // characters and the dot after it cannot be part of one, so nothing
+            // else can match — and naming the suffixes would mean this needed
+            // editing every time something new is kept per note, with the one
+            // that was forgotten being the one left readable on the disk. It
+            // catches the `.tmp` files an interrupted write leaves behind for
+            // the same reason.
+            let prefix = format!("{}.", note.encode());
+            for entry in fs::read_dir(&self.root).map_err(io)? {
+                let entry = entry.map_err(io)?;
+                if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    continue;
+                }
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => {}
+                    // Something else got there first, which is the outcome this
+                    // asked for.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(io(e)),
+                }
+            }
+            Ok(())
+        }
+
         fn notes(&self) -> Result<Vec<NoteId>> {
             // Every suffix, not just `.log`: a note compacted to a snapshot has
             // no log left, and a note that was created and not yet edited has
@@ -331,6 +390,15 @@ pub trait Keyring {
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()>;
     fn note_key(&self, note: NoteId) -> Result<Option<crate::crypto::NoteKey>>;
     fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()>;
+
+    /// Forget a note's key.
+    ///
+    /// The other half of [`OpStore::forget`]. Two traits rather than one because
+    /// key material is not kept where the log is — two SQLite files on a device,
+    /// and one day the OS keychain — so nothing can remove both under one
+    /// transaction, and pretending otherwise would hide the window rather than
+    /// close it. Forgetting a key that is not there is not an error.
+    fn forget_note_key(&mut self, note: NoteId) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -361,6 +429,11 @@ impl Keyring for MemoryKeyring {
 
     fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()> {
         self.keys.insert(note, key.clone());
+        Ok(())
+    }
+
+    fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
+        self.keys.remove(&note);
         Ok(())
     }
 }
@@ -421,6 +494,14 @@ pub mod file_keyring {
 
         fn put_note_key(&mut self, note: NoteId, key: &NoteKey) -> Result<()> {
             fs::write(self.root.join(format!("{}.key", note.encode())), key.0).map_err(io)
+        }
+
+        fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
+            match fs::remove_file(self.root.join(format!("{}.key", note.encode()))) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(io(e)),
+            }
         }
     }
 }
@@ -584,6 +665,9 @@ impl OpStore for Box<dyn OpStore + Send> {
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
         (**self).get_meta(note, key)
     }
+    fn forget(&mut self, note: NoteId) -> Result<()> {
+        (**self).forget(note)
+    }
 }
 
 impl Keyring for Box<dyn Keyring + Send> {
@@ -598,5 +682,8 @@ impl Keyring for Box<dyn Keyring + Send> {
     }
     fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()> {
         (**self).put_note_key(note, key)
+    }
+    fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
+        (**self).forget_note_key(note)
     }
 }

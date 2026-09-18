@@ -180,9 +180,21 @@ abstract class NoteLibrary {
 
   /// Throw a note away, or take it back out of the trash.
   ///
-  /// The note is still on the device and still syncing; what has changed is that
-  /// this person does not see it. There is no way to delete one for good yet.
+  /// Reversible, and nothing is destroyed: the note is still on the device and
+  /// still syncing, and what has changed is that this person does not see it.
+  /// [forgetNote] is the irreversible one.
   Future<void> setTrashed(String noteId, bool trashed);
+
+  /// Delete a note for good: its content, its key and this person's placement of
+  /// it all go, and there is no undo.
+  ///
+  /// It removes **this device's copy**. A note that has been shared is also on
+  /// the relay and on every guest's device, under a key they hold, and nothing
+  /// here reaches either of those — so the screen must not promise that it does.
+  Future<void> forgetNote(String noteId);
+
+  /// Delete every note in the trash for good. Returns how many there were.
+  Future<int> emptyTrash();
 
   /// How this person last left the note list.
   NoteLayout get layout;

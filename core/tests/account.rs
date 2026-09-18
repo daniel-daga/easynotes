@@ -10,7 +10,7 @@ use easynotes_core::crdt::account::{AccountDoc, AccountEdit, Value};
 use easynotes_core::crdt::{Colour, Layout, NoteDoc};
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC};
+use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC, INDEX};
 use easynotes_core::store::{
     master_key_from_file, Keyring, MemoryKeyring, MemoryStore, OpStore, SqliteKeyring, SqliteStore,
 };
@@ -265,6 +265,162 @@ fn a_relaunch_places_nothing_again<D: NoteDoc>() {
     assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), logged);
 }
 
+// ---------------------------------------------------------------------------
+// Forgetting a note
+// ---------------------------------------------------------------------------
+
+/// What the trash was always going to need. A forgotten note leaves nothing: no
+/// log, no snapshot, no index entry, no key, and no placement.
+fn forgetting_a_note_leaves_nothing_of_it_anywhere<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let gone = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(gone, "tax papers").unwrap();
+    core.add_item(gone, "shred this").unwrap();
+    core.set_colour(gone, Some(Colour::Red)).unwrap();
+    core.set_trashed(gone, true).unwrap();
+    let kept = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(kept, "groceries").unwrap();
+    core.notes().unwrap();
+
+    core.forget_note(gone).unwrap();
+
+    // Not in the list, and not in the store the list is built from.
+    assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);
+    assert!(!core.store().notes().unwrap().contains(&gone));
+    assert!(core.store().load(gone).unwrap().is_empty());
+    assert!(core.store().get_snapshot(gone).unwrap().is_none());
+    assert!(core.store().get_meta(gone, INDEX).unwrap().is_none());
+    assert!(core.keyring().note_key(gone).unwrap().is_none());
+    // And this person's opinion of it went with it, rather than being left in a
+    // document that nothing compacts.
+    assert!(!core.account().placements.contains_key(&gone));
+
+    // The note beside it is untouched, including its key and its placement.
+    assert!(core.keyring().note_key(kept).unwrap().is_some());
+    assert_eq!(core.view(kept).unwrap().title, "groceries");
+}
+
+/// The note cannot be opened again, by anything, including a share blob that
+/// somebody kept.
+fn a_forgotten_note_cannot_be_opened<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(id, "gone").unwrap();
+    let blob = core.export_share_blob(id).unwrap();
+
+    core.forget_note(id).unwrap();
+
+    assert!(core.open_note(id).is_err());
+    assert!(core.view(id).is_err());
+    // A blob carries the key, so importing it puts the note back — with nothing
+    // on it, because the log it described is gone. That is the honest outcome
+    // and worth pinning: a delete is not a way to stop someone re-adding a note
+    // they were given, it is a way to remove this device's copy.
+    let back = core.import_share_blob(&blob).unwrap();
+    assert_eq!(back, id);
+    assert_eq!(core.view(id).unwrap().title, "");
+}
+
+/// It stays forgotten, and nothing gives the note a placement again.
+///
+/// The second half is the one that could quietly regress: `notes` gives every
+/// unplaced note in the store an order key, so a note whose rows were removed
+/// but whose metadata survived would come back as an empty card at the bottom of
+/// the grid.
+fn a_forgotten_note_is_still_gone_after_a_relaunch<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let (gone, kept) = {
+        let mut core = on_disk::<D>(dir.path());
+        let gone = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(gone, "tax papers").unwrap();
+        let kept = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(kept, "groceries").unwrap();
+        core.notes().unwrap();
+        core.forget_note(gone).unwrap();
+        (gone, kept)
+    };
+
+    let mut core = on_disk::<D>(dir.path());
+    assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);
+    assert!(!core.account().placements.contains_key(&gone));
+    assert!(core.keyring().note_key(gone).unwrap().is_none());
+    assert!(core.keyring().note_key(kept).unwrap().is_some());
+}
+
+/// Emptying the trash takes the trash and only the trash.
+fn emptying_the_trash_forgets_what_is_in_it<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let mut ids = Vec::new();
+    for title in ["one", "two", "three", "archived", "kept"] {
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(id, title).unwrap();
+        ids.push(id);
+    }
+    for id in &ids[..3] {
+        core.set_trashed(*id, true).unwrap();
+    }
+    // The archive is not the trash, which is the mistake this guards against.
+    core.set_archived(ids[3], true).unwrap();
+
+    assert_eq!(core.empty_trash().unwrap(), 3);
+
+    let left = core.notes().unwrap();
+    let mut names = titles(&left);
+    names.sort();
+    assert_eq!(names, vec!["archived", "kept"]);
+    for id in &ids[..3] {
+        assert!(core.keyring().note_key(*id).unwrap().is_none());
+        assert!(core.store().load(*id).unwrap().is_empty());
+    }
+    // Twice is not an error and finds nothing the second time.
+    assert_eq!(core.empty_trash().unwrap(), 0);
+}
+
+/// Emptying a trash that nothing was ever put in changes nothing at all — not
+/// even one envelope in the account document, which is not compacted.
+fn emptying_an_empty_trash_writes_nothing<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(id, "groceries").unwrap();
+    core.notes().unwrap();
+    let logged = core.store().load(ACCOUNT_DOC).unwrap().len();
+
+    assert_eq!(core.empty_trash().unwrap(), 0);
+
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), logged);
+    assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);
+}
+
+/// The account document is not a note and cannot be forgotten as one. Doing it
+/// would take every colour, pin and placement this person has with it.
+fn the_account_document_cannot_be_forgotten<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_colour(id, Some(Colour::Teal)).unwrap();
+
+    assert!(core.forget_note(ACCOUNT_DOC).is_err());
+
+    assert_eq!(core.placement(id).colour, Some(Colour::Teal));
+    assert!(core.keyring().note_key(ACCOUNT_DOC).unwrap().is_some());
+    assert!(!core.store().load(ACCOUNT_DOC).unwrap().is_empty());
+}
+
+/// Whoever is watching the grid is told, including when the note being forgotten
+/// had no placement of its own to clear.
+fn forgetting_a_note_reaches_the_list<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(id, "gone").unwrap();
+    core.notes().unwrap();
+    let mut watch = core.watch_notes();
+    watch.borrow_and_update();
+
+    core.forget_note(id).unwrap();
+
+    assert!(watch.has_changed().unwrap(), "the list was not refreshed");
+    assert!(watch.borrow_and_update().is_empty());
+}
+
 /// The migration. A device that has notes and no account document — every device
 /// that updates into this version — gets the grid it had, in the order it had
 /// it, seeded from the ordinal those notes were made with.
@@ -474,6 +630,34 @@ macro_rules! backend_suite {
             #[test]
             fn a_backend_keeps_a_key_it_does_not_understand() {
                 super::a_backend_keeps_a_key_it_does_not_understand::<$backend>()
+            }
+            #[test]
+            fn forgetting_a_note_leaves_nothing_of_it_anywhere() {
+                super::forgetting_a_note_leaves_nothing_of_it_anywhere::<$backend>()
+            }
+            #[test]
+            fn a_forgotten_note_cannot_be_opened() {
+                super::a_forgotten_note_cannot_be_opened::<$backend>()
+            }
+            #[test]
+            fn a_forgotten_note_is_still_gone_after_a_relaunch() {
+                super::a_forgotten_note_is_still_gone_after_a_relaunch::<$backend>()
+            }
+            #[test]
+            fn emptying_the_trash_forgets_what_is_in_it() {
+                super::emptying_the_trash_forgets_what_is_in_it::<$backend>()
+            }
+            #[test]
+            fn emptying_an_empty_trash_writes_nothing() {
+                super::emptying_an_empty_trash_writes_nothing::<$backend>()
+            }
+            #[test]
+            fn the_account_document_cannot_be_forgotten() {
+                super::the_account_document_cannot_be_forgotten::<$backend>()
+            }
+            #[test]
+            fn forgetting_a_note_reaches_the_list() {
+                super::forgetting_a_note_reaches_the_list::<$backend>()
             }
         }
     };

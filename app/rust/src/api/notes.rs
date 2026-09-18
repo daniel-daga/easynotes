@@ -339,6 +339,13 @@ impl Statuses {
         }))
     }
 
+    /// The same, for a note that must already have a channel. `None` means it
+    /// does not — which, since [`Statuses::forget`], means the note is gone.
+    fn existing<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> Option<T> {
+        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        per_note.get_mut(&note).map(f)
+    }
+
     /// The channel for one note, created on first use.
     ///
     /// It belongs to the note rather than to a connection, so the UI subscribes
@@ -365,15 +372,30 @@ impl Statuses {
     /// allowance goes away when the browser transport lands.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn report(&self, note: NoteId, epoch: u64, status: SyncStatus) {
-        let current = self.entry(note, |note| {
+        // `existing` rather than `entry`: a report can arrive for a note that has
+        // just been forgotten, from an engine whose task had not yet noticed, and
+        // creating a channel for a note that no longer exists would leave an
+        // `Offline` in the device's combined status for ever — one deleted note
+        // would make the whole device look disconnected.
+        let current = self.existing(note, |note| {
             if note.epoch == epoch {
                 note.tx.send_replace(status);
             }
             note.epoch
         });
-        if current == epoch {
+        if current == Some(epoch) {
             self.refresh();
         }
+    }
+
+    /// A note is gone for good. Its epoch ends, so anything its engine says from
+    /// here is dropped, and its channel goes with it so that the device's status
+    /// stops counting a note that does not exist toward what is pending.
+    fn forget(&self, note: NoteId) {
+        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        per_note.remove(&note);
+        drop(per_note);
+        self.refresh();
     }
 
     fn refresh(&self) {
@@ -455,6 +477,24 @@ impl Shared {
         if let Some(previous) = previous {
             previous.shutdown();
         }
+        Ok(())
+    }
+
+    /// Stop syncing one note because it is about to stop existing.
+    ///
+    /// Not the same as replacing a connection, which leaves the note's status
+    /// channel in place because the note is still there and a screen may still be
+    /// watching it. Here there will be no note, so the channel goes too.
+    fn disconnect_note(&self, note: NoteId) -> Result<(), String> {
+        let connection = self
+            .connections
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .remove(&note);
+        if let Some(connection) = connection {
+            connection.shutdown();
+        }
+        self.statuses.forget(note);
         Ok(())
     }
 
@@ -748,13 +788,67 @@ impl Library {
 
     /// Throw a note away, or take it back out of the trash.
     ///
-    /// The note is still on the disk and still syncing; what has changed is that
-    /// this person does not see it. There is no way to delete one for good yet.
+    /// Reversible, and nothing is destroyed: the note is still on the disk and
+    /// still syncing, and what has changed is that this person does not see it.
+    /// [`Library::forget_note`] is the irreversible one.
     pub fn set_trashed(&self, id: String, trashed: bool) -> Result<(), String> {
         let id = note_id(&id)?;
         self.shared
             .locked()?
             .set_trashed(id, trashed)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forget a note for good: its log, its snapshot, its index entry, its key
+    /// and this person's placement of it.
+    ///
+    /// There is no undo, which is why the UI offers it only from the trash and
+    /// only behind a confirmation. It removes **this device's copy**: a note that
+    /// has been shared is on the relay and on every guest's device under a key
+    /// they hold, and nothing here reaches either. See
+    /// `docs/adr/0010-forgetting-a-note.md`.
+    pub fn forget_note(&self, id: String) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.forget(id)
+    }
+
+    /// Forget every note in the trash. Returns how many there were.
+    pub fn empty_trash(&self) -> Result<u32, String> {
+        // Asked for the list, then told to empty it, rather than one call: every
+        // one of these notes has a socket that has to be closed before its rows
+        // go, and the core cannot close a socket.
+        let trashed = self
+            .shared
+            .locked()?
+            .trashed_notes()
+            .map_err(|e| e.to_string())?;
+        let mut forgotten = 0u32;
+        for id in trashed {
+            self.forget(id)?;
+            forgotten += 1;
+        }
+        Ok(forgotten)
+    }
+
+    /// The socket first, then the rows.
+    ///
+    /// The order matters and is not obvious. An envelope that arrives for a note
+    /// the core has just forgotten cannot be applied — there is no key — but the
+    /// engine still records how far it has read, and that sync cursor is a store
+    /// row, and a store row is enough to make the note exist again as far as the
+    /// store is concerned. So the engine is asked to stop, and its status channel
+    /// removed, before the core is asked to forget anything.
+    ///
+    /// It closes the window rather than the possibility: the engine's task may
+    /// already be mid-delivery when the shutdown is queued. What that can leave
+    /// is one sealed cursor row for a note with no key, which holds no content
+    /// and draws no card — `adopt_unplaced` in the core is what keeps it from
+    /// turning into anything more.
+    fn forget(&self, id: NoteId) -> Result<(), String> {
+        self.shared.disconnect_note(id)?;
+        self.shared
+            .locked()?
+            .forget_note(id)
             .map_err(|e| e.to_string())
     }
 

@@ -133,6 +133,76 @@ class _NoteListScreenState extends State<NoteListScreen> {
     await widget.library.setLayout(next);
   }
 
+  /// Delete one note for good, if this person says so a second time.
+  ///
+  /// The confirmation is not ceremony. It is the only thing between a long press
+  /// and a list nobody can get back, and it is where the promise the app cannot
+  /// keep gets said out loud: deleting a shared list here does not delete it for
+  /// whoever it was shared with, because their copy is theirs and under a key
+  /// they hold.
+  Future<void> _forget(NoteSummary note) async {
+    final title = note.title.trim();
+    final confirmed = await _confirmDelete(
+      question: title.isEmpty
+          ? 'Delete this list for good?'
+          : 'Delete "$title" for good?',
+      action: 'Delete',
+    );
+    if (!confirmed || !mounted) return;
+    await widget.library.forgetNote(note.id);
+  }
+
+  /// The same, for everything in the trash at once.
+  Future<void> _emptyTrash(int count) async {
+    final confirmed = await _confirmDelete(
+      question: count == 1
+          ? 'Delete 1 list for good?'
+          : 'Delete all $count lists for good?',
+      action: 'Delete all',
+    );
+    if (!confirmed || !mounted) return;
+    await widget.library.emptyTrash();
+  }
+
+  Future<bool> _confirmDelete({
+    required String question,
+    required String action,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('confirm-delete'),
+        title: Text(question),
+        // Worded so that it reads the same for one list and for a trash full of
+        // them, and so that the second sentence is there at all: a person
+        // deleting a shared shopping list may well think they are deleting it
+        // for the household, and they are not.
+        content: const Text(
+          'Deleted from this device, and there is no undo. '
+          'Anything you shared stays with whoever you shared it with.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('confirm-keep'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep'),
+          ),
+          TextButton(
+            key: const Key('confirm-delete-forever'),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    // A dialog dismissed by tapping outside it returns null, and the answer to
+    // "shall I delete this?" that nobody gave is no.
+    return confirmed ?? false;
+  }
+
   /// The actions for one note, on a sheet that comes up from the bottom.
   ///
   /// A long press rather than a button on every card: a card is mostly the
@@ -140,7 +210,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _actionsFor(NoteSummary note) async {
     await showModalBottomSheet<void>(
       context: context,
-      builder: (context) => _NoteActions(note: note, library: widget.library),
+      builder: (context) => _NoteActions(
+        note: note,
+        library: widget.library,
+        // Handed down rather than called from the sheet: the confirmation
+        // outlives the sheet that asked for it, so it has to be shown with the
+        // screen's context and not with one that is about to be popped.
+        onForget: () => _forget(note),
+      ),
     );
   }
 
@@ -204,6 +281,16 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     icon: const Icon(Icons.group_add_outlined),
                     tooltip: 'Join a list',
                     onPressed: _join,
+                  ),
+                // Only where there is a trash and something in it. An empty
+                // trash with a button to empty it invites the one gesture that
+                // cannot be undone, for no result.
+                if (_shelf == _Shelf.trash && notes.isNotEmpty)
+                  IconButton(
+                    key: const Key('empty-trash-button'),
+                    icon: const Icon(Icons.delete_sweep_outlined),
+                    tooltip: 'Empty the trash',
+                    onPressed: () => _emptyTrash(notes.length),
                   ),
               ],
             ],
@@ -428,10 +515,19 @@ class _Shelves extends StatelessWidget {
 
 /// What can be done to one note, without opening it.
 class _NoteActions extends StatelessWidget {
-  const _NoteActions({required this.note, required this.library});
+  const _NoteActions({
+    required this.note,
+    required this.library,
+    required this.onForget,
+  });
 
   final NoteSummary note;
   final NoteLibrary library;
+
+  /// Ask the screen to delete this note for good. Not `library.forgetNote`
+  /// directly: it has to be confirmed first, and the confirmation is shown after
+  /// this sheet has gone.
+  final Future<void> Function() onForget;
 
   @override
   Widget build(BuildContext context) {
@@ -500,6 +596,23 @@ class _NoteActions extends StatelessWidget {
                 : const Text('Kept, and out of the grid'),
             onTap: () => run(() => library.setTrashed(note.id, !note.trashed)),
           ),
+          // Only from the trash. Throwing a note away and deleting it for good
+          // are one gesture apart everywhere else, and one of them cannot be
+          // taken back — so the reversible one has to happen first.
+          if (note.trashed)
+            ListTile(
+              key: const Key('action-delete-forever'),
+              leading: Icon(
+                Icons.delete_forever_outlined,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                'Delete for good',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              subtitle: const Text('Gone from this device, with no undo'),
+              onTap: () => run(onForget),
+            ),
         ],
       ),
     );

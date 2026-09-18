@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `entry`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
 
@@ -40,6 +40,19 @@ abstract class Library implements RustOpaqueInterface {
   /// Stop syncing everything. Edits still work and still queue; nothing is
   /// lost.
   Future<void> disconnect();
+
+  /// Forget every note in the trash. Returns how many there were.
+  Future<int> emptyTrash();
+
+  /// Forget a note for good: its log, its snapshot, its index entry, its key
+  /// and this person's placement of it.
+  ///
+  /// There is no undo, which is why the UI offers it only from the trash and
+  /// only behind a confirmation. It removes **this device's copy**: a note that
+  /// has been shared is on the relay and on every guest's device under a key
+  /// they hold, and nothing here reaches either. See
+  /// `docs/adr/0010-forgetting-a-note.md`.
+  Future<void> forgetNote({required String id});
 
   /// Accept a share blob and add the note it describes to this device.
   ///
@@ -109,8 +122,9 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Throw a note away, or take it back out of the trash.
   ///
-  /// The note is still on the disk and still syncing; what has changed is that
-  /// this person does not see it. There is no way to delete one for good yet.
+  /// Reversible, and nothing is destroyed: the note is still on the disk and
+  /// still syncing, and what has changed is that this person does not see it.
+  /// [`Library::forget_note`] is the irreversible one.
   Future<void> setTrashed({required String id, required bool trashed});
 
   /// End the watchers started above and let their tasks finish.
