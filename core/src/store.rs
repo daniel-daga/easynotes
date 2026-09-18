@@ -49,15 +49,21 @@ pub trait OpStore {
         Ok(self.load(note)?.len())
     }
 
+    /// Every note this store holds anything for, in a stable order.
+    ///
+    /// "Anything" is the whole of it: a log, a snapshot, or only the metadata a
+    /// note gets when it is created. A note made and not yet edited has nothing
+    /// but that row, and a note list that dropped it would show a note until the
+    /// app restarted and then lose it.
     fn notes(&self) -> Result<Vec<NoteId>>;
 
-    /// Small per-note bookkeeping that is not part of the log. Today that is the
-    /// sync cursor and nothing else.
+    /// Small per-note bookkeeping that is not part of the log: the sync cursor,
+    /// and where the note sits in this device's list.
     ///
     /// It lives beside the log rather than in it because it is *local*: it
-    /// records what this device has sent and received, it is meaningless on
-    /// another device, and it must never be handed to the relay. `key` is an
-    /// internal name, not user data.
+    /// records what this device has sent, received and shows first, it is
+    /// meaningless on another device, and it must never be handed to the relay.
+    /// `key` is an internal name, not user data.
     fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()>;
 
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>>;
@@ -122,7 +128,11 @@ impl OpStore for MemoryStore {
 
     fn notes(&self) -> Result<Vec<NoteId>> {
         let mut ids: Vec<NoteId> = self.logs.keys().copied().collect();
-        for id in self.snapshots.keys() {
+        for id in self
+            .snapshots
+            .keys()
+            .chain(self.meta.keys().map(|(id, _)| id))
+        {
             if !ids.contains(id) {
                 ids.push(*id);
             }
@@ -257,18 +267,26 @@ pub mod file {
         }
 
         fn notes(&self) -> Result<Vec<NoteId>> {
-            // Both suffixes: a note compacted to a snapshot has no log left, and
-            // listing only `.log` would make it disappear from the note list
-            // while its content is still right there. The conformance suite in
-            // `tests/store.rs` caught this by holding all three stores to the
-            // same answer.
+            // Every suffix, not just `.log`: a note compacted to a snapshot has
+            // no log left, and a note that was created and not yet edited has
+            // only its metadata. Listing one of the three would make such a note
+            // disappear while it is still right there. The conformance suite in
+            // `tests/store.rs` caught the first of those by holding all three
+            // stores to the same answer.
             let mut ids = Vec::new();
             for entry in fs::read_dir(&self.root).map_err(io)? {
                 let entry = entry.map_err(io)?;
                 let name = entry.file_name().to_string_lossy().into_owned();
+                // A meta file is `{note}.{key}.meta`, so the note is what is
+                // left once both suffixes are off.
                 let stem = name
                     .strip_suffix(".log")
-                    .or_else(|| name.strip_suffix(".snap"));
+                    .or_else(|| name.strip_suffix(".snap"))
+                    .or_else(|| {
+                        name.strip_suffix(".meta")
+                            .and_then(|rest| rest.rsplit_once('.'))
+                            .map(|(note, _)| note)
+                    });
                 if let Some(stem) = stem {
                     if let Ok(id) = NoteId::decode(stem) {
                         if !ids.contains(&id) {
@@ -404,14 +422,33 @@ pub mod file_keyring {
 #[cfg(feature = "file-store")]
 pub use file_keyring::FileKeyring;
 
+/// The master key a device wrote beside its database before the app could reach
+/// the OS keychain, if it has one. Never creates one.
+///
+/// This is the whole of the migration off that file. A device that has it is
+/// unlocked by it and by nothing else, so the app reads it once, puts it in the
+/// keychain, and finds it there from then on. The file is left where it is, like
+/// every other thing this store has replaced.
+#[cfg(feature = "file-store")]
+pub fn existing_master_key(
+    path: impl AsRef<std::path::Path>,
+) -> Result<Option<crate::crypto::MasterKey>> {
+    use crate::crypto::MasterKey;
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read(path).map_err(|e| crate::error::CoreError::Storage(e.to_string()))?;
+    Ok(Some(MasterKey::from_slice(&raw)?))
+}
+
 /// Read the master key from `path`, generating one on first run.
 ///
-/// **The stand-in for the OS keychain.** It is worth being exact about what that
-/// is worth: a key in a file beside the database it unlocks protects against
-/// almost nothing, because anyone who has the one has the other. What it buys is
-/// that there is now exactly one secret, in one place, with one way in and out —
-/// so moving it into Keystore, Keychain or libsecret is a change to this function
-/// and its caller and to nothing else. Item 3b of the Slice 2 plan.
+/// **Not what the app does any more.** A device's key is in the OS keychain and
+/// is handed to [`open_local`](sqlite::open_local) by the caller; this is what a
+/// `cargo test` or a benchmark uses instead, because neither has a keychain and
+/// both need a key that survives being reopened. What the app kept from it is
+/// the shape: exactly one secret, in one place, with one way in and out.
 #[cfg(feature = "file-store")]
 pub fn master_key_from_file(path: impl AsRef<std::path::Path>) -> Result<crate::crypto::MasterKey> {
     use crate::crypto::MasterKey;

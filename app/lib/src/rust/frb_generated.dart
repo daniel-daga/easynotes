@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -696367753;
+  int get rustContentHash => 889119395;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -78,29 +78,53 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<void> crateApiNotesLibraryConnect({
+    required Library that,
+    required String relay,
+  });
+
+  Future<String> crateApiNotesLibraryCreateNote({required Library that});
+
+  Future<void> crateApiNotesLibraryDisconnect({required Library that});
+
+  Future<String> crateApiNotesLibraryJoin({
+    required Library that,
+    required String blob,
+  });
+
+  Note crateApiNotesLibraryNote({required Library that, required String id});
+
+  List<NoteSummaryView> crateApiNotesLibraryNotes({required Library that});
+
+  Library crateApiNotesLibraryOpen({
+    required String dir,
+    required List<int> masterKey,
+  });
+
+  Library crateApiNotesLibraryOpenEphemeral();
+
+  Future<void> crateApiNotesLibraryStopWatching({required Library that});
+
+  SyncStatus crateApiNotesLibrarySyncStatus({required Library that});
+
+  Stream<List<NoteSummaryView>> crateApiNotesLibraryWatchNotes({
+    required Library that,
+  });
+
+  Stream<SyncStatus> crateApiNotesLibraryWatchSync({required Library that});
+
   Future<String> crateApiNotesNoteAddItem({
     required Note that,
     required String text,
   });
 
-  Future<void> crateApiNotesNoteConnect({
-    required Note that,
-    required String relay,
-  });
-
-  Future<void> crateApiNotesNoteDisconnect({required Note that});
-
-  Note crateApiNotesNoteJoin({required String dir, required String blob});
+  String crateApiNotesNoteId({required Note that});
 
   Future<void> crateApiNotesNoteMoveItem({
     required Note that,
     required String item,
     required int toIndex,
   });
-
-  Note crateApiNotesNoteOpen({required String dir});
-
-  Note crateApiNotesNoteOpenEphemeral();
 
   Future<void> crateApiNotesNoteRemoveItem({
     required Note that,
@@ -138,6 +162,14 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiNotesInitApp();
 
+  Uint8List? crateApiNotesMasterKeyBesideTheDatabase({required String dir});
+
+  RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Library;
+
+  RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Library;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_LibraryPtr;
+
   RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Note;
 
   RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Note;
@@ -152,6 +184,390 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required super.generalizedFrbRustBinding,
     required super.portManager,
   });
+
+  @override
+  Future<void> crateApiNotesLibraryConnect({
+    required Library that,
+    required String relay,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          sse_encode_String(relay, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryConnectConstMeta,
+        argValues: [that, relay],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryConnectConstMeta =>
+      const TaskConstMeta(
+        debugName: "Library_connect",
+        argNames: ["that", "relay"],
+      );
+
+  @override
+  Future<String> crateApiNotesLibraryCreateNote({required Library that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryCreateNoteConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryCreateNoteConstMeta =>
+      const TaskConstMeta(debugName: "Library_create_note", argNames: ["that"]);
+
+  @override
+  Future<void> crateApiNotesLibraryDisconnect({required Library that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryDisconnectConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryDisconnectConstMeta =>
+      const TaskConstMeta(debugName: "Library_disconnect", argNames: ["that"]);
+
+  @override
+  Future<String> crateApiNotesLibraryJoin({
+    required Library that,
+    required String blob,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          sse_encode_String(blob, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryJoinConstMeta,
+        argValues: [that, blob],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryJoinConstMeta => const TaskConstMeta(
+    debugName: "Library_join",
+    argNames: ["that", "blob"],
+  );
+
+  @override
+  Note crateApiNotesLibraryNote({required Library that, required String id}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          sse_encode_String(id, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryNoteConstMeta,
+        argValues: [that, id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryNoteConstMeta =>
+      const TaskConstMeta(debugName: "Library_note", argNames: ["that", "id"]);
+
+  @override
+  List<NoteSummaryView> crateApiNotesLibraryNotes({required Library that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_note_summary_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryNotesConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryNotesConstMeta =>
+      const TaskConstMeta(debugName: "Library_notes", argNames: ["that"]);
+
+  @override
+  Library crateApiNotesLibraryOpen({
+    required String dir,
+    required List<int> masterKey,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          sse_encode_list_prim_u_8_loose(masterKey, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryOpenConstMeta,
+        argValues: [dir, masterKey],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryOpenConstMeta => const TaskConstMeta(
+    debugName: "Library_open",
+    argNames: ["dir", "masterKey"],
+  );
+
+  @override
+  Library crateApiNotesLibraryOpenEphemeral() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryOpenEphemeralConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryOpenEphemeralConstMeta =>
+      const TaskConstMeta(debugName: "Library_open_ephemeral", argNames: []);
+
+  @override
+  Future<void> crateApiNotesLibraryStopWatching({required Library that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesLibraryStopWatchingConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryStopWatchingConstMeta =>
+      const TaskConstMeta(
+        debugName: "Library_stop_watching",
+        argNames: ["that"],
+      );
+
+  @override
+  SyncStatus crateApiNotesLibrarySyncStatus({required Library that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_sync_status,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNotesLibrarySyncStatusConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesLibrarySyncStatusConstMeta =>
+      const TaskConstMeta(debugName: "Library_sync_status", argNames: ["that"]);
+
+  @override
+  Stream<List<NoteSummaryView>> crateApiNotesLibraryWatchNotes({
+    required Library that,
+  }) {
+    final sink = RustStreamSink<List<NoteSummaryView>>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+              that,
+              serializer,
+            );
+            sse_encode_StreamSink_list_note_summary_view_Sse(sink, serializer);
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 11,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_String,
+          ),
+          constMeta: kCrateApiNotesLibraryWatchNotesConstMeta,
+          argValues: [that, sink],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryWatchNotesConstMeta =>
+      const TaskConstMeta(
+        debugName: "Library_watch_notes",
+        argNames: ["that", "sink"],
+      );
+
+  @override
+  Stream<SyncStatus> crateApiNotesLibraryWatchSync({required Library that}) {
+    final sink = RustStreamSink<SyncStatus>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+              that,
+              serializer,
+            );
+            sse_encode_StreamSink_sync_status_Sse(sink, serializer);
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 12,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_String,
+          ),
+          constMeta: kCrateApiNotesLibraryWatchSyncConstMeta,
+          argValues: [that, sink],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiNotesLibraryWatchSyncConstMeta =>
+      const TaskConstMeta(
+        debugName: "Library_watch_sync",
+        argNames: ["that", "sink"],
+      );
 
   @override
   Future<String> crateApiNotesNoteAddItem({
@@ -170,7 +586,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 13,
             port: port_,
           );
         },
@@ -191,97 +607,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<void> crateApiNotesNoteConnect({
-    required Note that,
-    required String relay,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
+  String crateApiNotesNoteId({required Note that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
             that,
             serializer,
           );
-          sse_encode_String(relay, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 2,
-            port: port_,
-          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_String,
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
         ),
-        constMeta: kCrateApiNotesNoteConnectConstMeta,
-        argValues: [that, relay],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiNotesNoteConnectConstMeta => const TaskConstMeta(
-    debugName: "Note_connect",
-    argNames: ["that", "relay"],
-  );
-
-  @override
-  Future<void> crateApiNotesNoteDisconnect({required Note that}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 3,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCrateApiNotesNoteDisconnectConstMeta,
+        constMeta: kCrateApiNotesNoteIdConstMeta,
         argValues: [that],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateApiNotesNoteDisconnectConstMeta =>
-      const TaskConstMeta(debugName: "Note_disconnect", argNames: ["that"]);
-
-  @override
-  Note crateApiNotesNoteJoin({required String dir, required String blob}) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(dir, serializer);
-          sse_encode_String(blob, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCrateApiNotesNoteJoinConstMeta,
-        argValues: [dir, blob],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiNotesNoteJoinConstMeta =>
-      const TaskConstMeta(debugName: "Note_join", argNames: ["dir", "blob"]);
+  TaskConstMeta get kCrateApiNotesNoteIdConstMeta =>
+      const TaskConstMeta(debugName: "Note_id", argNames: ["that"]);
 
   @override
   Future<void> crateApiNotesNoteMoveItem({
@@ -302,7 +651,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 15,
             port: port_,
           );
         },
@@ -323,53 +672,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Note crateApiNotesNoteOpen({required String dir}) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(dir, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCrateApiNotesNoteOpenConstMeta,
-        argValues: [dir],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiNotesNoteOpenConstMeta =>
-      const TaskConstMeta(debugName: "Note_open", argNames: ["dir"]);
-
-  @override
-  Note crateApiNotesNoteOpenEphemeral() {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCrateApiNotesNoteOpenEphemeralConstMeta,
-        argValues: [],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiNotesNoteOpenEphemeralConstMeta =>
-      const TaskConstMeta(debugName: "Note_open_ephemeral", argNames: []);
-
-  @override
   Future<void> crateApiNotesNoteRemoveItem({
     required Note that,
     required String item,
@@ -386,7 +688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 16,
             port: port_,
           );
         },
@@ -426,7 +728,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 17,
             port: port_,
           );
         },
@@ -466,7 +768,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 18,
             port: port_,
           );
         },
@@ -504,7 +806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 19,
             port: port_,
           );
         },
@@ -534,7 +836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -563,7 +865,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 21,
             port: port_,
           );
         },
@@ -591,7 +893,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_sync_status,
@@ -617,7 +919,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_note_view,
@@ -649,7 +951,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 16,
+              funcId: 24,
               port: port_,
             );
           },
@@ -685,7 +987,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 17,
+              funcId: 25,
               port: port_,
             );
           },
@@ -716,7 +1018,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 26,
             port: port_,
           );
         },
@@ -734,6 +1036,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiNotesInitAppConstMeta =>
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
+  @override
+  Uint8List? crateApiNotesMasterKeyBesideTheDatabase({required String dir}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesMasterKeyBesideTheDatabaseConstMeta,
+        argValues: [dir],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesMasterKeyBesideTheDatabaseConstMeta =>
+      const TaskConstMeta(
+        debugName: "master_key_beside_the_database",
+        argNames: ["dir"],
+      );
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_Library => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_Library => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary;
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_Note => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote;
@@ -749,12 +1085,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Library
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LibraryImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   Note
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return NoteImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  Library
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LibraryImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -767,12 +1121,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Library
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LibraryImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   Note
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return NoteImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  RustStreamSink<List<NoteSummaryView>>
+  dco_decode_StreamSink_list_note_summary_view_Sse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
   }
 
   @protected
@@ -828,15 +1198,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
   List<ItemView> dco_decode_list_item_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_item_view).toList();
   }
 
   @protected
+  List<NoteSummaryView> dco_decode_list_note_summary_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_note_summary_view).toList();
+  }
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as List<int>;
+  }
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  NoteSummaryView dco_decode_note_summary_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return NoteSummaryView(
+      id: dco_decode_String(arr[0]),
+      title: dco_decode_String(arr[1]),
+      items: dco_decode_u_32(arr[2]),
+      checked: dco_decode_u_32(arr[3]),
+      preview: dco_decode_list_String(arr[4]),
+    );
   }
 
   @protected
@@ -855,6 +1258,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
   }
 
   @protected
@@ -909,12 +1318,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Library
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return LibraryImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   Note
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return NoteImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  Library
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return LibraryImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -933,6 +1366,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Library
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return LibraryImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   Note
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     SseDeserializer deserializer,
@@ -942,6 +1387,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
+  }
+
+  @protected
+  RustStreamSink<List<NoteSummaryView>>
+  sse_decode_StreamSink_list_note_summary_view_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
   }
 
   @protected
@@ -1001,6 +1455,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <String>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<ItemView> sse_decode_list_item_view(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1013,10 +1479,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<NoteSummaryView> sse_decode_list_note_summary_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <NoteSummaryView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_note_summary_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var len_ = sse_decode_i_32(deserializer);
+    return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  NoteSummaryView sse_decode_note_summary_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_title = sse_decode_String(deserializer);
+    var var_items = sse_decode_u_32(deserializer);
+    var var_checked = sse_decode_u_32(deserializer);
+    var var_preview = sse_decode_list_String(deserializer);
+    return NoteSummaryView(
+      id: var_id,
+      title: var_title,
+      items: var_items,
+      checked: var_checked,
+      preview: var_preview,
+    );
   }
 
   @protected
@@ -1033,6 +1537,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_list_prim_u_8_strict(deserializer));
     } else {
       return null;
     }
@@ -1094,6 +1609,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as LibraryImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     Note self,
     SseSerializer serializer,
@@ -1101,6 +1629,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as NoteImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as LibraryImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -1120,6 +1661,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as LibraryImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     Note self,
     SseSerializer serializer,
@@ -1127,6 +1681,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as NoteImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_StreamSink_list_note_summary_view_Sse(
+    RustStreamSink<List<NoteSummaryView>> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_note_summary_view,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
       serializer,
     );
   }
@@ -1199,6 +1770,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_item_view(
     List<ItemView> self,
     SseSerializer serializer,
@@ -1211,6 +1791,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_note_summary_view(
+    List<NoteSummaryView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_note_summary_view(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(
+    List<int> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    serializer.buffer.putUint8List(
+      self is Uint8List ? self : Uint8List.fromList(self),
+    );
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -1218,6 +1822,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     serializer.buffer.putUint8List(self);
+  }
+
+  @protected
+  void sse_encode_note_summary_view(
+    NoteSummaryView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.title, serializer);
+    sse_encode_u_32(self.items, serializer);
+    sse_encode_u_32(self.checked, serializer);
+    sse_encode_list_String(self.preview, serializer);
   }
 
   @protected
@@ -1234,6 +1851,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_list_prim_u_8_strict(
+    Uint8List? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_list_prim_u_8_strict(self, serializer);
     }
   }
 
@@ -1277,6 +1907,87 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 }
 
 @sealed
+class LibraryImpl extends RustOpaque implements Library {
+  // Not to be used by end users
+  LibraryImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  LibraryImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_Library,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_Library,
+    rustArcDecrementStrongCountPtr:
+        RustLib.instance.api.rust_arc_decrement_strong_count_LibraryPtr,
+  );
+
+  /// Start syncing every note with the relay at `relay` (`http://host:port`
+  /// or `wss://host`), and every note made or joined after this.
+  ///
+  /// Returns as soon as the engines are started, not when they are connected:
+  /// there may be no network, and the app is not allowed to care. Watch
+  /// [`Library::watch_sync`] to find out how it goes. Calling this again moves
+  /// the device to a different relay.
+  Future<void> connect({required String relay}) => RustLib.instance.api
+      .crateApiNotesLibraryConnect(that: this, relay: relay);
+
+  /// Make a new, empty note and return its ID.
+  Future<String> createNote() =>
+      RustLib.instance.api.crateApiNotesLibraryCreateNote(that: this);
+
+  /// Stop syncing everything. Edits still work and still queue; nothing is
+  /// lost.
+  Future<void> disconnect() =>
+      RustLib.instance.api.crateApiNotesLibraryDisconnect(that: this);
+
+  /// Accept a share blob and add the note it describes to this device.
+  ///
+  /// An addition, not a replacement — which is the whole difference between
+  /// this and Slice 1's one-note join. A blob for a note this device already
+  /// has is not an error and does not make a second copy.
+  Future<String> join({required String blob}) =>
+      RustLib.instance.api.crateApiNotesLibraryJoin(that: this, blob: blob);
+
+  /// A handle to one note, for a screen that is showing it.
+  ///
+  /// Cheap, and there may be several: they share the library's core, so two
+  /// handles to one note are two views of the same document rather than two
+  /// documents.
+  Note note({required String id}) =>
+      RustLib.instance.api.crateApiNotesLibraryNote(that: this, id: id);
+
+  List<NoteSummaryView> notes() =>
+      RustLib.instance.api.crateApiNotesLibraryNotes(that: this);
+
+  /// End the watchers started above and let their tasks finish.
+  ///
+  /// Necessary rather than tidy: a watcher is parked on a channel, so without
+  /// a wake it waits forever, the task leaks, and anything waiting for the
+  /// stream to close — such as Dart cancelling its subscription — waits
+  /// forever too.
+  Future<void> stopWatching() =>
+      RustLib.instance.api.crateApiNotesLibraryStopWatching(that: this);
+
+  /// Where this device stands with the relay, over all its notes.
+  SyncStatus syncStatus() =>
+      RustLib.instance.api.crateApiNotesLibrarySyncStatus(that: this);
+
+  /// The note list now, and every version of it after that.
+  ///
+  /// Every edit reaches it, whether it was made here or arrived from another
+  /// device, because both go through the core's one refresh.
+  Stream<List<NoteSummaryView>> watchNotes() =>
+      RustLib.instance.api.crateApiNotesLibraryWatchNotes(that: this);
+
+  Stream<SyncStatus> watchSync() =>
+      RustLib.instance.api.crateApiNotesLibraryWatchSync(that: this);
+}
+
+@sealed
 class NoteImpl extends RustOpaque implements Note {
   // Not to be used by end users
   NoteImpl.frbInternalDcoDecode(List<dynamic> wire)
@@ -1298,19 +2009,7 @@ class NoteImpl extends RustOpaque implements Note {
   Future<String> addItem({required String text}) =>
       RustLib.instance.api.crateApiNotesNoteAddItem(that: this, text: text);
 
-  /// Start syncing this note with the relay at `relay` (`http://host:port` or
-  /// `wss://host`).
-  ///
-  /// Returns as soon as the engine is started, not when it is connected: there
-  /// may be no network, and the app is not allowed to care. Watch
-  /// [`Note::watch_sync`] to find out how it goes. Calling this again replaces
-  /// the connection, which is how the app moves to a different relay.
-  Future<void> connect({required String relay}) =>
-      RustLib.instance.api.crateApiNotesNoteConnect(that: this, relay: relay);
-
-  /// Stop syncing. Edits still work and still queue; nothing is lost.
-  Future<void> disconnect() =>
-      RustLib.instance.api.crateApiNotesNoteDisconnect(that: this);
+  String id() => RustLib.instance.api.crateApiNotesNoteId(that: this);
 
   Future<void> moveItem({required String item, required int toIndex}) => RustLib
       .instance
@@ -1342,15 +2041,12 @@ class NoteImpl extends RustOpaque implements Note {
   String shareBlob() =>
       RustLib.instance.api.crateApiNotesNoteShareBlob(that: this);
 
-  /// End the watcher started by [`Note::watch`] and let its task finish.
-  ///
-  /// Necessary rather than tidy: the watcher is parked on the view channel, so
-  /// without a wake it waits forever, the task leaks, and anything waiting for
-  /// the stream to close — such as Dart cancelling its subscription — waits
-  /// forever too.
+  /// End this handle's watchers and let their tasks finish. The note stays
+  /// open in the library, because another screen may be showing it.
   Future<void> stopWatching() =>
       RustLib.instance.api.crateApiNotesNoteStopWatching(that: this);
 
+  /// Where this note stands with the relay.
   SyncStatus syncStatus() =>
       RustLib.instance.api.crateApiNotesNoteSyncStatus(that: this);
 
@@ -1364,7 +2060,6 @@ class NoteImpl extends RustOpaque implements Note {
   Stream<NoteView> watch() =>
       RustLib.instance.api.crateApiNotesNoteWatch(that: this);
 
-  /// The sync status now, and every change to it.
   Stream<SyncStatus> watchSync() =>
       RustLib.instance.api.crateApiNotesNoteWatchSync(that: this);
 }

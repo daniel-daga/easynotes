@@ -104,18 +104,6 @@ class FakeNoteCore implements NoteCore {
   }
 
   @override
-  Future<void> connect(String url) async {
-    edits.add('connect($url)');
-    pushStatus(const SyncStatus(state: SyncState.connecting));
-  }
-
-  @override
-  Future<void> disconnect() async {
-    edits.add('disconnect()');
-    pushStatus(const SyncStatus.offline());
-  }
-
-  @override
   Stream<SyncStatus> watchSync() async* {
     yield _status;
     yield* _sync.stream;

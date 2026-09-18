@@ -1,8 +1,9 @@
 /// [NoteCore] backed by the real Rust core through flutter_rust_bridge.
 ///
-/// This class is the whole of the bridge's surface in the app. The screen talks
-/// to [NoteCore]; nothing above this file imports anything generated, so
-/// regenerating the bindings cannot ripple into the UI.
+/// One note, handed out by [RustNoteLibrary]; the device and its relay are
+/// there. The screen talks to [NoteCore]; nothing above this file and its
+/// library counterpart imports anything generated, so regenerating the bindings
+/// cannot ripple into the UI.
 library;
 
 import 'dart:async';
@@ -16,7 +17,9 @@ import 'note_view.dart';
 import 'sync_status.dart';
 
 class RustNoteCore implements NoteCore {
-  RustNoteCore._(this._note) {
+  /// Wraps a note handle the library opened. Made by [RustNoteLibrary.open] and
+  /// not by anyone else, which is what keeps one core behind every note.
+  RustNoteCore(this._note) {
     // Exactly one Rust watcher per note, fanned out to however many widgets
     // want it.
     //
@@ -32,7 +35,7 @@ class RustNoteCore implements NoteCore {
     );
     // Same reasoning for the sync status: one Rust watcher, fanned out here.
     _syncUpstream = _note.watchSync().listen(
-      (status) => _sync.add(_toStatus(status)),
+      (status) => _sync.add(toStatus(status)),
       onError: _sync.addError,
     );
   }
@@ -48,39 +51,14 @@ class RustNoteCore implements NoteCore {
   static Future<void> ensureInitialized({ExternalLibrary? library}) =>
       _initialized ??= RustLib.init(externalLibrary: library);
 
-  /// Open the note stored under [directory], creating it on first run.
-  static Future<RustNoteCore> open(String directory) async {
-    await ensureInitialized();
-    return RustNoteCore._(rust.Note.open(dir: directory));
-  }
-
-  /// Open the note a share blob describes, replacing this device's note with it.
-  ///
-  /// Slice 1's model has exactly one note per device, so joining a shared list
-  /// means becoming a member of that one. A note list turns this into an
-  /// addition rather than a replacement.
-  static Future<RustNoteCore> join(String directory, String blob) async {
-    await ensureInitialized();
-    return RustNoteCore._(rust.Note.join(dir: directory, blob: blob));
-  }
-
-  /// Open a note that lives only in memory.
-  ///
-  /// The web build uses this: a browser has no filesystem, and backing the op
-  /// log with IndexedDB is the part of M4 this slice did not finish. Everything
-  /// above the store — crypto, CRDT, the watch stream — is the same Rust the
-  /// native build runs, so this is a stepping stone and not a mock. See
-  /// `docs/adr/0002-web-core.md`.
-  static Future<RustNoteCore> openEphemeral() async {
-    await ensureInitialized();
-    return RustNoteCore._(rust.Note.openEphemeral());
-  }
-
   final rust.Note _note;
   final _controller = StreamController<NoteView>.broadcast();
   late final StreamSubscription<rust.NoteView> _upstream;
   final _sync = StreamController<SyncStatus>.broadcast();
   late final StreamSubscription<rust.SyncStatus> _syncUpstream;
+
+  /// Which note this is, so a screen can say what it is showing.
+  String get id => _note.id();
 
   /// Read straight through to Rust rather than caching. A cached copy is only
   /// fresh while something is listening to [watch], and a caller that reads
@@ -119,13 +97,7 @@ class RustNoteCore implements NoteCore {
   Future<String> exportShareBlob() async => _note.shareBlob();
 
   @override
-  Future<void> connect(String url) => _note.connect(relay: url);
-
-  @override
-  Future<void> disconnect() => _note.disconnect();
-
-  @override
-  SyncStatus get syncStatus => _toStatus(_note.syncStatus());
+  SyncStatus get syncStatus => toStatus(_note.syncStatus());
 
   @override
   Stream<SyncStatus> watchSync() async* {
@@ -135,11 +107,10 @@ class RustNoteCore implements NoteCore {
 
   @override
   Future<void> dispose() async {
-    // The relay connection goes first: its engine holds a reference to the core
-    // and would otherwise keep applying updates to a note nothing is watching.
-    await _note.disconnect();
-    // Then stop the Rust watchers: cancelling an upstream subscription waits for
-    // that stream to close, and neither closes on its own.
+    // Stop the Rust watchers: cancelling an upstream subscription waits for that
+    // stream to close, and neither closes on its own. The note itself stays open
+    // in the library — another screen may be showing it, and the relay keeps
+    // syncing it either way.
     await _note.stopWatching();
     await _upstream.cancel();
     await _syncUpstream.cancel();
@@ -147,23 +118,33 @@ class RustNoteCore implements NoteCore {
     await _sync.close();
   }
 
-  static SyncStatus _toStatus(rust.SyncStatus s) => SyncStatus(
-        state: switch (s.state) {
-          rust.SyncState.offline => SyncState.offline,
-          rust.SyncState.connecting => SyncState.connecting,
-          rust.SyncState.online => SyncState.online,
-          rust.SyncState.synced => SyncState.synced,
-        },
-        pending: s.pending,
-        lastSeq: s.lastSeq,
-        lastError: s.lastError,
-      );
+  /// Shared with [RustNoteLibrary], whose status comes over the same wire.
+  ///
+  /// `lastSeq` is narrowed here, and this is the only place it could be. The
+  /// bridge gives an `i64` as a `PlatformInt64`, which is an `int` natively and
+  /// a `BigInt` in a browser, so one Dart `int` field cannot take both — and
+  /// widening [SyncStatus] to `PlatformInt64` would put a generated type in the
+  /// layer this file exists to keep them out of. Narrowing is safe because the
+  /// value is a relay sequence number the app only ever shows: a note would need
+  /// nine quadrillion envelopes to reach the edge of a browser's integers, and
+  /// `toInt` clamps rather than wraps if one ever did.
+  static SyncStatus toStatus(rust.SyncStatus s) => SyncStatus(
+    state: switch (s.state) {
+      rust.SyncState.offline => SyncState.offline,
+      rust.SyncState.connecting => SyncState.connecting,
+      rust.SyncState.online => SyncState.online,
+      rust.SyncState.synced => SyncState.synced,
+    },
+    pending: s.pending,
+    lastSeq: s.lastSeq.toInt(),
+    lastError: s.lastError,
+  );
 
   static NoteView _toView(rust.NoteView v) => NoteView(
-        title: v.title,
-        items: [
-          for (final i in v.items)
-            ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
-        ],
-      );
+    title: v.title,
+    items: [
+      for (final i in v.items)
+        ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
+    ],
+  );
 }

@@ -38,6 +38,9 @@ dependencies:
     path: rust_builder
   flutter_rust_bridge: 2.13.0
   path_provider: ^2.1.5
+  # Where the master key lives: Keystore on Android, the Keychain on iOS and
+  # macOS, libsecret on Linux, DPAPI on Windows. See lib/core/master_key.dart.
+  flutter_secure_storage: ^11.2.0
 
 dev_dependencies:
   flutter_test:

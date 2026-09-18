@@ -8,6 +8,9 @@
 /// flutter_rust_bridge, and [FakeNoteCore] for widget tests. The screen cannot
 /// tell them apart, which is why the tests are fast and the screen is testable
 /// without a native build.
+///
+/// One note. The set of them, and the relay they all sync with, is
+/// [NoteLibrary].
 library;
 
 import 'note_view.dart';
@@ -38,17 +41,11 @@ abstract class NoteCore {
   /// becomes the fragment of an invite link, with the same bytes.
   Future<String> exportShareBlob();
 
-  /// Start syncing with the relay at [url].
+  /// The sync status of this note now, and every change to it.
   ///
-  /// Returns when the attempt has *started*, not when it has succeeded: there
-  /// may be no network, and nothing above this is allowed to wait for one.
-  /// [watchSync] is where it says how it went.
-  Future<void> connect(String url);
-
-  /// Stop syncing. Edits still work and still queue.
-  Future<void> disconnect();
-
-  /// The sync status now, and every change to it.
+  /// Connecting is not here: what to sync with is a decision for the device,
+  /// not for one note, so it lives on [NoteLibrary]. This is only where a note
+  /// says how its own share of that is going.
   Stream<SyncStatus> watchSync();
 
   /// The status right now, for the first frame.

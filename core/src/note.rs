@@ -43,6 +43,40 @@ pub struct SyncCursor {
     pub sent_upto: Option<u64>,
 }
 
+/// Where a note's place in this device's list is kept.
+///
+/// An ordinal, not a timestamp: the core compiles for the browser, where the
+/// clock is not `SystemTime`, and "which note is newer" is all the list needs.
+/// It is also purely local — the design doc puts a note's *shared* order nowhere
+/// at all, and its personal one (`gridOrder`, pinning) in the account document,
+/// which is item 6 of the Slice 2 plan. Until that lands this is what stops a
+/// new note from appearing in the middle of the grid.
+pub const ADDED: &str = "added";
+
+/// One note, as a list of notes needs it: enough to draw a card, and no more.
+///
+/// The title and the counts come from the CRDT, so producing one means the note
+/// is open and its log replayed. That is why [`NoteCore::notes`] opens
+/// everything rather than reading a column somewhere: the title *is* ciphertext
+/// until a key decrypts it, and no index beside the database may hold it in the
+/// clear.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteSummary {
+    pub id: NoteId,
+    pub title: String,
+    /// Every item, checked or not.
+    pub items: usize,
+    pub checked: usize,
+    /// The first few items, in display order, so a card can show what the note
+    /// is about. Most shopping lists never get a title.
+    pub preview: Vec<String>,
+}
+
+/// How many items a summary carries. Enough to recognise a list, few enough
+/// that a hundred notes do not put a hundred whole documents through the
+/// bridge on every keystroke.
+pub const PREVIEW_ITEMS: usize = 4;
+
 /// How long a note's log may get before opening it compacts the log away.
 ///
 /// A number, not a science: 256 envelopes is a few weeks of a household's
@@ -74,6 +108,8 @@ struct OpenNote<D: NoteDoc> {
     /// envelope a no-op at the core level, independently of the CRDT's own
     /// idempotence.
     seen: HashSet<(AuthorKey, u64)>,
+    /// This note's place in the list, read from [`ADDED`] when it was opened.
+    added: u64,
     watch: watch::Sender<NoteView>,
 }
 
@@ -83,6 +119,10 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     store: S,
     keyring: K,
     open: HashMap<NoteId, OpenNote<D>>,
+    /// The list of notes, for whoever is showing one. Recomputed from `open`
+    /// every time a view changes, which is cheap because a summary is four
+    /// fields off a document that is already in memory.
+    library: watch::Sender<Vec<NoteSummary>>,
 }
 
 impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
@@ -106,6 +146,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             store,
             keyring,
             open: HashMap::new(),
+            library: watch::channel(Vec::new()).0,
         })
     }
 
@@ -125,6 +166,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.keyring.put_note_key(id, &key)?;
         let doc = D::create(&self.actor);
         let (tx, _) = watch::channel(doc.view());
+        let added = self.next_ordinal()?;
         self.open.insert(
             id,
             OpenNote {
@@ -132,12 +174,22 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter: 0,
                 seen: HashSet::new(),
+                added,
                 watch: tx,
             },
         );
+        // This is also what puts the note on disk. A note exists from the moment
+        // it is created rather than from its first edit, because an empty note
+        // that is in the list until the app restarts and then is not would be a
+        // worse answer than either keeping it or refusing to make it. What it
+        // costs is that a note made by accident stays until there is a way to
+        // delete one, which is the trash — a personal placement in the account
+        // document, item 6 of the Slice 2 plan.
+        self.store.put_meta(id, ADDED, &added.to_be_bytes())?;
         // `kind` does not change the document shape in Slice 1 (a text note is a
         // checklist with no items); it is recorded so the UI can branch later.
         let _ = kind;
+        self.refresh_library();
         Ok(id)
     }
 
@@ -192,6 +244,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         let view = doc.view();
         let (tx, _) = watch::channel(view.clone());
+        let added = self.ordinal(id)?;
         self.open.insert(
             id,
             OpenNote {
@@ -199,9 +252,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter,
                 seen,
+                added,
                 watch: tx,
             },
         );
+        self.refresh_library();
 
         // The one place where opening a note writes to the store, and the right
         // one: the document has just been rebuilt, so the snapshot costs nothing
@@ -230,6 +285,112 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))
     }
 
+    // -- the note list ------------------------------------------------------
+    //
+    // A note list is not a query: every title in it is inside an envelope that
+    // only a key opens, so listing notes means opening them. That is the cost of
+    // the store holding nothing in the clear, and it is the cost this slice
+    // chose ([ADR 0005](../../docs/adr/0005-local-store.md)). What it buys back
+    // is that the list is exactly the open documents, so it cannot disagree with
+    // what a note screen shows.
+
+    /// Open every note this device holds, and return them newest first.
+    ///
+    /// The bound is a household's notes, not a filesystem's: each one replays a
+    /// snapshot and whatever log came after it, which `just bench-compaction`
+    /// measures at 0.3 ms for a compacted note and 18 ms for a 256-envelope log.
+    /// A few dozen notes is a blink; a few thousand would want a sealed index of
+    /// titles, which is the same shape as the search index item 7 needs and
+    /// should be built once, for both.
+    pub fn notes(&mut self) -> Result<Vec<NoteSummary>> {
+        for id in self.store.notes()? {
+            if self.open.contains_key(&id) {
+                continue;
+            }
+            match self.open_note(id) {
+                Ok(_) => {}
+                // A note whose key this device does not have is not a note this
+                // device can show. It can happen: `copy_store` carries a log
+                // whose key never arrived, and a future revocation takes a key
+                // away while its log stays. Skipping it keeps the list usable
+                // rather than making one unreadable note hide the rest.
+                Err(CoreError::UnknownNote(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        self.refresh_library();
+        Ok(self.library.borrow().clone())
+    }
+
+    /// The note list now, and every version of it after that.
+    ///
+    /// Only reflects notes that are open, so a caller that wants the whole list
+    /// calls [`NoteCore::notes`] first. Everything after that — an edit here, an
+    /// edit from a peer, a note created or joined — arrives on this channel.
+    pub fn watch_notes(&self) -> watch::Receiver<Vec<NoteSummary>> {
+        self.library.subscribe()
+    }
+
+    fn refresh_library(&self) {
+        let mut summaries: Vec<(u64, NoteSummary)> = self
+            .open
+            .iter()
+            .map(|(id, note)| {
+                let view = note.doc.view();
+                (
+                    note.added,
+                    NoteSummary {
+                        id: *id,
+                        title: view.title,
+                        items: view.items.len(),
+                        checked: view.items.iter().filter(|i| i.checked).count(),
+                        preview: view
+                            .items
+                            .iter()
+                            .take(PREVIEW_ITEMS)
+                            .map(|i| i.text.clone())
+                            .collect(),
+                    },
+                )
+            })
+            .collect();
+        // Newest first, and the ID to break a tie, because two notes carried
+        // over from a store that never recorded a place share the ordinal 0 and
+        // a list that reshuffles itself between frames is worse than an
+        // arbitrary order that holds still.
+        summaries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        // `send_replace`, not `send`: the latter refuses when nothing is
+        // subscribed yet and leaves the channel holding a list that is already
+        // wrong. A screen that subscribes after the first edit would then be
+        // handed that stale list as its opening frame.
+        self.library
+            .send_replace(summaries.into_iter().map(|(_, s)| s).collect());
+    }
+
+    /// Where a note sits in this device's list. `0` for one that predates
+    /// [`ADDED`] being written, which sorts it below everything that has one.
+    fn ordinal(&self, id: NoteId) -> Result<u64> {
+        let Some(raw) = self.store.get_meta(id, ADDED)? else {
+            return Ok(0);
+        };
+        let bytes: [u8; 8] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| CoreError::Storage("unreadable note order".into()))?;
+        Ok(u64::from_be_bytes(bytes))
+    }
+
+    fn next_ordinal(&self) -> Result<u64> {
+        let mut highest = 0u64;
+        for id in self.store.notes()? {
+            highest = highest.max(self.ordinal(id)?);
+        }
+        for note in self.open.values() {
+            highest = highest.max(note.added);
+        }
+        Ok(highest + 1)
+    }
+
     // -- editing ------------------------------------------------------------
 
     /// Apply a local edit. Returns the sealed envelope to hand to the relay.
@@ -250,7 +411,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         self.store.append(id, &encoded)?;
         let note = self.open.get_mut(&id).expect("just borrowed");
-        let _ = note.watch.send(note.doc.view());
+        let _ = note.watch.send_replace(note.doc.view());
+        self.refresh_library();
         Ok(encoded)
     }
 
@@ -283,7 +445,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         let note = self.open.get_mut(&id).expect("just borrowed");
         let view = note.doc.view();
-        let _ = note.watch.send(view.clone());
+        let _ = note.watch.send_replace(view.clone());
+        self.refresh_library();
         Ok(view)
     }
 
@@ -391,6 +554,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.keyring.put_note_key(id, &key)?;
         let doc = D::create(&self.actor);
         let (tx, _) = watch::channel(doc.view());
+        // A note this device has joined before keeps the place it already had,
+        // so re-pasting a blob does not move someone else's list to the top.
+        let added = match self.ordinal(id)? {
+            0 => {
+                let next = self.next_ordinal()?;
+                self.store.put_meta(id, ADDED, &next.to_be_bytes())?;
+                next
+            }
+            existing => existing,
+        };
         self.open.insert(
             id,
             OpenNote {
@@ -398,9 +571,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter: 0,
                 seen: HashSet::new(),
+                added,
                 watch: tx,
             },
         );
+        self.refresh_library();
         Ok(id)
     }
 
@@ -475,8 +650,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// come — and anything waiting for it to finish parks too.
     pub fn touch(&self, id: NoteId) -> Result<()> {
         let note = self.note(id)?;
-        let _ = note.watch.send(note.doc.view());
+        let _ = note.watch.send_replace(note.doc.view());
         Ok(())
+    }
+
+    /// The same wake for whoever is watching the note list.
+    pub fn touch_notes(&self) {
+        self.refresh_library();
     }
 
     // -- sync bookkeeping ---------------------------------------------------
@@ -526,6 +706,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// tests to simulate the app being killed.
     pub fn close_all(&mut self) {
         self.open.clear();
+        // The list is the open notes, so closing them all empties it. Saying so
+        // is what stops a watcher from showing notes that nothing is listening
+        // to any more.
+        self.refresh_library();
     }
 
     pub fn store(&self) -> &S {

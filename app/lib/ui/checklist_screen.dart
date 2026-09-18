@@ -1,4 +1,4 @@
-/// The one screen Slice 1 has: a checklist.
+/// One checklist, opened from the note list.
 ///
 /// Keep-ish enough to be recognisable; ugly is fine. What is *not* negotiable is
 /// where the state comes from. There is exactly one `StreamBuilder` at the top,
@@ -15,18 +15,12 @@ import 'package:flutter/material.dart';
 
 import '../core/note_core.dart';
 import '../core/note_view.dart';
-import '../core/sync_status.dart';
+import 'sync_button.dart';
 
 class ChecklistScreen extends StatefulWidget {
-  const ChecklistScreen({super.key, required this.core, this.onJoin});
+  const ChecklistScreen({super.key, required this.core});
 
   final NoteCore core;
-
-  /// Called with a share blob the user pasted. Joining replaces the note this
-  /// device holds, which only the layer that owns the core can do — so it is a
-  /// callback rather than something this screen performs. Null where joining is
-  /// not possible yet, and the button is then not offered.
-  final Future<void> Function(String blob)? onJoin;
 
   @override
   State<ChecklistScreen> createState() => _ChecklistScreenState();
@@ -81,45 +75,6 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     );
   }
 
-  Future<void> _showJoinDialog() async {
-    final blob = await showDialog<String>(
-      context: context,
-      builder: (context) => const _JoinDialog(),
-    );
-    if (blob == null || blob.isEmpty) return;
-    await widget.onJoin?.call(blob);
-  }
-
-  Future<void> _showSyncDetail(SyncStatus status) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Sync'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_syncSentence(status)),
-            if (status.lastError != null) ...[
-              const SizedBox(height: 12),
-              SelectableText(
-                status.lastError!,
-                key: const Key('sync-error'),
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
@@ -137,27 +92,10 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
               onChanged: widget.core.setTitle,
             ),
             actions: [
-              // Its own stream: sync state changes on the relay's schedule, not
-              // on the note's, and rebuilding the list every time a socket
-              // reconnects would be silly.
-              StreamBuilder<SyncStatus>(
+              SyncStatusButton(
                 stream: widget.core.watchSync(),
-                initialData: widget.core.syncStatus,
-                builder: (context, snapshot) {
-                  final status = snapshot.data ?? const SyncStatus.offline();
-                  return _SyncButton(
-                    status: status,
-                    onPressed: () => _showSyncDetail(status),
-                  );
-                },
+                initial: widget.core.syncStatus,
               ),
-              if (widget.onJoin != null)
-                IconButton(
-                  key: const Key('join-button'),
-                  icon: const Icon(Icons.group_add_outlined),
-                  tooltip: 'Join a list',
-                  onPressed: _showJoinDialog,
-                ),
               IconButton(
                 key: const Key('share-button'),
                 icon: const Icon(Icons.ios_share),
@@ -235,115 +173,6 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
         );
       },
     );
-  }
-}
-
-/// Asks for a share blob and pops with it.
-///
-/// A widget of its own rather than a closure in [ChecklistScreen], because the
-/// text controller has to outlive the dialog's own teardown and be disposed
-/// after it — which is exactly what a `State` does and a local variable does not.
-class _JoinDialog extends StatefulWidget {
-  const _JoinDialog();
-
-  @override
-  State<_JoinDialog> createState() => _JoinDialogState();
-}
-
-class _JoinDialogState extends State<_JoinDialog> {
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Join a list'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Paste the blob from the device that has the list. This device '
-            'then holds that list instead of its own.',
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: const Key('join-blob-field'),
-            controller: _controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Share blob',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          key: const Key('join-confirm'),
-          onPressed: () =>
-              Navigator.of(context).pop(_controller.text.trim()),
-          child: const Text('Join'),
-        ),
-      ],
-    );
-  }
-}
-
-/// What the sync state says, in one sentence, for a tooltip or a dialog.
-///
-/// Deliberately about the user's data rather than about the socket: "waiting to
-/// reach the relay" is a fact they can act on, `ECONNREFUSED` is not. The error
-/// itself is still there for anyone who opens the detail.
-String _syncSentence(SyncStatus status) {
-  final waiting = switch (status.pending) {
-    0 => '',
-    1 => ', 1 edit waiting',
-    _ => ', ${status.pending} edits waiting',
-  };
-  return switch (status.state) {
-    SyncState.offline => 'Not syncing$waiting',
-    SyncState.connecting => 'Connecting$waiting',
-    SyncState.online => 'Catching up$waiting',
-    SyncState.synced =>
-      status.pending == 0 ? 'Up to date' : 'Sending$waiting',
-  };
-}
-
-/// The sync state, as one button that explains itself when tapped.
-class _SyncButton extends StatelessWidget {
-  const _SyncButton({required this.status, required this.onPressed});
-
-  final SyncStatus status;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final icon = switch (status.state) {
-      SyncState.offline => Icons.cloud_off_outlined,
-      SyncState.connecting => Icons.cloud_queue_outlined,
-      SyncState.online => Icons.cloud_sync_outlined,
-      SyncState.synced => Icons.cloud_done_outlined,
-    };
-    final button = IconButton(
-      key: const Key('sync-status'),
-      icon: Icon(icon),
-      tooltip: _syncSentence(status),
-      onPressed: onPressed,
-    );
-    if (status.pending == 0) return button;
-    return Badge.count(count: status.pending, child: button);
   }
 }
 

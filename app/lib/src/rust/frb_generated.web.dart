@@ -20,6 +20,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     required super.portManager,
   });
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_LibraryPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary;
+
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_NotePtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote;
 
@@ -27,8 +31,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
+  Library
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    dynamic raw,
+  );
+
+  @protected
   Note
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
+    dynamic raw,
+  );
+
+  @protected
+  Library
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
     dynamic raw,
   );
 
@@ -39,10 +55,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Library
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    dynamic raw,
+  );
+
+  @protected
   Note
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     dynamic raw,
   );
+
+  @protected
+  RustStreamSink<List<NoteSummaryView>>
+  dco_decode_StreamSink_list_note_summary_view_Sse(dynamic raw);
 
   @protected
   RustStreamSink<NoteView> dco_decode_StreamSink_note_view_Sse(dynamic raw);
@@ -66,16 +92,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ItemView dco_decode_item_view(dynamic raw);
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
   List<ItemView> dco_decode_list_item_view(dynamic raw);
 
   @protected
+  List<NoteSummaryView> dco_decode_list_note_summary_view(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  NoteSummaryView dco_decode_note_summary_view(dynamic raw);
 
   @protected
   NoteView dco_decode_note_view(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
 
   @protected
   SyncState dco_decode_sync_state(dynamic raw);
@@ -99,8 +140,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
+  Library
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Note
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Library
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
     SseDeserializer deserializer,
   );
 
@@ -111,8 +164,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Library
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Note
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<List<NoteSummaryView>>
+  sse_decode_StreamSink_list_note_summary_view_Sse(
     SseDeserializer deserializer,
   );
 
@@ -142,16 +207,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ItemView sse_decode_item_view(SseDeserializer deserializer);
 
   @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
   List<ItemView> sse_decode_list_item_view(SseDeserializer deserializer);
 
   @protected
+  List<NoteSummaryView> sse_decode_list_note_summary_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  NoteSummaryView sse_decode_note_summary_view(SseDeserializer deserializer);
 
   @protected
   NoteView sse_decode_note_view(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
   SyncState sse_decode_sync_state(SseDeserializer deserializer);
@@ -179,8 +261,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     Note self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
     SseSerializer serializer,
   );
 
@@ -193,8 +289,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    Library self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     Note self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_list_note_summary_view_Sse(
+    RustStreamSink<List<NoteSummaryView>> self,
     SseSerializer serializer,
   );
 
@@ -226,7 +335,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_item_view(ItemView self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_item_view(List<ItemView> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_note_summary_view(
+    List<NoteSummaryView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -235,10 +356,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_note_summary_view(
+    NoteSummaryView self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_note_view(NoteView self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_prim_u_8_strict(
+    Uint8List? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_sync_state(SyncState self, SseSerializer serializer);
@@ -265,6 +398,22 @@ class RustLibWire implements BaseWire {
   RustLibWire.fromExternalLibrary(ExternalLibrary lib);
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     int ptr,
   ) => wasmModule
@@ -287,6 +436,16 @@ external RustLibWasmModule get wasmModule;
 @JS()
 @anonymous
 extension type RustLibWasmModule._(JSObject _) implements JSObject {
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLibrary(
+    int ptr,
+  );
+
   external void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
     int ptr,
