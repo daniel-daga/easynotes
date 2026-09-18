@@ -224,8 +224,19 @@ fn the_store_lists_its_notes<D: NoteDoc, B: Backing>() {
         core.add_item(id, "x").unwrap();
         made.push(id);
     }
+    // The store holds one more document than the device has notes: the account
+    // document is sealed and logged like any other and the store cannot tell the
+    // difference, which is the point — the *note list* is where the difference
+    // is made.
+    let mut held = made.clone();
+    held.push(easynotes_core::note::ACCOUNT_DOC);
+    held.sort();
+    assert_eq!(core.store().notes().unwrap(), held);
+
     made.sort();
-    assert_eq!(core.store().notes().unwrap(), made);
+    let mut listed: Vec<NoteId> = core.notes().unwrap().into_iter().map(|s| s.id).collect();
+    listed.sort();
+    assert_eq!(listed, made, "the account document showed up as a note");
 }
 
 fn compaction_keeps_the_list_and_loses_the_log<D: NoteDoc, B: Backing>() {

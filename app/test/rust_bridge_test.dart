@@ -14,6 +14,7 @@ import 'dart:io';
 
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
+import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -305,6 +306,67 @@ void main() {
         expect(
           () => RustNoteLibrary.open(dir.path, MasterKeyStore.newKey()),
           throwsA(anything),
+        );
+      });
+
+      test('a colour, a pin and the trash survive a relaunch', () async {
+        // Across the bridge and onto the disk: the account document is a real
+        // document, so what it holds has to come back the way a note's items do.
+        final dir = await Directory.systemTemp.createTemp('easynotes-placement');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final before = await RustNoteLibrary.open(dir.path, key);
+        final coloured = await before.createNote();
+        final thrownAway = await before.createNote();
+        await before.setColour(coloured, NoteColour.teal);
+        await before.setPinned(coloured, true);
+        await before.setTrashed(thrownAway, true);
+        await before.setLayout(NoteLayout.list);
+        await before.dispose();
+
+        final after = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(after.dispose);
+        expect(after.layout, NoteLayout.list);
+        final notes = {for (final note in after.notes) note.id: note};
+        expect(notes[coloured]!.colour, NoteColour.teal);
+        expect(notes[coloured]!.pinned, isTrue);
+        expect(notes[thrownAway]!.trashed, isTrue);
+        expect(notes[thrownAway]!.inGrid, isFalse);
+        expect(
+          after.notes.first.id,
+          coloured,
+          reason: 'a pinned note belongs at the top',
+        );
+      });
+
+      test('a placement is not written into the note it is about', () async {
+        // The property the account document exists for. A colour is this
+        // person's, so it must not reach the note — which is the thing everyone
+        // else on the list has a key to.
+        final dir = await Directory.systemTemp.createTemp('easynotes-private');
+        addTearDown(() => dir.delete(recursive: true));
+
+        final library = await openLibraryInTempDir(dir);
+        final id = await library.createNote();
+        final core = library.openNote(id);
+        addTearDown(core.dispose);
+        await core.setTitle('Groceries');
+        final blob = await core.exportShareBlob();
+        await library.setColour(id, NoteColour.pink);
+
+        // A guest joining with that blob gets the note's key and nothing else.
+        // What it opens is the note's log, and the colour is not in it.
+        final guestDir = await Directory.systemTemp.createTemp(
+          'easynotes-guest',
+        );
+        addTearDown(() => guestDir.delete(recursive: true));
+        final guest = await openLibraryInTempDir(guestDir);
+        final joined = await guest.join(blob);
+        expect(
+          guest.notes.singleWhere((note) => note.id == joined).colour,
+          isNull,
+          reason: "one person's colour reached another person's device",
         );
       });
 

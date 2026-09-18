@@ -33,6 +33,8 @@ class FakeNoteLibrary implements NoteLibrary {
   final List<String> _order = [];
   final Map<String, FakeNoteCore> _cores = {};
   final Map<String, StreamSubscription<void>> _watchers = {};
+  final Map<String, _Placement> _placements = {};
+  NoteLayout _layout = NoteLayout.grid;
   int _counter = 0;
 
   /// Every call the screen made, in order. Tests assert on this to show that a
@@ -83,6 +85,49 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  Future<void> setColour(String noteId, NoteColour? colour) async {
+    calls.add('setColour($noteId, ${colour?.name})');
+    _placement(noteId).colour = colour;
+    _emit();
+  }
+
+  @override
+  Future<void> setPinned(String noteId, bool pinned) async {
+    calls.add('setPinned($noteId, $pinned)');
+    _placement(noteId).pinned = pinned;
+    _emit();
+  }
+
+  @override
+  Future<void> setArchived(String noteId, bool archived) async {
+    calls.add('setArchived($noteId, $archived)');
+    final placement = _placement(noteId);
+    placement.archived = archived;
+    // The core's rule, kept here so the screen sees the same thing from both: a
+    // note cannot be both held at the top and put out of the way.
+    if (archived) placement.pinned = false;
+    _emit();
+  }
+
+  @override
+  Future<void> setTrashed(String noteId, bool trashed) async {
+    calls.add('setTrashed($noteId, $trashed)');
+    final placement = _placement(noteId);
+    placement.trashed = trashed;
+    if (trashed) placement.pinned = false;
+    _emit();
+  }
+
+  @override
+  NoteLayout get layout => _layout;
+
+  @override
+  Future<void> setLayout(NoteLayout layout) async {
+    calls.add('setLayout(${layout.name})');
+    _layout = layout;
+  }
+
+  @override
   Future<void> connect(String url) async {
     calls.add('connect($url)');
     pushStatus(const SyncStatus(state: SyncState.connecting));
@@ -127,8 +172,11 @@ class FakeNoteLibrary implements NoteLibrary {
     _watchers[id] = core.watch().listen((_) => _emit());
   }
 
+  _Placement _placement(String id) =>
+      _placements.putIfAbsent(id, _Placement.new);
+
   void _emit() {
-    _summaries = [
+    final summaries = [
       for (final id in _order)
         NoteSummary(
           id: id,
@@ -138,8 +186,25 @@ class FakeNoteLibrary implements NoteLibrary {
           preview: [
             for (final item in _cores[id]!.current.items.take(4)) item.text,
           ],
+          colour: _placements[id]?.colour,
+          pinned: _placements[id]?.pinned ?? false,
+          archived: _placements[id]?.archived ?? false,
+          trashed: _placements[id]?.trashed ?? false,
         ),
     ];
+    // Pinned first, as the core sorts them; the rest keep the order they were
+    // made in. A stable sort, so pinning one note does not reshuffle the others.
+    final pinned = summaries.where((s) => s.pinned);
+    final rest = summaries.where((s) => !s.pinned);
+    _summaries = [...pinned, ...rest];
     _notes.add(_summaries);
   }
+}
+
+/// What the fake remembers about a note, standing in for the account document.
+class _Placement {
+  NoteColour? colour;
+  bool pinned = false;
+  bool archived = false;
+  bool trashed = false;
 }

@@ -11,7 +11,9 @@
 //! the same path, which is why the two-device case cannot drift from the one-device
 //! case.
 
-use crate::crdt::{Edit, NoteDoc, NoteView};
+use crate::crdt::{
+    AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NoteDoc, NoteView, Placement,
+};
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
 use crate::error::{CoreError, Result};
 use crate::ids::{ItemId, NoteId};
@@ -43,15 +45,35 @@ pub struct SyncCursor {
     pub sent_upto: Option<u64>,
 }
 
-/// Where a note's place in this device's list is kept.
+/// Where a note's place in this device's list *was* kept, and what now says a
+/// note exists at all.
 ///
 /// An ordinal, not a timestamp: the core compiles for the browser, where the
-/// clock is not `SystemTime`, and "which note is newer" is all the list needs.
-/// It is also purely local — the design doc puts a note's *shared* order nowhere
-/// at all, and its personal one (`gridOrder`, pinning) in the account document,
-/// which is item 6 of the Slice 2 plan. Until that lands this is what stops a
-/// new note from appearing in the middle of the grid.
+/// clock is not `SystemTime`, and "which note is newer" is all it ever had to
+/// answer. The account document has taken the answer over — a note's place in
+/// the grid is a personal placement and lives there ([`crate::crdt::account`]) —
+/// and this row keeps the two jobs it is still the only thing doing.
+///
+/// It is the row that puts a note on the disk the moment it is made, which is
+/// what stops an untyped-in note from vanishing on the next launch
+/// ([ADR 0007](../../docs/adr/0007-note-list.md)). And it is what a placement is
+/// seeded from: a device that had notes before the account document existed gets
+/// its grid back in the order it left it, because that order is still written
+/// here.
 pub const ADDED: &str = "added";
+
+/// The account document's ID.
+///
+/// It is a document like any other — sealed under a key of its own, appended to
+/// the same log, listed by the same store — so it needs an ID, and a reserved
+/// one is what keeps it out of the note list. Sixteen zero bytes: no random ID
+/// will ever be it, and [`NoteCore::import_share_blob`] refuses a share blob
+/// that claims it, because accepting one would overwrite the key this device's
+/// own placements are sealed with.
+pub const ACCOUNT_DOC: NoteId = NoteId([0u8; 16]);
+
+/// The setting that says whether the note list is a grid or one column.
+pub const LAYOUT: &str = "layout";
 
 /// One note, as a list of notes needs it: enough to draw a card, and no more.
 ///
@@ -70,6 +92,15 @@ pub struct NoteSummary {
     /// The first few items, in display order, so a card can show what the note
     /// is about. Most shopping lists never get a title.
     pub preview: Vec<String>,
+    /// What this person has done with the note: its colour, whether it is
+    /// pinned, and whether it is in the archive or the trash. Personal, and from
+    /// the account document rather than from the note.
+    ///
+    /// Archived and trashed notes are in this list. Which of them to *show* is
+    /// the screen's question — a grid, an archive and a trash are three answers
+    /// to it — and a core that filtered would have to be asked three times for
+    /// what it already knows once.
+    pub placement: Placement,
 }
 
 /// How many items a summary carries. Enough to recognise a list, few enough
@@ -108,9 +139,21 @@ struct OpenNote<D: NoteDoc> {
     /// envelope a no-op at the core level, independently of the CRDT's own
     /// idempotence.
     seen: HashSet<(AuthorKey, u64)>,
-    /// This note's place in the list, read from [`ADDED`] when it was opened.
-    added: u64,
     watch: watch::Sender<NoteView>,
+}
+
+/// The account document, open for as long as the core is.
+///
+/// The same four things a note needs — the document, the key it is sealed with,
+/// our next counter and what we have already applied — because it *is* a note as
+/// far as the crypto and the store are concerned. What it is not is a note as far
+/// as the note list is concerned: it has no view, no watchers of its own, and no
+/// card.
+struct OpenAccount<A: AccountDoc> {
+    doc: A,
+    key: NoteKey,
+    next_counter: u64,
+    seen: HashSet<(AuthorKey, u64)>,
 }
 
 pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
@@ -119,6 +162,13 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     store: S,
     keyring: K,
     open: HashMap<NoteId, OpenNote<D>>,
+    /// This person's own view of their notes: colours, pins, the archive, the
+    /// trash, the order of the grid and the view settings. One per device, open
+    /// from the moment the core is.
+    account: OpenAccount<D::Account>,
+    /// What that document currently says, kept beside it so that refreshing the
+    /// list does not re-read the whole document on every keystroke.
+    placements: AccountView,
     /// The list of notes, for whoever is showing one. Recomputed from `open`
     /// every time a view changes, which is cheap because a summary is four
     /// fields off a document that is already in memory.
@@ -127,7 +177,7 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
 
 impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Load the device identity from the keyring, generating one on first run.
-    pub fn open(store: S, mut keyring: K) -> Result<Self> {
+    pub fn open(mut store: S, mut keyring: K) -> Result<Self> {
         let seed = match keyring.device_seed()? {
             Some(seed) => seed,
             None => {
@@ -140,13 +190,70 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let identity = DeviceIdentity::from_seed(&seed);
         let mut actor = [0u8; 16];
         actor.copy_from_slice(&identity.public_key().0[..16]);
+        let account = Self::open_account(&mut store, &mut keyring, &identity, &actor)?;
+        let placements = account.doc.view();
         Ok(Self {
             identity,
             actor,
             store,
             keyring,
             open: HashMap::new(),
+            account,
+            placements,
             library: watch::channel(Vec::new()).0,
+        })
+    }
+
+    /// Read the account document out of the store, minting its key on first run.
+    ///
+    /// No snapshot is read, because nothing writes one: the account document is
+    /// not compacted. [ADR 0006](../../docs/adr/0006-compaction.md) says a
+    /// document keeps every envelope the relay has not acknowledged, and the
+    /// relay has acknowledged none of this one — it is the same rule a note that
+    /// has never been shared already follows, and it applies until the account
+    /// document syncs. What it costs is a signature verification per placement
+    /// ever made, at launch.
+    fn open_account(
+        store: &mut S,
+        keyring: &mut K,
+        identity: &DeviceIdentity,
+        actor: &[u8; 16],
+    ) -> Result<OpenAccount<D::Account>> {
+        let key = match keyring.note_key(ACCOUNT_DOC)? {
+            Some(key) => key,
+            None => {
+                let key = NoteKey::random();
+                keyring.put_note_key(ACCOUNT_DOC, &key)?;
+                key
+            }
+        };
+
+        let me = identity.public_key();
+        let mut doc = <D::Account as AccountDoc>::create(actor);
+        let mut next_counter = 0u64;
+        let mut seen = HashSet::new();
+        for raw in store.load(ACCOUNT_DOC)? {
+            let env = Envelope::decode(&raw)?;
+            if env.note_id != ACCOUNT_DOC {
+                return Err(CoreError::WrongNote {
+                    expected: ACCOUNT_DOC.encode(),
+                    got: env.note_id.encode(),
+                });
+            }
+            let plain = env.open(&key)?;
+            if seen.insert((env.author, env.counter)) {
+                doc.apply_remote(&plain)?;
+            }
+            if env.author == me {
+                next_counter = next_counter.max(env.counter + 1);
+            }
+        }
+
+        Ok(OpenAccount {
+            doc,
+            key,
+            next_counter,
+            seen,
         })
     }
 
@@ -174,7 +281,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter: 0,
                 seen: HashSet::new(),
-                added,
                 watch: tx,
             },
         );
@@ -186,16 +292,25 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // delete one, which is the trash — a personal placement in the account
         // document, item 6 of the Slice 2 plan.
         self.store.put_meta(id, ADDED, &added.to_be_bytes())?;
+        // Where it sits is the account document's answer, and a new note goes to
+        // the top of the grid. `place` refreshes the list, which is why nothing
+        // here does.
+        self.place(id, 0)?;
         // `kind` does not change the document shape in Slice 1 (a text note is a
         // checklist with no items); it is recorded so the UI can branch later.
         let _ = kind;
-        self.refresh_library();
         Ok(id)
     }
 
     /// Open a note that is already in the store, replaying its snapshot and log.
     /// This is what makes demo step 6 — relaunch with no network — work.
     pub fn open_note(&mut self, id: NoteId) -> Result<NoteView> {
+        if id == ACCOUNT_DOC {
+            // Not a note, whatever the caller was handed. Opening it as one would
+            // replay this person's placements into an empty checklist and put a
+            // blank card in their grid.
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
         if let Some(note) = self.open.get(&id) {
             return Ok(note.doc.view());
         }
@@ -244,7 +359,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         let view = doc.view();
         let (tx, _) = watch::channel(view.clone());
-        let added = self.ordinal(id)?;
         self.open.insert(
             id,
             OpenNote {
@@ -252,7 +366,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter,
                 seen,
-                added,
                 watch: tx,
             },
         );
@@ -304,7 +417,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// should be built once, for both.
     pub fn notes(&mut self) -> Result<Vec<NoteSummary>> {
         for id in self.store.notes()? {
-            if self.open.contains_key(&id) {
+            if id == ACCOUNT_DOC || self.open.contains_key(&id) {
                 continue;
             }
             match self.open_note(id) {
@@ -318,6 +431,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 Err(e) => return Err(e),
             }
         }
+        self.adopt_unplaced()?;
         self.refresh_library();
         Ok(self.library.borrow().clone())
     }
@@ -332,43 +446,47 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     fn refresh_library(&self) {
-        let mut summaries: Vec<(u64, NoteSummary)> = self
+        let mut summaries: Vec<NoteSummary> = self
             .open
             .iter()
             .map(|(id, note)| {
                 let view = note.doc.view();
-                (
-                    note.added,
-                    NoteSummary {
-                        id: *id,
-                        title: view.title,
-                        items: view.items.len(),
-                        checked: view.items.iter().filter(|i| i.checked).count(),
-                        preview: view
-                            .items
-                            .iter()
-                            .take(PREVIEW_ITEMS)
-                            .map(|i| i.text.clone())
-                            .collect(),
-                    },
-                )
+                NoteSummary {
+                    id: *id,
+                    title: view.title,
+                    items: view.items.len(),
+                    checked: view.items.iter().filter(|i| i.checked).count(),
+                    preview: view
+                        .items
+                        .iter()
+                        .take(PREVIEW_ITEMS)
+                        .map(|i| i.text.clone())
+                        .collect(),
+                    placement: self.placements.placement(*id),
+                }
             })
             .collect();
-        // Newest first, and the ID to break a tie, because two notes carried
-        // over from a store that never recorded a place share the ordinal 0 and
-        // a list that reshuffles itself between frames is worse than an
-        // arbitrary order that holds still.
-        summaries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        // Pinned notes first, then the grid order, then the ID to break a tie —
+        // because two notes placed at the top by two devices at the same moment
+        // can share an order key, and a list that reshuffles itself between
+        // frames is worse than an arbitrary order that holds still.
+        summaries.sort_by(|a, b| {
+            b.placement
+                .pinned
+                .cmp(&a.placement.pinned)
+                .then_with(|| a.placement.order.cmp(&b.placement.order))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         // `send_replace`, not `send`: the latter refuses when nothing is
         // subscribed yet and leaves the channel holding a list that is already
         // wrong. A screen that subscribes after the first edit would then be
         // handed that stale list as its opening frame.
-        self.library
-            .send_replace(summaries.into_iter().map(|(_, s)| s).collect());
+        self.library.send_replace(summaries);
     }
 
-    /// Where a note sits in this device's list. `0` for one that predates
-    /// [`ADDED`] being written, which sorts it below everything that has one.
+    /// The ordinal a note was made with. `0` for one that predates [`ADDED`]
+    /// being written, which is what a placement is seeded from and nothing else
+    /// reads.
     fn ordinal(&self, id: NoteId) -> Result<u64> {
         let Some(raw) = self.store.get_meta(id, ADDED)? else {
             return Ok(0);
@@ -385,10 +503,179 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         for id in self.store.notes()? {
             highest = highest.max(self.ordinal(id)?);
         }
-        for note in self.open.values() {
-            highest = highest.max(note.added);
-        }
         Ok(highest + 1)
+    }
+
+    // -- personal placements and settings ------------------------------------
+    //
+    // The account document. Everything here changes what *this person* sees —
+    // a colour, a pin, the archive, the trash, the order of the grid, a view
+    // setting — and none of it reaches the note, so none of it reaches whoever
+    // else is on the note. That separation is the whole reason the document
+    // exists ([ADR 0008](../../docs/adr/0008-account-document.md)).
+
+    /// This person's placements and settings, as they stand.
+    pub fn account(&self) -> &AccountView {
+        &self.placements
+    }
+
+    /// Where one note sits and what it looks like. The default — no colour, not
+    /// pinned, in the grid — for a note nobody has touched.
+    pub fn placement(&self, id: NoteId) -> Placement {
+        self.placements.placement(id)
+    }
+
+    pub fn set_colour(&mut self, id: NoteId, colour: Option<Colour>) -> Result<()> {
+        self.apply_account(AccountEdit::SetColour { note: id, colour })
+    }
+
+    pub fn set_pinned(&mut self, id: NoteId, pinned: bool) -> Result<()> {
+        self.apply_account(AccountEdit::SetPinned { note: id, pinned })
+    }
+
+    /// Put a note in the archive, or take it out. Archiving a pinned note
+    /// unpins it, as Keep does: a note cannot be both out of the way and held at
+    /// the top.
+    pub fn set_archived(&mut self, id: NoteId, archived: bool) -> Result<()> {
+        if archived && self.placement(id).pinned {
+            self.set_pinned(id, false)?;
+        }
+        self.apply_account(AccountEdit::SetArchived { note: id, archived })
+    }
+
+    /// Throw a note away, or take it back out.
+    ///
+    /// The trash is where deleting a note goes until there is a way to delete one
+    /// for good: the content is still on the disk and still syncing, and what has
+    /// changed is that this person does not see it. Emptying the trash has to
+    /// remove the log, the snapshot, the metadata and the key, which is a store
+    /// question rather than a placement one — it is written down in
+    /// [ADR 0008](../../docs/adr/0008-account-document.md) and not built here.
+    pub fn set_trashed(&mut self, id: NoteId, trashed: bool) -> Result<()> {
+        if trashed && self.placement(id).pinned {
+            self.set_pinned(id, false)?;
+        }
+        self.apply_account(AccountEdit::SetTrashed { note: id, trashed })
+    }
+
+    /// Move a note so that it lands at `to_index` in the grid's order.
+    ///
+    /// The same translation [`NoteCore::move_item`] does for an item, against the
+    /// same fractional indices: the UI thinks in positions and the document holds
+    /// keys. Pinned notes are drawn first but are not ordered separately — a pin
+    /// lifts a note out of the sequence and putting it back down returns it to
+    /// where it was.
+    pub fn move_note(&mut self, id: NoteId, to_index: usize) -> Result<()> {
+        let mine = self.placement(id).order;
+        let mut keys = self.order_keys();
+        if let Some(at) = keys.iter().position(|key| *key == mine) {
+            keys.remove(at);
+        }
+        let order = order::key_for_index(&keys, to_index.min(keys.len()));
+        self.apply_account(AccountEdit::SetOrder { note: id, order })
+    }
+
+    /// A view setting, by name. [`LAYOUT`] is the only one so far.
+    pub fn setting(&self, name: &str) -> Option<&str> {
+        self.placements.setting(name)
+    }
+
+    pub fn set_setting(&mut self, name: impl Into<String>, value: impl Into<String>) -> Result<()> {
+        self.apply_account(AccountEdit::SetSetting {
+            name: name.into(),
+            value: value.into(),
+        })
+    }
+
+    /// Whether the note list is drawn as a grid or as one column.
+    pub fn layout(&self) -> Layout {
+        self.setting(LAYOUT)
+            .map_or(Layout::default(), Layout::from_name)
+    }
+
+    pub fn set_layout(&mut self, layout: Layout) -> Result<()> {
+        self.set_setting(LAYOUT, layout.name())
+    }
+
+    /// Apply one change to the account document: seal it, log it, and tell the
+    /// list.
+    ///
+    /// The same path a note edit takes, minus the return value. A note hands its
+    /// envelope back so the bridge can publish it; there is no relay for this
+    /// document yet, and when there is one the engine will read the envelope out
+    /// of the log like every other outbox does
+    /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)) rather than being handed
+    /// it here.
+    fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
+        let update = self.account.doc.apply_local(&edit)?;
+        if update.is_empty() {
+            // A write that changed nothing — clearing a colour that was never
+            // set. Sealing it would put an envelope in the log that says nothing.
+            return Ok(());
+        }
+        let counter = self.account.next_counter;
+        self.account.next_counter += 1;
+        let envelope = Envelope::seal(
+            &self.identity,
+            ACCOUNT_DOC,
+            &self.account.key,
+            counter,
+            &update,
+        )?;
+        self.account.seen.insert((envelope.author, counter));
+        self.store.append(ACCOUNT_DOC, &envelope.encode())?;
+        self.placements = self.account.doc.view();
+        self.refresh_library();
+        Ok(())
+    }
+
+    /// Every order key in use, ascending.
+    fn order_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .placements
+            .placements
+            .values()
+            .map(|placement| placement.order.clone())
+            .filter(|key| !key.is_empty())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// Give a note a place at `index` in the grid's order.
+    fn place(&mut self, id: NoteId, index: usize) -> Result<()> {
+        let keys = self.order_keys();
+        let order = order::key_for_index(&keys, index.min(keys.len()));
+        self.apply_account(AccountEdit::SetOrder { note: id, order })
+    }
+
+    /// Give a placement to every note in the store that has none.
+    ///
+    /// This is the migration off [`ADDED`], and it is not only a one-off: a note
+    /// can arrive in the store without going through `create_note` or
+    /// `import_share_blob` — [`crate::store::copy_store`] moves a whole device —
+    /// and a note with no order key would sit at the top of the grid until
+    /// something gave it one.
+    ///
+    /// They go to the bottom, newest of them first, which for a device upgrading
+    /// into the account document is exactly the grid it had: every note is
+    /// unplaced, so "the bottom" is the whole list and the ordinal it was made
+    /// with decides the order.
+    fn adopt_unplaced(&mut self) -> Result<()> {
+        let mut unplaced: Vec<(u64, NoteId)> = Vec::new();
+        for id in self.store.notes()? {
+            if id == ACCOUNT_DOC || self.placements.placements.contains_key(&id) {
+                continue;
+            }
+            unplaced.push((self.ordinal(id)?, id));
+        }
+        // Newest first, and the ID to break a tie between two notes made before
+        // anything recorded an ordinal.
+        unplaced.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        for (_, id) in unplaced {
+            self.place(id, usize::MAX)?;
+        }
+        Ok(())
     }
 
     // -- editing ------------------------------------------------------------
@@ -548,22 +835,24 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// as updates from the relay.
     pub fn import_share_blob(&mut self, blob: &str) -> Result<NoteId> {
         let (id, key) = crate::crypto::import_share_blob(blob)?;
+        if id == ACCOUNT_DOC {
+            // Nobody shares the account document, and a blob that claims to would
+            // put a key of someone else's choosing where this device's placements
+            // are sealed with its own — which is to say, throw them away.
+            return Err(CoreError::MalformedShareBlob(
+                "the account document is not a note",
+            ));
+        }
         if self.open.contains_key(&id) {
             return Ok(id);
         }
         self.keyring.put_note_key(id, &key)?;
         let doc = D::create(&self.actor);
         let (tx, _) = watch::channel(doc.view());
-        // A note this device has joined before keeps the place it already had,
-        // so re-pasting a blob does not move someone else's list to the top.
-        let added = match self.ordinal(id)? {
-            0 => {
-                let next = self.next_ordinal()?;
-                self.store.put_meta(id, ADDED, &next.to_be_bytes())?;
-                next
-            }
-            existing => existing,
-        };
+        if self.ordinal(id)? == 0 {
+            let next = self.next_ordinal()?;
+            self.store.put_meta(id, ADDED, &next.to_be_bytes())?;
+        }
         self.open.insert(
             id,
             OpenNote {
@@ -571,11 +860,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter: 0,
                 seen: HashSet::new(),
-                added,
                 watch: tx,
             },
         );
-        self.refresh_library();
+        // A note this device has joined before keeps the place it already had, so
+        // re-pasting a blob does not move someone else's list to the top.
+        if self.placements.placements.contains_key(&id) {
+            self.refresh_library();
+        } else {
+            self.place(id, 0)?;
+        }
         Ok(id)
     }
 

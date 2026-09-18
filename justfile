@@ -108,8 +108,9 @@ bench-crdt:
 bench-compaction:
     cargo run --release -p easynotes-core --example bench_compaction
 
-# What opening a device's whole note list costs, at three sizes. Prints the
-# table in ADR 0007.
+# What opening a device's whole note list costs, at three sizes, and what the
+# account document adds before the first note is read. Prints the tables in
+# ADR 0007 and ADR 0008.
 bench-library:
     cargo run --release -p easynotes-core --example bench_library
 

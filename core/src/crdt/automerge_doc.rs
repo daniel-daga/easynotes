@@ -62,6 +62,8 @@ impl AutomergeNote {
 }
 
 impl NoteDoc for AutomergeNote {
+    type Account = super::AutomergeAccount;
+
     fn create(actor: &[u8; 16]) -> Self {
         // No bootstrap transaction: an empty document has no changes, so two
         // devices that create a note from the same share blob start identical.

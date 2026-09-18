@@ -37,22 +37,25 @@ pub struct YrsNote {
     pending: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
-impl YrsNote {
-    /// Yrs identifies a replica by a client ID that must fit in **53 bits** — a
-    /// constraint inherited from Yjs, where the ID has to survive a round trip
-    /// through a JavaScript number. Automerge takes an arbitrary-length actor ID,
-    /// so this is a real difference between the two backends and is recorded in
-    /// ADR 0001.
-    ///
-    /// 53 random bits puts a 1% collision chance at roughly 13 million devices
-    /// sharing a single note, which no household will reach. Yrs documents that a
-    /// collision corrupts the store, so if a future slice needs stronger identity
-    /// it has to allocate client IDs rather than hash them.
-    fn client_id(actor: &[u8; 16]) -> u64 {
-        const FIFTY_THREE_BITS: u64 = (1 << 53) - 1;
-        u64::from_be_bytes(actor[..8].try_into().unwrap()) & FIFTY_THREE_BITS
-    }
+/// Yrs identifies a replica by a client ID that must fit in **53 bits** — a
+/// constraint inherited from Yjs, where the ID has to survive a round trip
+/// through a JavaScript number. Automerge takes an arbitrary-length actor ID,
+/// so this is a real difference between the two backends and is recorded in
+/// ADR 0001.
+///
+/// 53 random bits puts a 1% collision chance at roughly 13 million devices
+/// sharing a single note, which no household will reach. Yrs documents that a
+/// collision corrupts the store, so if a future slice needs stronger identity
+/// it has to allocate client IDs rather than hash them.
+///
+/// Shared with the account document, which is the same replica on the same
+/// device and has no reason to call itself anything else.
+pub(crate) fn client_id(actor: &[u8; 16]) -> u64 {
+    const FIFTY_THREE_BITS: u64 = (1 << 53) - 1;
+    u64::from_be_bytes(actor[..8].try_into().unwrap()) & FIFTY_THREE_BITS
+}
 
+impl YrsNote {
     /// A root type is addressed by name, so every replica resolves `ROOT` to the
     /// same object without anyone having to create it in a bootstrap transaction.
     fn open(doc: Doc) -> Self {
@@ -93,12 +96,14 @@ fn any_bool(v: Option<Out>) -> bool {
 }
 
 impl NoteDoc for YrsNote {
+    type Account = super::YrsAccount;
+
     fn create(actor: &[u8; 16]) -> Self {
-        Self::open(Doc::with_client_id(Self::client_id(actor)))
+        Self::open(Doc::with_client_id(client_id(actor)))
     }
 
     fn load(actor: &[u8; 16], snapshot: &[u8]) -> Result<Self> {
-        let doc = Doc::with_client_id(Self::client_id(actor));
+        let doc = Doc::with_client_id(client_id(actor));
         let update = Update::decode_v1(snapshot)
             .map_err(|e| CoreError::Crdt(format!("decoding snapshot: {e}")))?;
         doc.transact_mut()

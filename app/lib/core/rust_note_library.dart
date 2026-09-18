@@ -91,6 +91,39 @@ class RustNoteLibrary implements NoteLibrary {
   NoteCore openNote(String noteId) => RustNoteCore(_library.note(id: noteId));
 
   @override
+  Future<void> setColour(String noteId, NoteColour? colour) =>
+      _library.setColour(id: noteId, colour: _toRustColour(colour));
+
+  @override
+  Future<void> setPinned(String noteId, bool pinned) =>
+      _library.setPinned(id: noteId, pinned: pinned);
+
+  @override
+  Future<void> setArchived(String noteId, bool archived) =>
+      _library.setArchived(id: noteId, archived: archived);
+
+  @override
+  Future<void> setTrashed(String noteId, bool trashed) =>
+      _library.setTrashed(id: noteId, trashed: trashed);
+
+  /// Read straight through to Rust, like [notes]: the account document is the
+  /// only copy of this, and a cached one would be stale the moment another
+  /// screen changed it.
+  @override
+  NoteLayout get layout => switch (_library.layout()) {
+    rust.NoteLayout.grid => NoteLayout.grid,
+    rust.NoteLayout.list => NoteLayout.list,
+  };
+
+  @override
+  Future<void> setLayout(NoteLayout layout) => _library.setLayout(
+    layout: switch (layout) {
+      NoteLayout.grid => rust.NoteLayout.grid,
+      NoteLayout.list => rust.NoteLayout.list,
+    },
+  );
+
+  @override
   Future<void> connect(String url) => _library.connect(relay: url);
 
   @override
@@ -126,5 +159,42 @@ class RustNoteLibrary implements NoteLibrary {
     items: s.items,
     checked: s.checked,
     preview: s.preview,
+    colour: _fromRustColour(s.colour),
+    pinned: s.pinned,
+    archived: s.archived,
+    trashed: s.trashed,
   );
+
+  /// The two palettes are the same list in two places, which is what keeps the
+  /// UI from importing anything generated. A colour the Rust side adds and this
+  /// one has not heard of would not compile, which is the point of writing it
+  /// out rather than going through an index.
+  static NoteColour? _fromRustColour(rust.NoteColour? colour) =>
+      switch (colour) {
+        null => null,
+        rust.NoteColour.red => NoteColour.red,
+        rust.NoteColour.orange => NoteColour.orange,
+        rust.NoteColour.yellow => NoteColour.yellow,
+        rust.NoteColour.green => NoteColour.green,
+        rust.NoteColour.teal => NoteColour.teal,
+        rust.NoteColour.blue => NoteColour.blue,
+        rust.NoteColour.purple => NoteColour.purple,
+        rust.NoteColour.pink => NoteColour.pink,
+        rust.NoteColour.brown => NoteColour.brown,
+        rust.NoteColour.grey => NoteColour.grey,
+      };
+
+  static rust.NoteColour? _toRustColour(NoteColour? colour) => switch (colour) {
+    null => null,
+    NoteColour.red => rust.NoteColour.red,
+    NoteColour.orange => rust.NoteColour.orange,
+    NoteColour.yellow => rust.NoteColour.yellow,
+    NoteColour.green => rust.NoteColour.green,
+    NoteColour.teal => rust.NoteColour.teal,
+    NoteColour.blue => rust.NoteColour.blue,
+    NoteColour.purple => rust.NoteColour.purple,
+    NoteColour.pink => rust.NoteColour.pink,
+    NoteColour.brown => rust.NoteColour.brown,
+    NoteColour.grey => rust.NoteColour.grey,
+  };
 }
