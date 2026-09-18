@@ -15,7 +15,10 @@ far it has got.
 
 The app now opens on a grid of lists rather than on the single note Slice 1
 had: make one, join someone else's and it is added rather than swapped in, and
-every one of them syncs. Edits go to a relay as they are made, an edit made with
+every one of them syncs. Hold a card and it offers the palette, a pin, the
+archive and the trash — all of them *personal*, in a private account document of
+this device's own, so colouring a shared shopping list does not recolour it for
+whoever else is on it. Edits go to a relay as they are made, an edit made with
 no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
@@ -28,8 +31,13 @@ Listing notes means opening them, because a title is ciphertext until a key
 opens it. `just bench-library` says what that costs: a household's ten lists open
 in a couple of milliseconds, two hundred take most of a second, and
 [ADR 0007](docs/adr/0007-note-list.md) says what to do about it when someone has
-two hundred. Colours, pins, archive and trash are not there yet — they are
-personal placements and they need the account document.
+two hundred.
+
+What the account document does not do yet is sync: a colour stays on the device
+that chose it, because there is no such thing as one person's two devices until
+accounts land. Nor is there a way to delete a note for good — the trash keeps it,
+out of sight and still on the disk. Tags, reminders and search are the rest of
+that document's remit and are not built.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -95,6 +103,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0005](docs/adr/0005-local-store.md) | Local store: SQLite with sealed values, not SQLCipher |
 | [ADR 0006](docs/adr/0006-compaction.md) | Compaction: the log keeps what the relay has not acknowledged |
 | [ADR 0007](docs/adr/0007-note-list.md) | The note list: listing notes means opening them |
+| [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
 
 ## Security, in one paragraph
 
