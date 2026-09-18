@@ -164,6 +164,21 @@ jobs:
         working-directory: app
         run: flutter build web --release
 
+      # The two failures the web build has produced so far — a thread panic and
+      # a memory-cloning error — both compiled cleanly and only appeared when a
+      # browser ran the code (ADR 0002). Since the web store landed there is a
+      # third thing only a browser can answer: whether IndexedDB was opened and
+      # whether a reloaded tab reads back what the first one wrote.
+      - name: Run the web build in a browser
+        working-directory: tools/web-smoke
+        run: |
+          # No browser download: the runner has Chrome, and `playwright-core`
+          # uses it rather than fetching a hundred megabytes for six assertions.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+          python3 serve.py "$GITHUB_WORKSPACE/app/build/web" 8099 &
+          until curl -sfo /dev/null http://127.0.0.1:8099/; do sleep 0.2; done
+          node smoke.mjs http://127.0.0.1:8099/
+
       # A size that grows quietly is a size nobody notices until launch.
       - name: Report the bundle size
         working-directory: app

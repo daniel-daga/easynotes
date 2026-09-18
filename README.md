@@ -104,7 +104,9 @@ they are the only cover for the concurrency in sequence allocation — so a gree
 run without it is a run that skipped the tests that matter there.
 
 The web build needs a nightly toolchain and a few extras; `just setup-web`
-installs them, then `just build-web`. Whatever serves the result must send
+installs them, then `just build-web` — and `just web-smoke` loads the result in
+a headless browser and checks that what it writes to IndexedDB is there when the
+tab is reloaded. Whatever serves the result must send
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
 threaded and will not start without cross-origin isolation.

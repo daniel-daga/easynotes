@@ -72,6 +72,23 @@ test-app:
     cargo build -p easynotes-relay
     cd app && EASYNOTES_NATIVE_LIB={{native_lib}} EASYNOTES_RELAY_BIN={{relay_bin}} flutter test
 
+# Does the web build run in a browser and keep what it is given?
+#
+# Builds nothing: run `just build-web` first. It needs `playwright-core`, which
+# it installs beside the script, and a Chromium — set CHROME_EXECUTABLE if the
+# one it should use is not the one Playwright would find.
+web-smoke port="8099":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{justfile_directory()}}/tools/web-smoke
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    python3 serve.py {{justfile_directory()}}/app/build/web {{port}} &
+    server=$!
+    trap 'kill $server 2>/dev/null || true' EXIT
+    # The server is a socket away, not a build away.
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node smoke.mjs http://127.0.0.1:{{port}}/
+
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
