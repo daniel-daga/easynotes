@@ -14,6 +14,7 @@
 /// therefore outlive the screen.
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
@@ -55,6 +56,32 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// What this person last chose, which the library remembers for them.
   late NoteLayout _layout = widget.library.layout;
   _Shelf _shelf = _Shelf.notes;
+
+  /// The search box, when it is open, and what is in it.
+  ///
+  /// Not remembered the way the layout is: a colour is a decision about a note
+  /// and a search is a question about right now, so it goes away with the
+  /// screen. The query is held here as well as in the controller because the
+  /// body is rebuilt from it and a controller is not a source of truth.
+  final _search = TextEditingController();
+  bool _searching = false;
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _openSearch() => setState(() => _searching = true);
+
+  void _closeSearch() {
+    _search.clear();
+    setState(() {
+      _searching = false;
+      _query = '';
+    });
+  }
 
   /// Open a note, and hold the handle open only while its screen is on top.
   ///
@@ -127,31 +154,58 @@ class _NoteListScreenState extends State<NoteListScreen> {
         final notes = all.where(_shelf.holds).toList();
         return Scaffold(
           appBar: AppBar(
-            title: Text(_shelf.title),
+            leading: _searching
+                ? IconButton(
+                    key: const Key('search-close'),
+                    icon: const Icon(Icons.arrow_back),
+                    tooltip: 'Stop searching',
+                    onPressed: _closeSearch,
+                  )
+                : null,
+            title: _searching
+                ? TextField(
+                    key: const Key('search-field'),
+                    controller: _search,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Search your lists',
+                      border: InputBorder.none,
+                    ),
+                    onChanged: (value) => setState(() => _query = value),
+                  )
+                : Text(_shelf.title),
             actions: [
-              SyncStatusButton(
-                stream: widget.library.watchSync(),
-                initial: widget.library.syncStatus,
-              ),
-              IconButton(
-                key: const Key('layout-toggle'),
-                icon: Icon(
-                  _layout == NoteLayout.grid
-                      ? Icons.view_agenda_outlined
-                      : Icons.grid_view,
+              if (!_searching) ...[
+                SyncStatusButton(
+                  stream: widget.library.watchSync(),
+                  initial: widget.library.syncStatus,
                 ),
-                tooltip: _layout == NoteLayout.grid
-                    ? 'Show as a list'
-                    : 'Show as a grid',
-                onPressed: _toggleLayout,
-              ),
-              if (widget.library.canJoin && _shelf == _Shelf.notes)
                 IconButton(
-                  key: const Key('join-button'),
-                  icon: const Icon(Icons.group_add_outlined),
-                  tooltip: 'Join a list',
-                  onPressed: _join,
+                  key: const Key('search-button'),
+                  icon: const Icon(Icons.search),
+                  tooltip: 'Search',
+                  onPressed: _openSearch,
                 ),
+                IconButton(
+                  key: const Key('layout-toggle'),
+                  icon: Icon(
+                    _layout == NoteLayout.grid
+                        ? Icons.view_agenda_outlined
+                        : Icons.grid_view,
+                  ),
+                  tooltip: _layout == NoteLayout.grid
+                      ? 'Show as a list'
+                      : 'Show as a grid',
+                  onPressed: _toggleLayout,
+                ),
+                if (widget.library.canJoin && _shelf == _Shelf.notes)
+                  IconButton(
+                    key: const Key('join-button'),
+                    icon: const Icon(Icons.group_add_outlined),
+                    tooltip: 'Join a list',
+                    onPressed: _join,
+                  ),
+              ],
             ],
           ),
           drawer: _Shelves(
@@ -163,8 +217,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
             onChosen: (shelf) => setState(() => _shelf = shelf),
           ),
           // Only where a new note would land. One made while looking at the
-          // trash would appear in a grid that is not on screen.
-          floatingActionButton: _shelf == _Shelf.notes
+          // trash would appear in a grid that is not on screen, and one made
+          // while searching would appear in results it does not match.
+          floatingActionButton: _shelf == _Shelf.notes && !_searching
               ? FloatingActionButton(
                   key: const Key('new-note-button'),
                   tooltip: 'New list',
@@ -172,11 +227,23 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   child: const Icon(Icons.add),
                 )
               : null,
-          body: notes.isEmpty
-              ? Center(
-                  key: const Key('no-notes'),
-                  child: Text(_shelf.empty),
+          body: _query.trim().isNotEmpty
+              // The shelf still decides what is on screen: searching the trash
+              // searches the trash. The library answers for the whole device and
+              // this is where that is narrowed, exactly as the list is.
+              ? _SearchResults(
+                  library: widget.library,
+                  query: _query.trim(),
+                  shelf: _shelf,
+                  // Changes when anything about the notes changes, which is what
+                  // makes a result follow an edit someone else just made.
+                  notes: all,
+                  layout: _layout,
+                  onTap: _openNote,
+                  onHold: _actionsFor,
                 )
+              : notes.isEmpty
+              ? Center(key: const Key('no-notes'), child: Text(_shelf.empty))
               : _NoteCollection(
                   notes: notes,
                   layout: _layout,
@@ -189,6 +256,91 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 }
 
+/// What the library found, drawn as the same cards with the matching line on
+/// them.
+///
+/// A widget of its own because searching is the one thing on this screen that
+/// is not a function of the note list: the text is inside the notes and only
+/// the library can read it, so this asks and waits. It asks again whenever the
+/// query changes *or* the list does, which is what makes a result follow an edit
+/// arriving from another device while the results are on screen.
+class _SearchResults extends StatefulWidget {
+  const _SearchResults({
+    required this.library,
+    required this.query,
+    required this.shelf,
+    required this.notes,
+    required this.layout,
+    required this.onTap,
+    required this.onHold,
+  });
+
+  final NoteLibrary library;
+  final String query;
+  final _Shelf shelf;
+  final List<NoteSummary> notes;
+  final NoteLayout layout;
+  final void Function(String id) onTap;
+  final void Function(NoteSummary note) onHold;
+
+  @override
+  State<_SearchResults> createState() => _SearchResultsState();
+}
+
+class _SearchResultsState extends State<_SearchResults> {
+  List<SearchHit>? _hits;
+
+  /// Which search is the current one. Typing is faster than a search returns,
+  /// and without this the answer to "aspar" can arrive after the answer to
+  /// "asparagus" and be shown instead of it.
+  int _generation = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  @override
+  void didUpdateWidget(_SearchResults old) {
+    super.didUpdateWidget(old);
+    if (old.query != widget.query || !listEquals(old.notes, widget.notes)) {
+      _run();
+    }
+  }
+
+  Future<void> _run() async {
+    final generation = ++_generation;
+    final hits = await widget.library.search(widget.query);
+    if (!mounted || generation != _generation) return;
+    setState(() => _hits = hits);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hits = _hits;
+    // The first frame, before the first answer. Blank rather than a spinner: a
+    // local search over a household's lists is done well inside a frame, and a
+    // spinner that flashes says something untrue about what is happening.
+    if (hits == null) return const SizedBox.shrink();
+
+    final found = hits.where((hit) => widget.shelf.holds(hit.note)).toList();
+    if (found.isEmpty) {
+      return Center(
+        key: const Key('no-matches'),
+        child: Text('Nothing here matches "${widget.query}".'),
+      );
+    }
+    return _NoteCollection(
+      notes: [for (final hit in found) hit.note],
+      matched: {for (final hit in found) hit.note.id: hit.matched},
+      layout: widget.layout,
+      onTap: widget.onTap,
+      onHold: widget.onHold,
+    );
+  }
+}
+
 /// The grid, or the single column. Both draw the same cards.
 class _NoteCollection extends StatelessWidget {
   const _NoteCollection({
@@ -196,12 +348,16 @@ class _NoteCollection extends StatelessWidget {
     required this.layout,
     required this.onTap,
     required this.onHold,
+    this.matched = const {},
   });
 
   final List<NoteSummary> notes;
   final NoteLayout layout;
   final void Function(String id) onTap;
   final void Function(NoteSummary note) onHold;
+
+  /// The line a search matched, per note. Empty when this is the plain list.
+  final Map<String, String> matched;
 
   @override
   Widget build(BuildContext context) {
@@ -210,6 +366,7 @@ class _NoteCollection extends StatelessWidget {
         _NoteCard(
           key: ValueKey(note.id),
           note: note,
+          matched: matched[note.id],
           onTap: () => onTap(note.id),
           onHold: () => onHold(note),
         ),
@@ -220,10 +377,7 @@ class _NoteCollection extends StatelessWidget {
             padding: const EdgeInsets.all(8),
             children: [
               for (final card in cards)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: card,
-                ),
+                Padding(padding: const EdgeInsets.only(bottom: 8), child: card),
             ],
           );
   }
@@ -325,7 +479,9 @@ class _NoteActions extends StatelessWidget {
             ListTile(
               key: const Key('action-archive'),
               leading: Icon(
-                note.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+                note.archived
+                    ? Icons.unarchive_outlined
+                    : Icons.archive_outlined,
               ),
               title: Text(note.archived ? 'Unarchive' : 'Archive'),
               onTap: () =>
@@ -431,10 +587,14 @@ class _MasonryGrid extends StatelessWidget {
 
   final List<_NoteCard> children;
 
-  /// Roughly what a card will take: the padding and title, plus a line per
-  /// preview item. Units are arbitrary and only ever compared with each other.
-  static double _estimate(NoteSummary note) =>
-      64 + (note.title.isEmpty ? 0 : 28) + note.preview.length * 22;
+  /// Roughly what a card will take: the padding and title, a line per preview
+  /// item, and the matched line when it is a search result. Units are arbitrary
+  /// and only ever compared with each other.
+  static double _estimate(_NoteCard card) =>
+      64 +
+      (card.note.title.isEmpty ? 0 : 28) +
+      card.note.preview.length * 22 +
+      (card.matched == null ? 0 : 22);
 
   @override
   Widget build(BuildContext context) {
@@ -453,7 +613,7 @@ class _MasonryGrid extends StatelessWidget {
           buckets[shortest].add(
             Padding(padding: const EdgeInsets.only(bottom: 8), child: card),
           );
-          heights[shortest] += _estimate(card.note);
+          heights[shortest] += _estimate(card);
         }
         return SingleChildScrollView(
           padding: const EdgeInsets.all(8),
@@ -485,11 +645,16 @@ class _NoteCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     required this.onHold,
+    this.matched,
   });
 
   final NoteSummary note;
   final VoidCallback onTap;
   final VoidCallback onHold;
+
+  /// The line a search matched, when this card is a result. Shown because the
+  /// preview is four items and the match may be the twelfth.
+  final String? matched;
 
   @override
   Widget build(BuildContext context) {
@@ -564,6 +729,34 @@ class _NoteCard extends StatelessWidget {
                 Text(
                   '${note.checked} of ${note.items} done',
                   style: theme.textTheme.bodySmall,
+                ),
+              ],
+              // Only when the match is not already on the card: a hit on the
+              // title, or on one of the four items the preview shows, needs no
+              // second copy of itself underneath.
+              if (matched != null &&
+                  matched != note.title &&
+                  !note.preview.contains(matched)) ...[
+                const SizedBox(height: 6),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.search,
+                      size: 14,
+                      color: theme.textTheme.bodySmall?.color,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        matched!,
+                        key: Key('matched:${note.id}'),
+                        style: theme.textTheme.bodySmall,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ],

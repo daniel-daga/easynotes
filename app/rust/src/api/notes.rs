@@ -112,6 +112,25 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
     }
 }
 
+/// One note a search found, and the line it was found on.
+///
+/// The line is carried because a card shows four items and a shopping list has
+/// twenty: a result with nothing on it to say why it is a result reads as a bug.
+pub struct SearchHitView {
+    pub note: NoteSummaryView,
+    /// The title, or the item, that the query matched.
+    pub matched: String,
+}
+
+impl From<easynotes_core::note::SearchHit> for SearchHitView {
+    fn from(hit: easynotes_core::note::SearchHit) -> Self {
+        Self {
+            note: hit.summary.into(),
+            matched: hit.matched,
+        }
+    }
+}
+
 /// A note's colour, as Dart sees it. A fixed palette rather than a number,
 /// because what a colour has to look like is a question for the theme on the
 /// device drawing it — the same name is one thing in daylight and another in
@@ -519,9 +538,10 @@ fn note_id(s: &str) -> Result<NoteId, String> {
 
 /// Every note this device holds.
 ///
-/// One per app. Opening it opens every note, because a note's title is inside an
-/// envelope and listing notes therefore means decrypting them — see
-/// `NoteCore::notes`.
+/// One per app. Opening it reads each note's sealed index entry rather than each
+/// note — a title is inside an envelope, so a device with no index would have to
+/// replay every log to draw a grid, which is what `easynotes_core::index`
+/// exists to stop.
 pub struct Library {
     shared: Arc<Shared>,
     /// Set by [`Library::stop_watching`]. The watcher tasks check it when they
@@ -570,7 +590,7 @@ impl Library {
     }
 
     fn wrap(mut core: Core) -> Result<Library, String> {
-        // Everything on the disk, opened once, so that the list is populated
+        // Everything on the disk, read once, so that the list is populated
         // before the first frame asks for it.
         core.notes().map_err(|e| e.to_string())?;
         Ok(Library {
@@ -624,6 +644,23 @@ impl Library {
         }
     }
 
+    /// Every note whose text contains all of the query's words.
+    ///
+    /// Local, and local in the strong sense: it reads the same sealed index the
+    /// grid is drawn from, so it works with no network and never asks a relay
+    /// anything. Archived and trashed notes come back too, with their placements
+    /// on them — which of them to show is the screen's question, as it is for
+    /// the list.
+    pub fn search(&self, query: String) -> Result<Vec<SearchHitView>, String> {
+        let mut core = self.shared.locked()?;
+        Ok(core
+            .search(&query)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     /// Make a new, empty note and return its ID.
     pub fn create_note(&self) -> Result<String, String> {
         let id = {
@@ -643,14 +680,10 @@ impl Library {
     pub fn join(&self, blob: String) -> Result<String, String> {
         let id = {
             let mut core = self.shared.locked()?;
-            let id = core.import_share_blob(&blob).map_err(|e| e.to_string())?;
-            // `import_share_blob` opens an empty document, which is right for a
-            // first join and wrong for a second one: this device may already
-            // hold the log. Reopening replays whatever is on disk under the key
-            // the blob just supplied.
-            core.close_all();
-            core.notes().map_err(|e| e.to_string())?;
-            id
+            // Replays whatever this device already holds for the note under the
+            // key the blob just supplied, so a second join finds the log that is
+            // there rather than putting an empty card over it.
+            core.import_share_blob(&blob).map_err(|e| e.to_string())?
         };
         self.shared.connect_note(id)?;
         Ok(id.encode())
