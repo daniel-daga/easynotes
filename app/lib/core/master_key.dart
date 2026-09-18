@@ -66,6 +66,32 @@ class MasterKeyStore {
     return key;
   }
 
+  /// The key for the notes a browser is holding, from the same keychain — and
+  /// the honest account of what that is worth on the web.
+  ///
+  /// `flutter_secure_storage` on the web wraps the value with WebCrypto and
+  /// keeps both the wrapped value and the wrapping key in this origin's
+  /// `localStorage`. Anything that can run script on the origin can therefore
+  /// read this key, and anything that can read this key can read the IndexedDB
+  /// it unlocks — which is on the same origin. So the sealing buys nothing
+  /// against an attacker who is already running here, and it is not claimed to.
+  ///
+  /// What it does buy is that the shape is the same everywhere: one secret, one
+  /// place, handed to the core from outside it. The day a browser offers
+  /// somewhere real to put it — a passphrase, or a WebAuthn PRF — it is this
+  /// method that changes and nothing below it. [ADR
+  /// 0011](../../../docs/adr/0011-the-web-store.md) has the rest.
+  ///
+  /// There is no file to carry over, because no version of this app ever wrote
+  /// one in a browser.
+  Future<Uint8List> forBrowser() async {
+    final stored = await _storage.read(key: _key);
+    if (stored != null) return _decode(stored);
+    final key = newKey();
+    await _storage.write(key: _key, value: base64Encode(key));
+    return key;
+  }
+
   /// A key for a device that has never had one.
   ///
   /// `Random.secure` is the platform's own CSPRNG on every target Flutter

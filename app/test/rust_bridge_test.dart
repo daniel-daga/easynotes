@@ -12,12 +12,14 @@ library;
 
 import 'dart:io';
 
+import 'package:easynotes/core/browser_store.dart';
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:easynotes/src/rust/api/notes.dart' show StorageArea;
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -515,6 +517,140 @@ void main() {
             );
           }
         }
+      });
+    },
+    skip: libPath == null
+        ? 'set EASYNOTES_NATIVE_LIB to the built cdylib to run these'
+        : null,
+  );
+
+  group(
+    'the store a browser gets',
+    () {
+      // Everything a tab does to keep its notes, driven over the real bridge on
+      // a machine with no browser on it. `MemoryBrowserStore` is a map, which is
+      // all `IndexedDbStore` is once the requests and events are taken off it —
+      // and the point of putting the key layout, the sealing and the batching in
+      // the Rust core is that a map is enough to hold them to what they promise.
+      //
+      // What is *not* covered here is IndexedDB itself: whether a browser
+      // applies a batch in one transaction, and in the order it was handed them.
+      // That needs a browser, and `docs/plan-slice-02.md` says so.
+
+      /// Open a library over [db], as a tab would, and tear it down.
+      Future<RustNoteLibrary> openTab(
+        MemoryBrowserStore db,
+        Uint8List masterKey,
+      ) async {
+        final library = await RustNoteLibrary.openInBrowser(db, masterKey);
+        addTearDown(library.dispose);
+        return library;
+      }
+
+      test('a note survives the tab being closed', () async {
+        final db = MemoryBrowserStore();
+        final key = MasterKeyStore.newKey();
+
+        final first = await openTab(db, key);
+        final id = await first.createNote();
+        final note = first.openNote(id);
+        await note.setTitle('Groceries');
+        await note.addItem('asparagus');
+        await note.dispose();
+        // Closing the tab, which is the last chance those writes have.
+        await first.dispose();
+
+        final second = await openTab(db, key);
+        expect(second.notes.single.title, 'Groceries');
+        final reopened = second.openNote(id);
+        addTearDown(reopened.dispose);
+        expect(reopened.current.items.map((i) => i.text), ['asparagus']);
+      });
+
+      test('the device keeps its identity across a tab', () async {
+        // A tab that minted a new identity every launch would look like a
+        // forger to every peer it already shares a list with, and its own log
+        // would fail its own replay check.
+        final db = MemoryBrowserStore();
+        final key = MasterKeyStore.newKey();
+
+        final first = await openTab(db, key);
+        final id = await first.createNote();
+        final note = first.openNote(id);
+        await note.addItem('milk');
+        await note.dispose();
+        await first.dispose();
+
+        // The second tab appends to the same log under the same identity, and
+        // the note opens — which it would not if the author or the counter had
+        // restarted.
+        final second = await openTab(db, key);
+        final reopened = second.openNote(id);
+        addTearDown(reopened.dispose);
+        await reopened.addItem('bread');
+        await second.flush();
+
+        final third = await openTab(db, key);
+        final again = third.openNote(id);
+        addTearDown(again.dispose);
+        expect(again.current.items.map((i) => i.text), ['milk', 'bread']);
+      });
+
+      test('a note thrown away for good leaves no row behind', () async {
+        final db = MemoryBrowserStore();
+        final key = MasterKeyStore.newKey();
+
+        final library = await openTab(db, key);
+        final id = await library.createNote();
+        final note = library.openNote(id);
+        await note.setTitle('Groceries');
+        await note.addItem('asparagus');
+        await note.dispose();
+        await library.setTrashed(id, true);
+        await library.forgetNote(id);
+        await library.flush();
+
+        for (final area in StorageArea.values) {
+          for (final row in await db.rows(area)) {
+            expect(
+              row.key.contains(id),
+              isFalse,
+              reason: '${row.key} is still there after the note was forgotten',
+            );
+          }
+        }
+        expect(library.notes, isEmpty);
+      });
+
+      test('nothing a browser holds is plaintext', () async {
+        final db = MemoryBrowserStore();
+        final library = await openTab(db, MasterKeyStore.newKey());
+        final note = library.openNote(await library.createNote());
+        addTearDown(note.dispose);
+        await note.setTitle('Groceries');
+        await note.addItem('asparagus');
+        await library.flush();
+
+        for (final area in StorageArea.values) {
+          for (final row in await db.rows(area)) {
+            final raw = String.fromCharCodes(row.key.codeUnits + row.value);
+            for (final secret in ['Groceries', 'asparagus']) {
+              expect(raw.contains(secret), isFalse, reason: row.key);
+            }
+          }
+        }
+      });
+
+      test('the wrong key does not quietly open an empty tab', () async {
+        final db = MemoryBrowserStore();
+        final library = await openTab(db, MasterKeyStore.newKey());
+        await library.createNote();
+        await library.dispose();
+
+        await expectLater(
+          RustNoteLibrary.openInBrowser(db, MasterKeyStore.newKey()),
+          throwsA(anything),
+        );
       });
     },
     skip: libPath == null

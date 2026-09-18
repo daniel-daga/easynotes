@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'core/browser_store.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/rust_note_library.dart';
@@ -31,13 +32,7 @@ Future<void> main() async {
 
 /// Open this device's notes, and start syncing them.
 Future<NoteLibrary> openLibrary() async {
-  if (kIsWeb) {
-    // No filesystem in a browser, and no relay transport either: both are the
-    // unfinished half of the web build. ADR 0002 records what that costs. The
-    // app still runs the same Rust core — it just cannot keep or share what it
-    // holds.
-    return RustNoteLibrary.openEphemeral();
-  }
+  if (kIsWeb) return openInBrowser();
   final directory = (await getApplicationSupportDirectory()).path;
   // The keychain first, because it is what says whether this device has a key
   // at all — and because a device that updated into this version has one in a
@@ -50,6 +45,33 @@ Future<NoteLibrary> openLibrary() async {
   if (relayUrl.isNotEmpty) await library.connect(relayUrl);
   return library;
 }
+
+/// Open this browser's notes out of IndexedDB.
+///
+/// A tab still cannot reach a relay — that is the other unfinished half of the
+/// web build, and [ADR 0002](../../docs/adr/0002-web-core.md) records it — but
+/// what it holds now survives the tab closing.
+///
+/// A browser that will not give the app a database is not an error worth
+/// refusing to start over: some private-browsing modes do not, and it can be
+/// switched off outright. The notes go in memory for that tab, which is what
+/// every tab had before this, and the app runs.
+Future<NoteLibrary> openInBrowser() async {
+  final masterKey = await MasterKeyStore().forBrowser();
+  try {
+    return await RustNoteLibrary.openInBrowser(
+      await openBrowserStore(browserDatabase),
+      masterKey,
+    );
+  } on Object catch (error) {
+    debugPrint('keeping this tab\'s notes in memory only: $error');
+    return RustNoteLibrary.openEphemeral();
+  }
+}
+
+/// The name of the IndexedDB database. One per origin, so it says what it is
+/// rather than which notes are in it.
+const browserDatabase = 'easynotes';
 
 class EasyNotesApp extends StatelessWidget {
   const EasyNotesApp({super.key, required this.library});

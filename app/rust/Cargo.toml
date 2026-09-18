@@ -19,12 +19,13 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 easynotes-core = { path = "../../core", features = ["sync-native"] }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time", "net"] }
 
-# The browser gets the CRDT and the crypto and nothing that touches a disk: the
-# SQLite store compiles C, which has no business in a WebAssembly bundle, and the
-# filesystem store would be a directory a tab does not have. What the web build
-# needs instead is the IndexedDB store, which is item 4 of the Slice 2 plan.
+# The browser gets the CRDT, the crypto and the web store, and nothing that
+# touches a disk: the SQLite store compiles C, which has no business in a
+# WebAssembly bundle, and the filesystem store would be a directory a tab does
+# not have. `web-store` is the one a browser gets instead — it holds no browser
+# API itself, only the rules; see `crate::api::notes` for where the two meet.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-easynotes-core = { path = "../../core", default-features = false, features = ["automerge-backend", "yrs-backend"] }
+easynotes-core = { path = "../../core", default-features = false, features = ["automerge-backend", "yrs-backend", "web-store"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
