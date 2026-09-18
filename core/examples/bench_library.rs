@@ -7,10 +7,16 @@
 //! ```
 //!
 //! The question this answers is a launch-time one. A note's title lives inside
-//! an envelope, so listing notes means opening them, and the app opens every
-//! note it holds before it can draw its first frame. That is fine for a
-//! household and not fine for ever, and the point of measuring is to know where
-//! the line is rather than to guess it.
+//! an envelope, so a device that kept nothing but the log would have to open
+//! every note it holds before it could draw its first frame. That is fine for a
+//! household and not fine for ever, which is what the sealed index
+//! ([`easynotes_core::index`]) is for, and the point of measuring is to know
+//! what it is worth rather than to assume it.
+//!
+//! So each row is measured three ways over the same notes: with no index, which
+//! is what every launch cost before it existed and what the first launch after
+//! an update still costs; the same device once its logs are compacted; and with
+//! the index, which is every launch after the first.
 //!
 //! Unlike `bench_compaction` this runs against SQLite in a real directory,
 //! because a launch reads a disk and that read is part of the answer.
@@ -18,10 +24,11 @@
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Edit, NoteDoc};
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, SyncCursor};
-use easynotes_core::store::{master_key_from_file, SqliteKeyring, SqliteStore};
+use easynotes_core::note::{NoteCore, NoteKind, SyncCursor, ADDED, SYNC_CURSOR};
+use easynotes_core::store::{copy_store, master_key_from_file, SqliteKeyring, SqliteStore};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tempfile::TempDir;
 
 /// How many notes a device holds. The first is a household after a year; the
 /// last is somebody using this as a notes app in earnest.
@@ -98,6 +105,28 @@ fn pretend_the_relay_has_it_all(core: &mut Core, notes: &[NoteId]) {
     }
 }
 
+/// The same device with no index entries: what it looked like before this
+/// existed, and what a device that updates into this version looks like on its
+/// first launch.
+///
+/// Built by copying it through the trait and leaving the index rows behind,
+/// which is exactly what `open_local` does for a device coming off Slice 1's
+/// directory of files.
+fn without_the_index(from: &Path) -> TempDir {
+    let to = tempfile::tempdir().unwrap();
+    let source = master_key_from_file(from.join("master.key")).unwrap();
+    let target = master_key_from_file(to.path().join("master.key")).unwrap();
+    copy_store(
+        &SqliteStore::open(from.join("notes.db"), source.clone()).unwrap(),
+        &SqliteKeyring::open(from.join("keys.db"), source).unwrap(),
+        &mut SqliteStore::open(to.path().join("notes.db"), target.clone()).unwrap(),
+        &mut SqliteKeyring::open(to.path().join("keys.db"), target).unwrap(),
+        &[SYNC_CURSOR, ADDED],
+    )
+    .unwrap();
+    to
+}
+
 fn time(mut f: impl FnMut()) -> Duration {
     let start = Instant::now();
     f();
@@ -109,6 +138,7 @@ struct Row {
     account: Duration,
     from_logs: Duration,
     from_snapshots: Duration,
+    from_index: Duration,
 }
 
 fn measure(notes: usize) -> Row {
@@ -117,21 +147,36 @@ fn measure(notes: usize) -> Row {
     let ids = fill(&mut core, notes);
     drop(core);
 
-    // A launch on a device whose notes still have their logs: 53 envelopes each,
-    // every one of them signature-verified before it is decrypted.
-    let mut core = open(dir.path());
+    // A launch with no index, on a device whose notes still have their logs: 53
+    // envelopes each, every one of them signature-verified before it is
+    // decrypted. This is the column the index was built against.
+    let bare = without_the_index(dir.path());
+    let mut core = open(bare.path());
     let from_logs = time(|| {
         core.notes().unwrap();
     });
     assert_eq!(core.notes().unwrap().len(), notes);
+    drop(core);
+    drop(bare);
 
-    // And the same device once its notes have been compacted, which is what a
-    // second launch finds after the first one has done it.
+    // The same, once the notes have been compacted: one snapshot to verify
+    // instead of 53 envelopes, and still every note opened.
+    let mut core = open(dir.path());
+    core.notes().unwrap();
     pretend_the_relay_has_it_all(&mut core, &ids);
     for id in &ids {
         core.compact(*id).unwrap();
     }
     drop(core);
+
+    let bare = without_the_index(dir.path());
+    let mut core = open(bare.path());
+    let from_snapshots = time(|| {
+        core.notes().unwrap();
+    });
+    assert_eq!(core.notes().unwrap().len(), notes);
+    drop(core);
+    drop(bare);
 
     // Opening the device is opening the account document: its log is replayed
     // before the first note is, because a note cannot be placed in a grid whose
@@ -140,8 +185,10 @@ fn measure(notes: usize) -> Row {
         drop(open(dir.path()));
     });
 
+    // And the launch the app actually does: one sealed row a note, no document
+    // replayed and no signature verified.
     let mut core = open(dir.path());
-    let from_snapshots = time(|| {
+    let from_index = time(|| {
         core.notes().unwrap();
     });
     assert_eq!(core.notes().unwrap().len(), notes);
@@ -151,6 +198,7 @@ fn measure(notes: usize) -> Row {
         account,
         from_logs,
         from_snapshots,
+        from_index,
     }
 }
 
@@ -160,17 +208,23 @@ fn main() {
         DefaultNoteDoc::backend_name()
     );
     println!(
-        "{:>6}  {:>16}  {:>16}  {:>14}  {:>16}",
-        "notes", "open from logs", "from snapshots", "per note", "account document"
+        "{:>6}  {:>16}  {:>16}  {:>16}  {:>14}  {:>16}",
+        "notes",
+        "no index, logs",
+        "no index, snaps",
+        "from the index",
+        "per note",
+        "account document"
     );
     for &count in COUNTS {
         let row = measure(count);
         println!(
-            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>11.2} ms  {:>13.1} ms",
+            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>13.1} ms  {:>11.3} ms  {:>13.1} ms",
             row.notes,
             row.from_logs.as_secs_f64() * 1e3,
             row.from_snapshots.as_secs_f64() * 1e3,
-            row.from_snapshots.as_secs_f64() * 1e3 / row.notes as f64,
+            row.from_index.as_secs_f64() * 1e3,
+            row.from_index.as_secs_f64() * 1e3 / row.notes as f64,
             row.account.as_secs_f64() * 1e3,
         );
     }

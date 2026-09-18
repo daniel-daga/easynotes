@@ -17,6 +17,7 @@ use crate::crdt::{
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
 use crate::error::{CoreError, Result};
 use crate::ids::{ItemId, NoteId};
+use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,15 @@ pub const ADDED: &str = "added";
 /// own placements are sealed with.
 pub const ACCOUNT_DOC: NoteId = NoteId([0u8; 16]);
 
+/// Where a note's row in the sealed index is kept, in the same per-note
+/// metadata as the sync cursor.
+///
+/// Public for the same reason [`SYNC_CURSOR`] is: moving a device from one store
+/// to another has to carry it. Leaving it behind would be correct — a missing
+/// entry rebuilds itself — and would make the first launch after a migration pay
+/// to open every note, which is precisely what the index exists to stop.
+pub const INDEX: &str = "index";
+
 /// The setting that says whether the note list is a grid or one column.
 pub const LAYOUT: &str = "layout";
 
@@ -101,6 +111,18 @@ pub struct NoteSummary {
     /// to it — and a core that filtered would have to be asked three times for
     /// what it already knows once.
     pub placement: Placement,
+}
+
+/// One note a search found, and where it found the query.
+///
+/// The line matters as much as the note. A card shows four items, so a hit on
+/// the twelfth is a note that appears in the results with nothing on it to say
+/// why — which reads as a bug rather than as a match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchHit {
+    pub summary: NoteSummary,
+    /// The title, or the first item, containing one of the query's terms.
+    pub matched: String,
 }
 
 /// How many items a summary carries. Enough to recognise a list, few enough
@@ -169,6 +191,15 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// What that document currently says, kept beside it so that refreshing the
     /// list does not re-read the whole document on every keystroke.
     placements: AccountView,
+    /// What every note this device holds says, without holding the notes open.
+    ///
+    /// This is the note list and the search index both: a summary is built from
+    /// an entry rather than from a document, so a note that nothing has opened
+    /// still has a card and is still found by a search. Rewritten from the
+    /// document on every change, and reloaded from the store — or rebuilt by
+    /// opening the note — on the first launch that finds one missing or stale.
+    /// See [`crate::index`].
+    index: HashMap<NoteId, IndexEntry>,
     /// The list of notes, for whoever is showing one. Recomputed from `open`
     /// every time a view changes, which is cheap because a summary is four
     /// fields off a document that is already in memory.
@@ -200,6 +231,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             open: HashMap::new(),
             account,
             placements,
+            index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
         })
     }
@@ -292,6 +324,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // delete one, which is the trash — a personal placement in the account
         // document, item 6 of the Slice 2 plan.
         self.store.put_meta(id, ADDED, &added.to_be_bytes())?;
+        // An empty entry, so that the note has a card from the moment it exists
+        // rather than from its first edit. `place` below refreshes the list, and
+        // the list is built from the index.
+        self.reindex(id)?;
         // Where it sits is the account document's answer, and a new note goes to
         // the top of the grid. `place` refreshes the list, which is why nothing
         // here does.
@@ -369,6 +405,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 watch: tx,
             },
         );
+        // The document has just been replayed, so this is the cheapest moment
+        // there will ever be to write down what it says — and if the entry was
+        // missing or stale, which is why we are here, it is now neither.
+        self.reindex(id)?;
         self.refresh_library();
 
         // The one place where opening a note writes to the store, and the right
@@ -401,23 +441,27 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // -- the note list ------------------------------------------------------
     //
     // A note list is not a query: every title in it is inside an envelope that
-    // only a key opens, so listing notes means opening them. That is the cost of
-    // the store holding nothing in the clear, and it is the cost this slice
-    // chose ([ADR 0005](../../docs/adr/0005-local-store.md)). What it buys back
-    // is that the list is exactly the open documents, so it cannot disagree with
-    // what a note screen shows.
+    // only a key opens, so a device that kept nothing but the log would have to
+    // open every note to draw a grid. That is the cost of the store holding
+    // nothing in the clear ([ADR 0005](../../docs/adr/0005-local-store.md)), and
+    // the sealed index is how it is paid once instead of at every launch — a
+    // card is drawn from an entry, and the entry is rewritten from the document
+    // by everything that changes one, so the two cannot disagree
+    // ([`crate::index`]).
 
-    /// Open every note this device holds, and return them newest first.
+    /// Every note this device holds, newest first.
     ///
-    /// The bound is a household's notes, not a filesystem's: each one replays a
-    /// snapshot and whatever log came after it, which `just bench-compaction`
-    /// measures at 0.3 ms for a compacted note and 18 ms for a 256-envelope log.
-    /// A few dozen notes is a blink; a few thousand would want a sealed index of
-    /// titles, which is the same shape as the search index item 7 needs and
-    /// should be built once, for both.
+    /// Reads each note's index entry, and opens only the notes whose entry is
+    /// missing or no longer matches their log — a note created before the index
+    /// existed, one carried in by [`crate::store::copy_store`], or one whose last
+    /// edit was interrupted between the log and the entry. Those are rebuilt
+    /// here, which costs exactly what every launch used to cost and happens once.
     pub fn notes(&mut self) -> Result<Vec<NoteSummary>> {
         for id in self.store.notes()? {
-            if id == ACCOUNT_DOC || self.open.contains_key(&id) {
+            if id == ACCOUNT_DOC || self.index.contains_key(&id) {
+                continue;
+            }
+            if self.load_index(id)? {
                 continue;
             }
             match self.open_note(id) {
@@ -436,34 +480,126 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok(self.library.borrow().clone())
     }
 
+    /// Every note whose text contains all of `query`'s terms, in the order the
+    /// list shows them.
+    ///
+    /// Local and nothing but local: it reads the same sealed entries the grid is
+    /// drawn from, so it works with no network, in an aeroplane, and against a
+    /// relay that is down — which is the point of the design doc putting search
+    /// over "the decrypted local database only". Archived and trashed notes are
+    /// in the results with their placements on them, for the reason they are in
+    /// the list: which of them to show is the screen's question.
+    ///
+    /// It lists first, so that a search made before anything has drawn a grid
+    /// still searches the whole device.
+    pub fn search(&mut self, query: &str) -> Result<Vec<SearchHit>> {
+        let terms = crate::index::terms(query);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let all = self.notes()?;
+        let mut hits = Vec::new();
+        for summary in all {
+            let Some(entry) = self.index.get(&summary.id) else {
+                continue;
+            };
+            if let Some(line) = entry.matched_line(&terms) {
+                hits.push(SearchHit {
+                    matched: line.to_string(),
+                    summary,
+                });
+            }
+        }
+        Ok(hits)
+    }
+
+    // -- the index ----------------------------------------------------------
+
+    /// Write down what an open note currently says.
+    ///
+    /// Called by everything that changes a document, *after* the change is in the
+    /// log. The order is the whole of the staleness story: an entry is never
+    /// ahead of the log it summarises, so a crash in between leaves one that
+    /// fails its length check and is rebuilt rather than one that claims an edit
+    /// the log does not have. See [`crate::index`].
+    fn reindex(&mut self, id: NoteId) -> Result<()> {
+        let Some(note) = self.open.get(&id) else {
+            // Nothing to write it from. Not an error: a note can be listed
+            // without being open, and it is the open ones that are out of date.
+            return Ok(());
+        };
+        let view = note.doc.view();
+        let entry = IndexEntry {
+            version: crate::index::ENTRY_VERSION,
+            title: view.title,
+            checked: view.items.iter().filter(|i| i.checked).count(),
+            items: view.items.into_iter().map(|i| i.text).collect(),
+            log_len: self.store.log_len(id)?,
+        };
+        let sealed = entry.seal(id, &note.key)?;
+        self.store.put_meta(id, INDEX, &sealed)?;
+        self.index.insert(id, entry);
+        Ok(())
+    }
+
+    /// Read a note's entry out of the store. `false` means there was nothing
+    /// usable there and the note has to be opened.
+    fn load_index(&mut self, id: NoteId) -> Result<bool> {
+        let Some(sealed) = self.store.get_meta(id, INDEX)? else {
+            return Ok(false);
+        };
+        // A note whose key is gone cannot be shown at all, so it is not this
+        // function's business to decide what happens next: it says no, and
+        // `notes` skips the note for the same reason it always did.
+        let Some(key) = self.keyring.note_key(id)? else {
+            return Ok(false);
+        };
+        let log_len = self.store.log_len(id)?;
+        match IndexEntry::open(id, &key, &sealed, log_len) {
+            Some(entry) => {
+                self.index.insert(id, entry);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Open a note that an edit or an arrival is about to touch, if it is not
+    /// open already.
+    ///
+    /// Before the index, the note list opened everything, so anything the app
+    /// could reach was already open. Now a note can be listed, coloured, pinned
+    /// and searched without its document ever being replayed — so the first
+    /// thing that needs the document has to say so.
+    fn ensure_open(&mut self, id: NoteId) -> Result<()> {
+        if self.open.contains_key(&id) {
+            return Ok(());
+        }
+        self.open_note(id)?;
+        Ok(())
+    }
+
     /// The note list now, and every version of it after that.
     ///
-    /// Only reflects notes that are open, so a caller that wants the whole list
-    /// calls [`NoteCore::notes`] first. Everything after that — an edit here, an
-    /// edit from a peer, a note created or joined — arrives on this channel.
+    /// Only reflects notes this core has read, so a caller that wants the whole
+    /// list calls [`NoteCore::notes`] first. Everything after that — an edit
+    /// here, an edit from a peer, a note created or joined — arrives on this
+    /// channel.
     pub fn watch_notes(&self) -> watch::Receiver<Vec<NoteSummary>> {
         self.library.subscribe()
     }
 
     fn refresh_library(&self) {
         let mut summaries: Vec<NoteSummary> = self
-            .open
+            .index
             .iter()
-            .map(|(id, note)| {
-                let view = note.doc.view();
-                NoteSummary {
-                    id: *id,
-                    title: view.title,
-                    items: view.items.len(),
-                    checked: view.items.iter().filter(|i| i.checked).count(),
-                    preview: view
-                        .items
-                        .iter()
-                        .take(PREVIEW_ITEMS)
-                        .map(|i| i.text.clone())
-                        .collect(),
-                    placement: self.placements.placement(*id),
-                }
+            .map(|(id, entry)| NoteSummary {
+                id: *id,
+                title: entry.title.clone(),
+                items: entry.items.len(),
+                checked: entry.checked,
+                preview: entry.items.iter().take(PREVIEW_ITEMS).cloned().collect(),
+                placement: self.placements.placement(*id),
             })
             .collect();
         // Pinned notes first, then the grid order, then the ID to break a tie —
@@ -682,6 +818,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Apply a local edit. Returns the sealed envelope to hand to the relay.
     pub fn apply_local(&mut self, id: NoteId, edit: Edit) -> Result<Vec<u8>> {
+        self.ensure_open(id)?;
         let identity_ref = &self.identity;
         let note = self
             .open
@@ -699,6 +836,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.store.append(id, &encoded)?;
         let note = self.open.get_mut(&id).expect("just borrowed");
         let _ = note.watch.send_replace(note.doc.view());
+        self.reindex(id)?;
         self.refresh_library();
         Ok(encoded)
     }
@@ -708,6 +846,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Unknown, tampered, replayed and misrouted envelopes are all rejected here,
     /// before the CRDT sees anything.
     pub fn apply_remote(&mut self, id: NoteId, envelope: &[u8]) -> Result<NoteView> {
+        // An arrival is the other thing that can be the first to need a note's
+        // document: the list no longer opens every note, so a peer's edit to a
+        // note nobody has looked at today opens it here.
+        self.ensure_open(id)?;
         let note = self
             .open
             .get_mut(&id)
@@ -733,6 +875,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let note = self.open.get_mut(&id).expect("just borrowed");
         let view = note.doc.view();
         let _ = note.watch.send_replace(view.clone());
+        self.reindex(id)?;
         self.refresh_library();
         Ok(view)
     }
@@ -748,6 +891,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Append an item and return `(item id, envelope)`.
     pub fn add_item(&mut self, id: NoteId, text: impl Into<String>) -> Result<(ItemId, Vec<u8>)> {
+        self.ensure_open(id)?;
         let keys = self.view(id)?.order_keys();
         self.insert_item_at(id, text, keys.len())
     }
@@ -758,6 +902,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         text: impl Into<String>,
         index: usize,
     ) -> Result<(ItemId, Vec<u8>)> {
+        self.ensure_open(id)?;
         let keys = self.view(id)?.order_keys();
         let item = ItemId::random();
         let order = order::key_for_index(&keys, index.min(keys.len()));
@@ -800,6 +945,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Move `item` so that it lands at `to_index` in the current display order.
     pub fn move_item(&mut self, id: NoteId, item: ItemId, to_index: usize) -> Result<Vec<u8>> {
+        self.ensure_open(id)?;
         let view = self.view(id)?;
         let from = view
             .items
@@ -815,7 +961,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.apply_local(id, Edit::MoveItem { id: item, order })
     }
 
-    fn require_item(&self, id: NoteId, item: ItemId) -> Result<()> {
+    fn require_item(&mut self, id: NoteId, item: ItemId) -> Result<()> {
+        self.ensure_open(id)?;
         if self.view(id)?.item(item).is_none() {
             return Err(CoreError::UnknownItem(item.encode()));
         }
@@ -847,22 +994,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             return Ok(id);
         }
         self.keyring.put_note_key(id, &key)?;
-        let doc = D::create(&self.actor);
-        let (tx, _) = watch::channel(doc.view());
         if self.ordinal(id)? == 0 {
             let next = self.next_ordinal()?;
             self.store.put_meta(id, ADDED, &next.to_be_bytes())?;
         }
-        self.open.insert(
-            id,
-            OpenNote {
-                doc,
-                key,
-                next_counter: 0,
-                seen: HashSet::new(),
-                watch: tx,
-            },
-        );
+        // Opening rather than starting an empty document, because a second join
+        // is as ordinary as a first: this device may already hold the note's
+        // whole log, from before it was ever shared or from a previous join, and
+        // an empty document would put a blank card over it until the relay
+        // happened to send it all again. On a first join there is nothing there
+        // and this is the empty document, at the cost of one store read.
+        self.open_note(id)?;
         // A note this device has joined before keeps the place it already had, so
         // re-pasting a blob does not move someone else's list to the top.
         if self.placements.placements.contains_key(&id) {
@@ -878,6 +1020,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Write an encrypted snapshot. Slice 2 uses this to compact the log; Slice 1
     /// writes it so that `open_note` exercises the snapshot path.
     pub fn save_snapshot(&mut self, id: NoteId) -> Result<()> {
+        self.ensure_open(id)?;
         let identity_ref = &self.identity;
         let note = self
             .open
@@ -908,9 +1051,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// leaves a note that replays a log it already has a snapshot of, which costs
     /// milliseconds and changes nothing; the other order would lose edits.
     pub fn compact(&mut self, id: NoteId) -> Result<usize> {
-        // Up front, so that compacting a note that is not open fails the same way
-        // whether or not there turns out to be anything to drop.
-        self.note(id)?;
+        // Up front, because a snapshot is written from the document and the note
+        // list no longer leaves every document open — and so that compacting a
+        // note this device has no key for fails the same way whether or not
+        // there turns out to be anything to drop.
+        self.ensure_open(id)?;
 
         let sent_upto = self.sync_cursor(id)?.sent_upto;
         let me = self.identity.public_key();
@@ -934,6 +1079,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         self.save_snapshot(id)?;
         self.store.replace_log(id, &keep)?;
+        // The document is unchanged and its log is not, so the entry that was
+        // right a moment ago now fails its length check. Rewriting it here is
+        // what stops the next launch from reopening every note this one
+        // compacted.
+        self.reindex(id)?;
         Ok(dropped)
     }
 
@@ -1000,13 +1150,23 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// tests to simulate the app being killed.
     pub fn close_all(&mut self) {
         self.open.clear();
-        // The list is the open notes, so closing them all empties it. Saying so
-        // is what stops a watcher from showing notes that nothing is listening
-        // to any more.
+        // The index goes with them. It is in memory as well as in the store, and
+        // a "killed" app that kept its list would be telling the test it is only
+        // half killed — the next `notes` reads the entries back off the disk,
+        // which is exactly the path a real relaunch takes.
+        self.index.clear();
         self.refresh_library();
     }
 
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// The keyring, for the one caller that needs both halves of a device at
+    /// once: [`crate::store::copy_store`], which moves a device from one store
+    /// to another and has to carry the keys with the logs. Read-only, and it
+    /// hands out nothing the holder of this core could not already decrypt.
+    pub fn keyring(&self) -> &K {
+        &self.keyring
     }
 }

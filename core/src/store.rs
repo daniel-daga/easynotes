@@ -117,6 +117,12 @@ impl OpStore for MemoryStore {
         Ok(self.snapshots.get(&note).cloned())
     }
 
+    fn log_len(&self, note: NoteId) -> Result<usize> {
+        // Asked once per edit by the index, so answering it by cloning the whole
+        // log would make every keystroke quadratic in the log behind it.
+        Ok(self.len(note))
+    }
+
     fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()> {
         self.meta.insert((note, key.to_string()), value.to_vec());
         Ok(())
