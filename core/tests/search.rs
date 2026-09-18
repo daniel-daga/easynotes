@@ -69,6 +69,9 @@ impl<S: OpStore> OpStore for Counting<S> {
     fn get_meta(&self, note: NoteId, key: &str) -> Result<Option<Vec<u8>>> {
         self.inner.get_meta(note, key)
     }
+    fn forget(&mut self, note: NoteId) -> Result<()> {
+        self.inner.forget(note)
+    }
 }
 
 /// A core over the real store, opened the way a relaunch opens it, with every

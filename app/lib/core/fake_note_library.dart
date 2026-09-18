@@ -143,6 +143,27 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  Future<void> forgetNote(String noteId) async {
+    calls.add('forgetNote($noteId)');
+    _forget(noteId);
+    _emit();
+  }
+
+  @override
+  Future<int> emptyTrash() async {
+    calls.add('emptyTrash()');
+    final trashed = [
+      for (final id in _order)
+        if (_placements[id]?.trashed ?? false) id,
+    ];
+    for (final id in trashed) {
+      _forget(id);
+    }
+    _emit();
+    return trashed.length;
+  }
+
+  @override
   NoteLayout get layout => _layout;
 
   @override
@@ -198,6 +219,16 @@ class FakeNoteLibrary implements NoteLibrary {
 
   _Placement _placement(String id) =>
       _placements.putIfAbsent(id, _Placement.new);
+
+  /// Everything the real library forgets: the note, this person's placement of
+  /// it, and the watcher behind its card. Not `_emit`: the callers above do that
+  /// once, so emptying a trash of ten notes is one list and not ten.
+  void _forget(String id) {
+    _order.remove(id);
+    _cores.remove(id);
+    _placements.remove(id);
+    _watchers.remove(id)?.cancel();
+  }
 
   void _emit() {
     final summaries = [

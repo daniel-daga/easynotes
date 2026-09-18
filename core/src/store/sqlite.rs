@@ -54,7 +54,37 @@ fn prepare(conn: &Connection) -> Result<()> {
     // serialises them; without a timeout the loser gets an error instead.
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(db)?;
+    // Overwrite what a delete frees instead of only unlinking it. Without this a
+    // `DELETE` leaves the row's bytes intact in a free page for as long as
+    // nothing else needs the space: emptying the trash would unlist a note and
+    // leave it wholly recoverable from the file, which is not what the word
+    // means. Measured on a 50-row table, every copy survived the delete with
+    // this off and none with it on.
+    //
+    // It costs a write of the pages a delete touches, on a delete. Compaction is
+    // the only other thing here that deletes anything, and zeroing the envelopes
+    // it drops is wanted there too.
+    conn.pragma_update(None, "secure_delete", "ON")
+        .map_err(db)?;
     Ok(())
+}
+
+/// Fold the write-ahead log back into the database and start it again from
+/// nothing.
+///
+/// Only [`OpStore::forget`] and [`Keyring::forget_note_key`] need this, and they
+/// need it for a reason `secure_delete` alone does not cover: a page's *old*
+/// image is in the WAL from when the row was written, and stays there until a
+/// checkpoint, so the zeroing lands in the database while the content is still in
+/// the WAL beside it. Measured, again, rather than assumed: 1 275 copies of a
+/// deleted string were in the WAL of a database whose own pages were clean.
+///
+/// A checkpoint that cannot run is not a failed delete — the rows are already
+/// gone and committed — so this reports nothing. It happens when another
+/// connection is mid-read, and the next checkpoint, automatic or on close, does
+/// the work.
+fn checkpoint(conn: &Connection) {
+    let _ = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
 }
 
 fn migrate(conn: &mut Connection, schema: &str) -> Result<()> {
@@ -264,6 +294,28 @@ impl OpStore for SqliteStore {
         }
     }
 
+    fn forget(&mut self, note: NoteId) -> Result<()> {
+        // All three tables under one transaction. The halfway state is the one
+        // that must not exist: the snapshot is the whole note in a single row,
+        // so a delete that emptied the log and then failed would have destroyed
+        // the edits and kept the note, and one that cleared the log and left the
+        // metadata would have kept the sealed index entry — which holds the
+        // note's whole text.
+        let tx = self.conn.transaction().map_err(db)?;
+        for sql in [
+            "DELETE FROM ops WHERE note = ?1",
+            "DELETE FROM snapshots WHERE note = ?1",
+            "DELETE FROM meta WHERE note = ?1",
+        ] {
+            tx.execute(sql, [note.as_bytes().as_slice()]).map_err(db)?;
+        }
+        tx.commit().map_err(db)?;
+        // `secure_delete` zeroed the pages; this takes the copies the WAL still
+        // holds of what was on them before.
+        checkpoint(&self.conn);
+        Ok(())
+    }
+
     fn notes(&self) -> Result<Vec<NoteId>> {
         let mut stmt = self
             .conn
@@ -397,6 +449,20 @@ impl Keyring for SqliteKeyring {
 
     fn put_note_key(&mut self, note: NoteId, key: &NoteKey) -> Result<()> {
         self.put("note-key", note.as_bytes(), &key.0)
+    }
+
+    fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM keys WHERE kind = ?1 AND id = ?2",
+                rusqlite::params!["note-key", note.as_bytes().as_slice()],
+            )
+            .map_err(db)?;
+        // The key is the one row whose bytes being left behind would undo the
+        // whole delete: anything else recovered from a free page is ciphertext
+        // without it.
+        checkpoint(&self.conn);
+        Ok(())
     }
 }
 

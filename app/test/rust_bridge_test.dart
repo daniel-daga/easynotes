@@ -403,6 +403,68 @@ void main() {
         );
       });
 
+      test('a note deleted for good is gone after a relaunch', () async {
+        // The whole of emptying the trash, from the app's own API and onto a real
+        // disk: the note has to be gone from the list, and still gone when the
+        // app is opened again — which is the part a store that only forgot in
+        // memory would pass everything else and fail here.
+        final dir = await Directory.systemTemp.createTemp('easynotes-forget');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final before = await RustNoteLibrary.open(dir.path, key);
+        final kept = before.openNote(await before.createNote());
+        await kept.setTitle('Groceries');
+        await kept.dispose();
+        final gone = await before.createNote();
+        final goneNote = before.openNote(gone);
+        await goneNote.setTitle('Tax papers');
+        await goneNote.addItem('shred this');
+        await goneNote.dispose();
+
+        await before.setTrashed(gone, true);
+        expect(await before.emptyTrash(), 1);
+        expect(before.notes.map((note) => note.title), ['Groceries']);
+        await before.dispose();
+
+        final after = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(after.dispose);
+        expect(after.notes.map((note) => note.title), ['Groceries']);
+        // Not findable either. The index entry held the note's whole text, so a
+        // delete that left it behind would leave the note searchable with no
+        // card to open.
+        expect(await after.search('shred'), isEmpty);
+        expect(await after.search('milk'), isEmpty);
+        // And the trash is empty rather than holding a note nothing can draw.
+        expect(await after.emptyTrash(), 0);
+      });
+
+      test(
+        'deleting one note for good leaves the rest of the device alone',
+        () async {
+          final library = await openLibraryInTempDir();
+          final kept = await library.createNote();
+          final keptNote = library.openNote(kept);
+          await keptNote.setTitle('Groceries');
+          await keptNote.addItem('milk');
+          final gone = await library.createNote();
+
+          await library.setColour(kept, NoteColour.teal);
+          await library.setPinned(kept, true);
+          await library.forgetNote(gone);
+
+          // The note beside it keeps its content and its placement: forgetting one
+          // note rewrites the account document, and a rewrite that dropped the
+          // wrong keys would show up here.
+          final notes = {for (final note in library.notes) note.id: note};
+          expect(notes.keys, [kept]);
+          expect(notes[kept]!.colour, NoteColour.teal);
+          expect(notes[kept]!.pinned, isTrue);
+          expect(notes[kept]!.items, 1);
+          await keptNote.dispose();
+        },
+      );
+
       test('a placement is not written into the note it is about', () async {
         // The property the account document exists for. A colour is this
         // person's, so it must not reach the note — which is the thing everyone

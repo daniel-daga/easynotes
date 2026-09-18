@@ -86,6 +86,85 @@ fn an_empty_envelope_is_still_an_entry(store: &mut impl OpStore) {
     assert_eq!(store.load(note).unwrap(), vec![Vec::<u8>::new()]);
 }
 
+fn forgetting_a_note_leaves_nothing_of_it(store: &mut impl OpStore) {
+    let note = NoteId::random();
+    store.append(note, b"one").unwrap();
+    store.append(note, b"two").unwrap();
+    store.put_snapshot(note, b"snap").unwrap();
+    store.put_meta(note, "sync", b"cursor").unwrap();
+    // The one that matters most: the index entry holds the note's whole text, so
+    // a delete that missed it would leave the readable copy behind.
+    store
+        .put_meta(note, "index", b"the note, in words")
+        .unwrap();
+
+    store.forget(note).unwrap();
+
+    assert!(store.load(note).unwrap().is_empty());
+    assert!(store.get_snapshot(note).unwrap().is_none());
+    assert!(store.get_meta(note, "sync").unwrap().is_none());
+    assert!(store.get_meta(note, "index").unwrap().is_none());
+    assert_eq!(store.log_len(note).unwrap(), 0);
+    // And it is not a note this device has any more, which is what the note list
+    // reads.
+    assert!(!store.notes().unwrap().contains(&note));
+}
+
+fn forgetting_a_note_leaves_the_others_alone(store: &mut impl OpStore) {
+    let (gone, kept) = (NoteId::random(), NoteId::random());
+    for note in [gone, kept] {
+        store.append(note, b"log").unwrap();
+        store.put_snapshot(note, b"snap").unwrap();
+        store.put_meta(note, "index", b"words").unwrap();
+    }
+
+    store.forget(gone).unwrap();
+
+    assert_eq!(store.load(kept).unwrap(), vec![b"log".to_vec()]);
+    assert_eq!(store.get_snapshot(kept).unwrap().unwrap(), b"snap");
+    assert_eq!(store.get_meta(kept, "index").unwrap().unwrap(), b"words");
+    assert_eq!(store.notes().unwrap(), vec![kept]);
+}
+
+fn forgetting_a_note_that_is_not_there_is_not_an_error(store: &mut impl OpStore) {
+    // Emptying an empty trash, and finishing a delete a crash interrupted, both
+    // arrive here.
+    let note = NoteId::random();
+    store.forget(note).unwrap();
+    store.append(note, b"log").unwrap();
+    store.forget(note).unwrap();
+    store.forget(note).unwrap();
+    assert!(store.load(note).unwrap().is_empty());
+}
+
+fn a_forgotten_note_can_be_written_again(store: &mut impl OpStore) {
+    // Not because anything asks for it — a note ID is random and never reused —
+    // but because a store that left a tombstone where a note had been would be
+    // hiding state the trait does not describe.
+    let note = NoteId::random();
+    store.append(note, b"first life").unwrap();
+    store.forget(note).unwrap();
+    store.append(note, b"second life").unwrap();
+    assert_eq!(store.load(note).unwrap(), vec![b"second life".to_vec()]);
+}
+
+fn the_keyring_forgets_one_key_and_keeps_the_rest(keyring: &mut impl Keyring) {
+    let (gone, kept) = (NoteId::random(), NoteId::random());
+    keyring.put_device_seed(&DeviceSeed([7u8; 64])).unwrap();
+    keyring.put_note_key(gone, &NoteKey([1u8; 32])).unwrap();
+    keyring.put_note_key(kept, &NoteKey([2u8; 32])).unwrap();
+
+    keyring.forget_note_key(gone).unwrap();
+
+    assert!(keyring.note_key(gone).unwrap().is_none());
+    assert_eq!(keyring.note_key(kept).unwrap().unwrap().0, [2u8; 32]);
+    // The identity is not a note key, and forgetting a note is not forgetting
+    // the device.
+    assert_eq!(keyring.device_seed().unwrap().unwrap().0, [7u8; 64]);
+    // Twice is the same as once.
+    keyring.forget_note_key(gone).unwrap();
+}
+
 fn the_keyring_round_trips(keyring: &mut impl Keyring) {
     let note = NoteId::random();
     assert!(keyring.device_seed().unwrap().is_none());
@@ -138,8 +217,28 @@ macro_rules! store_suite {
                 super::an_empty_envelope_is_still_an_entry(&mut $store);
             }
             #[test]
+            fn forgetting_a_note_leaves_nothing_of_it() {
+                super::forgetting_a_note_leaves_nothing_of_it(&mut $store);
+            }
+            #[test]
+            fn forgetting_a_note_leaves_the_others_alone() {
+                super::forgetting_a_note_leaves_the_others_alone(&mut $store);
+            }
+            #[test]
+            fn forgetting_a_note_that_is_not_there_is_not_an_error() {
+                super::forgetting_a_note_that_is_not_there_is_not_an_error(&mut $store);
+            }
+            #[test]
+            fn a_forgotten_note_can_be_written_again() {
+                super::a_forgotten_note_can_be_written_again(&mut $store);
+            }
+            #[test]
             fn the_keyring_round_trips() {
                 super::the_keyring_round_trips(&mut $keyring);
+            }
+            #[test]
+            fn the_keyring_forgets_one_key_and_keeps_the_rest() {
+                super::the_keyring_forgets_one_key_and_keeps_the_rest(&mut $keyring);
             }
         }
     };
@@ -308,6 +407,60 @@ mod sqlite_file {
                 !contains(&file, &[0x5A; 32]),
                 "a note key is in the database in the clear"
             );
+        }
+    }
+
+    #[test]
+    fn a_forgotten_note_is_not_in_the_database_or_its_wal() {
+        // The other half of `nothing_readable_is_in_the_database_or_its_wal`.
+        // That one holds that nothing readable is ever written; this one holds
+        // that what was written stops being there — which a `DELETE` does not do
+        // on its own. Both read the actual bytes, because both are claims about
+        // the file and not about the API.
+        let dir = tempfile::tempdir().unwrap();
+        let master = MasterKey([5u8; 32]);
+        let note = NoteId::random();
+        let mut store = SqliteStore::open(dir.path().join("notes.db"), master.clone()).unwrap();
+        let mut keyring = SqliteKeyring::open(dir.path().join("keys.db"), master).unwrap();
+
+        // Everything a note puts in the two files. The envelopes are ciphertext
+        // and the metadata is sealed, so the strings below stand in for them: if
+        // a recognisable one survives, so would the real thing.
+        store.append(note, b"ENVELOPE-ONE").unwrap();
+        store.append(note, b"ENVELOPE-TWO").unwrap();
+        store.put_snapshot(note, b"SNAPSHOT-HERE").unwrap();
+        store
+            .put_meta(note, "index", b"THE-NOTES-OWN-WORDS")
+            .unwrap();
+        // A recognisable 32 bytes rather than a repeated one, so that the filler
+        // below cannot accidentally write the needle this looks for.
+        let secret = NoteKey(*b"NOTE-KEY-THAT-MUST-NOT-SURVIVE!!");
+        keyring.put_note_key(note, &secret).unwrap();
+        // Enough other notes that a page is not still in SQLite's cache,
+        // unwritten.
+        for i in 0..200u8 {
+            store.append(NoteId::random(), &[i; 64]).unwrap();
+        }
+
+        store.forget(note).unwrap();
+        keyring.forget_note_key(note).unwrap();
+
+        // The connections are still open: this is the app mid-session, not a
+        // relaunch, which is the harder case for the WAL.
+        for file in secrets_in(dir.path()) {
+            for needle in [
+                &b"ENVELOPE-ONE"[..],
+                b"ENVELOPE-TWO",
+                b"SNAPSHOT-HERE",
+                b"THE-NOTES-OWN-WORDS",
+                &secret.0,
+            ] {
+                assert!(
+                    !contains(&file, needle),
+                    "a forgotten note left {} bytes behind",
+                    needle.len()
+                );
+            }
         }
     }
 

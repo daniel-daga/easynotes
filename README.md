@@ -36,11 +36,19 @@ used to take most of a second. [ADR 0009](docs/adr/0009-search-index.md) says ho
 it stays honest about a note it has not opened, and what is now the slowest thing
 a launch does.
 
+A note in the trash can be deleted for good, one at a time or all at once, and
+that means gone: the log, the snapshot, the search entry that held its text, the
+key that opened it and this person's placement of it. [ADR
+0010](docs/adr/0010-forgetting-a-note.md) says in what order, and why a `DELETE`
+alone was not enough — it leaves the bytes in the file, which a test now reads
+the file to check. What it cannot do is reach the relay's copy or a guest's: the
+dialog that deletes a list says so, because that is the promise the button would
+otherwise be making.
+
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
-accounts land. Nor is there a way to delete a note for good — the trash keeps it,
-out of sight and still on the disk. Tags and reminders are the rest of that
-document's remit and are not built.
+accounts land. Tags and reminders are the rest of that document's remit and are
+not built.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -108,6 +116,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0007](docs/adr/0007-note-list.md) | The note list: listing notes means opening them |
 | [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
 | [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
+| [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
 
 ## Security, in one paragraph
 
@@ -123,7 +132,11 @@ wire rather than trusting the claim, and the same check runs against the local
 database and its write-ahead log. The one thing on this device that holds a note
 in a form the CRDT did not produce — the search index — is sealed under that
 note's own key, so it cannot be read by anything that could not already read the
-note, and cannot outlive access to it. The sync engine that moves those envelopes
+note, and cannot outlive access to it. Deleting a note removes all of that and
+overwrites it rather than unlinking it, which
+`a_forgotten_note_is_not_in_the_database_or_its_wal` checks against the actual
+bytes of both databases; it is this device's copy and no other, and a note that
+was shared stays with whoever holds its key until Slice 3 brings revocation. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.
 

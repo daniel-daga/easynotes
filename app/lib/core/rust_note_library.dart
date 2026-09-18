@@ -115,6 +115,12 @@ class RustNoteLibrary implements NoteLibrary {
   Future<void> setTrashed(String noteId, bool trashed) =>
       _library.setTrashed(id: noteId, trashed: trashed);
 
+  @override
+  Future<void> forgetNote(String noteId) => _library.forgetNote(id: noteId);
+
+  @override
+  Future<int> emptyTrash() => _library.emptyTrash();
+
   /// Read straight through to Rust, like [notes]: the account document is the
   /// only copy of this, and a cached one would be stale the moment another
   /// screen changed it.

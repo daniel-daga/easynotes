@@ -681,17 +681,109 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Throw a note away, or take it back out.
     ///
-    /// The trash is where deleting a note goes until there is a way to delete one
-    /// for good: the content is still on the disk and still syncing, and what has
-    /// changed is that this person does not see it. Emptying the trash has to
-    /// remove the log, the snapshot, the metadata and the key, which is a store
-    /// question rather than a placement one — it is written down in
-    /// [ADR 0008](../../docs/adr/0008-account-document.md) and not built here.
+    /// Reversible, and nothing is destroyed: the content is still on the disk and
+    /// still syncing, and what has changed is that this person does not see it.
+    /// [`NoteCore::forget_note`] is the irreversible one, and the trash is what
+    /// it is reached from.
     pub fn set_trashed(&mut self, id: NoteId, trashed: bool) -> Result<()> {
         if trashed && self.placement(id).pinned {
             self.set_pinned(id, false)?;
         }
         self.apply_account(AccountEdit::SetTrashed { note: id, trashed })
+    }
+
+    // -- forgetting a note --------------------------------------------------
+    //
+    // The one operation here that destroys something. Everything else in this
+    // file can be undone by doing the opposite of it; this cannot be undone at
+    // all, which is why the UI reaches it only from the trash and only behind a
+    // confirmation. [ADR 0010](../../docs/adr/0010-forgetting-a-note.md) records
+    // what it does, in what order, and what it cannot do.
+
+    /// Forget a note for good: its log, its snapshot, its sealed index entry,
+    /// its key, and this person's placement of it.
+    ///
+    /// **The order is the whole of the crash story**, and it is store, then key,
+    /// then placement:
+    ///
+    /// * The store goes first because that is where the note *is* — the log, the
+    ///   snapshot, and the index entry that holds its whole text. Each store does
+    ///   that much atomically ([`OpStore::forget`]), so there is no moment at
+    ///   which some of those three are gone and the rest are readable.
+    /// * The key goes second, and cannot go in the same transaction because it is
+    ///   not in the same database. A crash in between leaves 32 bytes that open
+    ///   nothing that exists, which is the harmless way round; the other order
+    ///   would leave the note's ciphertext with no way to read it — indistinguishable
+    ///   from a note whose key never arrived, and so something the next launch
+    ///   would keep rather than finish deleting.
+    /// * The placement goes last, because a note with no placement keys reads
+    ///   back as a note *in the grid* ([`AccountEdit::ForgetNote`]). Clearing it
+    ///   before the note was gone would put the note the person just deleted back
+    ///   on the shelf they deleted it from.
+    ///
+    /// **What it does not do** is reach anything that is not this device. A note
+    /// that has been shared is on the relay and on every guest's device, sealed
+    /// under a key they hold; forgetting it here removes this device's copy and
+    /// nothing else, and there is no message that would remove theirs. That is
+    /// revocation, it needs key rotation, and it is Slice 3's.
+    ///
+    /// Forgetting a note this device does not have is not an error, for the same
+    /// reason [`OpStore::forget`] says so: it is what finishing an interrupted
+    /// delete looks like.
+    pub fn forget_note(&mut self, id: NoteId) -> Result<()> {
+        if id == ACCOUNT_DOC {
+            // Not a note, and forgetting it would take this person's every
+            // colour, pin and placement with it — under a reserved ID no caller
+            // can have been handed by the note list.
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
+        // In memory first, so that nothing between here and the end of this
+        // function can write back what is about to be removed: a reindex of a
+        // still-open document would put the note's text in a fresh metadata row
+        // after the store had forgotten the old one.
+        self.open.remove(&id);
+        self.index.remove(&id);
+        self.store.forget(id)?;
+        self.keyring.forget_note_key(id)?;
+        self.apply_account(AccountEdit::ForgetNote { note: id })?;
+        // `apply_account` refreshes the list, but only when it had something to
+        // write: a note nobody ever coloured, pinned or ordered produces an empty
+        // update and returns early. The card still has to go.
+        self.refresh_library();
+        Ok(())
+    }
+
+    /// Every note this person has thrown away, which is what emptying the trash
+    /// would forget.
+    ///
+    /// Separate from [`NoteCore::empty_trash`] because a caller may have work to
+    /// do per note before the rows go: the app has a socket open for each of
+    /// them, and an envelope arriving for a note that has just been forgotten
+    /// would write a sync cursor — a store row, and a store row is a note.
+    ///
+    /// A trashed note whose key this device no longer has is not in this list,
+    /// for the reason [`NoteCore::notes`] skips it: it cannot be read, drawn or
+    /// searched, and what is left of it is ciphertext.
+    pub fn trashed_notes(&mut self) -> Result<Vec<NoteId>> {
+        Ok(self
+            .notes()?
+            .into_iter()
+            .filter(|note| note.placement.trashed)
+            .map(|note| note.id)
+            .collect())
+    }
+
+    /// Forget every note in the trash. Returns how many there were.
+    ///
+    /// The list is taken before anything is forgotten, because
+    /// [`NoteCore::notes`] rebuilds the index and the placements, and iterating a
+    /// list while removing from it is how a note gets missed.
+    pub fn empty_trash(&mut self) -> Result<usize> {
+        let trashed = self.trashed_notes()?;
+        for id in &trashed {
+            self.forget_note(*id)?;
+        }
+        Ok(trashed.len())
     }
 
     /// Move a note so that it lands at `to_index` in the grid's order.
@@ -801,6 +893,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let mut unplaced: Vec<(u64, NoteId)> = Vec::new();
         for id in self.store.notes()? {
             if id == ACCOUNT_DOC || self.placements.placements.contains_key(&id) {
+                continue;
+            }
+            // A note this device has no key for gets no placement, for the same
+            // reason `notes` gives it no card: there is nothing to show and
+            // nothing that could be shown. It is also what keeps a forgotten note
+            // forgotten — a late-arriving envelope can leave a sync cursor behind
+            // for one ([`NoteCore::trashed_notes`]), and a placement written from
+            // that row would be a permanent entry in a document nothing compacts,
+            // about a note that does not exist.
+            if self.keyring.note_key(id)?.is_none() {
                 continue;
             }
             unplaced.push((self.ordinal(id)?, id));
