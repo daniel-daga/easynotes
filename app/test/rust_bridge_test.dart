@@ -405,6 +405,109 @@ void main() {
         );
       });
 
+      test('labels survive a relaunch, and a label is its notes', () async {
+        // A label is a placement like a colour, so the same question: across the
+        // bridge, into the account document, onto the disk, and back.
+        final dir = await Directory.systemTemp.createTemp('easynotes-labels');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final before = await RustNoteLibrary.open(dir.path, key);
+        final shopping = await before.createNote();
+        final chores = await before.createNote();
+        expect(await before.addTag(shopping, 'errands'), 'errands');
+        await before.addTag(shopping, 'weekly shop');
+        await before.addTag(chores, 'errands');
+        await before.dispose();
+
+        final after = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(after.dispose);
+        final notes = {for (final note in after.notes) note.id: note};
+        expect(notes[shopping]!.tags, ['errands', 'weekly shop']);
+        expect(notes[chores]!.tags, ['errands']);
+        // A label is counted by the notes that carry it, and sorted for a menu.
+        expect(after.tags, const [
+          Tag(name: 'errands', notes: 2),
+          Tag(name: 'weekly shop', notes: 1),
+        ]);
+
+        // Taking it off the last note takes the label away: there is no list of
+        // labels apart from the notes.
+        await after.removeTag(shopping, 'weekly shop');
+        expect(after.tags, const [Tag(name: 'errands', notes: 2)]);
+      });
+
+      test(
+        'a label typed in another casing is the label already there',
+        () async {
+          // Two chips that look the same would be two keys in the document, so the
+          // core reuses the one this device has rather than making a second.
+          final library = await openLibraryInTempDir();
+          final first = await library.createNote();
+          final second = await library.createNote();
+          await library.addTag(first, 'Recipes');
+
+          expect(await library.addTag(second, '  recipes '), 'Recipes');
+          expect(library.tags, const [Tag(name: 'Recipes', notes: 2)]);
+
+          // And a name that is not a name reaches nothing.
+          expect(await library.addTag(second, '   '), isNull);
+          expect(library.tags, const [Tag(name: 'Recipes', notes: 2)]);
+        },
+      );
+
+      test('a label is cut at the length the field stops at', () async {
+        // `maxLabelLength` is written in Dart and in Rust, because a `maxLength`
+        // has to be a constant. This is what holds the two numbers together.
+        final library = await openLibraryInTempDir();
+        final id = await library.createNote();
+        final stored = await library.addTag(id, 'x' * (maxLabelLength + 10));
+        expect(stored!.length, maxLabelLength);
+      });
+
+      test('a label is not written into the note it is about', () async {
+        // The same property a colour has, and the reason labels are in the
+        // account document: a household sharing a list does not share one
+        // person's filing.
+        final library = await openLibraryInTempDir();
+        final id = await library.createNote();
+        final core = library.openNote(id);
+        addTearDown(core.dispose);
+        await core.setTitle('Groceries');
+        final blob = await core.exportShareBlob();
+        await library.addTag(id, 'errands');
+
+        final guestDir = await Directory.systemTemp.createTemp(
+          'easynotes-guest-labels',
+        );
+        addTearDown(() => guestDir.delete(recursive: true));
+        final guest = await openLibraryInTempDir(guestDir);
+        final joined = await guest.join(blob);
+        expect(
+          guest.notes.singleWhere((note) => note.id == joined).tags,
+          isEmpty,
+          reason: "one person's label reached another person's device",
+        );
+        expect(guest.tags, isEmpty);
+      });
+
+      test('a note deleted for good takes its labels with it', () async {
+        final library = await openLibraryInTempDir();
+        final gone = await library.createNote();
+        final kept = await library.createNote();
+        await library.addTag(gone, 'errands');
+        await library.addTag(gone, 'holiday');
+        await library.addTag(kept, 'errands');
+
+        await library.forgetNote(gone);
+
+        // The shared label is down to one note; the one only that note had is
+        // gone, because a label alive with nothing under it would be replayed at
+        // every launch for ever.
+        expect(library.tags, const [Tag(name: 'errands', notes: 1)]);
+        expect(library.notes.single.tags, ['errands']);
+      });
+
       test('a note deleted for good is gone after a relaunch', () async {
         // The whole of emptying the trash, from the app's own API and onto a real
         // disk: the note has to be gone from the list, and still gone when the

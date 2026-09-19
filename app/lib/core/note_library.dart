@@ -39,6 +39,38 @@ enum NoteColour {
 /// a personal one: it lives in the account document beside the colours.
 enum NoteLayout { grid, list }
 
+/// The longest a label may be.
+///
+/// The same number the core cuts a name at (`MAX_TAG_LEN` in
+/// `core/src/crdt/account.rs`), written twice because a field's `maxLength` has
+/// to be a constant here. Being wrong costs a label that is quietly shortened,
+/// not a label that is refused, and `a_label_is_cut_at_the_length_the_field_stops_at`
+/// in the bridge test holds the two numbers together.
+const maxLabelLength = 48;
+
+/// One label, and how many notes carry it.
+///
+/// The count is what the filter menu shows beside the name, and it is also the
+/// whole of a label's existence: there is no list of labels apart from the notes
+/// that have them, so taking a label off its last note takes the label away.
+@immutable
+class Tag {
+  const Tag({required this.name, required this.notes});
+
+  final String name;
+  final int notes;
+
+  @override
+  bool operator ==(Object other) =>
+      other is Tag && other.name == name && other.notes == notes;
+
+  @override
+  int get hashCode => Object.hash(name, notes);
+
+  @override
+  String toString() => 'Tag("$name", $notes)';
+}
+
 /// One note as the grid draws it: enough for a card, without opening the note.
 @immutable
 class NoteSummary {
@@ -52,6 +84,7 @@ class NoteSummary {
     this.pinned = false,
     this.archived = false,
     this.trashed = false,
+    this.tags = const [],
   });
 
   final String id;
@@ -73,6 +106,9 @@ class NoteSummary {
   final bool archived;
   final bool trashed;
 
+  /// The labels on this note, sorted, each once.
+  final List<String> tags;
+
   /// Whether this note belongs in the grid rather than in the archive or the
   /// trash. The trash wins: a note that was archived and then thrown away is in
   /// one place, not two.
@@ -89,7 +125,8 @@ class NoteSummary {
       other.pinned == pinned &&
       other.archived == archived &&
       other.trashed == trashed &&
-      listEquals(other.preview, preview);
+      listEquals(other.preview, preview) &&
+      listEquals(other.tags, tags);
 
   @override
   int get hashCode => Object.hash(
@@ -102,6 +139,7 @@ class NoteSummary {
     pinned,
     archived,
     trashed,
+    Object.hashAll(tags),
   );
 
   @override
@@ -176,6 +214,25 @@ abstract class NoteLibrary {
 
   /// Hold a note at the top of the grid, or stop.
   Future<void> setPinned(String noteId, bool pinned);
+
+  /// Every label in use on this device, with how many notes carry each, in the
+  /// order a menu wants them.
+  ///
+  /// Read straight through rather than watched: the note list already carries
+  /// every note's labels, so anything drawing this is rebuilding on
+  /// [watchNotes] anyway.
+  List<Tag> get tags;
+
+  /// Put a label on a note, and return the name it was stored under.
+  ///
+  /// Null for something that is not a name — whitespace, or nothing. The name
+  /// that comes back may not be the one that went in: a label differing only in
+  /// case from one this device already has *is* that one, so the UI must draw
+  /// what it is told rather than what was typed.
+  Future<String?> addTag(String noteId, String tag);
+
+  /// Take a label off a note. Not an error if it was never on it.
+  Future<void> removeTag(String noteId, String tag);
 
   /// Put a note out of the way, or bring it back.
   Future<void> setArchived(String noteId, bool archived);

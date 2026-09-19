@@ -183,6 +183,181 @@ fn moving_a_note_puts_it_where_it_was_asked<D: NoteDoc>() {
     assert_eq!(titles(&core.notes().unwrap()), ["c", "b", "a"]);
 }
 
+// ---------------------------------------------------------------------------
+// Labels
+// ---------------------------------------------------------------------------
+
+/// The same property a colour has, for the same reason: a label is what *this
+/// person* calls a note, and a household sharing a shopping list does not share
+/// one person's filing.
+fn labelling_a_note_puts_nothing_in_the_note<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(id, "groceries").unwrap();
+    let before = core.store().load(id).unwrap().len();
+
+    core.add_tag(id, "errands").unwrap();
+    core.add_tag(id, "weekly shop").unwrap();
+
+    assert_eq!(
+        core.store().load(id).unwrap().len(),
+        before,
+        "a label was written to the note's own log"
+    );
+}
+
+fn a_label_comes_back_on_the_summary<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    assert_eq!(
+        core.add_tag(id, "errands").unwrap().as_deref(),
+        Some("errands")
+    );
+    core.add_tag(id, "recipes").unwrap();
+
+    let notes = core.notes().unwrap();
+    assert_eq!(
+        notes[0].placement.tags.iter().cloned().collect::<Vec<_>>(),
+        ["errands", "recipes"]
+    );
+    assert_eq!(
+        core.tags(),
+        vec![("errands".to_string(), 1), ("recipes".to_string(), 1)]
+    );
+
+    core.remove_tag(id, "errands").unwrap();
+    assert_eq!(
+        core.placement(id).tags.iter().cloned().collect::<Vec<_>>(),
+        ["recipes"]
+    );
+    // A label is the notes that carry it and nothing else, so taking it off the
+    // last one takes the label away.
+    assert_eq!(core.tags(), vec![("recipes".to_string(), 1)]);
+}
+
+/// The reuse rule. Two labels that differ only in case are one label, decided
+/// where the existing ones are known — otherwise a person who types `recipes`
+/// under the `Recipes` they made last week gets two chips that look the same.
+fn a_label_that_differs_only_in_case_is_the_one_already_there<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let first = core.create_note(NoteKind::Checklist).unwrap();
+    let second = core.create_note(NoteKind::Checklist).unwrap();
+    core.add_tag(first, "Recipes").unwrap();
+
+    // On another note, under another casing, with whitespace around it.
+    assert_eq!(
+        core.add_tag(second, "  recipes ").unwrap().as_deref(),
+        Some("Recipes")
+    );
+    assert_eq!(core.tags(), vec![("Recipes".to_string(), 2)]);
+
+    // And taking it off is as forgiving as putting it on.
+    core.remove_tag(second, "RECIPES").unwrap();
+    assert_eq!(core.tags(), vec![("Recipes".to_string(), 1)]);
+}
+
+fn a_label_that_is_not_a_name_is_not_a_label<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    let before = core.store().load(ACCOUNT_DOC).unwrap().len();
+
+    assert_eq!(core.add_tag(id, "   ").unwrap(), None);
+    assert_eq!(core.add_tag(id, "").unwrap(), None);
+    // Nothing that says nothing reaches the log.
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), before);
+    assert!(core.tags().is_empty());
+
+    // Nor does taking off a label that was never on.
+    core.remove_tag(id, "errands").unwrap();
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), before);
+}
+
+/// A label is a placement, so it survives a relaunch the way a colour does —
+/// through the log, on the disk, sealed.
+fn a_label_survives_a_relaunch<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = {
+        let mut core = on_disk::<D>(dir.path());
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(id, "groceries").unwrap();
+        core.add_tag(id, "weekly shop").unwrap();
+        id
+    };
+    let mut core = on_disk::<D>(dir.path());
+    assert_eq!(
+        core.notes().unwrap()[0]
+            .placement
+            .tags
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["weekly shop"]
+    );
+    assert_eq!(core.tags(), vec![("weekly shop".to_string(), 1)]);
+    assert_eq!(core.placement(id).tags.len(), 1);
+}
+
+/// Forgetting a note takes its labels with it. Leaving them would keep a label
+/// alive with nothing under it — in a document nothing compacts, so it would be
+/// replayed at every launch for ever.
+fn forgetting_a_note_takes_its_labels_with_it<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let gone = core.create_note(NoteKind::Checklist).unwrap();
+    let kept = core.create_note(NoteKind::Checklist).unwrap();
+    core.add_tag(gone, "errands").unwrap();
+    core.add_tag(gone, "recipes").unwrap();
+    core.add_tag(kept, "recipes").unwrap();
+
+    core.forget_note(gone).unwrap();
+    core.notes().unwrap();
+
+    // The label only that note had is gone; the shared one is down to one note.
+    assert_eq!(core.tags(), vec![("recipes".to_string(), 1)]);
+    assert!(core.placement(gone).tags.is_empty());
+}
+
+/// Two labels on one note are two keys, which is what makes two devices adding
+/// two of them keep both. Against the document directly, for the reason
+/// [`two_devices_keep_both_placements`] is: there is no sync for this document
+/// yet, and this is the property that has to hold when there is.
+fn two_devices_keep_both_labels<D: NoteDoc>() {
+    let note = NoteId::random();
+    let mut phone = <D::Account as AccountDoc>::create(&[5u8; 16]);
+    let mut laptop = <D::Account as AccountDoc>::create(&[6u8; 16]);
+
+    let errands = phone
+        .apply_local(&AccountEdit::SetTag {
+            note,
+            tag: "errands".into(),
+            on: true,
+        })
+        .unwrap();
+    let recipes = laptop
+        .apply_local(&AccountEdit::SetTag {
+            note,
+            tag: "recipes".into(),
+            on: true,
+        })
+        .unwrap();
+
+    phone.apply_remote(&recipes).unwrap();
+    phone.apply_remote(&recipes).unwrap(); // and again, for nothing
+    laptop.apply_remote(&errands).unwrap();
+
+    for doc in [&phone, &laptop] {
+        assert_eq!(
+            doc.view()
+                .placement(note)
+                .tags
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["errands", "recipes"]
+        );
+    }
+    assert_eq!(phone.view(), laptop.view());
+}
+
 /// A placement is an edit like any other, so the grid has to hear about it the
 /// same way: on the stream, without being asked again.
 fn a_placement_reaches_the_list<D: NoteDoc>() {
@@ -594,6 +769,34 @@ macro_rules! backend_suite {
             #[test]
             fn a_placement_reaches_the_list() {
                 super::a_placement_reaches_the_list::<$backend>()
+            }
+            #[test]
+            fn labelling_a_note_puts_nothing_in_the_note() {
+                super::labelling_a_note_puts_nothing_in_the_note::<$backend>()
+            }
+            #[test]
+            fn a_label_comes_back_on_the_summary() {
+                super::a_label_comes_back_on_the_summary::<$backend>()
+            }
+            #[test]
+            fn a_label_that_differs_only_in_case_is_the_one_already_there() {
+                super::a_label_that_differs_only_in_case_is_the_one_already_there::<$backend>()
+            }
+            #[test]
+            fn a_label_that_is_not_a_name_is_not_a_label() {
+                super::a_label_that_is_not_a_name_is_not_a_label::<$backend>()
+            }
+            #[test]
+            fn a_label_survives_a_relaunch() {
+                super::a_label_survives_a_relaunch::<$backend>()
+            }
+            #[test]
+            fn forgetting_a_note_takes_its_labels_with_it() {
+                super::forgetting_a_note_takes_its_labels_with_it::<$backend>()
+            }
+            #[test]
+            fn two_devices_keep_both_labels() {
+                super::two_devices_keep_both_labels::<$backend>()
             }
             #[test]
             fn the_layout_is_a_grid_until_somebody_says_otherwise() {

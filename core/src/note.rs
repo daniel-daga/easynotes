@@ -12,7 +12,8 @@
 //! case.
 
 use crate::crdt::{
-    AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NoteDoc, NoteView, Placement,
+    account, AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NoteDoc, NoteView,
+    Placement,
 };
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
 use crate::error::{CoreError, Result};
@@ -669,6 +670,85 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.apply_account(AccountEdit::SetPinned { note: id, pinned })
     }
 
+    /// Every label in use on this device, and how many notes carry each.
+    ///
+    /// There is no list of labels apart from the notes that carry them: a label
+    /// exists because a note has it, and taking it off the last one takes the
+    /// label with it. See [`AccountView::tags`].
+    pub fn tags(&self) -> Vec<(String, usize)> {
+        self.placements.tags()
+    }
+
+    /// Put a label on a note, and return the name it was stored under.
+    ///
+    /// `None` for something that is not a name at all — whitespace, or nothing.
+    /// Otherwise the name after [`normalise_tag`], **except** when this device
+    /// already has a label that differs only in case: then it is that one. Typing
+    /// `recipes` under a `Recipes` this person made last week means the label they
+    /// already have, not a second one that looks the same on a chip; and since
+    /// the two are different keys in the document, nothing but this reuse keeps
+    /// them from both existing.
+    ///
+    /// What it cannot do is stop two *devices* from making that pair, each
+    /// offline and each the first to use the name. That is a real residue and it
+    /// is the honest cost of having no separate list of labels to agree about —
+    /// both show, both work, and either can be taken off.
+    ///
+    /// Labelling a note this device cannot open is refused, for the reason
+    /// forgetting the account document is: a placement is about a note, and a
+    /// note with a placement and no key is a card that cannot be drawn.
+    pub fn add_tag(&mut self, id: NoteId, tag: &str) -> Result<Option<String>> {
+        let Some(name) = account::normalise_tag(tag) else {
+            return Ok(None);
+        };
+        let name = self.existing_tag(&name).unwrap_or(name);
+        self.apply_account(AccountEdit::SetTag {
+            note: id,
+            tag: name.clone(),
+            on: true,
+        })?;
+        Ok(Some(name))
+    }
+
+    /// Take a label off a note. Not an error if it was never on it.
+    ///
+    /// Matched the way [`NoteCore::add_tag`] matches, so that a caller holding
+    /// the name a person typed removes the label they meant rather than nothing.
+    pub fn remove_tag(&mut self, id: NoteId, tag: &str) -> Result<()> {
+        let Some(name) = account::normalise_tag(tag) else {
+            return Ok(());
+        };
+        let tags = self.placement(id).tags;
+        let Some(name) = tags
+            .iter()
+            .find(|held| held.eq_ignore_ascii_case(&name))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.apply_account(AccountEdit::SetTag {
+            note: id,
+            tag: name,
+            on: false,
+        })
+    }
+
+    /// The label this device already has under this name, ignoring case.
+    ///
+    /// ASCII-insensitive and not Unicode-insensitive, deliberately: a full case
+    /// fold depends on a locale — Turkish dotless i is the standing example — and
+    /// a label that is the same one on a phone and a different one on a laptop is
+    /// worse than a label that is only ever folded where every device folds it
+    /// the same way.
+    fn existing_tag(&self, name: &str) -> Option<String> {
+        self.placements
+            .placements
+            .values()
+            .flat_map(|placement| placement.tags.iter())
+            .find(|held| held.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+
     /// Put a note in the archive, or take it out. Archiving a pinned note
     /// unpins it, as Keep does: a note cannot be both out of the way and held at
     /// the top.
@@ -745,7 +825,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.index.remove(&id);
         self.store.forget(id)?;
         self.keyring.forget_note_key(id)?;
-        self.apply_account(AccountEdit::ForgetNote { note: id })?;
+        // The labels have to be read before anything else is removed, because
+        // they are the one part of a placement that cannot be named without
+        // looking ([`AccountEdit::ForgetNote`]).
+        let tags = self.placement(id).tags.into_iter().collect();
+        self.apply_account(AccountEdit::ForgetNote { note: id, tags })?;
         // `apply_account` refreshes the list, but only when it had something to
         // write: a note nobody ever coloured, pinned or ordered produces an empty
         // update and returns early. The card still has to go.

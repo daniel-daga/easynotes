@@ -122,6 +122,50 @@ class FakeNoteLibrary implements NoteLibrary {
     _emit();
   }
 
+  /// Counted off the notes, as the real one does: a label exists because a note
+  /// carries it, and sorted so a menu holds still.
+  @override
+  List<Tag> get tags {
+    final counts = <String, int>{};
+    for (final placement in _placements.values) {
+      for (final tag in placement.tags) {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      }
+    }
+    final names = counts.keys.toList()
+      ..sort((a, b) {
+        final folded = a.toLowerCase().compareTo(b.toLowerCase());
+        return folded != 0 ? folded : a.compareTo(b);
+      });
+    return [for (final name in names) Tag(name: name, notes: counts[name]!)];
+  }
+
+  /// The core's rules, kept here so the screen sees the same thing from both:
+  /// whitespace collapsed, nothing for a name that is not one, and a label
+  /// differing only in case from one already here *is* that one.
+  @override
+  Future<String?> addTag(String noteId, String tag) async {
+    calls.add('addTag($noteId, $tag)');
+    final name = tag.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (name.isEmpty) return null;
+    final existing = tags.firstWhere(
+      (held) => held.name.toLowerCase() == name.toLowerCase(),
+      orElse: () => Tag(name: name, notes: 0),
+    );
+    _placement(noteId).tags.add(existing.name);
+    _emit();
+    return existing.name;
+  }
+
+  @override
+  Future<void> removeTag(String noteId, String tag) async {
+    calls.add('removeTag($noteId, $tag)');
+    _placement(noteId).tags.removeWhere(
+      (held) => held.toLowerCase() == tag.trim().toLowerCase(),
+    );
+    _emit();
+  }
+
   @override
   Future<void> setArchived(String noteId, bool archived) async {
     calls.add('setArchived($noteId, $archived)');
@@ -245,6 +289,7 @@ class FakeNoteLibrary implements NoteLibrary {
           pinned: _placements[id]?.pinned ?? false,
           archived: _placements[id]?.archived ?? false,
           trashed: _placements[id]?.trashed ?? false,
+          tags: [...?_placements[id]?.tags]..sort(),
         ),
     ];
     // Pinned first, as the core sorts them; the rest keep the order they were
@@ -262,4 +307,5 @@ class _Placement {
   bool pinned = false;
   bool archived = false;
   bool trashed = false;
+  final Set<String> tags = {};
 }

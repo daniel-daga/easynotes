@@ -25,6 +25,15 @@ Uint8List? masterKeyBesideTheDatabase({required String dir}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>
 abstract class Library implements RustOpaqueInterface {
+  /// Put a label on a note, and return the name it was stored under.
+  ///
+  /// `null` for something that is not a name — whitespace, or nothing — so a
+  /// field submitted empty is a no-op rather than a label called "". The name
+  /// that comes back may not be the one that went in: a label differing only in
+  /// case from one this device already has *is* that one, and the UI has to draw
+  /// the label that exists rather than the casing that was typed.
+  Future<String?> addTag({required String id, required String tag});
+
   /// Start syncing every note with the relay at `relay` (`http://host:port`
   /// or `wss://host`), and every note made or joined after this.
   ///
@@ -128,6 +137,9 @@ abstract class Library implements RustOpaqueInterface {
     masterKey: masterKey,
   );
 
+  /// Take a label off a note. Not an error if it was never on it.
+  Future<void> removeTag({required String id, required String tag});
+
   /// Every note whose text contains all of the query's words.
   ///
   /// Local, and local in the strong sense: it reads the same sealed index the
@@ -162,6 +174,12 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Where this device stands with the relay, over all its notes.
   SyncStatus syncStatus();
+
+  /// Every label in use on this device, with how many notes carry each.
+  ///
+  /// Sorted the way a menu wants them, which the core decides: a label is read
+  /// by a person, so the order ignores case.
+  List<TagView> tags();
 
   /// Every write the store has made since this was last called, oldest first,
   /// and forget them.
@@ -302,6 +320,11 @@ class NoteSummaryView {
   final bool archived;
   final bool trashed;
 
+  /// The labels this person has put on the note, sorted. A `Vec` rather than a
+  /// set because that is what crosses the bridge; it holds each label once,
+  /// which is the document's doing and not this type's.
+  final List<String> tags;
+
   const NoteSummaryView({
     required this.id,
     required this.title,
@@ -312,6 +335,7 @@ class NoteSummaryView {
     required this.pinned,
     required this.archived,
     required this.trashed,
+    required this.tags,
   });
 
   @override
@@ -324,7 +348,8 @@ class NoteSummaryView {
       colour.hashCode ^
       pinned.hashCode ^
       archived.hashCode ^
-      trashed.hashCode;
+      trashed.hashCode ^
+      tags.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -339,7 +364,8 @@ class NoteSummaryView {
           colour == other.colour &&
           pinned == other.pinned &&
           archived == other.archived &&
-          trashed == other.trashed;
+          trashed == other.trashed &&
+          tags == other.tags;
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
@@ -524,4 +550,27 @@ class SyncStatus {
           pending == other.pending &&
           lastSeq == other.lastSeq &&
           lastError == other.lastError;
+}
+
+/// One label, and how many notes carry it.
+///
+/// The count is what a filter menu shows beside the name, and it is also the
+/// whole of a label's existence: there is no list of labels apart from the notes
+/// that have them, so a label with no notes is not a label.
+class TagView {
+  final String name;
+  final int notes;
+
+  const TagView({required this.name, required this.notes});
+
+  @override
+  int get hashCode => name.hashCode ^ notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TagView &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          notes == other.notes;
 }
