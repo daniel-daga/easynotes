@@ -1,0 +1,25 @@
+[package]
+name = "easynotes-web-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "What opening a device costs in a browser: IndexedDB plus the unsealing, at three sizes."
+
+[lib]
+crate-type = ["cdylib"]
+
+# Only ever built for the browser. The core's SQLite store compiles C and its
+# native sync client wants a reactor; neither belongs in a bundle, and both come
+# with `easynotes-core`'s default features.
+[dependencies]
+easynotes-core = { path = "../../core", default-features = false, features = ["web-store"] }
+js-sys = "0.3.105"
+wasm-bindgen = "0.2.128"
+
+# The same choice the app makes, so the numbers are about the same build: one
+# backend, and `DefaultNoteDoc` is whichever of the two is compiled in.
+[features]
+default = ["yrs-backend"]
+automerge-backend = ["easynotes-core/automerge-backend"]
+yrs-backend = ["easynotes-core/yrs-backend"]

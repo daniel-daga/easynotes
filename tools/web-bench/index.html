@@ -1,0 +1,24 @@
+<!doctype html>
+<!--
+  The page `just bench-web` loads. It has no UI, because the benchmark is not
+  about one: `bench.mjs` drives it from outside through the module it imports
+  here, and everything it measures is in that module or in IndexedDB.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>EasyNotes — what a launch costs in a browser</title>
+  </head>
+  <body>
+    <p>Nothing to see. Run <code>just bench-web</code>.</p>
+    <script type="module">
+      import init, { seed, open, list, close } from './easynotes_web_bench.js';
+      await init();
+      // Under one name, not four on `window`: two of them are `open` and
+      // `close`, which a page already has and which do something else entirely.
+      // The driver reaches them through `page.evaluate`, which runs in the
+      // page's own scope and cannot see a module's bindings.
+      window.bench = { seed, open, list, close };
+    </script>
+  </body>
+</html>

@@ -134,6 +134,13 @@ that a tab reaches it, publishes, and is acknowledged. Whatever serves the resul
 `Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
 threaded and will not start without cross-origin isolation.
 
+`just bench-web` is the third, and it needs none of that build: it compiles the
+core alone for WebAssembly and measures what opening a device costs a tab —
+reading the database, replaying the account document, and unsealing one index
+entry a note. Two hundred notes is about 148 ms, five sixths of it IndexedDB.
+[ADR 0011](docs/adr/0011-the-web-store.md) has the table and what it means for
+reading the whole database at open.
+
 ## Decisions
 
 | | |

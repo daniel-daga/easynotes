@@ -153,6 +153,34 @@ bench-compaction:
 bench-library:
     cargo run --release -p easynotes-core --example bench_library
 
+# The same question `bench-library` asks, asked of a browser: what reading the
+# whole database out of IndexedDB and unsealing it costs a tab at three sizes.
+# Prints the table in ADR 0011.
+#
+# Needs `wasm-bindgen-cli` and the `wasm32-unknown-unknown` target — `just
+# setup-web` installs both — and a Chromium, which `CHROME_EXECUTABLE` names.
+# It does not need the Flutter web build: no widget is drawn, because the
+# question is what the store and the crypto cost rather than what a frame does.
+bench-web port="8100":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out={{justfile_directory()}}/target/web-bench
+    cargo build --release -p easynotes-web-bench --target wasm32-unknown-unknown
+    # `--target web`, so the page loads it as a module with no bundler in the
+    # way. No `wasm-opt`: it is a size pass, the build is already `--release`,
+    # and reaching for it would drag in the binaryen download that CLAUDE.md
+    # has to work around.
+    wasm-bindgen --target web --no-typescript --out-dir "$out" \
+        {{justfile_directory()}}/target/wasm32-unknown-unknown/release/easynotes_web_bench.wasm
+    cp {{justfile_directory()}}/tools/web-bench/index.html "$out/"
+    cd {{justfile_directory()}}/tools/web-bench
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    python3 {{justfile_directory()}}/tools/web-smoke/serve.py "$out" {{port}} &
+    server=$!
+    trap 'kill $server 2>/dev/null || true' EXIT
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node bench.mjs http://127.0.0.1:{{port}}/
+
 # What each CRDT backend adds to a WebAssembly bundle.
 bench-wasm:
     #!/usr/bin/env bash
