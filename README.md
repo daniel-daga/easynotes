@@ -56,10 +56,19 @@ engine above the socket is the same code either way — only the transport diffe
 — and the relay learned to answer the handshake for a page, which it could not
 before.
 
+Notes can be labelled, and a label is a shelf: hold a card, type a name, and the
+drawer grows an entry with that label's notes on it — with a search made there
+searching only them, and a note made there getting the label rather than
+appearing and vanishing. Labels are personal like the colours, for the same
+reason and in the same document, and a label is nothing but the notes that carry
+it: take it off the last one and it is gone. [ADR
+0008](docs/adr/0008-account-document.md) says why each label is a key of its own
+rather than a list in one.
+
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
-accounts land. Tags and reminders are the rest of that document's remit and are
-not built.
+accounts land. Reminders are the rest of that document's remit and are not built,
+and a label cannot yet be renamed.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.

@@ -167,6 +167,21 @@ class RustNoteLibrary implements NoteLibrary {
   Future<void> setPinned(String noteId, bool pinned) =>
       _library.setPinned(id: noteId, pinned: pinned);
 
+  /// Read straight through to Rust, like [notes]: the account document is the
+  /// only copy of this.
+  @override
+  List<Tag> get tags => [
+    for (final tag in _library.tags()) Tag(name: tag.name, notes: tag.notes),
+  ];
+
+  @override
+  Future<String?> addTag(String noteId, String tag) =>
+      _library.addTag(id: noteId, tag: tag);
+
+  @override
+  Future<void> removeTag(String noteId, String tag) =>
+      _library.removeTag(id: noteId, tag: tag);
+
   @override
   Future<void> setArchived(String noteId, bool archived) =>
       _library.setArchived(id: noteId, archived: archived);
@@ -278,6 +293,7 @@ class RustNoteLibrary implements NoteLibrary {
     pinned: s.pinned,
     archived: s.archived,
     trashed: s.trashed,
+    tags: s.tags,
   );
 
   /// The two palettes are the same list in two places, which is what keeps the

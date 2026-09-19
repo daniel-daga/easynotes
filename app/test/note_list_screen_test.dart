@@ -474,6 +474,170 @@ void main() {
     );
   });
 
+  // -- labels ---------------------------------------------------------------
+
+  /// Put a label on a note the way a person does: hold the card, open the
+  /// dialog, type, add, close.
+  Future<void> labelNote(
+    WidgetTester tester,
+    String id,
+    String label,
+  ) async {
+    await tester.longPress(find.byKey(Key('note:$id')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('action-labels')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('label-field')), label);
+    await tester.tap(find.byKey(const Key('label-add')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('labels-done')));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('labelling a note tells the library and puts a chip on the card', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await labelNote(tester, 'groceries', 'errands');
+
+    expect(library.calls, contains('addTag(groceries, errands)'));
+    expect(
+      find.byKey(const Key('chip:groceries:errands')),
+      findsOneWidget,
+      reason: 'the label is part of what the card says',
+    );
+    // And only on the note it was put on.
+    expect(find.byKey(const Key('chip:hardware:errands')), findsNothing);
+  });
+
+  testWidgets('a label already on the device is offered rather than retyped', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    // The other note: the label exists now, so it is a checkbox and not a
+    // second thing to spell.
+    await tester.longPress(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('action-labels')));
+    await tester.pumpAndSettle();
+    final check = find.byKey(const Key('label-check-errands'));
+    expect(check, findsOneWidget);
+    expect(tester.widget<CheckboxListTile>(check).value, isFalse);
+
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(tester.widget<CheckboxListTile>(check).value, isTrue);
+
+    // And off again, from the same checkbox.
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('removeTag(hardware, errands)'));
+    expect(tester.widget<CheckboxListTile>(check).value, isFalse);
+  });
+
+  testWidgets('a label that is only whitespace is not a label', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', '   ');
+
+    // The field never reaches the library, so there is nothing to undo.
+    expect(library.calls.where((call) => call.startsWith('addTag')), isEmpty);
+    expect(library.tags, isEmpty);
+  });
+
+  testWidgets('a label is a shelf of its own, with what is on it', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    final shelf = find.byKey(const Key('label-shelf-errands'));
+    expect(shelf, findsOneWidget);
+    expect(
+      find.descendant(of: shelf, matching: find.text('1')),
+      findsOneWidget,
+      reason: 'a label says how many notes carry it',
+    );
+
+    await tester.tap(shelf);
+    await tester.pumpAndSettle();
+
+    // The shelf is the label, and it holds the one note that has it.
+    expect(find.text('errands'), findsWidgets);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+  });
+
+  testWidgets('a note made on a label shelf carries that label', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+
+    // Otherwise it would be made, drawn, and gone on the next frame.
+    await tester.tap(find.byKey(const Key('new-note-button')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('addTag(note-0, errands)'));
+  });
+
+  testWidgets('a shelf whose last label came off goes back to the grid', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+
+    // Taken off from underneath the screen, which is what another device doing
+    // it would look like.
+    await library.removeTag('groceries', 'errands');
+    await tester.pumpAndSettle();
+
+    // A shelf that does not exist cannot say why it is empty, so the screen goes
+    // somewhere that can.
+    expect(find.text('EasyNotes'), findsWidgets);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
+  testWidgets('a search on a label shelf searches that label', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    // "screws" is on the unlabelled note, and so is not on this shelf.
+    await tester.enterText(find.byKey(const Key('search-field')), 'screws');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('search-field')), 'milk');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
   // -- search ---------------------------------------------------------------
 
   /// A list long enough that the interesting item is off the card, which is the

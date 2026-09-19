@@ -95,6 +95,10 @@ pub struct NoteSummaryView {
     pub pinned: bool,
     pub archived: bool,
     pub trashed: bool,
+    /// The labels this person has put on the note, sorted. A `Vec` rather than a
+    /// set because that is what crosses the bridge; it holds each label once,
+    /// which is the document's doing and not this type's.
+    pub tags: Vec<String>,
 }
 
 impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
@@ -109,8 +113,19 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
             pinned: s.placement.pinned,
             archived: s.placement.archived,
             trashed: s.placement.trashed,
+            tags: s.placement.tags.into_iter().collect(),
         }
     }
+}
+
+/// One label, and how many notes carry it.
+///
+/// The count is what a filter menu shows beside the name, and it is also the
+/// whole of a label's existence: there is no list of labels apart from the notes
+/// that have them, so a label with no notes is not a label.
+pub struct TagView {
+    pub name: String,
+    pub notes: u32,
 }
 
 /// One note a search found, and the line it was found on.
@@ -945,6 +960,48 @@ impl Library {
         self.shared
             .locked()?
             .set_pinned(id, pinned)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Every label in use on this device, with how many notes carry each.
+    ///
+    /// Sorted the way a menu wants them, which the core decides: a label is read
+    /// by a person, so the order ignores case.
+    #[frb(sync)]
+    pub fn tags(&self) -> Result<Vec<TagView>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .tags()
+            .into_iter()
+            .map(|(name, notes)| TagView {
+                name,
+                notes: notes as u32,
+            })
+            .collect())
+    }
+
+    /// Put a label on a note, and return the name it was stored under.
+    ///
+    /// `null` for something that is not a name — whitespace, or nothing — so a
+    /// field submitted empty is a no-op rather than a label called "". The name
+    /// that comes back may not be the one that went in: a label differing only in
+    /// case from one this device already has *is* that one, and the UI has to draw
+    /// the label that exists rather than the casing that was typed.
+    pub fn add_tag(&self, id: String, tag: String) -> Result<Option<String>, String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .add_tag(id, &tag)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Take a label off a note. Not an error if it was never on it.
+    pub fn remove_tag(&self, id: String, tag: String) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
+            .locked()?
+            .remove_tag(id, &tag)
             .map_err(|e| e.to_string())
     }
 

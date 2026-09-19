@@ -43,6 +43,51 @@ enum _Shelf {
   };
 }
 
+/// What the screen is showing: one of the three shelves, or one label.
+///
+/// A label is a fourth shelf rather than a filter inside the other three. That
+/// is Keep's shape, and it is the one that needs no extra control: "the archived
+/// notes labelled errands" is a question nobody has wanted a button for, and
+/// giving a label its own shelf keeps the drawer a list of places rather than a
+/// place and a modifier.
+@immutable
+class _Where {
+  const _Where.shelf(this.shelf) : tag = null;
+
+  /// A label's shelf is the grid, which is what makes a new note made here land
+  /// somewhere this person can see it.
+  const _Where.tag(String this.tag) : shelf = _Shelf.notes;
+
+  final _Shelf shelf;
+  final String? tag;
+
+  String get title => tag ?? shelf.title;
+
+  String get empty =>
+      tag == null ? shelf.empty : 'Nothing here is labelled "$tag".';
+
+  /// Whether this is the plain grid, where a list can be joined.
+  bool get isGrid => tag == null && shelf == _Shelf.notes;
+
+  /// Whether a new note made here would be visible afterwards. True on the grid
+  /// and on a label — where the note is given that label, so it does not appear
+  /// and then vanish.
+  bool get takesNewNotes => shelf == _Shelf.notes;
+
+  bool holds(NoteSummary note) => tag == null
+      ? shelf.holds(note)
+      // A note keeps its labels in the archive and in the trash; what a label
+      // shows is what is on the shelf this person actually looks at.
+      : note.inGrid && note.tags.contains(tag);
+
+  @override
+  bool operator ==(Object other) =>
+      other is _Where && other.shelf == shelf && other.tag == tag;
+
+  @override
+  int get hashCode => Object.hash(shelf, tag);
+}
+
 class NoteListScreen extends StatefulWidget {
   const NoteListScreen({super.key, required this.library});
 
@@ -55,7 +100,7 @@ class NoteListScreen extends StatefulWidget {
 class _NoteListScreenState extends State<NoteListScreen> {
   /// What this person last chose, which the library remembers for them.
   late NoteLayout _layout = widget.library.layout;
-  _Shelf _shelf = _Shelf.notes;
+  _Where _where = const _Where.shelf(_Shelf.notes);
 
   /// The search box, when it is open, and what is in it.
   ///
@@ -100,9 +145,29 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   Future<void> _createNote() async {
     final id = await widget.library.createNote();
+    // Made while looking at a label, so it gets that label: otherwise the note
+    // would be created, drawn for a frame, and gone from the shelf it was made
+    // on as soon as the list refreshed.
+    final tag = _where.tag;
+    if (tag != null) await widget.library.addTag(id, tag);
     if (!mounted) return;
     await _openNote(id);
   }
+
+  /// The labels on one note, on a dialog that can put more on and take them off.
+  ///
+  /// Shown with the screen's context rather than the action sheet's, for the
+  /// reason the delete confirmation is: the sheet is popped before this opens.
+  Future<void> _labelsFor(NoteSummary note) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _LabelsDialog(library: widget.library, note: note),
+    );
+  }
+
+  /// Show one label's notes, or go back to a shelf. Either way the drawer is the
+  /// only way in, so it closes itself.
+  void _show(_Where where) => setState(() => _where = where);
 
   Future<void> _join() async {
     final blob = await showDialog<String>(
@@ -213,6 +278,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
       builder: (context) => _NoteActions(
         note: note,
         library: widget.library,
+        onLabels: () => _labelsFor(note),
         // Handed down rather than called from the sheet: the confirmation
         // outlives the sheet that asked for it, so it has to be shown with the
         // screen's context and not with one that is about to be popped.
@@ -228,7 +294,20 @@ class _NoteListScreenState extends State<NoteListScreen> {
       initialData: widget.library.notes,
       builder: (context, snapshot) {
         final all = snapshot.data ?? const <NoteSummary>[];
-        final notes = all.where(_shelf.holds).toList();
+        final notes = all.where(_where.holds).toList();
+        // Read here rather than in the drawer, so that a label appearing or
+        // disappearing follows the same rebuild every other change to the list
+        // does. A label's whole existence is the notes that carry it.
+        final tags = widget.library.tags;
+        // The label this person is looking at, gone: its last note was
+        // relabelled, trashed or deleted. Back to the grid, because a shelf that
+        // does not exist cannot say anything about why it is empty.
+        final tag = _where.tag;
+        if (tag != null && !tags.any((held) => held.name == tag)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _show(const _Where.shelf(_Shelf.notes));
+          });
+        }
         return Scaffold(
           appBar: AppBar(
             leading: _searching
@@ -250,7 +329,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     ),
                     onChanged: (value) => setState(() => _query = value),
                   )
-                : Text(_shelf.title),
+                : Text(_where.title),
             actions: [
               if (!_searching) ...[
                 SyncStatusButton(
@@ -275,7 +354,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                       : 'Show as a grid',
                   onPressed: _toggleLayout,
                 ),
-                if (widget.library.canJoin && _shelf == _Shelf.notes)
+                if (widget.library.canJoin && _where.isGrid)
                   IconButton(
                     key: const Key('join-button'),
                     icon: const Icon(Icons.group_add_outlined),
@@ -285,7 +364,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                 // Only where there is a trash and something in it. An empty
                 // trash with a button to empty it invites the one gesture that
                 // cannot be undone, for no result.
-                if (_shelf == _Shelf.trash && notes.isNotEmpty)
+                if (_where.shelf == _Shelf.trash && notes.isNotEmpty)
                   IconButton(
                     key: const Key('empty-trash-button'),
                     icon: const Icon(Icons.delete_sweep_outlined),
@@ -296,17 +375,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
             ],
           ),
           drawer: _Shelves(
-            current: _shelf,
+            current: _where,
             counts: {
               for (final shelf in _Shelf.values)
                 shelf: all.where(shelf.holds).length,
             },
-            onChosen: (shelf) => setState(() => _shelf = shelf),
+            tags: tags,
+            onChosen: _show,
           ),
           // Only where a new note would land. One made while looking at the
           // trash would appear in a grid that is not on screen, and one made
           // while searching would appear in results it does not match.
-          floatingActionButton: _shelf == _Shelf.notes && !_searching
+          floatingActionButton: _where.takesNewNotes && !_searching
               ? FloatingActionButton(
                   key: const Key('new-note-button'),
                   tooltip: 'New list',
@@ -321,7 +401,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
               ? _SearchResults(
                   library: widget.library,
                   query: _query.trim(),
-                  shelf: _shelf,
+                  where: _where,
                   // Changes when anything about the notes changes, which is what
                   // makes a result follow an edit someone else just made.
                   notes: all,
@@ -330,7 +410,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   onHold: _actionsFor,
                 )
               : notes.isEmpty
-              ? Center(key: const Key('no-notes'), child: Text(_shelf.empty))
+              ? Center(key: const Key('no-notes'), child: Text(_where.empty))
               : _NoteCollection(
                   notes: notes,
                   layout: _layout,
@@ -355,7 +435,7 @@ class _SearchResults extends StatefulWidget {
   const _SearchResults({
     required this.library,
     required this.query,
-    required this.shelf,
+    required this.where,
     required this.notes,
     required this.layout,
     required this.onTap,
@@ -364,7 +444,7 @@ class _SearchResults extends StatefulWidget {
 
   final NoteLibrary library;
   final String query;
-  final _Shelf shelf;
+  final _Where where;
   final List<NoteSummary> notes;
   final NoteLayout layout;
   final void Function(String id) onTap;
@@ -411,7 +491,7 @@ class _SearchResultsState extends State<_SearchResults> {
     // spinner that flashes says something untrue about what is happening.
     if (hits == null) return const SizedBox.shrink();
 
-    final found = hits.where((hit) => widget.shelf.holds(hit.note)).toList();
+    final found = hits.where((hit) => widget.where.holds(hit.note)).toList();
     if (found.isEmpty) {
       return Center(
         key: const Key('no-matches'),
@@ -470,17 +550,23 @@ class _NoteCollection extends StatelessWidget {
   }
 }
 
-/// The three shelves, with how many notes are on each.
+/// The three shelves and this person's labels, with how many notes are on each.
 class _Shelves extends StatelessWidget {
   const _Shelves({
     required this.current,
     required this.counts,
+    required this.tags,
     required this.onChosen,
   });
 
-  final _Shelf current;
+  final _Where current;
   final Map<_Shelf, int> counts;
-  final void Function(_Shelf) onChosen;
+
+  /// Every label in use, in the order the library gives them. Empty until this
+  /// person makes one, and empty again when they take the last one off — there is
+  /// no list of labels apart from the notes that carry them.
+  final List<Tag> tags;
+  final void Function(_Where) onChosen;
 
   static const _icons = {
     _Shelf.notes: Icons.lightbulb_outline,
@@ -490,6 +576,11 @@ class _Shelves extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    void go(_Where where) {
+      Navigator.of(context).pop();
+      onChosen(where);
+    }
+
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -501,12 +592,31 @@ class _Shelves extends StatelessWidget {
               leading: Icon(_icons[shelf]),
               title: Text(shelf == _Shelf.notes ? 'Notes' : shelf.title),
               trailing: Text('${counts[shelf] ?? 0}'),
-              selected: shelf == current,
-              onTap: () {
-                Navigator.of(context).pop();
-                onChosen(shelf);
-              },
+              selected: current.tag == null && shelf == current.shelf,
+              onTap: () => go(_Where.shelf(shelf)),
             ),
+          // No heading over an empty list: a person who has never made a label
+          // has nothing to be told about them here, and the place labels are
+          // made is a note.
+          if (tags.isNotEmpty) ...[
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 4),
+              child: Text(
+                'Labels',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
+            for (final tag in tags)
+              ListTile(
+                key: Key('label-shelf-${tag.name}'),
+                leading: const Icon(Icons.label_outline),
+                title: Text(tag.name),
+                trailing: Text('${tag.notes}'),
+                selected: current.tag == tag.name,
+                onTap: () => go(_Where.tag(tag.name)),
+              ),
+          ],
         ],
       ),
     );
@@ -518,11 +628,16 @@ class _NoteActions extends StatelessWidget {
   const _NoteActions({
     required this.note,
     required this.library,
+    required this.onLabels,
     required this.onForget,
   });
 
   final NoteSummary note;
   final NoteLibrary library;
+
+  /// Ask the screen for the label dialog. Handed down for the reason [onForget]
+  /// is: it outlives this sheet, which is popped before it opens.
+  final Future<void> Function() onLabels;
 
   /// Ask the screen to delete this note for good. Not `library.forgetNote`
   /// directly: it has to be confirmed first, and the confirmation is shown after
@@ -570,6 +685,16 @@ class _NoteActions extends StatelessWidget {
               ),
               title: Text(note.pinned ? 'Unpin' : 'Pin'),
               onTap: () => run(() => library.setPinned(note.id, !note.pinned)),
+            ),
+          if (!note.trashed)
+            ListTile(
+              key: const Key('action-labels'),
+              leading: const Icon(Icons.label_outline),
+              title: const Text('Labels'),
+              subtitle: note.tags.isEmpty
+                  ? null
+                  : Text(note.tags.join(', '), maxLines: 1),
+              onTap: () => run(onLabels),
             ),
           if (!note.trashed)
             ListTile(
@@ -707,7 +832,10 @@ class _MasonryGrid extends StatelessWidget {
       64 +
       (card.note.title.isEmpty ? 0 : 28) +
       card.note.preview.length * 22 +
-      (card.matched == null ? 0 : 22);
+      (card.matched == null ? 0 : 22) +
+      // One row of chips, whatever the number: they wrap, and a card with eight
+      // labels on it is rarer than the error in guessing how many rows they take.
+      (card.note.tags.isEmpty ? 0 : 30);
 
   @override
   Widget build(BuildContext context) {
@@ -844,6 +972,22 @@ class _NoteCard extends StatelessWidget {
                   style: theme.textTheme.bodySmall,
                 ),
               ],
+              // The labels, as small chips. On the card and not only in the
+              // drawer, because a note's filing is part of what it is — and
+              // because a shared list that one person has labelled looks the
+              // same to everyone else, which is the whole point of the account
+              // document.
+              if (note.tags.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    for (final tag in note.tags)
+                      _Chip(key: Key('chip:${note.id}:$tag'), label: tag),
+                  ],
+                ),
+              ],
               // Only when the match is not already on the card: a hit on the
               // title, or on one of the four items the preview shows, needs no
               // second copy of itself underneath.
@@ -876,6 +1020,174 @@ class _NoteCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// One label on a card. Small, flat and not tappable: a card's own gesture is
+/// opening the note, and a chip that could be pressed would be a second target
+/// inside the first.
+class _Chip extends StatelessWidget {
+  const _Chip({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        // Over whatever colour the card is, so a chip reads on all ten of them.
+        color: theme.colorScheme.onSurface.withValues(alpha: 0.08),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelSmall,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
+/// The labels on one note: which of this person's labels it has, and a field for
+/// one it has not.
+///
+/// It keeps its own copy of what is on the note, which is the one place in this
+/// screen that does. Everything else here is a function of the library's stream,
+/// but a dialog is above the `StreamBuilder` that would rebuild it — so it asks
+/// the library after every change and redraws from the answer. That answer is the
+/// account document's and not this widget's guess, which matters for the case
+/// below: a name typed in a casing this device has already used comes back as
+/// the casing it has.
+class _LabelsDialog extends StatefulWidget {
+  const _LabelsDialog({required this.library, required this.note});
+
+  final NoteLibrary library;
+  final NoteSummary note;
+
+  @override
+  State<_LabelsDialog> createState() => _LabelsDialogState();
+}
+
+class _LabelsDialogState extends State<_LabelsDialog> {
+  final _field = TextEditingController();
+
+  /// What the note has, and every label this device knows, as of the last answer.
+  late Set<String> _on = widget.note.tags.toSet();
+  late List<Tag> _all = widget.library.tags;
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  /// Re-read both from the library. The note's own labels come off the list
+  /// rather than being tracked here, so that a label the core reused under
+  /// another casing is drawn as the label that exists.
+  void _reread() {
+    final summary = widget.library.notes
+        .where((note) => note.id == widget.note.id)
+        .firstOrNull;
+    setState(() {
+      _all = widget.library.tags;
+      _on = (summary?.tags ?? const <String>[]).toSet();
+    });
+  }
+
+  Future<void> _toggle(String name, bool on) async {
+    if (on) {
+      await widget.library.addTag(widget.note.id, name);
+    } else {
+      await widget.library.removeTag(widget.note.id, name);
+    }
+    if (mounted) _reread();
+  }
+
+  Future<void> _add() async {
+    final typed = _field.text;
+    if (typed.trim().isEmpty) return;
+    await widget.library.addTag(widget.note.id, typed);
+    if (!mounted) return;
+    _field.clear();
+    _reread();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('labels-dialog'),
+      title: const Text('Labels'),
+      // `double.maxFinite` rather than a number: an `AlertDialog` measures its
+      // content's intrinsic width, and the scrollable below cannot report one.
+      // This is the documented way to put a list in a dialog, and it means the
+      // dialog is as wide as it is allowed to be rather than as wide as the
+      // longest label.
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('label-field'),
+                    controller: _field,
+                    autofocus: true,
+                    // The same number the core would cut a name at: a label has to
+                    // fit on a chip, and anything longer is text for the note.
+                    maxLength: maxLabelLength,
+                    decoration: const InputDecoration(
+                      hintText: 'New label',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      counterText: '',
+                    ),
+                    onSubmitted: (_) => _add(),
+                  ),
+                ),
+                IconButton(
+                  key: const Key('label-add'),
+                  icon: const Icon(Icons.add),
+                  tooltip: 'Add this label',
+                  onPressed: _add,
+                ),
+              ],
+            ),
+            if (_all.isNotEmpty)
+              // Bounded, because a dialog cannot be taller than the screen and a
+              // person with forty labels still has to reach the ones at the end.
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final tag in _all)
+                      CheckboxListTile(
+                        key: Key('label-check-${tag.name}'),
+                        value: _on.contains(tag.name),
+                        title: Text(tag.name),
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: (on) => _toggle(tag.name, on ?? false),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const Key('labels-done'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Done'),
+        ),
+      ],
     );
   }
 }

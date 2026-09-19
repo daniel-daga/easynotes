@@ -122,6 +122,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<StorageWrite> dco_decode_list_storage_write(dynamic raw);
 
   @protected
+  List<TagView> dco_decode_list_tag_view(dynamic raw);
+
+  @protected
   NoteColour dco_decode_note_colour(dynamic raw);
 
   @protected
@@ -165,6 +168,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SyncStatus dco_decode_sync_status(dynamic raw);
+
+  @protected
+  TagView dco_decode_tag_view(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -287,6 +293,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<TagView> sse_decode_list_tag_view(SseDeserializer deserializer);
+
+  @protected
   NoteColour sse_decode_note_colour(SseDeserializer deserializer);
 
   @protected
@@ -332,6 +341,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SyncStatus sse_decode_sync_status(SseDeserializer deserializer);
+
+  @protected
+  TagView sse_decode_tag_view(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -478,6 +490,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_tag_view(List<TagView> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_note_colour(NoteColour self, SseSerializer serializer);
 
   @protected
@@ -533,6 +548,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sync_status(SyncStatus self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_tag_view(TagView self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
