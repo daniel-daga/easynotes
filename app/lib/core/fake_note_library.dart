@@ -150,6 +150,22 @@ class FakeNoteLibrary implements NoteLibrary {
     _emit();
   }
 
+  /// The same rule the core follows, over the list this holds instead of over
+  /// fractional indices: dragged downwards a note lands after the card it was
+  /// dropped on, dragged upwards it lands before it.
+  @override
+  Future<void> moveNoteTo(String noteId, String targetId) async {
+    calls.add('moveNoteTo($noteId, $targetId)');
+    if (noteId == targetId) return;
+    final from = _order.indexOf(noteId);
+    final to = _order.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    _order.removeAt(from);
+    final at = _order.indexOf(targetId);
+    _order.insert(from < to ? at + 1 : at, noteId);
+    _emit();
+  }
+
   /// Counted off the notes, as the real one does: a label exists because a note
   /// carries it, and sorted so a menu holds still.
   @override

@@ -15,6 +15,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
@@ -434,7 +435,15 @@ class _NoteListScreenState extends State<NoteListScreen> {
             layout: _layout,
             onTap: _openNote,
             onHold: _actionsFor,
+            onMove: _moveNote,
           );
+  }
+
+  /// A card was dropped on another. The library is told which two notes they
+  /// were and works out the order key; nothing here counts positions, because
+  /// what is on screen is a shelf or a label and the order is over the lot.
+  void _moveNote(String id, String targetId) {
+    widget.library.moveNoteTo(id, targetId);
   }
 }
 
@@ -530,6 +539,7 @@ class _NoteCollection extends StatelessWidget {
     required this.layout,
     required this.onTap,
     required this.onHold,
+    this.onMove,
     this.matched = const {},
   });
 
@@ -538,11 +548,20 @@ class _NoteCollection extends StatelessWidget {
   final void Function(String id) onTap;
   final void Function(NoteSummary note) onHold;
 
+  /// Where a card was dropped: the note that moved, and the note it landed on.
+  ///
+  /// Null on the one collection that cannot be reordered — search results, where
+  /// the cards on screen are the answer to a question rather than the grid, and
+  /// dropping one on another would move two notes past each other in an order
+  /// most of which is not being shown.
+  final void Function(String id, String targetId)? onMove;
+
   /// The line a search matched, per note. Empty when this is the plain list.
   final Map<String, String> matched;
 
   @override
   Widget build(BuildContext context) {
+    final move = onMove;
     final cards = [
       for (final note in notes)
         _NoteCard(
@@ -550,18 +569,139 @@ class _NoteCollection extends StatelessWidget {
           note: note,
           matched: matched[note.id],
           onTap: () => onTap(note.id),
-          onHold: () => onHold(note),
+          // Held by the wrapper where there is one, because a long press there
+          // is the start of a drag and only turns into this when nothing moved.
+          onHold: move == null ? () => onHold(note) : null,
         ),
     ];
+    Widget wrap(_NoteCard card) => move == null
+        ? card
+        : _DraggableCard(
+            card: card,
+            onMove: move,
+            onHold: () => onHold(card.note),
+          );
     return layout == NoteLayout.grid
-        ? _MasonryGrid(children: cards)
+        ? _MasonryGrid(wrap: wrap, children: cards)
         : ListView(
             padding: const EdgeInsets.all(8),
             children: [
               for (final card in cards)
-                Padding(padding: const EdgeInsets.only(bottom: 8), child: card),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: wrap(card),
+                ),
             ],
           );
+  }
+}
+
+/// A card that can be picked up, and that a picked-up card can be dropped on.
+///
+/// The gesture is Keep's, and it has to do two jobs with one press: holding a
+/// card lifts it, and letting go without having moved it opens the card's menu.
+/// They cannot be two gestures — a long press that both starts a drag and opens
+/// a sheet is one pointer in two places — so the drag is the gesture and the
+/// menu is what a drag that went nowhere means.
+///
+/// A drop is refused across the pin line. Pinned notes are drawn first but share
+/// one order with the rest ([ADR 0008](../../../docs/adr/0008-account-document.md)),
+/// so dragging a pinned card among the unpinned ones would write a move that
+/// nothing on screen could show — the card would spring back to the top and look
+/// broken. Unpin it and it lands where it was dropped.
+class _DraggableCard extends StatefulWidget {
+  const _DraggableCard({
+    required this.card,
+    required this.onMove,
+    required this.onHold,
+  });
+
+  final _NoteCard card;
+  final void Function(String id, String targetId) onMove;
+  final VoidCallback onHold;
+
+  @override
+  State<_DraggableCard> createState() => _DraggableCardState();
+}
+
+class _DraggableCardState extends State<_DraggableCard> {
+  /// How far the pointer has travelled since the card was picked up, and so
+  /// whether this is a drag or a hand resting on a screen.
+  ///
+  /// The path's length rather than the distance from where it started: a card
+  /// dragged out and back is still a card that was dragged, and a first update
+  /// that already carries the whole movement — which is every drag a test makes
+  /// — has no earlier position to be measured against.
+  double _travelled = 0;
+  bool _moved = false;
+
+  NoteSummary get _note => widget.card.note;
+
+  void _started() {
+    _travelled = 0;
+    _moved = false;
+  }
+
+  void _updated(DragUpdateDetails details) {
+    _travelled += details.delta.distance;
+    if (_travelled > kTouchSlop) _moved = true;
+  }
+
+  void _ended(DraggableDetails details) {
+    // Dropped on nothing, having gone nowhere: the press was a press. A drag
+    // that travelled and was refused — across the pin line, or onto empty
+    // space — is a drag that missed, and opening a menu under the finger that
+    // was aiming somewhere else would be a surprise.
+    if (!details.wasAccepted && !_moved) widget.onHold();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DragTarget<NoteSummary>(
+      onWillAcceptWithDetails: (details) =>
+          details.data.id != _note.id && details.data.pinned == _note.pinned,
+      onAcceptWithDetails: (details) =>
+          widget.onMove(details.data.id, _note.id),
+      builder: (context, candidates, _) => LayoutBuilder(
+        builder: (context, constraints) => Container(
+          // `foregroundDecoration`, so that the outline is painted over the card
+          // rather than around it: a border that took up space would move every
+          // card below it the moment a drag passed over this one.
+          foregroundDecoration: candidates.isEmpty
+              ? null
+              : BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary,
+                    width: 2,
+                  ),
+                ),
+          child: LongPressDraggable<NoteSummary>(
+            data: _note,
+            onDragStarted: _started,
+            onDragUpdate: _updated,
+            onDragEnd: _ended,
+            feedback: SizedBox(
+              width: constraints.maxWidth,
+              child: Opacity(
+                opacity: 0.9,
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: widget.card,
+                ),
+              ),
+            ),
+            // The gap the card came out of, so the columns do not close up
+            // underneath the finger holding it.
+            childWhenDragging: Opacity(
+              opacity: 0.3,
+              child: IgnorePointer(child: widget.card),
+            ),
+            child: widget.card,
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -836,9 +976,15 @@ Color? cardColour(BuildContext context, NoteColour? colour) {
 /// enough to balance the columns, with no measurement and no package. The cost
 /// is that columns can end up slightly uneven; the alternative costs a frame.
 class _MasonryGrid extends StatelessWidget {
-  const _MasonryGrid({required this.children});
+  const _MasonryGrid({required this.wrap, required this.children});
 
+  /// The cards, unwrapped, because the estimate below reads what is on them.
   final List<_NoteCard> children;
+
+  /// What actually goes in the column: the card, or the card made draggable.
+  /// Kept apart from [children] so that balancing the columns stays a question
+  /// about a note's contents and not about what is wrapped around it.
+  final Widget Function(_NoteCard) wrap;
 
   /// Roughly what a card will take: the padding and title, a line per preview
   /// item, and the matched line when it is a search result. Units are arbitrary
@@ -867,7 +1013,10 @@ class _MasonryGrid extends StatelessWidget {
             if (heights[i] < heights[shortest]) shortest = i;
           }
           buckets[shortest].add(
-            Padding(padding: const EdgeInsets.only(bottom: 8), child: card),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: wrap(card),
+            ),
           );
           heights[shortest] += _estimate(card);
         }
@@ -900,13 +1049,17 @@ class _NoteCard extends StatelessWidget {
     super.key,
     required this.note,
     required this.onTap,
-    required this.onHold,
+    this.onHold,
     this.matched,
   });
 
   final NoteSummary note;
   final VoidCallback onTap;
-  final VoidCallback onHold;
+
+  /// The card's menu, when the card is not draggable. Null when it is: there the
+  /// long press is the drag, and [_DraggableCard] decides whether it was a press
+  /// after all.
+  final VoidCallback? onHold;
 
   /// The line a search matched, when this card is a result. Shown because the
   /// preview is four items and the match may be the twelfth.

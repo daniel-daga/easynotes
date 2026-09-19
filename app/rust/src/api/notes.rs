@@ -963,6 +963,21 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    /// Move a note so that it takes `target`'s place in the grid's order.
+    ///
+    /// Named by the note underneath rather than by an index, because that is what
+    /// a drag knows: the grid is filtered to a shelf or a label, and the order it
+    /// writes into is over every note this device has. See
+    /// `NoteCore::move_note_to` for which side of the target a drop lands on.
+    pub fn move_note_to(&self, id: String, target: String) -> Result<(), String> {
+        let id = note_id(&id)?;
+        let target = note_id(&target)?;
+        self.shared
+            .locked()?
+            .move_note_to(id, target)
+            .map_err(|e| e.to_string())
+    }
+
     /// Every label in use on this device, with how many notes carry each.
     ///
     /// Sorted the way a menu wants them, which the core decides: a label is read

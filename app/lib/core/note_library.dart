@@ -247,6 +247,19 @@ abstract class NoteLibrary implements StorageHealth {
   /// Hold a note at the top of the grid, or stop.
   Future<void> setPinned(String noteId, bool pinned);
 
+  /// Move a note so that it takes [targetId]'s place in the grid's order.
+  ///
+  /// What a drag reports, and it names a note rather than a position on purpose:
+  /// the screen a drop landed on is filtered to a shelf or a label, and the
+  /// order underneath is over every note this device has, so an index counted
+  /// off the cards would mean something else by the time it arrived.
+  ///
+  /// Which side of the target it lands on follows the drag: a note dragged
+  /// downwards onto a card ends up after it and one dragged upwards ends up
+  /// before it, so the card you dropped on moves out of the way in the
+  /// direction you came from. A note dropped on itself changes nothing.
+  Future<void> moveNoteTo(String noteId, String targetId);
+
   /// Every label in use on this device, with how many notes carry each, in the
   /// order a menu wants them.
   ///

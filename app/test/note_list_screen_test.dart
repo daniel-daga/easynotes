@@ -12,6 +12,7 @@ import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -212,6 +213,113 @@ void main() {
     expect(find.text('Pin'), findsOneWidget);
     expect(find.text('Archive'), findsOneWidget);
     expect(find.text('Move to trash'), findsOneWidget);
+  });
+
+  /// Pick a card up and let go over another one, the way a finger does.
+  ///
+  /// Not `tester.drag`: a `LongPressDraggable` has to be held before it moves,
+  /// and a drag with no hold in it is a scroll.
+  Future<void> dragCard(WidgetTester tester, String from, String onto) async {
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(Key('note:$from'))),
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+    await gesture.moveTo(tester.getCenter(find.byKey(Key('note:$onto'))));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('dragging a card onto another moves it there', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    // Hardware is the newer, so it starts first.
+    expect(
+      tester.getTopLeft(find.byKey(const Key('note:hardware'))).dx,
+      lessThan(tester.getTopLeft(find.byKey(const Key('note:groceries'))).dx),
+    );
+
+    await dragCard(tester, 'hardware', 'groceries');
+
+    // The library is told which two notes, not which two positions: the grid
+    // may be a shelf or a label and the order underneath is over every note.
+    expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
+    expect(
+      tester.getTopLeft(find.byKey(const Key('note:groceries'))).dx,
+      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dx),
+      reason:
+          'the dragged card should have landed after the one it was dropped on',
+    );
+  });
+
+  testWidgets('a card released without moving still opens its menu', (
+    tester,
+  ) async {
+    // The gesture does two jobs, and this is the one that was there first.
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.longPress(find.byKey(const Key('note:groceries')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note-actions')), findsOneWidget);
+    expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
+  });
+
+  testWidgets('a card dragged across the pin line does not move', (
+    tester,
+  ) async {
+    // A pin lifts a note out of the sequence it shares with the rest, so a move
+    // between the two groups is one nothing on screen could show.
+    final library = twoLists();
+    await pumpList(tester, library);
+    await tester.longPress(find.byKey(const Key('note:groceries')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('action-pin')));
+    await tester.pumpAndSettle();
+    library.calls.clear();
+
+    await dragCard(tester, 'hardware', 'groceries');
+
+    expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
+    // And it did not quietly turn into a menu either: the drag went somewhere.
+    expect(find.byKey(const Key('note-actions')), findsNothing);
+  });
+
+  testWidgets('a card dragged in the single column moves the same way', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await tester.tap(find.byKey(const Key('layout-toggle')));
+    await tester.pumpAndSettle();
+
+    await dragCard(tester, 'hardware', 'groceries');
+
+    expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
+    expect(
+      tester.getTopLeft(find.byKey(const Key('note:groceries'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dy),
+    );
+  });
+
+  testWidgets('search results are not reordered by dragging', (tester) async {
+    // The cards on screen are the answer to a question, and most of the order
+    // they would be moved in is not being shown.
+    final library = twoLists();
+    await pumpList(tester, library);
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('search-field')), 'e');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+
+    await dragCard(tester, 'hardware', 'groceries');
+
+    expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
+    // The hold still reaches the card's menu, which is a result's only gesture.
+    expect(find.byKey(const Key('note-actions')), findsOneWidget);
   });
 
   testWidgets('colouring a note tells the library and paints the card', (
@@ -478,11 +586,7 @@ void main() {
 
   /// Put a label on a note the way a person does: hold the card, open the
   /// dialog, type, add, close.
-  Future<void> labelNote(
-    WidgetTester tester,
-    String id,
-    String label,
-  ) async {
+  Future<void> labelNote(WidgetTester tester, String id, String label) async {
     await tester.longPress(find.byKey(Key('note:$id')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('action-labels')));
@@ -494,23 +598,24 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('labelling a note tells the library and puts a chip on the card', (
-    tester,
-  ) async {
-    final library = twoLists();
-    await pumpList(tester, library);
+  testWidgets(
+    'labelling a note tells the library and puts a chip on the card',
+    (tester) async {
+      final library = twoLists();
+      await pumpList(tester, library);
 
-    await labelNote(tester, 'groceries', 'errands');
+      await labelNote(tester, 'groceries', 'errands');
 
-    expect(library.calls, contains('addTag(groceries, errands)'));
-    expect(
-      find.byKey(const Key('chip:groceries:errands')),
-      findsOneWidget,
-      reason: 'the label is part of what the card says',
-    );
-    // And only on the note it was put on.
-    expect(find.byKey(const Key('chip:hardware:errands')), findsNothing);
-  });
+      expect(library.calls, contains('addTag(groceries, errands)'));
+      expect(
+        find.byKey(const Key('chip:groceries:errands')),
+        findsOneWidget,
+        reason: 'the label is part of what the card says',
+      );
+      // And only on the note it was put on.
+      expect(find.byKey(const Key('chip:hardware:errands')), findsNothing);
+    },
+  );
 
   testWidgets('a label already on the device is offered rather than retyped', (
     tester,

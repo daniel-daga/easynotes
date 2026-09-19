@@ -892,12 +892,41 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// lifts a note out of the sequence and putting it back down returns it to
     /// where it was.
     pub fn move_note(&mut self, id: NoteId, to_index: usize) -> Result<()> {
-        let mine = self.placement(id).order;
-        let mut keys = self.order_keys();
-        if let Some(at) = keys.iter().position(|key| *key == mine) {
-            keys.remove(at);
-        }
+        let keys = self.order_keys_without(id);
         let order = order::key_for_index(&keys, to_index.min(keys.len()));
+        self.apply_account(AccountEdit::SetOrder { note: id, order })
+    }
+
+    /// Move `id` so that it takes `target`'s place in the grid's order.
+    ///
+    /// What a drag reports, because a drag lands on a card and not on a number.
+    /// The screen showing the cards is filtered — a shelf, or a label — and the
+    /// order is over every note this device has, so an index counted off what is
+    /// on the screen would mean something else by the time it got here. A note is
+    /// a note on both sides.
+    ///
+    /// "Takes its place" is the same rule a reorderable list has, and it depends
+    /// on which way the drag went: a note dragged *downwards* onto a card lands
+    /// after it and a note dragged upwards lands before it, so that the card you
+    /// dropped on moves out of the way in the direction you came from. Dropping a
+    /// note on itself, or on one this device has no placement for, changes
+    /// nothing.
+    pub fn move_note_to(&mut self, id: NoteId, target: NoteId) -> Result<()> {
+        if id == target {
+            return Ok(());
+        }
+        let mine = self.placement(id).order;
+        let theirs = self.placement(target).order;
+        if theirs.is_empty() {
+            return Ok(());
+        }
+        let keys = self.order_keys_without(id);
+        // `partition_point`, not `position`: the keys are sorted and deduplicated,
+        // so this is the slot `target` occupies whether or not anything shares its
+        // key.
+        let at = keys.partition_point(|key| *key < theirs);
+        let to = if mine < theirs { at + 1 } else { at };
+        let order = order::key_for_index(&keys, to.min(keys.len()));
         self.apply_account(AccountEdit::SetOrder { note: id, order })
     }
 
@@ -957,14 +986,35 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Every order key in use, ascending.
     fn order_keys(&self) -> Vec<String> {
+        self.order_keys_except(None)
+    }
+
+    /// Every order key in use except the one `id` holds, ascending.
+    ///
+    /// What both moves compute their target slot against: a slot is a gap in the
+    /// list the note is *not* in, so that "move to index 3" means the same thing
+    /// whether the note came from above or below.
+    fn order_keys_without(&self, id: NoteId) -> Vec<String> {
+        self.order_keys_except(Some(id))
+    }
+
+    /// Deduplicated, which matters for both callers and not for display: two
+    /// devices placing a note at the same moment can write the same key, and
+    /// [`order::key_for_index`] asks for a key strictly between two neighbours —
+    /// which does not exist between a key and itself. The list decides the order
+    /// of such a pair by ID ([`NoteCore::refresh_library`]); a slot between them
+    /// is not a thing anyone can point at.
+    fn order_keys_except(&self, skip: Option<NoteId>) -> Vec<String> {
         let mut keys: Vec<String> = self
             .placements
             .placements
-            .values()
-            .map(|placement| placement.order.clone())
+            .iter()
+            .filter(|(note, _)| Some(**note) != skip)
+            .map(|(_, placement)| placement.order.clone())
             .filter(|key| !key.is_empty())
             .collect();
         keys.sort();
+        keys.dedup();
         keys
     }
 

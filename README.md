@@ -18,7 +18,10 @@ had: make one, join someone else's and it is added rather than swapped in, and
 every one of them syncs. Hold a card and it offers the palette, a pin, the
 archive and the trash — all of them *personal*, in a private account document of
 this device's own, so colouring a shared shopping list does not recolour it for
-whoever else is on it. Edits go to a relay as they are made, an edit made with
+whoever else is on it. Keep holding and the card comes up with your finger:
+drop it on another and it takes that one's place, which is the same document
+and the same privacy — where a list sits in your grid is yours, not the
+household's. Edits go to a relay as they are made, an edit made with
 no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the

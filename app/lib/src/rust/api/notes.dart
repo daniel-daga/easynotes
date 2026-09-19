@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
@@ -72,6 +73,14 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Whether the grid is a masonry or one column, as this person last left it.
   NoteLayout layout();
+
+  /// Move a note so that it takes `target`'s place in the grid's order.
+  ///
+  /// Named by the note underneath rather than by an index, because that is what
+  /// a drag knows: the grid is filtered to a shelf or a label, and the order it
+  /// writes into is over every note this device has. See
+  /// `NoteCore::move_note_to` for which side of the target a drop lands on.
+  Future<void> moveNoteTo({required String id, required String target});
 
   /// A handle to one note, for a screen that is showing it.
   ///
