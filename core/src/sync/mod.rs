@@ -20,6 +20,19 @@
 //! the document, so a hostile relay can withhold updates or reorder them, but it
 //! cannot forge one.
 
+// Compiled even with no transport, so that a plain `cargo test` runs the
+// protocol tests — which is the whole reason it is a module of its own. With no
+// transport, though, nothing outside those tests calls any of it, and the relay
+// builds this crate exactly that way: it needs the wire format and neither end
+// of a socket. Hence the allowance, which is narrow and disappears the moment
+// either transport is on.
+#[cfg_attr(
+    not(any(
+        feature = "sync-native",
+        all(feature = "sync-web", target_arch = "wasm32")
+    )),
+    allow(dead_code)
+)]
 mod wire;
 pub use wire::Incoming;
 

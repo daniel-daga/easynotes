@@ -50,11 +50,16 @@ the file to check. What it cannot do is reach the relay's copy or a guest's: the
 dialog that deletes a list says so, because that is the promise the button would
 otherwise be making.
 
+A browser is a device like any other now: it keeps its notes and it syncs them,
+over the WebSocket the tab lends it rather than a TCP socket it cannot open. The
+engine above the socket is the same code either way — only the transport differs
+— and the relay learned to answer the handshake for a page, which it could not
+before.
+
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
 accounts land. Tags and reminders are the rest of that document's remit and are
-not built. A browser still cannot reach a relay either — it keeps what it holds
-and cannot share it — which is the last thing on the web build's list.
+not built.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.
@@ -95,7 +100,8 @@ just run-linux https://relay.example     # or wherever yours is
 
 With no relay there, nothing breaks: the app is a local notes app and the status
 button in the app bar says so, with the count of edits that have not left the
-device. To share a list, open it and press the share button, then paste the blob
+device. The web build says the same thing about the same relay — it reaches one
+through the browser's own WebSocket. To share a list, open it and press the share button, then paste the blob
 into the join button on the note list of the other device. It carries the note's
 key, so it is as sensitive as the list itself.
 
@@ -104,9 +110,10 @@ they are the only cover for the concurrency in sequence allocation — so a gree
 run without it is a run that skipped the tests that matter there.
 
 The web build needs a nightly toolchain and a few extras; `just setup-web`
-installs them, then `just build-web` — and `just web-smoke` loads the result in
-a headless browser and checks that what it writes to IndexedDB is there when the
-tab is reloaded. Whatever serves the result must send
+installs them, then `just build-web`. Two recipes then run the result in a
+headless browser: `just web-smoke` checks that what a tab writes to IndexedDB is
+there when it is reloaded, and `just web-sync-smoke` starts a relay and checks
+that a tab reaches it, publishes, and is acknowledged. Whatever serves the result must send
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
 threaded and will not start without cross-origin isolation.
@@ -136,7 +143,10 @@ signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
 It may check a token, a size, and that an envelope's note ID matches the path it
-arrived on — it may not check anything else, and it never sees plaintext.
+arrived on — it may not check anything else, and it never sees plaintext. Its
+handshake answers any origin, so that a page can do it at all; that costs
+nothing, because a token needs a signature over the relay's nonce and a hostile
+page has no device key to make one with.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire rather than trusting the claim, and the same check runs against the local
 database and its write-ahead log. The one thing on this device that holds a note

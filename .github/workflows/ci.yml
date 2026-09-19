@@ -179,6 +179,23 @@ jobs:
           until curl -sfo /dev/null http://127.0.0.1:8099/; do sleep 0.2; done
           node smoke.mjs http://127.0.0.1:8099/
 
+      # And whether it can reach a relay. The browser transport is the one part
+      # of syncing no `cargo test` can run — it is the tab's own WebSocket and
+      # `fetch` — so this is the only thing that covers the join between the
+      # engine and the browser.
+      - name: Sync from a browser to a real relay
+        working-directory: tools/web-smoke
+        run: |
+          cargo build -p easynotes-relay
+          "$GITHUB_WORKSPACE/target/debug/easynotes-relay" &
+          # A port of its own: the step above leaves its server running, and a
+          # second one on 8099 would fail to bind and then quietly be served by
+          # the first, which is a test passing for the wrong reason.
+          python3 serve.py "$GITHUB_WORKSPACE/app/build/web" 8098 &
+          until curl -sfo /dev/null http://127.0.0.1:8080/v1/health; do sleep 0.2; done
+          until curl -sfo /dev/null http://127.0.0.1:8098/; do sleep 0.2; done
+          node sync.mjs http://127.0.0.1:8098/
+
       # A size that grows quietly is a size nobody notices until launch.
       - name: Report the bundle size
         working-directory: app
