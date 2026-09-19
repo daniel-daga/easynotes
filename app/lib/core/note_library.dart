@@ -48,24 +48,52 @@ enum NoteLayout { grid, list }
 /// in the bridge test holds the two numbers together.
 const maxLabelLength = 48;
 
+/// One label on a note: what it is, and what to call it.
+///
+/// Two fields and not one because the name is the part that can change. A screen
+/// draws the `name` and acts on the `id`, so a rename arriving between the two
+/// is a redraw rather than a label that cannot be taken off any more.
+@immutable
+class Label {
+  const Label({required this.id, required this.name});
+
+  final String id;
+  final String name;
+
+  @override
+  bool operator ==(Object other) =>
+      other is Label && other.id == id && other.name == name;
+
+  @override
+  int get hashCode => Object.hash(id, name);
+
+  @override
+  String toString() => 'Label("$name")';
+}
+
 /// One label, and how many notes carry it.
 ///
-/// The count is what the filter menu shows beside the name, and it is also the
-/// whole of a label's existence: there is no list of labels apart from the notes
-/// that have them, so taking a label off its last note takes the label away.
+/// The count is what the filter menu shows beside the name. It can be **zero**:
+/// a label exists in its own right rather than only through the notes carrying
+/// it, so taking a label off its last note leaves the label. Throwing it away is
+/// a separate gesture ([`NoteLibrary.forgetTag`]).
 @immutable
 class Tag {
-  const Tag({required this.name, required this.notes});
+  const Tag({required this.id, required this.name, required this.notes});
 
+  final String id;
   final String name;
   final int notes;
 
   @override
   bool operator ==(Object other) =>
-      other is Tag && other.name == name && other.notes == notes;
+      other is Tag &&
+      other.id == id &&
+      other.name == name &&
+      other.notes == notes;
 
   @override
-  int get hashCode => Object.hash(name, notes);
+  int get hashCode => Object.hash(id, name, notes);
 
   @override
   String toString() => 'Tag("$name", $notes)';
@@ -107,7 +135,11 @@ class NoteSummary {
   final bool trashed;
 
   /// The labels on this note, sorted, each once.
-  final List<String> tags;
+  final List<Label> tags;
+
+  /// The IDs of those labels, which is what every question about membership is
+  /// asked in. The names are for drawing.
+  Set<String> get tagIds => {for (final tag in tags) tag.id};
 
   /// Whether this note belongs in the grid rather than in the archive or the
   /// trash. The trash wins: a note that was archived and then thrown away is in
@@ -268,16 +300,37 @@ abstract class NoteLibrary implements StorageHealth {
   /// [watchNotes] anyway.
   List<Tag> get tags;
 
-  /// Put a label on a note, and return the name it was stored under.
+  /// Put a label on a note, and return the label it went on under.
   ///
-  /// Null for something that is not a name — whitespace, or nothing. The name
-  /// that comes back may not be the one that went in: a label differing only in
-  /// case from one this device already has *is* that one, so the UI must draw
-  /// what it is told rather than what was typed.
-  Future<String?> addTag(String noteId, String tag);
+  /// Null for something that is not a name — whitespace, or nothing. What comes
+  /// back may not be a new label: a name differing only in case from one this
+  /// device already has *is* that label, so the UI must draw what it is told
+  /// rather than what was typed.
+  Future<String?> addTag(String noteId, String name);
+
+  /// Make a label that no note carries yet, and return it. An existing label
+  /// with this name comes back rather than a second one being made.
+  Future<String> makeTag(String name);
 
   /// Take a label off a note. Not an error if it was never on it.
-  Future<void> removeTag(String noteId, String tag);
+  ///
+  /// The label itself stays, with one fewer note on it. [forgetTag] is the one
+  /// that throws a label away, and it is a separate gesture on purpose: a label
+  /// that vanished because somebody tidied up the one note carrying it is a
+  /// thing to have to explain.
+  Future<void> removeTag(String noteId, String labelId);
+
+  /// Rename a label. Every note carrying it keeps it.
+  ///
+  /// Returns the label that survived, which is **not** always the one passed in:
+  /// renaming onto a name another label already has merges the two, and the
+  /// survivor is the one that already had the name. Null for a name that is not
+  /// a name, or a label this device does not have.
+  Future<String?> renameTag(String labelId, String name);
+
+  /// Throw a label away: off every note that has it, and gone from the menu.
+  /// The notes themselves are untouched.
+  Future<void> forgetTag(String labelId);
 
   /// Put a note out of the way, or bring it back.
   Future<void> setArchived(String noteId, bool archived);

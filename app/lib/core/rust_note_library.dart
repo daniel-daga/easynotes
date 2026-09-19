@@ -190,16 +190,27 @@ class RustNoteLibrary implements NoteLibrary {
   /// only copy of this.
   @override
   List<Tag> get tags => [
-    for (final tag in _library.tags()) Tag(name: tag.name, notes: tag.notes),
+    for (final tag in _library.tags())
+      Tag(id: tag.id, name: tag.name, notes: tag.notes),
   ];
 
   @override
-  Future<String?> addTag(String noteId, String tag) =>
-      _library.addTag(id: noteId, tag: tag);
+  Future<String?> addTag(String noteId, String name) =>
+      _library.addTag(id: noteId, tag: name);
 
   @override
-  Future<void> removeTag(String noteId, String tag) =>
-      _library.removeTag(id: noteId, tag: tag);
+  Future<String> makeTag(String name) => _library.makeTag(name: name);
+
+  @override
+  Future<void> removeTag(String noteId, String labelId) =>
+      _library.removeTag(id: noteId, label: labelId);
+
+  @override
+  Future<String?> renameTag(String labelId, String name) =>
+      _library.renameTag(label: labelId, name: name);
+
+  @override
+  Future<void> forgetTag(String labelId) => _library.forgetTag(label: labelId);
 
   @override
   Future<void> setArchived(String noteId, bool archived) =>
@@ -328,7 +339,7 @@ class RustNoteLibrary implements NoteLibrary {
     pinned: s.pinned,
     archived: s.archived,
     trashed: s.trashed,
-    tags: s.tags,
+    tags: [for (final tag in s.tags) Label(id: tag.id, name: tag.name)],
   );
 
   /// The two palettes are the same list in two places, which is what keeps the

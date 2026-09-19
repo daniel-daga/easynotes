@@ -62,6 +62,12 @@ class FakeNoteLibrary implements NoteLibrary {
   final Map<String, FakeNoteCore> _cores = {};
   final Map<String, StreamSubscription<void>> _watchers = {};
   final Map<String, _Placement> _placements = {};
+
+  /// Every label this fake device has, by ID — the `l:<id>` half of the account
+  /// document. A label lives here whether or not a note carries it, which is
+  /// the thing an ID buys and the reason `tags` can report a count of zero.
+  final Map<String, String> _labels = {};
+  int _nextLabel = 1;
   NoteLayout _layout = NoteLayout.grid;
   int _counter = 0;
 
@@ -170,43 +176,104 @@ class FakeNoteLibrary implements NoteLibrary {
   /// carries it, and sorted so a menu holds still.
   @override
   List<Tag> get tags {
-    final counts = <String, int>{};
+    final counts = {for (final id in _labels.keys) id: 0};
     for (final placement in _placements.values) {
-      for (final tag in placement.tags) {
-        counts[tag] = (counts[tag] ?? 0) + 1;
+      for (final id in placement.tags) {
+        counts[id] = (counts[id] ?? 0) + 1;
       }
     }
-    final names = counts.keys.toList()
+    final ids = counts.keys.toList()
       ..sort((a, b) {
-        final folded = a.toLowerCase().compareTo(b.toLowerCase());
-        return folded != 0 ? folded : a.compareTo(b);
+        final left = _labels[a]!, right = _labels[b]!;
+        final folded = left.toLowerCase().compareTo(right.toLowerCase());
+        if (folded != 0) return folded;
+        final exact = left.compareTo(right);
+        return exact != 0 ? exact : a.compareTo(b);
       });
-    return [for (final name in names) Tag(name: name, notes: counts[name]!)];
+    return [
+      for (final id in ids) Tag(id: id, name: _labels[id]!, notes: counts[id]!),
+    ];
   }
 
-  /// The core's rules, kept here so the screen sees the same thing from both:
-  /// whitespace collapsed, nothing for a name that is not one, and a label
-  /// differing only in case from one already here *is* that one.
+  /// The core's rules, kept here so the screen sees the same thing from both.
+  String? _normalise(String raw) {
+    final name = raw.trim().replaceAll(RegExp(r'\s+'), ' ');
+    return name.isEmpty ? null : name;
+  }
+
+  /// A label already here whose name matches ignoring case, or null.
+  String? _labelNamed(String name) {
+    final matches =
+        _labels.entries
+            .where((e) => e.value.toLowerCase() == name.toLowerCase())
+            .map((e) => e.key)
+            .toList()
+          ..sort();
+    return matches.isEmpty ? null : matches.first;
+  }
+
   @override
-  Future<String?> addTag(String noteId, String tag) async {
-    calls.add('addTag($noteId, $tag)');
-    final name = tag.trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (name.isEmpty) return null;
-    final existing = tags.firstWhere(
-      (held) => held.name.toLowerCase() == name.toLowerCase(),
-      orElse: () => Tag(name: name, notes: 0),
-    );
-    _placement(noteId).tags.add(existing.name);
+  Future<String?> addTag(String noteId, String name) async {
+    calls.add('addTag($noteId, $name)');
+    final wanted = _normalise(name);
+    if (wanted == null) return null;
+    final id = _labelNamed(wanted) ?? _mint(wanted);
+    _placement(noteId).tags.add(id);
     _emit();
-    return existing.name;
+    return id;
   }
 
   @override
-  Future<void> removeTag(String noteId, String tag) async {
-    calls.add('removeTag($noteId, $tag)');
-    _placement(noteId).tags.removeWhere(
-      (held) => held.toLowerCase() == tag.trim().toLowerCase(),
-    );
+  Future<String> makeTag(String name) async {
+    calls.add('makeTag($name)');
+    final wanted = _normalise(name);
+    if (wanted == null) return '';
+    final id = _labelNamed(wanted) ?? _mint(wanted);
+    _emit();
+    return id;
+  }
+
+  String _mint(String name) {
+    final id = 'label-${_nextLabel++}';
+    _labels[id] = name;
+    return id;
+  }
+
+  @override
+  Future<void> removeTag(String noteId, String labelId) async {
+    calls.add('removeTag($noteId, $labelId)');
+    _placement(noteId).tags.remove(labelId);
+    _emit();
+  }
+
+  /// Renaming onto a name another label already has merges the two, as the core
+  /// does — every note on the renamed label gains the survivor.
+  @override
+  Future<String?> renameTag(String labelId, String name) async {
+    calls.add('renameTag($labelId, $name)');
+    final wanted = _normalise(name);
+    if (wanted == null || !_labels.containsKey(labelId)) return null;
+    final existing = _labelNamed(wanted);
+    if (existing != null && existing != labelId) {
+      for (final placement in _placements.values) {
+        if (placement.tags.remove(labelId)) placement.tags.add(existing);
+      }
+      _labels.remove(labelId);
+      _emit();
+      return existing;
+    }
+    _labels[labelId] = wanted;
+    _emit();
+    return labelId;
+  }
+
+  @override
+  Future<void> forgetTag(String labelId) async {
+    calls.add('forgetTag($labelId)');
+    _labels.remove(labelId);
+    for (final placement in _placements.values) {
+      placement.tags.remove(labelId);
+    }
     _emit();
   }
 
@@ -354,7 +421,7 @@ class FakeNoteLibrary implements NoteLibrary {
           pinned: _placements[id]?.pinned ?? false,
           archived: _placements[id]?.archived ?? false,
           trashed: _placements[id]?.trashed ?? false,
-          tags: [...?_placements[id]?.tags]..sort(),
+          tags: _labelsOn(id),
         ),
     ];
     // Pinned first, as the core sorts them; the rest keep the order they were
@@ -366,11 +433,31 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 }
 
+/// The labels on a note, resolved to names and sorted as a menu sorts them —
+/// which is what the core puts on a summary.
+extension on FakeNoteLibrary {
+  List<Label> _labelsOn(String id) {
+    final on = _placements[id]?.tags ?? const <String>{};
+    final labels = [
+      for (final labelId in on)
+        if (_labels[labelId] != null)
+          Label(id: labelId, name: _labels[labelId]!),
+    ]..sort((a, b) {
+      final folded = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      if (folded != 0) return folded;
+      final exact = a.name.compareTo(b.name);
+      return exact != 0 ? exact : a.id.compareTo(b.id);
+    });
+    return labels;
+  }
+}
+
 /// What the fake remembers about a note, standing in for the account document.
 class _Placement {
   NoteColour? colour;
   bool pinned = false;
   bool archived = false;
   bool trashed = false;
+  /// Label IDs, not names — the same separation the account document makes.
   final Set<String> tags = {};
 }

@@ -67,15 +67,23 @@ Notes can be labelled, and a label is a shelf: hold a card, type a name, and the
 drawer grows an entry with that label's notes on it — with a search made there
 searching only them, and a note made there getting the label rather than
 appearing and vanishing. Labels are personal like the colours, for the same
-reason and in the same document, and a label is nothing but the notes that carry
-it: take it off the last one and it is gone. [ADR
-0008](docs/adr/0008-account-document.md) says why each label is a key of its own
-rather than a list in one.
+reason and in the same document.
+
+A label is a thing rather than a word: it has an identity of its own and its name
+hangs off it, so it can be **renamed** — every note keeps it, because nothing
+that records a membership has ever mentioned the name — and it outlives the notes
+that carried it, so taking it off the last one leaves an empty shelf rather than
+deleting it behind your back. Renaming a label onto a name another already has
+merges the two, which is also the repair for the one duplicate two offline
+devices can make. Throwing a label away is a separate gesture from emptying it,
+and it says how many notes it is about to come off. [ADR
+0008](docs/adr/0008-account-document.md) says why the name is a register rather
+than the key, and what the shape before it could not do.
 
 What the account document does not do yet is sync: a colour stays on the device
-that chose it, because there is no such thing as one person's two devices until
-accounts land. Reminders are the rest of that document's remit and are not built,
-and a label cannot yet be renamed.
+that chose it, and so does a rename, because there is no such thing as one
+person's two devices until accounts land. Reminders are the rest of that
+document's remit and are not built.
 
 Android and iOS have still never been built — that is the largest open gap and
 the next thing to do on a machine that has an Android SDK and a Mac.

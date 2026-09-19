@@ -24,6 +24,16 @@ import 'package:easynotes/src/rust/api/notes.dart'
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+
+/// Label names, as a person would read them off a card.
+List<String> names(List<Label> labels) => [for (final l in labels) l.name];
+
+/// Every label with how many notes carry it, dropping the IDs — which are
+/// random and so cannot be written down in a test.
+List<(String, int)> counted(List<Tag> tags) => [
+  for (final tag in tags) (tag.name, tag.notes),
+];
+
 void main() {
   final libPath = Platform.environment['EASYNOTES_NATIVE_LIB'];
 
@@ -446,7 +456,9 @@ void main() {
         final before = await RustNoteLibrary.open(dir.path, key);
         final shopping = await before.createNote();
         final chores = await before.createNote();
-        expect(await before.addTag(shopping, 'errands'), 'errands');
+        // What comes back is the label, not the name: the name is the part
+        // that can change.
+        expect(await before.addTag(shopping, 'errands'), isNotNull);
         await before.addTag(shopping, 'weekly shop');
         await before.addTag(chores, 'errands');
         await before.dispose();
@@ -454,18 +466,99 @@ void main() {
         final after = await RustNoteLibrary.open(dir.path, key);
         addTearDown(after.dispose);
         final notes = {for (final note in after.notes) note.id: note};
-        expect(notes[shopping]!.tags, ['errands', 'weekly shop']);
-        expect(notes[chores]!.tags, ['errands']);
+        expect(names(notes[shopping]!.tags), ['errands', 'weekly shop']);
+        expect(names(notes[chores]!.tags), ['errands']);
         // A label is counted by the notes that carry it, and sorted for a menu.
-        expect(after.tags, const [
-          Tag(name: 'errands', notes: 2),
-          Tag(name: 'weekly shop', notes: 1),
+        expect(counted(after.tags), [
+          ('errands', 2),
+          ('weekly shop', 1),
         ]);
 
-        // Taking it off the last note takes the label away: there is no list of
-        // labels apart from the notes.
-        await after.removeTag(shopping, 'weekly shop');
-        expect(after.tags, const [Tag(name: 'errands', notes: 2)]);
+        // Taking it off the last note leaves the label, carried by nobody. That
+        // is what a label having an identity of its own buys, and it is why
+        // renaming one is possible at all.
+        final weekly = after.tags.firstWhere((t) => t.name == 'weekly shop');
+        await after.removeTag(shopping, weekly.id);
+        expect(counted(after.tags), [
+          ('errands', 2),
+          ('weekly shop', 0),
+        ]);
+      });
+
+      test('a label can be renamed and every note keeps it', () async {
+        final library = await openLibraryInTempDir();
+        final one = await library.createNote();
+        final two = await library.createNote();
+        await library.addTag(one, 'Recipes');
+        await library.addTag(two, 'Recipes');
+        final recipes = library.tags.single;
+
+        expect(await library.renameTag(recipes.id, 'Dinners'), recipes.id);
+
+        expect(counted(library.tags), [('Dinners', 2)]);
+        for (final note in library.notes) {
+          expect(names(note.tags), ['Dinners']);
+        }
+      });
+
+      test('renaming a label onto another merges the two', () async {
+        final library = await openLibraryInTempDir();
+        final one = await library.createNote();
+        final two = await library.createNote();
+        await library.addTag(one, 'shopping');
+        await library.addTag(two, 'errands');
+        final shopping = library.tags.firstWhere((t) => t.name == 'shopping');
+        final errands = library.tags.firstWhere((t) => t.name == 'errands');
+
+        // The survivor is the label that already had the name, not the one
+        // being renamed — which the UI has to know, because it is what tells it
+        // a merge happened rather than a rename.
+        expect(await library.renameTag(shopping.id, 'Errands'), errands.id);
+        expect(counted(library.tags), [('errands', 2)]);
+      });
+
+      test('a label survives a relaunch with the name it was given', () async {
+        final dir = await Directory.systemTemp.createTemp('easynotes-rename');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final before = await RustNoteLibrary.open(dir.path, key);
+        final note = await before.createNote();
+        await before.addTag(note, 'Recipes');
+        await before.renameTag(before.tags.single.id, 'Dinners');
+        await before.dispose();
+
+        final after = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(after.dispose);
+        expect(counted(after.tags), [('Dinners', 1)]);
+        expect(names(after.notes.single.tags), ['Dinners']);
+      });
+
+      test('throwing a label away takes it off every note', () async {
+        final library = await openLibraryInTempDir();
+        final one = await library.createNote();
+        final two = await library.createNote();
+        await library.addTag(one, 'errands');
+        await library.addTag(two, 'errands');
+        await library.addTag(one, 'recipes');
+        final errands = library.tags.firstWhere((t) => t.name == 'errands');
+
+        await library.forgetTag(errands.id);
+
+        expect(counted(library.tags), [('recipes', 1)]);
+        // The notes are still there; they have just lost the label.
+        expect(library.notes.length, 2);
+      });
+
+      test('a label can be made before any note carries it', () async {
+        final library = await openLibraryInTempDir();
+        final someday = await library.makeTag('Someday');
+        expect(counted(library.tags), [('Someday', 0)]);
+
+        // And it is the label a note gets when that name is typed.
+        final note = await library.createNote();
+        expect(await library.addTag(note, 'someday'), someday);
+        expect(counted(library.tags), [('Someday', 1)]);
       });
 
       test(
@@ -478,12 +571,13 @@ void main() {
           final second = await library.createNote();
           await library.addTag(first, 'Recipes');
 
-          expect(await library.addTag(second, '  recipes '), 'Recipes');
-          expect(library.tags, const [Tag(name: 'Recipes', notes: 2)]);
+          final recipes = library.tags.single;
+          expect(await library.addTag(second, '  recipes '), recipes.id);
+          expect(counted(library.tags), [('Recipes', 2)]);
 
           // And a name that is not a name reaches nothing.
           expect(await library.addTag(second, '   '), isNull);
-          expect(library.tags, const [Tag(name: 'Recipes', notes: 2)]);
+          expect(counted(library.tags), [('Recipes', 2)]);
         },
       );
 
@@ -492,8 +586,8 @@ void main() {
         // has to be a constant. This is what holds the two numbers together.
         final library = await openLibraryInTempDir();
         final id = await library.createNote();
-        final stored = await library.addTag(id, 'x' * (maxLabelLength + 10));
-        expect(stored!.length, maxLabelLength);
+        await library.addTag(id, 'x' * (maxLabelLength + 10));
+        expect(library.tags.single.name.length, maxLabelLength);
       });
 
       test('a label is not written into the note it is about', () async {
@@ -533,10 +627,10 @@ void main() {
         await library.forgetNote(gone);
 
         // The shared label is down to one note; the one only that note had is
-        // gone, because a label alive with nothing under it would be replayed at
-        // every launch for ever.
-        expect(library.tags, const [Tag(name: 'errands', notes: 1)]);
-        expect(library.notes.single.tags, ['errands']);
+        // carried by nobody, and is still a label — forgetting a note does not
+        // throw away the labels it happened to be the last holder of.
+        expect(counted(library.tags), [('errands', 1), ('holiday', 0)]);
+        expect(names(library.notes.single.tags), ['errands']);
       });
 
       test('a note deleted for good is gone after a relaunch', () async {
