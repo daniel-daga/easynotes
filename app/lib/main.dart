@@ -89,15 +89,22 @@ class EasyNotesApp extends StatelessWidget {
     return MaterialApp(
       title: 'EasyNotes',
       debugShowCheckedModeBanner: false,
+      // `fontFamily` names the Roboto bundled in `pubspec.yaml` rather than
+      // the one the web engine would fetch from fonts.gstatic.com. Saying it
+      // here is what makes the bundled copy the font that is actually drawn on
+      // every platform, instead of 130 KB of assets that only the web build
+      // has a use for.
       theme: ThemeData(
         colorSchemeSeed: Colors.amber,
         useMaterial3: true,
         brightness: Brightness.light,
+        fontFamily: 'Roboto',
       ),
       darkTheme: ThemeData(
         colorSchemeSeed: Colors.amber,
         useMaterial3: true,
         brightness: Brightness.dark,
+        fontFamily: 'Roboto',
       ),
       home: NoteListScreen(library: library),
     );

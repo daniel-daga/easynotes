@@ -65,6 +65,35 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Roboto, from this origin rather than from Google's.
+  #
+  # Flutter's web engine downloads Roboto from `fonts.gstatic.com` on every
+  # launch unless the asset manifest already declares a family called exactly
+  # "Roboto" — `loadAssetFonts` in the engine's `canvaskit/fonts.dart` looks for
+  # that name and skips the download when it finds it. That download is an
+  # unconditional third-party request from a product whose whole claim is that
+  # nobody learns anything about you from using it, so this is the name that
+  # stops it, and the name has to be spelled this way to work.
+  #
+  # The files are the Roboto that ships inside the Flutter SDK
+  # (`engine/src/flutter/txt/third_party/fonts`, Apache-2.0), recompressed from
+  # TTF to WOFF2 — 130 KB for the pair rather than 340 KB, and the same bytes
+  # otherwise. Two weights: 400 for text and 500 for the places Material asks
+  # for a medium. Other weights are synthesised from the nearest of the two,
+  # which is what shipping a whole family would buy back for another 500 KB.
+  #
+  # They go into every build, not only the web one, because a pubspec has no
+  # per-platform assets. On native that is 130 KB spent making the typography
+  # the same everywhere rather than 130 KB wasted, since `main.dart` names this
+  # family in both themes.
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.woff2
+          weight: 400
+        - asset: assets/fonts/Roboto-Medium.woff2
+          weight: 500
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

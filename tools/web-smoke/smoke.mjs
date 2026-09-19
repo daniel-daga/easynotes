@@ -12,10 +12,13 @@
 // cleanly and only appeared when a browser ran the code.
 //
 // It asserts on the *database* and not on the UI. Flutter draws to a canvas, so
-// there is nothing to read without turning the semantics tree on, and on a
-// network that cannot reach fonts.gstatic.com the app renders its layout with
-// no visible text at all — which is a real deferral (ADR 0002) and not
-// something a storage test should be hostage to.
+// there is nothing to read without turning the semantics tree on.
+//
+// It also asserts on where the page goes, which is the other half of the same
+// promise: a product whose claim is that the server learns nothing must not be
+// announcing every launch to somebody else's. It used to — Flutter's engine
+// fetched Roboto from fonts.gstatic.com on every load — and the font is bundled
+// now, so the rule can be the strong one: nothing off this origin, at all.
 //
 //     node tools/web-smoke/smoke.mjs <url>
 import { chromium } from 'playwright-core';
@@ -41,6 +44,14 @@ const browser = await chromium.launch({
 const page = await (await browser.newContext()).newPage();
 const crashes = [];
 page.on('pageerror', e => crashes.push(e.message));
+
+// Every URL the page asks for, so that the off-origin check below is about what
+// the browser actually did rather than about what the source appears to say.
+// `request` fires for the request being made, whether or not it is answered —
+// which is the event that matters here, because a leak that 403s has still told
+// somebody that this page was opened.
+const requested = [];
+page.on('request', r => requested.push(r.url()));
 
 /// Everything in the app's IndexedDB, as keys to byte arrays.
 const database = () => page.evaluate(async () => {
@@ -115,6 +126,27 @@ check(
   'a reloaded tab reads the rows the first one wrote rather than starting over',
 );
 check(crashes.length === 0, `the page threw nothing: ${crashes.slice(0, 3).join(' | ')}`);
+
+// Nothing off this origin. Not a CDN, not a font, not an analytics beacon —
+// there is no third party this app has any business talking to, and the one it
+// used to talk to (fonts.gstatic.com, for Roboto) is why this check is here.
+// `data:` and `blob:` are the page talking to itself.
+const origin = new URL(url).origin;
+const offOrigin = [...new Set(requested)].filter(
+  u => !u.startsWith(origin) && !u.startsWith('data:') && !u.startsWith('blob:'),
+);
+check(
+  offOrigin.length === 0,
+  `the page asked nobody but its own origin: ${offOrigin.slice(0, 3).join(' | ')}`,
+);
+
+// And the font it draws with is one of ours. The check above would also pass if
+// the engine had quietly given up on Roboto and asked for nothing, so this is
+// the other side of it: the bundled asset was actually fetched.
+check(
+  requested.some(u => u.includes('assets/fonts/Roboto')),
+  'the bundled Roboto was loaded from this origin',
+);
 
 await browser.close();
 if (failures.length) {
