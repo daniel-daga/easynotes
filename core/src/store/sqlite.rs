@@ -20,7 +20,7 @@
 //! the filesystem store has `log/` and `keys/`: key material does not go in the
 //! file the log is in, whatever the encryption says.
 
-use super::{Keyring, OpStore};
+use super::{key_context, meta_context, Keyring, OpStore};
 use crate::crypto::{DeviceSeed, MasterKey, NoteKey};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
@@ -161,13 +161,6 @@ impl SqliteStore {
         migrate(&mut conn, STORE_SCHEMA)?;
         Ok(Self { conn, master })
     }
-
-    /// The sync cursor and anything else local is sealed against the note it
-    /// belongs to and the name it is stored under, so a row cannot be moved to
-    /// another note or another key and still open.
-    fn meta_context<'a>(note: &'a NoteId, key: &'a str) -> [&'a [u8]; 3] {
-        [b"meta", note.as_bytes(), key.as_bytes()]
-    }
 }
 
 impl OpStore for SqliteStore {
@@ -265,7 +258,7 @@ impl OpStore for SqliteStore {
     }
 
     fn put_meta(&mut self, note: NoteId, key: &str, value: &[u8]) -> Result<()> {
-        let sealed = self.master.seal(&Self::meta_context(&note, key), value)?;
+        let sealed = self.master.seal(&meta_context(&note, key), value)?;
         self.conn
             .execute(
                 "INSERT INTO meta (note, key, value) VALUES (?1, ?2, ?3)
@@ -287,9 +280,7 @@ impl OpStore for SqliteStore {
             .optional()
             .map_err(db)?;
         match sealed {
-            Some(sealed) => Ok(Some(
-                self.master.open(&Self::meta_context(&note, key), &sealed)?,
-            )),
+            Some(sealed) => Ok(Some(self.master.open(&meta_context(&note, key), &sealed)?)),
             None => Ok(None),
         }
     }
@@ -400,13 +391,13 @@ impl SqliteKeyring {
         match sealed {
             // The kind is in the context, so a note key cannot be handed back as
             // the device seed by rewriting one column.
-            Some(sealed) => Ok(Some(self.master.open(&[kind.as_bytes(), id], &sealed)?)),
+            Some(sealed) => Ok(Some(self.master.open(&key_context(kind, id), &sealed)?)),
             None => Ok(None),
         }
     }
 
     fn put(&mut self, kind: &str, id: &[u8], secret: &[u8]) -> Result<()> {
-        let sealed = self.master.seal(&[kind.as_bytes(), id], secret)?;
+        let sealed = self.master.seal(&key_context(kind, id), secret)?;
         self.conn
             .execute(
                 "INSERT INTO keys (kind, id, secret) VALUES (?1, ?2, ?3)

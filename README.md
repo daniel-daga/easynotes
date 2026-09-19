@@ -23,7 +23,12 @@ no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
 log, and a device that has a Slice 1 directory is carried into the database the
-first time it opens. A log that has grown past a few hundred edits is compacted
+first time it opens. In a browser the same rows, sealed the same way, go into
+IndexedDB — so a tab that is closed and opened again has the list it had, which
+until now it did not. [ADR 0011](docs/adr/0011-the-web-store.md) says what it
+took to fit an asynchronous database behind a synchronous trait, and the one
+promise a browser makes more weakly than a phone: an edit is kept shortly after
+it is made rather than by the time it returns. A log that has grown past a few hundred edits is compacted
 to a snapshot when the note is opened, minus whatever the relay has not
 acknowledged yet — which is the only copy of those edits anywhere.
 
@@ -44,6 +49,12 @@ alone was not enough — it leaves the bytes in the file, which a test now reads
 the file to check. What it cannot do is reach the relay's copy or a guest's: the
 dialog that deletes a list says so, because that is the promise the button would
 otherwise be making.
+
+A browser is a device like any other now: it keeps its notes and it syncs them,
+over the WebSocket the tab lends it rather than a TCP socket it cannot open. The
+engine above the socket is the same code either way — only the transport differs
+— and the relay learned to answer the handshake for a page, which it could not
+before.
 
 What the account document does not do yet is sync: a colour stays on the device
 that chose it, because there is no such thing as one person's two devices until
@@ -89,7 +100,8 @@ just run-linux https://relay.example     # or wherever yours is
 
 With no relay there, nothing breaks: the app is a local notes app and the status
 button in the app bar says so, with the count of edits that have not left the
-device. To share a list, open it and press the share button, then paste the blob
+device. The web build says the same thing about the same relay — it reaches one
+through the browser's own WebSocket. To share a list, open it and press the share button, then paste the blob
 into the join button on the note list of the other device. It carries the note's
 key, so it is as sensitive as the list itself.
 
@@ -98,7 +110,10 @@ they are the only cover for the concurrency in sequence allocation — so a gree
 run without it is a run that skipped the tests that matter there.
 
 The web build needs a nightly toolchain and a few extras; `just setup-web`
-installs them, then `just build-web`. Whatever serves the result must send
+installs them, then `just build-web`. Two recipes then run the result in a
+headless browser: `just web-smoke` checks that what a tab writes to IndexedDB is
+there when it is reloaded, and `just web-sync-smoke` starts a relay and checks
+that a tab reaches it, publishes, and is acknowledged. Whatever serves the result must send
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
 threaded and will not start without cross-origin isolation.
@@ -117,16 +132,21 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
 | [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
 | [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
+| [ADR 0011](docs/adr/0011-the-web-store.md) | The store a browser gets: reads from memory, writes through Dart |
 
 ## Security, in one paragraph
 
-Each note has its own key, and a master key — kept in the OS keychain — wraps
-those and the device seed on this device. Every update is encrypted with XChaCha20-Poly1305 and
+Each note has its own key, and a master key — kept in the OS keychain, or in a
+browser in the nearest thing one has — wraps those and the device seed on this
+device. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
 It may check a token, a size, and that an envelope's note ID matches the path it
-arrived on — it may not check anything else, and it never sees plaintext.
+arrived on — it may not check anything else, and it never sees plaintext. Its
+handshake answers any origin, so that a page can do it at all; that costs
+nothing, because a token needs a signature over the relay's nonce and a hostile
+page has no device key to make one with.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire rather than trusting the claim, and the same check runs against the local
 database and its write-ahead log. The one thing on this device that holds a note
@@ -135,7 +155,11 @@ note's own key, so it cannot be read by anything that could not already read the
 note, and cannot outlive access to it. Deleting a note removes all of that and
 overwrites it rather than unlinking it, which
 `a_forgotten_note_is_not_in_the_database_or_its_wal` checks against the actual
-bytes of both databases; it is this device's copy and no other, and a note that
+bytes of both databases; in a browser it is one range delete over the rows a
+note has, and what a browser does with the freed space is the browser's, which
+[ADR 0011](docs/adr/0011-the-web-store.md) says along with the rest of what the
+web is weaker at —  the master key there is obfuscation over `localStorage` and
+is not claimed to be more; it is this device's copy and no other, and a note that
 was shared stays with whoever holds its key until Slice 3 brings revocation. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.

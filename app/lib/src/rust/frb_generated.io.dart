@@ -111,6 +111,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SearchHitView> dco_decode_list_search_hit_view(dynamic raw);
 
   @protected
+  List<StorageBatch> dco_decode_list_storage_batch(dynamic raw);
+
+  @protected
+  List<StorageRow> dco_decode_list_storage_row(dynamic raw);
+
+  @protected
+  List<StorageWrite> dco_decode_list_storage_write(dynamic raw);
+
+  @protected
   NoteColour dco_decode_note_colour(dynamic raw);
 
   @protected
@@ -133,6 +142,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchHitView dco_decode_search_hit_view(dynamic raw);
+
+  @protected
+  StorageArea dco_decode_storage_area(dynamic raw);
+
+  @protected
+  StorageBatch dco_decode_storage_batch(dynamic raw);
+
+  @protected
+  StorageRow dco_decode_storage_row(dynamic raw);
+
+  @protected
+  StorageWrite dco_decode_storage_write(dynamic raw);
+
+  @protected
+  StorageWriteKind dco_decode_storage_write_kind(dynamic raw);
 
   @protected
   SyncState dco_decode_sync_state(dynamic raw);
@@ -248,6 +272,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<StorageBatch> sse_decode_list_storage_batch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<StorageRow> sse_decode_list_storage_row(SseDeserializer deserializer);
+
+  @protected
+  List<StorageWrite> sse_decode_list_storage_write(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   NoteColour sse_decode_note_colour(SseDeserializer deserializer);
 
   @protected
@@ -272,6 +309,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchHitView sse_decode_search_hit_view(SseDeserializer deserializer);
+
+  @protected
+  StorageArea sse_decode_storage_area(SseDeserializer deserializer);
+
+  @protected
+  StorageBatch sse_decode_storage_batch(SseDeserializer deserializer);
+
+  @protected
+  StorageRow sse_decode_storage_row(SseDeserializer deserializer);
+
+  @protected
+  StorageWrite sse_decode_storage_write(SseDeserializer deserializer);
+
+  @protected
+  StorageWriteKind sse_decode_storage_write_kind(SseDeserializer deserializer);
 
   @protected
   SyncState sse_decode_sync_state(SseDeserializer deserializer);
@@ -406,6 +458,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_storage_batch(
+    List<StorageBatch> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_storage_row(
+    List<StorageRow> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_storage_write(
+    List<StorageWrite> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_note_colour(NoteColour self, SseSerializer serializer);
 
   @protected
@@ -437,6 +507,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_search_hit_view(SearchHitView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_area(StorageArea self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_batch(StorageBatch self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_row(StorageRow self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_write(StorageWrite self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_storage_write_kind(
+    StorageWriteKind self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_sync_state(SyncState self, SseSerializer serializer);

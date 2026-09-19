@@ -8,3 +8,8 @@
 /app/.flutter-plugins*
 /app/web/pkg/
 /app/rust_builder/cargokit/build_tool/.dart_tool/
+
+# The smoke test fetches `playwright-core` beside itself rather than adding a
+# package manifest to a repository that has no JavaScript in it.
+/tools/web-smoke/node_modules/
+/tools/web-smoke/package*.json

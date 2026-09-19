@@ -1,10 +1,11 @@
-//! The wire: one connection to one note, and the handshake that opens it.
+//! The wire on a device: one socket to one note, and the handshake that opens it.
 //!
-//! Native only. The web build will implement the same two methods — `connect` and
-//! `next` — over the browser's own WebSocket; the message shapes and the `since`
-//! bookkeeping do not change, which is the point of keeping this module thin.
-//! [`super::engine`] is what drives this, and holds everything that is policy
-//! rather than protocol.
+//! Native only — `tokio-tungstenite` for the socket and `reqwest` for the two
+//! JSON calls. `client_web` is the same four methods over the browser's own
+//! WebSocket and `fetch`, and everything the two would otherwise have to agree
+//! about is in [`super::wire`] rather than written twice.
+//! [`super::engine`] drives this, and holds everything that is policy rather
+//! than protocol.
 //!
 //! The client is deliberately dumb in the opposite direction from the relay: it
 //! trusts the relay for *ordering and delivery* and for nothing else. Every
@@ -12,57 +13,18 @@
 //! the document, so a hostile relay can withhold updates or reorder them, but it
 //! cannot forge one.
 
+use super::wire::{self, ChallengeResponse, Incoming, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-#[derive(Serialize)]
-struct ChallengeRequest<'a> {
-    device: &'a str,
-}
-
-#[derive(Deserialize)]
-struct ChallengeResponse {
-    nonce: String,
-}
-
-#[derive(Serialize)]
-struct TokenRequest<'a> {
-    device: &'a str,
-    nonce: &'a str,
-    signature: &'a str,
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    token: String,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
-    Subscribe { since: i64 },
-    Append { envelope: String },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMessage {
-    Update { seq: i64, envelope: String },
-    Caught { seq: i64 },
-    Error { message: String },
-}
-
-fn net(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("relay: {e}"))
-}
+use wire::net;
 
 /// Prove possession of the device key and get a short-lived token.
 ///
@@ -77,7 +39,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
 
     let challenge: ChallengeResponse = http
         .post(format!("{http_base}/v1/challenge"))
-        .json(&ChallengeRequest { device: &device })
+        .json(&wire::ChallengeRequest { device: &device })
         .send()
         .await
         .map_err(net)?
@@ -94,7 +56,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
 
     let token: TokenResponse = http
         .post(format!("{http_base}/v1/token"))
-        .json(&TokenRequest {
+        .json(&wire::TokenRequest {
             device: &device,
             nonce: &challenge.nonce,
             signature: &signature,
@@ -119,26 +81,14 @@ pub struct NoteSync {
     pub last_seq: i64,
 }
 
-/// What arrived from the relay.
-pub enum Incoming {
-    /// An envelope to hand to `NoteCore::apply_remote`.
-    Envelope { seq: i64, envelope: Vec<u8> },
-    /// The backlog is drained; everything after this is live.
-    Caught { seq: i64 },
-    /// The relay refused something. Not fatal — the connection stays up.
-    Rejected(String),
-}
-
 impl NoteSync {
     /// Connect and subscribe from `since`. Pass the `last_seq` from a previous
     /// connection to resume; pass 0 for the whole log.
     pub async fn connect(ws_base: &str, token: &str, note: NoteId, since: i64) -> Result<Self> {
-        let url = format!("{ws_base}/v1/notes/{}?token={token}", note.encode());
+        let url = wire::note_url(ws_base, note, token);
         let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.map_err(net)?;
-        let subscribe = serde_json::to_string(&ClientMessage::Subscribe { since })
-            .expect("the subscribe message always serializes");
         socket
-            .send(Message::Text(subscribe.into()))
+            .send(Message::Text(wire::subscribe(since).into()))
             .await
             .map_err(net)?;
         Ok(Self {
@@ -150,12 +100,8 @@ impl NoteSync {
     /// Hand an envelope to the relay. It comes back through `next` like any other,
     /// which is what keeps the local and remote paths identical.
     pub async fn append(&mut self, envelope: &[u8]) -> Result<()> {
-        let msg = serde_json::to_string(&ClientMessage::Append {
-            envelope: URL_SAFE_NO_PAD.encode(envelope),
-        })
-        .expect("the append message always serializes");
         self.socket
-            .send(Message::Text(msg.into()))
+            .send(Message::Text(wire::append(envelope).into()))
             .await
             .map_err(net)
     }
@@ -170,22 +116,7 @@ impl NoteSync {
                 // Ping/pong and binary frames are not part of the protocol.
                 _ => continue,
             };
-            let parsed: ServerMessage = serde_json::from_str(&text)
-                .map_err(|e| CoreError::Storage(format!("relay sent nonsense: {e}")))?;
-            return Ok(Some(match parsed {
-                ServerMessage::Update { seq, envelope } => {
-                    let raw = URL_SAFE_NO_PAD.decode(&envelope).map_err(|_| {
-                        CoreError::Storage("relay sent a malformed envelope".into())
-                    })?;
-                    self.last_seq = self.last_seq.max(seq);
-                    Incoming::Envelope { seq, envelope: raw }
-                }
-                ServerMessage::Caught { seq } => {
-                    self.last_seq = self.last_seq.max(seq);
-                    Incoming::Caught { seq }
-                }
-                ServerMessage::Error { message } => Incoming::Rejected(message),
-            }));
+            return wire::parse(&text, &mut self.last_seq).map(Some);
         }
         Ok(None)
     }

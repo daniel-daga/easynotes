@@ -9,10 +9,13 @@
 //! The trait is here so the web build can back it with IndexedDB without anything
 //! above it changing.
 //!
-//! Three implementations today: [`MemoryStore`] for tests and the browser,
-//! [`FileStore`] from Slice 1, and [`SqliteStore`] — the real one, which is what
-//! the native app now opens. [ADR 0005](../../docs/adr/0005-local-store.md) says
-//! why the last one is plain SQLite with sealed values rather than SQLCipher.
+//! Four implementations today: [`MemoryStore`] for tests and for a tab with
+//! nowhere to keep anything, [`FileStore`] from Slice 1, [`SqliteStore`] — what
+//! the native app opens — and [`WebStore`], which is what a browser gets.
+//! [ADR 0005](../../docs/adr/0005-local-store.md) says why the third is plain
+//! SQLite with sealed values rather than SQLCipher, and
+//! [ADR 0011](../../docs/adr/0011-the-web-store.md) why the fourth cannot write
+//! for itself.
 
 use crate::error::Result;
 use crate::ids::NoteId;
@@ -375,16 +378,55 @@ pub mod sqlite;
 #[cfg(feature = "sqlite-store")]
 pub use sqlite::{open_local, SqliteKeyring, SqliteStore};
 
+#[cfg(feature = "web-store")]
+pub mod web;
+
+#[cfg(feature = "web-store")]
+pub use web::{Change, ChangeSink, WebKeyring, WebStore};
+
+// ---------------------------------------------------------------------------
+// What the master key is asked to seal, and against what
+// ---------------------------------------------------------------------------
+//
+// Here rather than in one store, because two stores now hold the same rows and a
+// device can be carried from either to the other. A context that differed
+// between them would make that carry-over produce a database whose rows are all
+// individually valid and none of which open.
+
+/// A metadata row is sealed against the note it belongs to and the name it is
+/// filed under, so that a row cannot be moved to another note or another name
+/// and still open.
+///
+/// Gated because the relay builds this crate with no stores at all — it needs
+/// the wire format and nothing else — and an ungated helper nothing calls is a
+/// warning in that build.
+#[cfg(any(feature = "sqlite-store", feature = "web-store"))]
+pub(crate) fn meta_context<'a>(note: &'a NoteId, key: &'a str) -> [&'a [u8]; 3] {
+    [b"meta", note.as_bytes(), key.as_bytes()]
+}
+
+/// A keyring row is sealed against what kind of secret it is and which note it
+/// is for, so a note key cannot be handed back as the device seed by rewriting
+/// one column. The device seed is the one row with no note, and passes an empty
+/// ID.
+#[cfg(any(feature = "sqlite-store", feature = "web-store"))]
+pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
+    [kind.as_bytes(), id]
+}
+
 // ---------------------------------------------------------------------------
 // Keyring
 // ---------------------------------------------------------------------------
 
 /// Where note keys and the device seed live.
 ///
-/// **Slice 1 stand-in.** In the shipping app this is the OS keychain (Keystore,
-/// Keychain, or a passphrase-wrapped blob on web and desktop) and never a file
-/// next to the op log. It is a separate trait from [`OpStore`] precisely so that
-/// "the log holds only ciphertext" stays true: key material never goes near it.
+/// A separate trait from [`OpStore`] precisely so that "the log holds only
+/// ciphertext" stays true: key material never goes near it. What each
+/// implementation keeps is already wrapped under a master key, and the master
+/// key itself is the platform's business — the OS keychain on a device, and in
+/// a browser the nearest thing one has
+/// ([ADR 0011](../../docs/adr/0011-the-web-store.md)). [`FileKeyring`] is the
+/// Slice 1 stand-in that wrapped nothing, and is kept for the migration off it.
 pub trait Keyring {
     fn device_seed(&self) -> Result<Option<crate::crypto::DeviceSeed>>;
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()>;

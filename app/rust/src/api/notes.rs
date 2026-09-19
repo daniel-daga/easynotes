@@ -16,6 +16,7 @@
 
 use crate::frb_generated::StreamSink;
 use crate::relay::Connection;
+use crate::storage::{Pending, Queue};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
@@ -27,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 /// The store and keyring are boxed so one `Library` type serves every platform:
-/// SQLite on desktop and mobile, memory in a browser, and — once item 4 of the
-/// Slice 2 plan lands — IndexedDB, without this file changing.
+/// SQLite on desktop and mobile, IndexedDB in a browser, and memory for a test
+/// or a tab that has neither, without this file changing.
 type Core = NoteCore<DefaultNoteDoc, Box<dyn OpStore + Send>, Box<dyn Keyring + Send>>;
 
 /// What a platform offers a core to write into: a log and the keys for it.
@@ -277,7 +278,6 @@ impl SyncStatus {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
     fn from(s: easynotes_core::sync::SyncStatus) -> Self {
         use easynotes_core::sync::SyncState as Core;
@@ -367,10 +367,6 @@ impl Statuses {
     /// An engine said something. Tell that note's watchers, then everyone
     /// watching the device as a whole.
     ///
-    /// Nothing calls it in a browser: the web `Connection` is a connection that
-    /// is never made, so there is no engine there to have an opinion. The
-    /// allowance goes away when the browser transport lands.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn report(&self, note: NoteId, epoch: u64, status: SyncStatus) {
         // `existing` rather than `entry`: a report can arrive for a note that has
         // just been forgotten, from an engine whose task had not yet noticed, and
@@ -560,13 +556,111 @@ pub fn master_key_beside_the_database(_dir: String) -> Result<Option<Vec<u8>>, S
     Ok(None)
 }
 
-/// A browser has no disk. It says so, rather than opening something that fails
-/// on the first write: the web build's library is [`Library::open_ephemeral`]
-/// until the IndexedDB store lands.
+/// A browser has no disk, and nothing here pretends otherwise: the web build's
+/// library is [`Library::open_in_browser`], which is handed the rows a browser
+/// kept and hands back the writes it should keep next.
 #[cfg(target_arch = "wasm32")]
 fn on_disk(_root: &std::path::Path, _master: Vec<u8>) -> Result<Backing, String> {
-    Err("this platform has no local database yet; open the notes in memory instead".to_string())
+    Err("this platform has no directory to open; use Library.openInBrowser".to_string())
 }
+
+// ---------------------------------------------------------------------------
+// The store a browser gets
+// ---------------------------------------------------------------------------
+//
+// IndexedDB is asynchronous and `OpStore` is not, so `easynotes_core::store::web`
+// splits the problem: it serves every read from memory and hands every write out
+// as a batch of key-value changes for something that can reach a database to
+// apply. This is the near side of that — the queue those batches wait in — and
+// Dart is the far side.
+//
+// **Dart and not Rust**, for the reason `master_key_beside_the_database` gives
+// about the keychain: the platform is Dart's. There is a sharper reason here
+// too. On the web, flutter_rust_bridge runs a `#[frb(sync)]` or `async` method
+// on the page's own thread and every other method on a Web Worker, and an
+// `IDBDatabase` belongs to the thread that opened it. A handle held in Rust
+// would therefore be reachable from some of the methods that write to it and
+// not from the others. A queue of plain bytes has no such problem, and Dart
+// takes it from the thread it is already on.
+
+/// One row of a browser's object store.
+pub struct StorageRow {
+    pub key: String,
+    pub value: Vec<u8>,
+}
+
+/// Which object store a batch is for. The log and the keys are kept apart in a
+/// browser as they are in two SQLite files on a device — as far apart as an
+/// origin allows, which [ADR 0011](../../../docs/adr/0011-the-web-store.md) is
+/// honest about.
+pub enum StorageArea {
+    Notes,
+    Keys,
+}
+
+/// What one write does.
+pub enum StorageWriteKind {
+    Put,
+    Delete,
+    /// Every key beginning with the given one, which is a single range delete.
+    DeletePrefix,
+}
+
+/// One write, in the shape an object store takes it.
+///
+/// Flat — a kind beside a key and a value — rather than an enum carrying its
+/// own fields, because flutter_rust_bridge renders the latter with `freezed`,
+/// and a code generator and its build step are a lot to add to the app for one
+/// three-armed type at an FFI boundary.
+pub struct StorageWrite {
+    pub kind: StorageWriteKind,
+    /// The key, or for a `DeletePrefix` the prefix every key to remove begins
+    /// with.
+    pub key: String,
+    /// What to store, for a `Put`. Empty for the other two — and an empty
+    /// *value* is legal, so it is the kind that says which this is.
+    pub value: Vec<u8>,
+}
+
+/// Writes that must land together or not at all: **one batch is one
+/// transaction**.
+///
+/// A batch is what the core says must not be applied by halves — the two steps
+/// of a compaction, or everything a forgotten note had — so a caller that split
+/// one across two transactions would reintroduce the crash windows the store is
+/// written to avoid.
+pub struct StorageBatch {
+    pub area: StorageArea,
+    pub writes: Vec<StorageWrite>,
+}
+
+impl From<&easynotes_core::store::Change> for StorageWrite {
+    fn from(change: &easynotes_core::store::Change) -> Self {
+        use easynotes_core::store::Change;
+        match change {
+            Change::Put { key, value } => StorageWrite {
+                kind: StorageWriteKind::Put,
+                key: key.clone(),
+                value: value.clone(),
+            },
+            Change::Delete { key } => StorageWrite {
+                kind: StorageWriteKind::Delete,
+                key: key.clone(),
+                value: Vec::new(),
+            },
+            Change::DeletePrefix { prefix } => StorageWrite {
+                kind: StorageWriteKind::DeletePrefix,
+                key: prefix.clone(),
+                value: Vec::new(),
+            },
+        }
+    }
+}
+
+// Where the batches wait between the store and Dart is `crate::storage`, which
+// is outside this module for the reason `crate::relay` is: everything in here
+// becomes Dart, and a queue of batches is not something Dart has any business
+// holding a handle to.
 
 fn item_id(s: &str) -> Result<ItemId, String> {
     ItemId::decode(s).map_err(|e| e.to_string())
@@ -587,6 +681,9 @@ pub struct Library {
     /// Set by [`Library::stop_watching`]. The watcher tasks check it when they
     /// wake.
     stop: Arc<AtomicBool>,
+    /// The writes a browser has yet to be given. Empty and never filled on a
+    /// device with a disk, where the store writes for itself.
+    pending: Arc<Pending>,
 }
 
 impl Library {
@@ -629,7 +726,79 @@ impl Library {
         )
     }
 
-    fn wrap(mut core: Core) -> Result<Library, String> {
+    /// Open the notes a browser is holding for this origin, unlocked by
+    /// `master_key`.
+    ///
+    /// `notes` and `keys` are every row of the two object stores, which the
+    /// caller has already read — that read is the one thing about a browser's
+    /// storage that has to be waited for, and it happens here, at launch, where
+    /// the app is waiting anyway. Afterwards nothing waits: the store answers
+    /// from memory and leaves its writes in a queue for
+    /// [`Library::take_storage_batches`].
+    ///
+    /// Not `#[cfg(target_arch = "wasm32")]`, deliberately. There is no browser
+    /// in any of this — it is a store, a queue and some rows — so the native
+    /// build can open one too, and `app/test/rust_bridge_test.dart` drives the
+    /// whole of the web build's persistence on a machine that has no browser on
+    /// it. A web-only path is a path nothing tests.
+    #[frb(sync)]
+    pub fn open_in_browser(
+        notes: Vec<StorageRow>,
+        keys: Vec<StorageRow>,
+        master_key: Vec<u8>,
+    ) -> Result<Library, String> {
+        use easynotes_core::store::{WebKeyring, WebStore};
+        let master = easynotes_core::crypto::MasterKey::from_slice(&master_key)
+            .map_err(|e| e.to_string())?;
+        let pending = Arc::new(Pending::default());
+        let rows = |rows: Vec<StorageRow>| rows.into_iter().map(|r| (r.key, r.value));
+        let queue = |area| {
+            Box::new(Queue {
+                area,
+                pending: pending.clone(),
+            })
+        };
+        let store = WebStore::from_rows(master.clone(), queue(StorageArea::Notes), rows(notes))
+            .map_err(|e| e.to_string())?;
+        let keyring = WebKeyring::from_rows(master, queue(StorageArea::Keys), rows(keys))
+            .map_err(|e| e.to_string())?;
+        Self::wrap_with(
+            NoteCore::open(boxed_store(store), boxed_keyring(keyring))
+                .map_err(|e| e.to_string())?,
+            pending,
+        )
+    }
+
+    /// Every write the store has made since this was last called, oldest first,
+    /// and forget them.
+    ///
+    /// The caller is expected to apply them — one batch, one transaction — and
+    /// to call this often, because until it does, an edit is in memory and
+    /// nowhere else. It is a *pull* rather than a stream for the reason the
+    /// section above this gives: the methods that write run on a Web Worker and
+    /// the one that reads runs on the page's thread, so what passes between them
+    /// has to be bytes behind a lock and nothing that belongs to a thread.
+    ///
+    /// Taking them and then failing to write them loses them, which is why this
+    /// is the only thing that empties the queue: a caller that cannot apply a
+    /// batch has already been handed it, and the honest thing for it to do is
+    /// say so rather than ask for it again.
+    #[frb(sync)]
+    pub fn take_storage_batches(&self) -> Vec<StorageBatch> {
+        self.pending.take()
+    }
+
+    /// How many batches are waiting. Zero on a device with a disk, always.
+    #[frb(sync)]
+    pub fn unwritten_batches(&self) -> u32 {
+        self.pending.len()
+    }
+
+    fn wrap(core: Core) -> Result<Library, String> {
+        Self::wrap_with(core, Arc::new(Pending::default()))
+    }
+
+    fn wrap_with(mut core: Core, pending: Arc<Pending>) -> Result<Library, String> {
         // Everything on the disk, read once, so that the list is populated
         // before the first frame asks for it.
         core.notes().map_err(|e| e.to_string())?;
@@ -641,6 +810,7 @@ impl Library {
                 statuses: Arc::new(Statuses::new()),
             }),
             stop: Arc::new(AtomicBool::new(false)),
+            pending,
         })
     }
 

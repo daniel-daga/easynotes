@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -103,6 +103,31 @@ abstract class Library implements RustOpaqueInterface {
   static Library openEphemeral() =>
       RustLib.instance.api.crateApiNotesLibraryOpenEphemeral();
 
+  /// Open the notes a browser is holding for this origin, unlocked by
+  /// `master_key`.
+  ///
+  /// `notes` and `keys` are every row of the two object stores, which the
+  /// caller has already read — that read is the one thing about a browser's
+  /// storage that has to be waited for, and it happens here, at launch, where
+  /// the app is waiting anyway. Afterwards nothing waits: the store answers
+  /// from memory and leaves its writes in a queue for
+  /// [`Library::take_storage_batches`].
+  ///
+  /// Not `#[cfg(target_arch = "wasm32")]`, deliberately. There is no browser
+  /// in any of this — it is a store, a queue and some rows — so the native
+  /// build can open one too, and `app/test/rust_bridge_test.dart` drives the
+  /// whole of the web build's persistence on a machine that has no browser on
+  /// it. A web-only path is a path nothing tests.
+  static Library openInBrowser({
+    required List<StorageRow> notes,
+    required List<StorageRow> keys,
+    required List<int> masterKey,
+  }) => RustLib.instance.api.crateApiNotesLibraryOpenInBrowser(
+    notes: notes,
+    keys: keys,
+    masterKey: masterKey,
+  );
+
   /// Every note whose text contains all of the query's words.
   ///
   /// Local, and local in the strong sense: it reads the same sealed index the
@@ -137,6 +162,25 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Where this device stands with the relay, over all its notes.
   SyncStatus syncStatus();
+
+  /// Every write the store has made since this was last called, oldest first,
+  /// and forget them.
+  ///
+  /// The caller is expected to apply them — one batch, one transaction — and
+  /// to call this often, because until it does, an edit is in memory and
+  /// nowhere else. It is a *pull* rather than a stream for the reason the
+  /// section above this gives: the methods that write run on a Web Worker and
+  /// the one that reads runs on the page's thread, so what passes between them
+  /// has to be bytes behind a lock and nothing that belongs to a thread.
+  ///
+  /// Taking them and then failing to write them loses them, which is why this
+  /// is the only thing that empties the queue: a caller that cannot apply a
+  /// batch has already been handed it, and the honest thing for it to do is
+  /// say so rather than ask for it again.
+  List<StorageBatch> takeStorageBatches();
+
+  /// How many batches are waiting. Zero on a device with a disk, always.
+  int unwrittenBatches();
 
   /// The note list now, and every version of it after that.
   ///
@@ -339,6 +383,101 @@ class SearchHitView {
           runtimeType == other.runtimeType &&
           note == other.note &&
           matched == other.matched;
+}
+
+/// Which object store a batch is for. The log and the keys are kept apart in a
+/// browser as they are in two SQLite files on a device — as far apart as an
+/// origin allows, which [ADR 0011](../../../docs/adr/0011-the-web-store.md) is
+/// honest about.
+enum StorageArea { notes, keys }
+
+/// Writes that must land together or not at all: **one batch is one
+/// transaction**.
+///
+/// A batch is what the core says must not be applied by halves — the two steps
+/// of a compaction, or everything a forgotten note had — so a caller that split
+/// one across two transactions would reintroduce the crash windows the store is
+/// written to avoid.
+class StorageBatch {
+  final StorageArea area;
+  final List<StorageWrite> writes;
+
+  const StorageBatch({required this.area, required this.writes});
+
+  @override
+  int get hashCode => area.hashCode ^ writes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StorageBatch &&
+          runtimeType == other.runtimeType &&
+          area == other.area &&
+          writes == other.writes;
+}
+
+/// One row of a browser's object store.
+class StorageRow {
+  final String key;
+  final Uint8List value;
+
+  const StorageRow({required this.key, required this.value});
+
+  @override
+  int get hashCode => key.hashCode ^ value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StorageRow &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          value == other.value;
+}
+
+/// One write, in the shape an object store takes it.
+///
+/// Flat — a kind beside a key and a value — rather than an enum carrying its
+/// own fields, because flutter_rust_bridge renders the latter with `freezed`,
+/// and a code generator and its build step are a lot to add to the app for one
+/// three-armed type at an FFI boundary.
+class StorageWrite {
+  final StorageWriteKind kind;
+
+  /// The key, or for a `DeletePrefix` the prefix every key to remove begins
+  /// with.
+  final String key;
+
+  /// What to store, for a `Put`. Empty for the other two — and an empty
+  /// *value* is legal, so it is the kind that says which this is.
+  final Uint8List value;
+
+  const StorageWrite({
+    required this.kind,
+    required this.key,
+    required this.value,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ key.hashCode ^ value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StorageWrite &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          key == other.key &&
+          value == other.value;
+}
+
+/// What one write does.
+enum StorageWriteKind {
+  put,
+  delete,
+
+  /// Every key beginning with the given one, which is a single range delete.
+  deletePrefix,
 }
 
 /// Where this note's sync stands, as Dart sees it.

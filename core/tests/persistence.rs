@@ -5,10 +5,13 @@ use easynotes_core::crdt::NoteDoc;
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::ids::NoteId;
 use easynotes_core::note::{NoteCore, NoteKind};
+use easynotes_core::store::web::{Change, ChangeSink, WebKeyring, WebStore};
 use easynotes_core::store::{
     master_key_from_file, FileKeyring, FileStore, Keyring, OpStore, SqliteKeyring, SqliteStore,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A way of putting a note on a disk. Every test below runs over both, because
 /// "the list is still there after a relaunch" has to mean the same thing whether
@@ -72,6 +75,115 @@ impl Backing for Sqlite {
     fn files(dir: &Path) -> Vec<PathBuf> {
         // Including the master key file, which is not supposed to contain any of
         // the secrets either — it is the key to them, not a copy.
+        walk(dir)
+    }
+}
+
+/// A browser, as far as [`WebStore`] can tell.
+///
+/// The rows go in a file so that a "relaunch" here is what it is for the other
+/// two — open the same place again with nothing kept from last time — and so
+/// that `nothing_on_disk_is_plaintext` has bytes to read. Nothing in the web
+/// build writes a file; what a browser keeps is an IndexedDB object store, and
+/// the only thing this has to get right is that it is a map of strings to bytes
+/// which a batch of changes is applied to, because that is all `WebStore` knows
+/// about it.
+///
+/// The framing is length-prefixed rather than JSON on purpose: a JSON file would
+/// write every byte as a decimal number, and `nothing_on_disk_is_plaintext`
+/// would then pass for a store that wrote "asparagus" in the clear.
+#[derive(Clone)]
+struct Rows {
+    path: PathBuf,
+    rows: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+}
+
+impl Rows {
+    /// The object store at `path`, as it was left.
+    fn open(path: PathBuf) -> Self {
+        let mut rows = BTreeMap::new();
+        if let Ok(raw) = std::fs::read(&path) {
+            let mut at = 0usize;
+            let take = |at: &mut usize| -> Vec<u8> {
+                let len = u32::from_be_bytes(raw[*at..*at + 4].try_into().unwrap()) as usize;
+                *at += 4;
+                let out = raw[*at..*at + len].to_vec();
+                *at += len;
+                out
+            };
+            while at + 8 <= raw.len() {
+                let key = String::from_utf8(take(&mut at)).unwrap();
+                rows.insert(key, take(&mut at));
+            }
+        }
+        Self {
+            path,
+            rows: Arc::new(Mutex::new(rows)),
+        }
+    }
+
+    fn entries(&self) -> Vec<(String, Vec<u8>)> {
+        self.rows
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+impl ChangeSink for Rows {
+    fn changed(&self, changes: &[Change]) {
+        let mut rows = self.rows.lock().unwrap();
+        for change in changes {
+            match change {
+                Change::Put { key, value } => {
+                    rows.insert(key.clone(), value.clone());
+                }
+                Change::Delete { key } => {
+                    rows.remove(key);
+                }
+                Change::DeletePrefix { prefix } => rows.retain(|key, _| !key.starts_with(prefix)),
+            }
+        }
+        let mut raw = Vec::new();
+        for (key, value) in rows.iter() {
+            for part in [key.as_bytes(), value.as_slice()] {
+                raw.extend_from_slice(&(part.len() as u32).to_be_bytes());
+                raw.extend_from_slice(part);
+            }
+        }
+        std::fs::write(&self.path, raw).unwrap();
+    }
+}
+
+struct Browser;
+
+impl Browser {
+    fn rows(dir: &Path, which: &str) -> Rows {
+        Rows::open(dir.join(format!("web-{which}")))
+    }
+}
+
+impl Backing for Browser {
+    type S = WebStore;
+    type K = WebKeyring;
+
+    fn open<D: NoteDoc>(dir: &Path) -> NoteCore<D, Self::S, Self::K> {
+        // The same master key a relaunch finds, for the same reason the SQLite
+        // backing reads one from the directory: on the web it comes from
+        // `flutter_secure_storage`, and a test has no keychain.
+        let master = master_key_from_file(dir.join("master.key")).unwrap();
+        let notes = Self::rows(dir, "notes");
+        let keys = Self::rows(dir, "keys");
+        NoteCore::open(
+            WebStore::from_rows(master.clone(), Box::new(notes.clone()), notes.entries()).unwrap(),
+            WebKeyring::from_rows(master, Box::new(keys.clone()), keys.entries()).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn files(dir: &Path) -> Vec<PathBuf> {
         walk(dir)
     }
 }
@@ -544,6 +656,7 @@ macro_rules! backend_suite {
 
             store_suite!(files, $backend, super::super::Files);
             store_suite!(sqlite, $backend, super::super::Sqlite);
+            store_suite!(web, $backend, super::super::Browser);
 
             #[test]
             fn a_torn_log_tail_does_not_lose_the_whole_note() {
