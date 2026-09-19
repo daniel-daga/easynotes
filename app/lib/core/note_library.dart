@@ -171,7 +171,39 @@ class SearchHit {
   String toString() => 'SearchHit(${note.id}, "$matched")';
 }
 
-abstract class NoteLibrary {
+/// Whether this device is keeping what it is shown, and what went wrong if it
+/// is not.
+///
+/// Its own interface, and a small one, so that it can be handed to a screen
+/// that has no business with the rest of a library: a checklist is one note and
+/// must not be given the device's other notes, its relay or its trash — but it
+/// is where a person is typing, so it is exactly where "this is not being kept"
+/// has to appear.
+///
+/// The question is a real one on one platform only. A device with a disk writes
+/// and fsyncs before the edit returns ([ADR
+/// 0005](../../../docs/adr/0005-local-store.md)), so there is nothing to report
+/// and [storageError] is null for ever. A browser's writes are handed out in
+/// batches for Dart to apply ([ADR
+/// 0011](../../../docs/adr/0011-the-web-store.md)), the core hands each batch
+/// over exactly once and keeps no copy, and so a batch the browser refuses —
+/// out of quota, or a database cleared under the tab — is an edit that is gone.
+abstract interface class StorageHealth {
+  /// What this device could not keep, in the browser's own words, or null while
+  /// everything has been kept.
+  ///
+  /// It latches: once a write has failed it stays failed, because nothing can
+  /// undo it. The edit is not in the queue — it was handed over and dropped —
+  /// so there is no retry to offer and no later success that would make the
+  /// first one true again. Telling someone their notes are safe after telling
+  /// them they were not is worse than not telling them at all.
+  String? get storageError;
+
+  /// [storageError] now, and every version of it after that. Emits immediately.
+  Stream<String?> watchStorageError();
+}
+
+abstract class NoteLibrary implements StorageHealth {
   /// The notes right now, newest first, for the first frame.
   List<NoteSummary> get notes;
 

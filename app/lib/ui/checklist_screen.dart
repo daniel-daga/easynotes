@@ -14,13 +14,24 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/note_core.dart';
+import '../core/note_library.dart';
 import '../core/note_view.dart';
+import 'storage_banner.dart';
 import 'sync_button.dart';
 
 class ChecklistScreen extends StatefulWidget {
-  const ChecklistScreen({super.key, required this.core});
+  const ChecklistScreen({super.key, required this.core, required this.storage});
 
   final NoteCore core;
+
+  /// Whether the device is keeping what is typed here.
+  ///
+  /// The device's question rather than this note's, which is why it comes from
+  /// beside the core rather than out of it — but this is the screen a person is
+  /// typing into, so it is where the answer matters most. Required rather than
+  /// optional: a screen that quietly did not show it would be exactly the bug
+  /// this is for.
+  final StorageHealth storage;
 
   @override
   State<ChecklistScreen> createState() => _ChecklistScreenState();
@@ -106,6 +117,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
           ),
           body: Column(
             children: [
+              StorageBanner(storage: widget.storage),
               Expanded(
                 child: note.items.isEmpty
                     ? const Center(

@@ -6,14 +6,26 @@
 library;
 
 import 'package:easynotes/core/fake_note_core.dart';
+import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/checklist_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Future<void> pumpScreen(WidgetTester tester, FakeNoteCore core) async {
-  await tester.pumpWidget(MaterialApp(home: ChecklistScreen(core: core)));
+Future<void> pumpScreen(
+  WidgetTester tester,
+  FakeNoteCore core, {
+  FakeStorageHealth? storage,
+}) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: ChecklistScreen(
+        core: core,
+        storage: storage ?? FakeStorageHealth(),
+      ),
+    ),
+  );
   await tester.pumpAndSettle();
 }
 
@@ -305,5 +317,29 @@ void main() {
       findsOneWidget,
       reason: 'a user who cannot sync should be able to see why',
     );
+  });
+
+  testWidgets('says so when an edit could not be kept', (tester) async {
+    // The screen a person is typing into is the one that has to say it: a
+    // warning only the note list draws is a warning they see after the edit
+    // they have lost.
+    final storage = FakeStorageHealth();
+    addTearDown(storage.dispose);
+    await pumpScreen(
+      tester,
+      FakeNoteCore(items: const ['milk']),
+      storage: storage,
+    );
+
+    expect(find.byKey(const Key('storage-error')), findsNothing);
+
+    storage.push('QuotaExceededError');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('storage-error')), findsOneWidget);
+
+    // And the browser's own words are a tap away, for whoever can act on them.
+    await tester.tap(find.byKey(const Key('storage-error')));
+    await tester.pumpAndSettle();
+    expect(find.text('QuotaExceededError'), findsOneWidget);
   });
 }

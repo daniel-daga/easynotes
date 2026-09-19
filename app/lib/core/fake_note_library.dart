@@ -14,6 +14,32 @@ import 'note_core.dart';
 import 'note_library.dart';
 import 'sync_status.dart';
 
+/// A [StorageHealth] on its own, for a screen that wants one without a library.
+///
+/// The checklist screen is the case: it is given one note and the device's
+/// answer to "is this being kept?", and nothing else.
+class FakeStorageHealth implements StorageHealth {
+  final _errors = StreamController<String?>.broadcast();
+  String? _error;
+
+  @override
+  String? get storageError => _error;
+
+  @override
+  Stream<String?> watchStorageError() async* {
+    yield _error;
+    yield* _errors.stream;
+  }
+
+  /// Say that a write was refused, without a browser to refuse it.
+  void push(String error) {
+    _error = error;
+    _errors.add(error);
+  }
+
+  Future<void> dispose() => _errors.close();
+}
+
 class FakeNoteLibrary implements NoteLibrary {
   FakeNoteLibrary({Map<String, FakeNoteCore>? notes, this.canJoin = true}) {
     if (notes != null) {
@@ -28,6 +54,8 @@ class FakeNoteLibrary implements NoteLibrary {
 
   final _notes = StreamController<List<NoteSummary>>.broadcast();
   final _sync = StreamController<SyncStatus>.broadcast();
+  final _storageErrors = StreamController<String?>.broadcast();
+  String? _storageError;
 
   /// Newest first, as the real one is.
   final List<String> _order = [];
@@ -244,12 +272,33 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  String? get storageError => _storageError;
+
+  @override
+  Stream<String?> watchStorageError() async* {
+    yield _storageError;
+    yield* _storageErrors.stream;
+  }
+
+  /// Say that a write was refused, without a browser to refuse it.
+  ///
+  /// It says exactly what it is told and latches nothing. Latching is the real
+  /// library's decision and `rust_bridge_test.dart` is where it is held; a fake
+  /// that made it too would be a second copy of a rule, and a screen test that
+  /// passed because of it would be testing this file.
+  void pushStorageError(String error) {
+    _storageError = error;
+    _storageErrors.add(error);
+  }
+
+  @override
   Future<void> dispose() async {
     for (final watcher in _watchers.values) {
       await watcher.cancel();
     }
     await _notes.close();
     await _sync.close();
+    await _storageErrors.close();
   }
 
   void _add(String id, FakeNoteCore core) {
