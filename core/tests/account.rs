@@ -10,7 +10,9 @@ use easynotes_core::crdt::account::{AccountDoc, AccountEdit, Value};
 use easynotes_core::crdt::{Colour, Layout, NoteDoc};
 use easynotes_core::crypto::{Envelope, MasterKey};
 use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC, COMPACT_AFTER, INDEX};
+use easynotes_core::note::{
+    NoteCore, NoteKind, NoteSummary, SyncCursor, ACCOUNT_DOC, COMPACT_AFTER, INDEX,
+};
 use easynotes_core::store::{
     master_key_from_file, Keyring, MemoryKeyring, MemoryStore, OpStore, SqliteKeyring, SqliteStore,
 };
@@ -589,6 +591,67 @@ fn a_forgotten_note_is_still_gone_after_a_relaunch<D: NoteDoc>() {
     assert!(core.keyring().note_key(kept).unwrap().is_some());
 }
 
+/// The residue a forgotten note can leave, and the sweep that takes it.
+///
+/// Forgetting closes the note's relay connection first, but the engine's task
+/// can already be mid-delivery: the envelope that arrives is rejected — no key —
+/// and the cursor moves past it anyway, which writes a store row for a note that
+/// has just been deleted. That row is a note as far as `store.notes` is
+/// concerned, and before the sweep nothing ever removed it.
+fn a_late_envelope_leaves_no_note_behind<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let gone = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(gone, "tax papers").unwrap();
+    let kept = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(kept, "groceries").unwrap();
+    core.notes().unwrap();
+
+    core.forget_note(gone).unwrap();
+    // The engine's last act for a note it is being disconnected from. Nothing
+    // here is contrived: `run_note` saves the cursor after `apply_remote` fails.
+    core.set_sync_cursor(
+        gone,
+        SyncCursor {
+            last_seq: 7,
+            sent_upto: None,
+        },
+    )
+    .unwrap();
+    assert!(core.store().notes().unwrap().contains(&gone));
+
+    // A list is drawn, which is where the sweep runs.
+    assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);
+    assert!(!core.store().notes().unwrap().contains(&gone));
+    // And it took only the row it was aimed at.
+    assert!(core.store().notes().unwrap().contains(&kept));
+}
+
+/// The sweep tests for ciphertext, not for a key — because a missing key is the
+/// one thing Slice 3 is meant to be able to undo.
+///
+/// This is the shape `copy_store` produces when a log is carried over and its
+/// key is not, and the shape a device will be in between restoring a store and
+/// restoring the keys that open it. There is no placement and no key, so it
+/// reaches the sweep; the log is what stops it.
+fn a_note_whose_key_never_arrived_is_not_swept<D: NoteDoc>() {
+    let mut source = in_memory::<D>();
+    let id = source.create_note(NoteKind::Checklist).unwrap();
+    source.set_title(id, "somebody else's").unwrap();
+    let log = source.store().load(id).unwrap();
+    assert!(!log.is_empty());
+
+    let mut store = MemoryStore::new();
+    for envelope in &log {
+        store.append(id, envelope).unwrap();
+    }
+    let mut core: Memory<D> = NoteCore::open(store, MemoryKeyring::new()).unwrap();
+
+    // It cannot be drawn, and it is still on the disk.
+    assert!(core.notes().unwrap().is_empty());
+    assert!(core.store().notes().unwrap().contains(&id));
+    assert_eq!(core.store().load(id).unwrap().len(), log.len());
+}
+
 /// Emptying the trash takes the trash and only the trash.
 fn emptying_the_trash_forgets_what_is_in_it<D: NoteDoc>() {
     let mut core = in_memory::<D>();
@@ -1164,6 +1227,14 @@ macro_rules! backend_suite {
             #[test]
             fn a_forgotten_note_is_still_gone_after_a_relaunch() {
                 super::a_forgotten_note_is_still_gone_after_a_relaunch::<$backend>()
+            }
+            #[test]
+            fn a_late_envelope_leaves_no_note_behind() {
+                super::a_late_envelope_leaves_no_note_behind::<$backend>()
+            }
+            #[test]
+            fn a_note_whose_key_never_arrived_is_not_swept() {
+                super::a_note_whose_key_never_arrived_is_not_swept::<$backend>()
             }
             #[test]
             fn emptying_the_trash_forgets_what_is_in_it() {

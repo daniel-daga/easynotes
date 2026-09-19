@@ -1047,10 +1047,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // reason `notes` gives it no card: there is nothing to show and
             // nothing that could be shown. It is also what keeps a forgotten note
             // forgotten — a late-arriving envelope can leave a sync cursor behind
-            // for one ([`NoteCore::trashed_notes`]), and a placement written from
-            // that row would be a permanent entry in a document nothing compacts,
-            // about a note that does not exist.
+            // for one, and a placement written from that row would be a permanent
+            // entry in a document nothing compacts, about a note that does not
+            // exist.
             if self.keyring.note_key(id)?.is_none() {
+                self.sweep_if_residue(id)?;
                 continue;
             }
             unplaced.push((self.ordinal(id)?, id));
@@ -1062,6 +1063,32 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             self.place(id, usize::MAX)?;
         }
         Ok(())
+    }
+
+    /// Remove what a forgotten note can leave behind, and nothing else.
+    ///
+    /// Forgetting a note closes its relay connection before taking the rows, but
+    /// the sync engine's task may already be mid-delivery: an envelope that
+    /// arrives in that window is rejected by `apply_remote` — there is no key to
+    /// open it with — and the engine moves the cursor past it anyway, because a
+    /// cursor that sticks on an envelope it cannot use would stall the note for
+    /// ever. Writing that cursor recreates a store row for a note that has just
+    /// been deleted. What is left is a sealed cursor, no log, no snapshot, no key
+    /// and no placement: nothing readable, but a row that `store.notes` returns
+    /// and that nothing has ever removed.
+    ///
+    /// The test of residue is **ciphertext, not the key**. A note with a log or a
+    /// snapshot is left exactly where it is even though this device cannot read
+    /// it: `copy_store` can carry a log whose key never arrived, and Slice 3's
+    /// recovery phrase is a key arriving later for a log that is still here.
+    /// Sweeping on a missing key alone would delete the note that feature is
+    /// meant to give back. A row with no ciphertext under it cannot be given back
+    /// by anything, because there is nothing left to decrypt.
+    fn sweep_if_residue(&mut self, id: NoteId) -> Result<()> {
+        if !self.store.load(id)?.is_empty() || self.store.get_snapshot(id)?.is_some() {
+            return Ok(());
+        }
+        self.store.forget(id)
     }
 
     // -- editing ------------------------------------------------------------
