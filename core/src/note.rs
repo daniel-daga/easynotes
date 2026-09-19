@@ -222,9 +222,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let identity = DeviceIdentity::from_seed(&seed);
         let mut actor = [0u8; 16];
         actor.copy_from_slice(&identity.public_key().0[..16]);
-        let account = Self::open_account(&mut store, &mut keyring, &identity, &actor)?;
+        let (account, length) = Self::open_account(&mut store, &mut keyring, &identity, &actor)?;
         let placements = account.doc.view();
-        Ok(Self {
+        let mut core = Self {
             identity,
             actor,
             store,
@@ -234,24 +234,33 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             placements,
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
-        })
+        };
+        // The same moment `open_note` compacts at, for the same reason: the
+        // document has just been rebuilt, so the snapshot is free, and the replay
+        // that made compaction worth doing has just been paid for the last time.
+        // The difference is that this one happens at launch rather than when a
+        // screen opens, because opening the device *is* opening this document.
+        if length > COMPACT_AFTER {
+            core.compact_account()?;
+        }
+        Ok(core)
     }
 
     /// Read the account document out of the store, minting its key on first run.
+    /// Returns it with the length of the log it was replayed from, which is what
+    /// [`NoteCore::open`] decides whether to compact on.
     ///
-    /// No snapshot is read, because nothing writes one: the account document is
-    /// not compacted. [ADR 0006](../../docs/adr/0006-compaction.md) says a
-    /// document keeps every envelope the relay has not acknowledged, and the
-    /// relay has acknowledged none of this one — it is the same rule a note that
-    /// has never been shared already follows, and it applies until the account
-    /// document syncs. What it costs is a signature verification per placement
-    /// ever made, at launch.
+    /// No snapshot row is read, because none is written: this document's
+    /// snapshot is an envelope *in its own log*
+    /// ([ADR 0012](../../docs/adr/0012-compacting-the-account-document.md)), so
+    /// replaying the log is the whole of opening it whether or not it has been
+    /// compacted, and the loop below does not know which it is looking at.
     fn open_account(
         store: &mut S,
         keyring: &mut K,
         identity: &DeviceIdentity,
         actor: &[u8; 16],
-    ) -> Result<OpenAccount<D::Account>> {
+    ) -> Result<(OpenAccount<D::Account>, usize)> {
         let key = match keyring.note_key(ACCOUNT_DOC)? {
             Some(key) => key,
             None => {
@@ -265,7 +274,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let mut doc = <D::Account as AccountDoc>::create(actor);
         let mut next_counter = 0u64;
         let mut seen = HashSet::new();
+        let mut length = 0usize;
         for raw in store.load(ACCOUNT_DOC)? {
+            length += 1;
             let env = Envelope::decode(&raw)?;
             if env.note_id != ACCOUNT_DOC {
                 return Err(CoreError::WrongNote {
@@ -282,12 +293,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             }
         }
 
-        Ok(OpenAccount {
-            doc,
-            key,
-            next_counter,
-            seen,
-        })
+        Ok((
+            OpenAccount {
+                doc,
+                key,
+                next_counter,
+                seen,
+            },
+            length,
+        ))
     }
 
     pub fn device_key(&self) -> AuthorKey {
@@ -1273,6 +1287,49 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok(dropped)
     }
 
+    /// Replace the account document's log with one envelope holding the whole
+    /// document. Returns how many envelopes were dropped.
+    ///
+    /// This is [`NoteCore::compact`] for the document that is not a note, and it
+    /// can drop *everything* where a note's compaction may drop almost nothing.
+    /// [ADR 0006](../../docs/adr/0006-compaction.md) forbids a never-synced note
+    /// to shorten its log because the log is the only route its content has to a
+    /// relay or a guest — a snapshot sits in a store row nothing sends. The rule
+    /// is kept here and the premise is not: the snapshot goes into the log, as an
+    /// ordinary sealed envelope with a counter above every one this device has
+    /// used, so the outbox [ADR 0004](../../docs/adr/0004-sync-engine.md) derives
+    /// from the log still holds the whole document. What a relay would be told is
+    /// the same account, in one envelope instead of hundreds.
+    /// [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md) has the
+    /// argument and what it rests on.
+    ///
+    /// One store call rather than two, because the snapshot *is* the new log:
+    /// `replace_log` is atomic, so a crash leaves either the log this was
+    /// replaying or the envelope that says the same thing, and never the gap
+    /// between them that a note's snapshot-then-truncate has to be ordered
+    /// around.
+    pub fn compact_account(&mut self) -> Result<usize> {
+        let before = self.store.log_len(ACCOUNT_DOC)?;
+        if before <= 1 {
+            // One envelope is already the shortest this log gets, and rewriting
+            // it as a snapshot of itself is work for its own sake.
+            return Ok(0);
+        }
+        let blob = self.account.doc.snapshot();
+        let counter = self.account.next_counter;
+        self.account.next_counter += 1;
+        let envelope = Envelope::seal(
+            &self.identity,
+            ACCOUNT_DOC,
+            &self.account.key,
+            counter,
+            &blob,
+        )?;
+        self.account.seen.insert((envelope.author, counter));
+        self.store.replace_log(ACCOUNT_DOC, &[envelope.encode()])?;
+        Ok(before)
+    }
+
     /// Re-send the current view to everyone watching, without changing anything.
     ///
     /// This exists so a watcher blocked on the channel can be woken and told to
@@ -1342,6 +1399,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // which is exactly the path a real relaunch takes.
         self.index.clear();
         self.refresh_library();
+    }
+
+    /// Give the store and the keyring back, consuming the core.
+    ///
+    /// The other half of [`NoteCore::close_all`], and the half that is a real
+    /// relaunch: opening a core is where a long account log is compacted and
+    /// where every counter is recovered, so a test that wants the app killed and
+    /// started again has to go back through [`NoteCore::open`] rather than only
+    /// dropping what is in memory.
+    pub fn into_parts(self) -> (S, K) {
+        (self.store, self.keyring)
     }
 
     pub fn store(&self) -> &S {
