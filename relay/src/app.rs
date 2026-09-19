@@ -13,12 +13,13 @@
 
 use crate::auth::Auth;
 use crate::error::{RelayError, Result};
+use crate::limit::RateLimit;
 use crate::protocol::*;
 use crate::store::RelayStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -68,41 +69,172 @@ impl AppState {
     }
 }
 
-/// The handshake is reachable from a browser, and that needs saying out loud.
+/// The handshake is reachable from a browser, and which browsers is now a
+/// deployment's decision.
 ///
-/// A page served from anywhere may POST to `/v1/challenge` and `/v1/token`. The
-/// WebSocket needs nothing here — sockets are not subject to CORS — so this is
-/// only about the two JSON calls that get a token, and those are a JSON POST,
-/// which means a preflight rather than a simple request.
+/// A page may POST to `/v1/challenge` and `/v1/token`. The WebSocket needs
+/// nothing here — sockets are not subject to CORS — so this is only about the
+/// two JSON calls that get a token, and those are a JSON POST, which means a
+/// preflight rather than a simple request.
 ///
-/// **Why any origin.** The relay has no cookies, no sessions and no ambient
-/// authority of any kind: the only way to get a token is to sign a nonce with a
-/// device's private key, which a hostile page does not have. So the most a page
-/// can do by calling these is ask for a nonce for a device key it names and read
-/// it back, and a nonce without the key it was minted for opens nothing. There
-/// is no request a browser could be tricked into making here that it could not
-/// already make from anywhere else, and nothing it could read that is worth
-/// reading.
+/// **Why any origin is a defensible default.** The relay has no cookies, no
+/// sessions and no ambient authority of any kind: the only way to get a token is
+/// to sign a nonce with a device's private key, which a hostile page does not
+/// have. So the most a page can do by calling these is ask for a nonce for a
+/// device key it names and read it back, and a nonce without the key it was
+/// minted for opens nothing. There is no request a browser could be tricked into
+/// making here that it could not already make from anywhere else.
 ///
-/// What this does *not* do is rate-limit or restrict anything, and a public
-/// relay will want both. It is on the same list as the tokens living in memory:
-/// [`plan-slice-02.md`](../../docs/plan-slice-02.md) carries it.
-fn browser_access() -> tower_http::cors::CorsLayer {
+/// **Why it is nonetheless configurable.** CORS is not what protects this relay
+/// and an allowlist would not make it safe — but a public deployment that knows
+/// which origin its app is served from gains nothing by advertising that any
+/// page may drive its handshake, and the narrower answer is the one to give when
+/// it is known. `RELAY_ALLOWED_ORIGINS` is that answer; unset is the default
+/// above, which is what a development relay and the browser smoke tests need,
+/// since those are served from an ephemeral localhost port.
+fn browser_access(origins: &Origins) -> tower_http::cors::CorsLayer {
     use axum::http::{header, Method};
+    let allow = match origins {
+        Origins::Any => tower_http::cors::AllowOrigin::any(),
+        Origins::List(list) => tower_http::cors::AllowOrigin::list(list.iter().cloned()),
+    };
     tower_http::cors::CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
+        .allow_origin(allow)
         .allow_methods([Method::POST])
         .allow_headers([header::CONTENT_TYPE])
 }
 
+/// Which pages may drive the handshake.
+#[derive(Clone, Debug, Default)]
+pub enum Origins {
+    /// Any of them. The default, and what a development relay wants.
+    #[default]
+    Any,
+    /// Exactly these. An origin not on the list gets no
+    /// `Access-Control-Allow-Origin` header, which is how a browser refuses.
+    List(Vec<axum::http::HeaderValue>),
+}
+
+impl Origins {
+    /// Parse a comma-separated list, as `RELAY_ALLOWED_ORIGINS` holds it. An
+    /// entry that is not a legal header value is an error rather than a silently
+    /// dropped rule: a typo in an allowlist that fails open is the worst of both
+    /// answers.
+    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
+        let mut list = Vec::new();
+        for entry in raw.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let value = axum::http::HeaderValue::from_str(entry)
+                .map_err(|_| format!("{entry:?} is not a usable origin"))?;
+            list.push(value);
+        }
+        if list.is_empty() {
+            return Err("no origins in the list".into());
+        }
+        Ok(Origins::List(list))
+    }
+}
+
+/// What a deployment gets to decide. Everything here fails open, because the
+/// defaults are what `just run-relay`, the tests and the browser smoke tests
+/// run with, and a relay that needs configuring to work in development is a
+/// relay nobody runs in development.
+pub struct RelayConfig {
+    pub origins: Origins,
+    /// `/v1/challenge` and `/v1/token`, per address.
+    pub handshake: RateLimit,
+    /// Opening a note socket, per address.
+    pub sockets: RateLimit,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            origins: Origins::Any,
+            handshake: RateLimit::unlimited(),
+            sockets: RateLimit::unlimited(),
+        }
+    }
+}
+
+impl RelayConfig {
+    /// The defaults a public relay should start from, and what `main` uses
+    /// unless the environment says otherwise.
+    ///
+    /// The numbers are deliberately loose. A real device does one handshake per
+    /// note per connection and reconnects with backoff, so twenty notes coming
+    /// back after a network drop is twenty handshakes in a few seconds — which
+    /// is why the burst is larger than the sustained rate. They are meant to
+    /// stop a flood, not to shape traffic, and anything that starts refusing
+    /// real clients is set too low rather than defended.
+    pub fn public() -> Self {
+        Self {
+            origins: Origins::Any,
+            handshake: RateLimit::new(120, 60),
+            sockets: RateLimit::new(240, 120),
+        }
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
+    router_with(state, RelayConfig::default())
+}
+
+pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
+    let cors = browser_access(&config.origins);
+    let limits = Arc::new(config);
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
         .route("/v1/notes/{note_id}", get(notes_ws))
+        // Health is outside the limiter on purpose: it is what a load balancer
+        // polls, it costs nothing to answer, and a relay that fails its health
+        // check because it is busy gets taken out of rotation for being busy.
         .route("/v1/health", get(|| async { StatusCode::OK }))
-        .layer(browser_access())
+        .layer(axum::middleware::from_fn(move |req, next| {
+            let limits = limits.clone();
+            async move { enforce_limits(limits, req, next).await }
+        }))
+        .layer(cors)
         .with_state(state)
+}
+
+/// Refuse a caller that is asking too often, before the handler does any work.
+///
+/// The peer address comes out of the request extensions rather than through the
+/// `ConnectInfo` extractor, so that a router built without connect info — which
+/// is every use of [`router`] in a test — degrades to no limiting instead of
+/// failing every request with a 500.
+async fn enforce_limits(
+    config: Arc<RelayConfig>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let limit = match req.uri().path() {
+        "/v1/challenge" | "/v1/token" => &config.handshake,
+        path if path.starts_with("/v1/notes/") => &config.sockets,
+        _ => return next.run(req).await,
+    };
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    let Some(peer) = peer else {
+        return next.run(req).await;
+    };
+    if limit.allow(peer) {
+        return next.run(req).await;
+    }
+    tracing::debug!(%peer, path = %req.uri().path(), "rate limited");
+    let retry = limit.retry_after().as_secs();
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(axum::http::header::RETRY_AFTER, retry.to_string())],
+    )
+        .into_response()
 }
 
 async fn challenge(

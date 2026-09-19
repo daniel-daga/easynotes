@@ -4,7 +4,8 @@
 use easynotes_core::crypto::{DeviceIdentity, Envelope, NoteKey};
 use easynotes_core::ids::NoteId;
 use easynotes_core::sync::{Incoming, NoteSync};
-use easynotes_relay::{MemoryStore, Relay, RelayStore};
+use easynotes_relay::limit::RateLimit;
+use easynotes_relay::{MemoryStore, Origins, Relay, RelayConfig, RelayStore};
 use std::sync::Arc;
 
 async fn relay() -> (Relay, MemoryStore) {
@@ -13,6 +14,18 @@ async fn relay() -> (Relay, MemoryStore) {
         .await
         .unwrap();
     (relay, store)
+}
+
+/// A relay configured the way a public one would be, so that the two things a
+/// public one adds can be asserted on.
+async fn relay_with(config: RelayConfig) -> Relay {
+    Relay::serve_with(
+        Arc::new(MemoryStore::new()),
+        "127.0.0.1:0".parse().unwrap(),
+        config,
+    )
+    .await
+    .unwrap()
 }
 
 fn envelope(
@@ -388,6 +401,172 @@ async fn a_browser_may_do_the_handshake() {
         "the response a page is allowed to read has to say so on the response too, \
          not only on the preflight"
     );
+}
+
+/// An allowlist that is set is an allowlist that applies.
+///
+/// CORS is not what protects this relay — the handshake is — so this is not a
+/// security boundary and is not claimed as one. It is the narrower answer given
+/// when the deployment knows which page it serves, and the test is here because
+/// an allowlist that quietly allows everything is the worst of the three
+/// possible behaviours.
+#[tokio::test]
+async fn an_allowlist_refuses_an_origin_that_is_not_on_it() {
+    let relay = relay_with(RelayConfig {
+        origins: Origins::parse("https://notes.example").unwrap(),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+
+    let preflight = |origin: &'static str| {
+        let http = http.clone();
+        let url = format!("{}/v1/challenge", relay.http_base());
+        async move {
+            http.request(reqwest::Method::OPTIONS, url)
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "content-type")
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let allowed = preflight("https://notes.example").await;
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .map(|v| v.to_str().unwrap()),
+        Some("https://notes.example"),
+    );
+
+    // The refusal is the *absence* of the header, which is how CORS says no: the
+    // response still arrives, and the browser is what refuses to hand it over.
+    let refused = preflight("https://phishing.example").await;
+    assert!(
+        refused
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
+        "an origin not on the list was told it was allowed",
+    );
+}
+
+/// The handshake is the unauthenticated door, and it is the one that has to hold
+/// against somebody leaning on it.
+///
+/// Two devices' worth of burst, then a refusal — with `Retry-After` on it, so a
+/// well-behaved client knows how long to wait rather than guessing or spinning.
+#[tokio::test]
+async fn a_flood_of_handshakes_is_refused() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 3),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+    let identity = DeviceIdentity::generate();
+    let ask = || {
+        http.post(format!("{}/v1/challenge", relay.http_base()))
+            .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+            .send()
+    };
+
+    for i in 0..3 {
+        let r = ask().await.unwrap();
+        assert!(r.status().is_success(), "handshake {i} was refused early");
+    }
+
+    let refused = ask().await.unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    let retry = refused
+        .headers()
+        .get("retry-after")
+        .expect("a refusal has to say when to come back")
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(retry >= 1, "Retry-After: 0 invites the retry just refused");
+}
+
+/// Opening sockets is limited too, and on its own budget.
+///
+/// A client that has spent its socket allowance can still get a token, and one
+/// that has spent its handshake allowance can still use the token it already
+/// has. Two buckets rather than one, because the alternative is a reconnecting
+/// device locking itself out of the door it just came through.
+#[tokio::test]
+async fn the_two_limits_are_kept_apart() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 1),
+        sockets: RateLimit::new(60, 1),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+    let identity = DeviceIdentity::generate();
+
+    // Spend the handshake bucket.
+    let first = http
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success());
+    let second = http
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+    // The socket bucket is untouched, so this reaches the handler rather than
+    // being refused for asking too often. What the handler then says is a 400:
+    // it is a plain GET with none of the headers an upgrade needs, which the
+    // `WebSocketUpgrade` extractor refuses before the token is ever looked at.
+    // The assertion is only that it is not a 429, because that is the whole
+    // question — anything else means the request got through the limiter.
+    let note = NoteId::random();
+    let socket = http
+        .get(format!(
+            "{}/v1/notes/{}?token=nonsense",
+            relay.http_base(),
+            note.encode()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        socket.status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "the socket path was spending the handshake's allowance",
+    );
+}
+
+/// Health is outside the limiter, because a relay that fails its health check
+/// for being busy gets taken out of rotation for being busy.
+#[tokio::test]
+async fn the_health_check_is_never_rate_limited() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 1),
+        sockets: RateLimit::new(60, 1),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+    for i in 0..20 {
+        let r = http
+            .get(format!("{}/v1/health", relay.http_base()))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "health check {i} was refused");
+    }
 }
 
 #[test]

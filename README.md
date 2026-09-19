@@ -168,9 +168,13 @@ before it decrypts**, and the AAD binds the note, the author and a counter, so a
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
 It may check a token, a size, and that an envelope's note ID matches the path it
 arrived on — it may not check anything else, and it never sees plaintext. Its
-handshake answers any origin, so that a page can do it at all; that costs
-nothing, because a token needs a signature over the relay's nonce and a hostile
-page has no device key to make one with.
+handshake answers any origin by default, so that a page can do it at all; that
+costs nothing, because a token needs a signature over the relay's nonce and a
+hostile page has no device key to make one with — and a deployment that knows
+which page it serves can name it in `RELAY_ALLOWED_ORIGINS` anyway. What a
+public relay did need is a limit on how often a stranger may knock: the
+handshake and opening a socket are a token bucket per address now, on by
+default and off in every test.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire rather than trusting the claim, and the same check runs against the local
 database and its write-ahead log. The one thing on this device that holds a note
