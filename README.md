@@ -5,13 +5,13 @@ encrypted, lists can be edited live by several people, and sharing needs no
 email account. See [`docs/design.md`](docs/design.md) for the product and
 architecture.
 
-**Status: Slice 1 complete, Slice 2 in progress.** The vertical spike works —
+**Status: Slices 1 and 2 complete, except for the Android and iOS builds.** The vertical spike works —
 one Rust core for crypto, CRDT, storage and sync, driving a Flutter UI on Linux
 desktop and in a browser, with a relay that stores and forwards ciphertext and
-nothing else. [`docs/slice-01-results.md`](docs/slice-01-results.md) is the
-honest account of that, including what it did not do;
-[`docs/plan-slice-02.md`](docs/plan-slice-02.md) is what happens next and how
-far it has got.
+nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest account of
+where that got to, including what it did not do, and
+[`docs/plan-slice-03.md`](docs/plan-slice-03.md) is what happens next: the
+mobile builds, and then accounts, so that one person can have two devices.
 
 The app now opens on a grid of lists rather than on the single note Slice 1
 had: make one, join someone else's and it is added rather than swapped in, and
@@ -85,8 +85,9 @@ that chose it, and so does a rename, because there is no such thing as one
 person's two devices until accounts land. Reminders are the rest of that
 document's remit and are not built.
 
-Android and iOS have still never been built — that is the largest open gap and
-the next thing to do on a machine that has an Android SDK and a Mac.
+Android and iOS have still never been built — that is the largest open gap, two
+slices old now, and the next thing to do on a machine that has an Android SDK
+and a Mac.
 
 ## Layout
 
