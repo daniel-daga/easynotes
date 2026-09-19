@@ -182,6 +182,10 @@ class RustNoteLibrary implements NoteLibrary {
   Future<void> setPinned(String noteId, bool pinned) =>
       _library.setPinned(id: noteId, pinned: pinned);
 
+  @override
+  Future<void> moveNoteTo(String noteId, String targetId) =>
+      _library.moveNoteTo(id: noteId, target: targetId);
+
   /// Read straight through to Rust, like [notes]: the account document is the
   /// only copy of this.
   @override

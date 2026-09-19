@@ -406,6 +406,36 @@ void main() {
         );
       });
 
+      test('a note dropped on another lands beside it, and stays', () async {
+        // What the grid's drag reports, over the real order keys. It names the
+        // note it landed on rather than a position, because the screen it
+        // landed on is filtered and the order is over every note this device
+        // has — and it has to be the same order after a relaunch.
+        final dir = await Directory.systemTemp.createTemp('easynotes-move');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final before = await RustNoteLibrary.open(dir.path, key);
+        final a = await before.createNote();
+        final b = await before.createNote();
+        final c = await before.createNote();
+        // Newest first, so the grid reads c, b, a.
+        expect(before.notes.map((note) => note.id), [c, b, a]);
+
+        // Dragged downwards: c lands after the card it was dropped on.
+        await before.moveNoteTo(c, b);
+        expect(before.notes.map((note) => note.id), [b, c, a]);
+
+        // And dragged upwards, before it.
+        await before.moveNoteTo(a, b);
+        expect(before.notes.map((note) => note.id), [a, b, c]);
+        await before.dispose();
+
+        final after = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(after.dispose);
+        expect(after.notes.map((note) => note.id), [a, b, c]);
+      });
+
       test('labels survive a relaunch, and a label is its notes', () async {
         // A label is a placement like a colour, so the same question: across the
         // bridge, into the account document, onto the disk, and back.

@@ -183,6 +183,73 @@ fn moving_a_note_puts_it_where_it_was_asked<D: NoteDoc>() {
     assert_eq!(titles(&core.notes().unwrap()), ["c", "b", "a"]);
 }
 
+/// What a drag reports. A drop lands on a card, and the screen it landed on is
+/// filtered — so the move is named by the note underneath rather than by an
+/// index counted off what happened to be drawn.
+fn dropping_a_note_on_another_takes_its_place<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let mut ids = Vec::new();
+    for title in ["a", "b", "c"] {
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(id, title).unwrap();
+        ids.push(id);
+    }
+    // Newest first, so the grid reads c, b, a.
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    assert_eq!(titles(&core.notes().unwrap()), ["c", "b", "a"]);
+
+    // Dragged downwards: c lands after the card it was dropped on.
+    core.move_note_to(c, b).unwrap();
+    assert_eq!(titles(&core.notes().unwrap()), ["b", "c", "a"]);
+
+    // Dragged upwards: a lands before it.
+    core.move_note_to(a, b).unwrap();
+    assert_eq!(titles(&core.notes().unwrap()), ["a", "b", "c"]);
+}
+
+/// The whole reason a drop names a note: the grid the drag happened on may be
+/// showing three of this device's notes, and the order it writes into is over
+/// all of them.
+fn dropping_a_note_ignores_the_notes_that_were_not_drawn<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let mut ids = Vec::new();
+    for title in ["a", "b", "c", "d"] {
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(id, title).unwrap();
+        ids.push(id);
+    }
+    let (a, b) = (ids[0], ids[1]);
+    assert_eq!(titles(&core.notes().unwrap()), ["d", "c", "b", "a"]);
+
+    // c is archived, so the grid shows d, b, a — and b is at index 1 there and
+    // at index 2 in the order. Dropping a on b has to mean the same either way.
+    core.set_archived(ids[2], true).unwrap();
+    core.move_note_to(a, b).unwrap();
+
+    let all = core.notes().unwrap();
+    let grid: Vec<&str> = all
+        .iter()
+        .filter(|note| !note.placement.archived)
+        .map(|note| note.title.as_str())
+        .collect();
+    assert_eq!(grid, ["d", "a", "b"]);
+    // And the archived note has not moved out from between them.
+    assert_eq!(titles(&all), ["d", "c", "a", "b"]);
+}
+
+/// A drop that says nothing is not an error and writes nothing: a card released
+/// on itself is the commonest way a drag ends.
+fn dropping_a_note_on_itself_writes_nothing<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.notes().unwrap();
+    let before = core.store().load(ACCOUNT_DOC).unwrap().len();
+
+    core.move_note_to(id, id).unwrap();
+
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), before);
+}
+
 // ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------
@@ -1005,6 +1072,18 @@ macro_rules! backend_suite {
             #[test]
             fn moving_a_note_puts_it_where_it_was_asked() {
                 super::moving_a_note_puts_it_where_it_was_asked::<$backend>()
+            }
+            #[test]
+            fn dropping_a_note_on_another_takes_its_place() {
+                super::dropping_a_note_on_another_takes_its_place::<$backend>()
+            }
+            #[test]
+            fn dropping_a_note_ignores_the_notes_that_were_not_drawn() {
+                super::dropping_a_note_ignores_the_notes_that_were_not_drawn::<$backend>()
+            }
+            #[test]
+            fn dropping_a_note_on_itself_writes_nothing() {
+                super::dropping_a_note_on_itself_writes_nothing::<$backend>()
             }
             #[test]
             fn a_placement_reaches_the_list() {
