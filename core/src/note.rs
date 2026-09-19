@@ -17,7 +17,7 @@ use crate::crdt::{
 };
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
 use crate::error::{CoreError, Result};
-use crate::ids::{ItemId, NoteId};
+use crate::ids::{ItemId, LabelId, NoteId};
 use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
@@ -112,6 +112,16 @@ pub struct NoteSummary {
     /// to it — and a core that filtered would have to be asked three times for
     /// what it already knows once.
     pub placement: Placement,
+    /// The labels on this note, resolved to their names and sorted the way a
+    /// menu sorts them.
+    ///
+    /// Resolved here rather than left to the caller because the names live in
+    /// the account document, which nothing above this line reads — and because
+    /// it is what makes a rename reach a card: renaming a label refreshes the
+    /// list, and the list carries names, so every chip redraws without anything
+    /// asking. The ID comes with it because the name is the part that can
+    /// change: a screen draws the name and acts on the ID.
+    pub labels: Vec<(LabelId, String)>,
 }
 
 /// One note a search found, and where it found the query.
@@ -243,6 +253,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         if length > COMPACT_AFTER {
             core.compact_account()?;
         }
+        // Before the compaction check would be wrong and after it is right: the
+        // migration appends, so running it first would compact a log and then
+        // immediately lengthen it. A device with nothing to migrate — which is
+        // every device after its first launch on this build — writes nothing
+        // here.
+        core.adopt_legacy_tags()?;
         Ok(core)
     }
 
@@ -604,6 +620,27 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.library.subscribe()
     }
 
+    /// The labels on a note, with their names, sorted as a menu sorts them.
+    fn labels_of(&self, id: NoteId) -> Vec<(LabelId, String)> {
+        let mut labels: Vec<(LabelId, String)> = self
+            .placements
+            .labels_on(id)
+            .into_iter()
+            .filter_map(|label| {
+                self.placements
+                    .label_name(label)
+                    .map(|name| (label, name.to_string()))
+            })
+            .collect();
+        labels.sort_by(|a, b| {
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        labels
+    }
+
     fn refresh_library(&self) {
         let mut summaries: Vec<NoteSummary> = self
             .index
@@ -615,6 +652,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 checked: entry.checked,
                 preview: entry.items.iter().take(PREVIEW_ITEMS).cloned().collect(),
                 placement: self.placements.placement(*id),
+                labels: self.labels_of(*id),
             })
             .collect();
         // Pinned notes first, then the grid order, then the ID to break a tie —
@@ -684,83 +722,239 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.apply_account(AccountEdit::SetPinned { note: id, pinned })
     }
 
-    /// Every label in use on this device, and how many notes carry each.
+    /// Every label this person has, with how many notes carry each.
     ///
-    /// There is no list of labels apart from the notes that carry them: a label
-    /// exists because a note has it, and taking it off the last one takes the
-    /// label with it. See [`AccountView::tags`].
-    pub fn tags(&self) -> Vec<(String, usize)> {
+    /// A label exists on its own now rather than only through the notes that
+    /// carry it, so a count of zero is a real answer: taking a label off the
+    /// last note leaves the label. [`AccountView::tags`] sorts them the way a
+    /// menu wants them.
+    pub fn tags(&self) -> Vec<(LabelId, String, usize)> {
         self.placements.tags()
     }
 
-    /// Put a label on a note, and return the name it was stored under.
+    /// The labels on one note, by ID.
+    pub fn tags_on(&self, id: NoteId) -> Vec<LabelId> {
+        self.placements.labels_on(id)
+    }
+
+    /// What a label is called, or `None` if this device has no name for it.
+    pub fn tag_name(&self, label: LabelId) -> Option<&str> {
+        self.placements.label_name(label)
+    }
+
+    /// Put a label on a note, and return the label it went on under.
     ///
     /// `None` for something that is not a name at all — whitespace, or nothing.
-    /// Otherwise the name after [`normalise_tag`], **except** when this device
-    /// already has a label that differs only in case: then it is that one. Typing
-    /// `recipes` under a `Recipes` this person made last week means the label they
-    /// already have, not a second one that looks the same on a chip; and since
-    /// the two are different keys in the document, nothing but this reuse keeps
-    /// them from both existing.
+    /// Otherwise an existing label whose name matches ignoring case, or a new
+    /// one. Typing `recipes` under a `Recipes` this person made last week means
+    /// the label they already have, not a second one that looks the same on a
+    /// chip.
     ///
     /// What it cannot do is stop two *devices* from making that pair, each
-    /// offline and each the first to use the name. That is a real residue and it
-    /// is the honest cost of having no separate list of labels to agree about —
-    /// both show, both work, and either can be taken off.
+    /// offline and each the first to use the name. That residue is smaller than
+    /// it was — [`NoteCore::rename_tag`] can now merge the two, which nothing
+    /// could when a label *was* its name — and it is still real until the
+    /// account document syncs at all.
     ///
     /// Labelling a note this device cannot open is refused, for the reason
     /// forgetting the account document is: a placement is about a note, and a
     /// note with a placement and no key is a card that cannot be drawn.
-    pub fn add_tag(&mut self, id: NoteId, tag: &str) -> Result<Option<String>> {
+    pub fn add_tag(&mut self, id: NoteId, tag: &str) -> Result<Option<LabelId>> {
         let Some(name) = account::normalise_tag(tag) else {
             return Ok(None);
         };
-        let name = self.existing_tag(&name).unwrap_or(name);
+        let label = match self.placements.label_named(&name) {
+            Some(label) => label,
+            None => self.make_tag(&name)?,
+        };
         self.apply_account(AccountEdit::SetTag {
             note: id,
-            tag: name.clone(),
+            label,
             on: true,
         })?;
-        Ok(Some(name))
+        Ok(Some(label))
+    }
+
+    /// Make a label that no note carries.
+    ///
+    /// Reachable on its own now, which it was not when a label was its name:
+    /// there was nowhere to put one. An existing label with this name is
+    /// returned rather than a second one made.
+    pub fn make_tag(&mut self, name: &str) -> Result<LabelId> {
+        let Some(name) = account::normalise_tag(name) else {
+            return Err(CoreError::UnknownNote("a label needs a name".into()));
+        };
+        if let Some(existing) = self.placements.label_named(&name) {
+            return Ok(existing);
+        }
+        let label = LabelId::random();
+        self.apply_account(AccountEdit::SetLabelName { label, name })?;
+        Ok(label)
     }
 
     /// Take a label off a note. Not an error if it was never on it.
     ///
-    /// Matched the way [`NoteCore::add_tag`] matches, so that a caller holding
-    /// the name a person typed removes the label they meant rather than nothing.
-    pub fn remove_tag(&mut self, id: NoteId, tag: &str) -> Result<()> {
-        let Some(name) = account::normalise_tag(tag) else {
+    /// The label itself stays, with one fewer note on it. Removing the label is
+    /// [`NoteCore::forget_tag`], and it is a different gesture on purpose: a
+    /// label that disappeared because somebody tidied up the one note carrying
+    /// it is a thing to explain.
+    pub fn remove_tag(&mut self, id: NoteId, label: LabelId) -> Result<()> {
+        // A membership the migration has not reached is named rather than
+        // pointed at, so taking it off means removing the old key as well —
+        // otherwise the label would come back on the next launch.
+        let placement = self.placement(id);
+        for tag in &placement.legacy_tags {
+            if self.placements.label_named(tag) == Some(label) {
+                self.apply_account(AccountEdit::DropLegacyTag {
+                    note: id,
+                    tag: tag.clone(),
+                })?;
+            }
+        }
+        if !placement.tags.contains(&label) {
             return Ok(());
-        };
-        let tags = self.placement(id).tags;
-        let Some(name) = tags
-            .iter()
-            .find(|held| held.eq_ignore_ascii_case(&name))
-            .cloned()
-        else {
-            return Ok(());
-        };
+        }
         self.apply_account(AccountEdit::SetTag {
             note: id,
-            tag: name,
+            label,
             on: false,
         })
     }
 
-    /// The label this device already has under this name, ignoring case.
+    /// Rename a label. Every note carrying it keeps it.
     ///
-    /// ASCII-insensitive and not Unicode-insensitive, deliberately: a full case
-    /// fold depends on a locale — Turkish dotless i is the standing example — and
-    /// a label that is the same one on a phone and a different one on a laptop is
-    /// worse than a label that is only ever folded where every device folds it
-    /// the same way.
-    fn existing_tag(&self, name: &str) -> Option<String> {
+    /// This is the thing a label having an ID is for. It is one register write:
+    /// the memberships point at the ID and never mention the name, so two
+    /// devices renaming the same label converge on one name exactly as they
+    /// converge on a colour, and no note loses a label on the way.
+    ///
+    /// **Renaming onto a name another label already has merges the two**, which
+    /// is what Keep does and the only answer that is not a lie: the person asked
+    /// for one label with that name, and refusing would leave them with two that
+    /// look identical. Every note on the renamed label gains the surviving one,
+    /// and the renamed label is removed. It is also the repair for the one
+    /// residue [`NoteCore::add_tag`] cannot prevent — two devices each inventing
+    /// the same name offline — which nothing could repair before.
+    ///
+    /// Returns the label that survived: `label` itself, or the one it merged
+    /// into.
+    pub fn rename_tag(&mut self, label: LabelId, name: &str) -> Result<Option<LabelId>> {
+        let Some(name) = account::normalise_tag(name) else {
+            return Ok(None);
+        };
+        if self.placements.label_name(label).is_none() {
+            return Ok(None);
+        }
+        match self.placements.label_named(&name) {
+            // Already called this, up to case. Write the name anyway, so that
+            // renaming `recipes` to `Recipes` does what it looks like.
+            Some(existing) if existing == label => {
+                self.apply_account(AccountEdit::SetLabelName { label, name })?;
+                Ok(Some(label))
+            }
+            Some(existing) => {
+                self.merge_tag(label, existing)?;
+                Ok(Some(existing))
+            }
+            None => {
+                self.apply_account(AccountEdit::SetLabelName { label, name })?;
+                Ok(Some(label))
+            }
+        }
+    }
+
+    /// Give every note on `from` the label `into`, then remove `from`.
+    fn merge_tag(&mut self, from: LabelId, into: LabelId) -> Result<()> {
+        for note in self.notes_with_tag(from) {
+            self.apply_account(AccountEdit::SetTag {
+                note,
+                label: into,
+                on: true,
+            })?;
+        }
+        self.forget_tag(from)
+    }
+
+    /// Remove a label: its name, and its membership of every note that has it.
+    ///
+    /// The notes are untouched apart from losing the label. Nothing here deletes
+    /// a note, and this is the only thing in the core that takes a label away
+    /// from notes the caller did not name.
+    pub fn forget_tag(&mut self, label: LabelId) -> Result<()> {
+        let notes = self.notes_with_tag(label);
+        // The old-shape memberships name the label, so `ForgetLabel` cannot
+        // reach them: it removes keys built from an ID.
+        for note in &notes {
+            let legacy = self.placement(*note).legacy_tags;
+            for tag in legacy {
+                if self.placements.label_named(&tag) == Some(label) {
+                    self.apply_account(AccountEdit::DropLegacyTag { note: *note, tag })?;
+                }
+            }
+        }
+        self.apply_account(AccountEdit::ForgetLabel { label, notes })
+    }
+
+    /// Every note carrying a label, including through a membership the migration
+    /// has not reached yet.
+    fn notes_with_tag(&self, label: LabelId) -> Vec<NoteId> {
         self.placements
             .placements
-            .values()
-            .flat_map(|placement| placement.tags.iter())
-            .find(|held| held.eq_ignore_ascii_case(name))
-            .cloned()
+            .keys()
+            .copied()
+            .filter(|note| self.placements.labels_on(*note).contains(&label))
+            .collect()
+    }
+
+    /// Turn every membership still stored in the old shape into a real label.
+    ///
+    /// The old shape made a label out of its name — `t:<note>:<name>` and
+    /// nothing else — so there is no ID to recover and one has to be minted.
+    /// Names that match ignoring case land on the same label, which is what
+    /// `add_tag` would have done had they been typed on this build.
+    ///
+    /// Runs at launch, writes nothing when there is nothing to do, and is
+    /// idempotent: the old keys are removed in the same pass, so the second
+    /// launch finds none. A crash halfway leaves some notes migrated and some
+    /// not, and the next launch finishes the job — which is why
+    /// [`AccountView::labels_on`] reads both shapes rather than assuming one.
+    ///
+    /// **By name, not by note.** When two notes carry the same label under
+    /// different casings, whichever is adopted first decides what the label is
+    /// called. Walking the notes would decide that by note ID, which is random,
+    /// so two devices migrating the same document would land on different
+    /// casings — and with no compaction to reconcile them, that difference would
+    /// be permanent. Sorting the names first makes it the same answer
+    /// everywhere: lexicographically first wins.
+    fn adopt_legacy_tags(&mut self) -> Result<()> {
+        let mut legacy: Vec<(NoteId, String)> = self
+            .placements
+            .placements
+            .iter()
+            .flat_map(|(note, placement)| {
+                placement
+                    .legacy_tags
+                    .iter()
+                    .map(move |tag| (*note, tag.clone()))
+            })
+            .collect();
+        if legacy.is_empty() {
+            return Ok(());
+        }
+        legacy.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        for (note, tag) in legacy {
+            let label = match self.placements.label_named(&tag) {
+                Some(label) => label,
+                None => self.make_tag(&tag)?,
+            };
+            self.apply_account(AccountEdit::SetTag {
+                note,
+                label,
+                on: true,
+            })?;
+            self.apply_account(AccountEdit::DropLegacyTag { note, tag })?;
+        }
+        Ok(())
     }
 
     /// Put a note in the archive, or take it out. Archiving a pinned note
@@ -841,9 +1035,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.keyring.forget_note_key(id)?;
         // The labels have to be read before anything else is removed, because
         // they are the one part of a placement that cannot be named without
-        // looking ([`AccountEdit::ForgetNote`]).
-        let tags = self.placement(id).tags.into_iter().collect();
-        self.apply_account(AccountEdit::ForgetNote { note: id, tags })?;
+        // looking ([`AccountEdit::ForgetNote`]). Both shapes, because a device
+        // can be forgetting a note on the same launch that migrates it.
+        let placement = self.placement(id);
+        let tags = placement.tags.into_iter().collect();
+        let legacy_tags = placement.legacy_tags.into_iter().collect();
+        self.apply_account(AccountEdit::ForgetNote {
+            note: id,
+            tags,
+            legacy_tags,
+        })?;
         // `apply_account` refreshes the list, but only when it had something to
         // write: a note nobody ever coloured, pinned or ordered produces an empty
         // update and returns early. The card still has to go.
@@ -963,6 +1164,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// it here.
     fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
         let update = self.account.doc.apply_local(&edit)?;
+        self.seal_account_update(update)
+    }
+
+    /// Seal one account-document update into the log and refresh what is drawn
+    /// from it.
+    fn seal_account_update(&mut self, update: Vec<u8>) -> Result<()> {
         if update.is_empty() {
             // A write that changed nothing — clearing a colour that was never
             // set. Sealing it would put an envelope in the log that says nothing.
@@ -982,6 +1189,18 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.placements = self.account.doc.view();
         self.refresh_library();
         Ok(())
+    }
+
+    /// Write a membership in the shape a label used to have, so that a test can
+    /// stand a device up in the state [`NoteCore::adopt_legacy_tags`] exists
+    /// for. There is no other way to produce one now, which is the point.
+    #[doc(hidden)]
+    pub fn write_legacy_tag(&mut self, note: NoteId, tag: &str) -> Result<()> {
+        let update = self
+            .account
+            .doc
+            .write(&[account::legacy_tag_write(note, tag)])?;
+        self.seal_account_update(update)
     }
 
     /// Every order key in use, ascending.
@@ -1047,10 +1266,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // reason `notes` gives it no card: there is nothing to show and
             // nothing that could be shown. It is also what keeps a forgotten note
             // forgotten — a late-arriving envelope can leave a sync cursor behind
-            // for one ([`NoteCore::trashed_notes`]), and a placement written from
-            // that row would be a permanent entry in a document nothing compacts,
-            // about a note that does not exist.
+            // for one, and a placement written from that row would be a permanent
+            // entry in a document nothing compacts, about a note that does not
+            // exist.
             if self.keyring.note_key(id)?.is_none() {
+                self.sweep_if_residue(id)?;
                 continue;
             }
             unplaced.push((self.ordinal(id)?, id));
@@ -1062,6 +1282,32 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             self.place(id, usize::MAX)?;
         }
         Ok(())
+    }
+
+    /// Remove what a forgotten note can leave behind, and nothing else.
+    ///
+    /// Forgetting a note closes its relay connection before taking the rows, but
+    /// the sync engine's task may already be mid-delivery: an envelope that
+    /// arrives in that window is rejected by `apply_remote` — there is no key to
+    /// open it with — and the engine moves the cursor past it anyway, because a
+    /// cursor that sticks on an envelope it cannot use would stall the note for
+    /// ever. Writing that cursor recreates a store row for a note that has just
+    /// been deleted. What is left is a sealed cursor, no log, no snapshot, no key
+    /// and no placement: nothing readable, but a row that `store.notes` returns
+    /// and that nothing has ever removed.
+    ///
+    /// The test of residue is **ciphertext, not the key**. A note with a log or a
+    /// snapshot is left exactly where it is even though this device cannot read
+    /// it: `copy_store` can carry a log whose key never arrived, and Slice 3's
+    /// recovery phrase is a key arriving later for a log that is still here.
+    /// Sweeping on a missing key alone would delete the note that feature is
+    /// meant to give back. A row with no ciphertext under it cannot be given back
+    /// by anything, because there is nothing left to decrypt.
+    fn sweep_if_residue(&mut self, id: NoteId) -> Result<()> {
+        if !self.store.load(id)?.is_empty() || self.store.get_snapshot(id)?.is_some() {
+            return Ok(());
+        }
+        self.store.forget(id)
     }
 
     // -- editing ------------------------------------------------------------

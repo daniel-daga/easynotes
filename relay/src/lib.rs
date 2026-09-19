@@ -4,10 +4,11 @@
 pub mod app;
 pub mod auth;
 pub mod error;
+pub mod limit;
 pub mod protocol;
 pub mod store;
 
-pub use app::{router, AppState};
+pub use app::{router, router_with, AppState, Origins, RelayConfig};
 pub use store::{MemoryStore, PostgresStore, RelayStore};
 
 use std::net::SocketAddr;
@@ -22,15 +23,34 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Bind and start serving. Pass port 0 to let the OS choose, then read
-    /// `addr` for the real one.
+    /// Bind and start serving, with nothing limited and any origin allowed.
+    /// Pass port 0 to let the OS choose, then read `addr` for the real one.
+    ///
+    /// This is the shape the tests want: a relay that answers whatever they ask
+    /// it, as fast as they ask. A relay anyone can reach wants
+    /// [`Relay::serve_with`].
     pub async fn serve(store: Arc<dyn RelayStore>, addr: SocketAddr) -> anyhow::Result<Self> {
+        Self::serve_with(store, addr, RelayConfig::default()).await
+    }
+
+    /// Bind and start serving under `config`.
+    pub async fn serve_with(
+        store: Arc<dyn RelayStore>,
+        addr: SocketAddr,
+        config: RelayConfig,
+    ) -> anyhow::Result<Self> {
         let state = AppState::new(store);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
-        let app = router(state.clone());
+        let app = router_with(state.clone(), config);
         let handle = tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
+            // With connect info, because the rate limiter is keyed on the
+            // address the connection came from and there is nowhere else to
+            // learn it. Without this the limiter sees no peer and lets
+            // everything through, which is the failure direction chosen in
+            // `enforce_limits` but not the one to ship.
+            let service = app.into_make_service_with_connect_info::<SocketAddr>();
+            if let Err(e) = axum::serve(listener, service).await {
                 tracing::error!(error = %e, "relay stopped");
             }
         });

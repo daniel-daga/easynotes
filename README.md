@@ -5,13 +5,13 @@ encrypted, lists can be edited live by several people, and sharing needs no
 email account. See [`docs/design.md`](docs/design.md) for the product and
 architecture.
 
-**Status: Slice 1 complete, Slice 2 in progress.** The vertical spike works —
+**Status: Slices 1 and 2 complete, except for the Android and iOS builds.** The vertical spike works —
 one Rust core for crypto, CRDT, storage and sync, driving a Flutter UI on Linux
 desktop and in a browser, with a relay that stores and forwards ciphertext and
-nothing else. [`docs/slice-01-results.md`](docs/slice-01-results.md) is the
-honest account of that, including what it did not do;
-[`docs/plan-slice-02.md`](docs/plan-slice-02.md) is what happens next and how
-far it has got.
+nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest account of
+where that got to, including what it did not do, and
+[`docs/plan-slice-03.md`](docs/plan-slice-03.md) is what happens next: the
+mobile builds, and then accounts, so that one person can have two devices.
 
 The app now opens on a grid of lists rather than on the single note Slice 1
 had: make one, join someone else's and it is added rather than swapped in, and
@@ -67,18 +67,27 @@ Notes can be labelled, and a label is a shelf: hold a card, type a name, and the
 drawer grows an entry with that label's notes on it — with a search made there
 searching only them, and a note made there getting the label rather than
 appearing and vanishing. Labels are personal like the colours, for the same
-reason and in the same document, and a label is nothing but the notes that carry
-it: take it off the last one and it is gone. [ADR
-0008](docs/adr/0008-account-document.md) says why each label is a key of its own
-rather than a list in one.
+reason and in the same document.
+
+A label is a thing rather than a word: it has an identity of its own and its name
+hangs off it, so it can be **renamed** — every note keeps it, because nothing
+that records a membership has ever mentioned the name — and it outlives the notes
+that carried it, so taking it off the last one leaves an empty shelf rather than
+deleting it behind your back. Renaming a label onto a name another already has
+merges the two, which is also the repair for the one duplicate two offline
+devices can make. Throwing a label away is a separate gesture from emptying it,
+and it says how many notes it is about to come off. [ADR
+0008](docs/adr/0008-account-document.md) says why the name is a register rather
+than the key, and what the shape before it could not do.
 
 What the account document does not do yet is sync: a colour stays on the device
-that chose it, because there is no such thing as one person's two devices until
-accounts land. Reminders are the rest of that document's remit and are not built,
-and a label cannot yet be renamed.
+that chose it, and so does a rename, because there is no such thing as one
+person's two devices until accounts land. Reminders are the rest of that
+document's remit and are not built.
 
-Android and iOS have still never been built — that is the largest open gap and
-the next thing to do on a machine that has an Android SDK and a Mac.
+Android and iOS have still never been built — that is the largest open gap, two
+slices old now, and the next thing to do on a machine that has an Android SDK
+and a Mac.
 
 ## Layout
 
@@ -168,9 +177,13 @@ before it decrypts**, and the AAD binds the note, the author and a counter, so a
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
 It may check a token, a size, and that an envelope's note ID matches the path it
 arrived on — it may not check anything else, and it never sees plaintext. Its
-handshake answers any origin, so that a page can do it at all; that costs
-nothing, because a token needs a signature over the relay's nonce and a hostile
-page has no device key to make one with.
+handshake answers any origin by default, so that a page can do it at all; that
+costs nothing, because a token needs a signature over the relay's nonce and a
+hostile page has no device key to make one with — and a deployment that knows
+which page it serves can name it in `RELAY_ALLOWED_ORIGINS` anyway. What a
+public relay did need is a limit on how often a stranger may knock: the
+handshake and opening a socket are a token bucket per address now, on by
+default and off in every test.
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire rather than trusting the claim, and the same check runs against the local
 database and its write-ahead log. The one thing on this device that holds a note

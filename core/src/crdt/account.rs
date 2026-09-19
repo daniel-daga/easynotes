@@ -20,13 +20,16 @@
 //! with a scalar in it:
 //!
 //! ```text
-//! "p:<note id>:colour"    -> string     a placement, one key per field
-//! "p:<note id>:pinned"    -> bool
-//! "p:<note id>:archived"  -> bool
-//! "p:<note id>:trashed"   -> bool
-//! "p:<note id>:order"     -> string     a fractional index; see crate::order
-//! "t:<note id>:<name>"    -> bool       a tag on that note, one key per tag
-//! "s:<name>"              -> string     a setting
+//! "p:<note id>:colour"      -> string   a placement, one key per field
+//! "p:<note id>:pinned"      -> bool
+//! "p:<note id>:archived"    -> bool
+//! "p:<note id>:trashed"     -> bool
+//! "p:<note id>:order"       -> string   a fractional index; see crate::order
+//! "l:<label id>"            -> string   a label's name
+//! "m:<note id>:<label id>"  -> bool     that note carries that label
+//! "s:<name>"                -> string   a setting
+//!
+//! "t:<note id>:<name>"      -> bool     a label, as it used to be stored
 //! ```
 //!
 //! Every write is then a last-writer-wins register on a root key, which is the
@@ -34,36 +37,60 @@
 //! note concurrently keep both, and two that colour it differently keep one
 //! colour rather than half of each.
 //!
-//! ## Why a tag is a key and not a list
+//! ## Why a label has an identity, and why membership is a key per pair
 //!
-//! A note's tags are a *set*, and the obvious shape — one key per note holding
+//! A note's labels are a *set*, and the obvious shape — one key per note holding
 //! `"errands,recipes"` — is the one that loses: two devices adding two different
-//! tags to the same note would each write the whole set, and last-writer-wins
-//! would keep one of the two additions. A key per `(note, tag)` makes each
-//! membership its own register, so those two devices keep both tags for the same
-//! reason they keep a pin and a colour.
+//! labels to the same note would each write the whole set, and last-writer-wins
+//! would keep one of the two additions. A key per `(note, label)` makes each
+//! membership its own register, so those two devices keep both labels for the
+//! same reason they keep a pin and a colour.
 //!
-//! Taking a tag off **deletes** the key rather than writing `false`. Nothing
-//! compacts this document ([ADR 0006](../../../docs/adr/0006-compaction.md)), so
-//! a `false` left behind is a key replayed at every launch for ever, about a
-//! label this person has stopped using — and unlike the five placement fields,
-//! which are bounded, the tags one note could accumulate are not. The price is
-//! the one case a register does not cover: one device deleting a tag while
-//! another re-adds it resolves to whichever the backend prefers rather than to a
-//! rule of ours, and the answer is a tag that is on or off, never half of one.
+//! What the pair is made of changed. A label used to *be* its name, so the
+//! membership key was `t:<note>:<name>` and there was nothing else — which meant
+//! a label could not be renamed (every note carrying it would have to be
+//! rewritten, and a peer replaying that would see every note lose its label and
+//! gain a different one) and could not exist without a note (there was nowhere to
+//! put it). A label has an ID now, `l:<id>` holds its name, and `m:<note>:<id>`
+//! is the membership. Renaming is one register write that every device converges
+//! on exactly as it converges on a colour, and a label with no notes is a name
+//! key with no membership keys, which is a perfectly ordinary thing for this
+//! document to hold.
+//!
+//! Taking a label off **deletes** the membership key rather than writing
+//! `false`. Nothing compacts a note's document
+//! ([ADR 0006](../../../docs/adr/0006-compaction.md)) and this one is compacted
+//! only at a threshold ([ADR 0012](../../../docs/adr/0012-compacting-the-account-document.md)),
+//! so a `false` left behind is a key replayed at every launch, about a label this
+//! person has stopped using — and unlike the five placement fields, which are
+//! bounded, the labels one note could accumulate are not. The price is the one
+//! case a register does not cover: one device deleting a membership while another
+//! re-adds it resolves to whichever the backend prefers rather than to a rule of
+//! ours, and the answer is a label that is on or off, never half of one.
+//!
+//! `t:` keys are what the old shape wrote, and they are still read.
+//! [`NoteCore::open`](crate::note::NoteCore::open) turns each of them into a real
+//! label the first time it sees one and removes them; until it has, they are
+//! memberships of a label that has no ID yet, and [`view_of`] reports them as
+//! such so that nothing between here and that migration has to know.
 //!
 //! A key this version does not understand is ignored rather than dropped, so a
 //! device on an older build shows a note it cannot colour instead of deleting the
 //! colour a newer one set.
 
 use crate::error::Result;
-use crate::ids::NoteId;
+use crate::ids::{LabelId, NoteId};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Keys that hold a placement field, a tag, and a setting.
+/// Keys that hold a placement field, a label's name, a membership, and a
+/// setting — plus the shape a membership used to have.
 const PLACEMENT: &str = "p:";
-const TAG: &str = "t:";
+const LABEL: &str = "l:";
+const MEMBER: &str = "m:";
 const SETTING: &str = "s:";
+/// A membership as it was stored before a label had an ID. Read, migrated and
+/// never written. See the module docs.
+const LEGACY_TAG: &str = "t:";
 
 const COLOUR: &str = "colour";
 const PINNED: &str = "pinned";
@@ -178,11 +205,19 @@ pub struct Placement {
     pub archived: bool,
     pub trashed: bool,
     pub order: String,
-    /// The labels this person has put on the note, in the order a set keeps
-    /// them. Byte order rather than the order they were added: there is nowhere
-    /// to record the latter, and a list of labels that reshuffles itself between
-    /// launches is worse than one that is merely alphabetical.
-    pub tags: BTreeSet<String>,
+    /// The labels this person has put on the note, by ID. Resolve a name with
+    /// [`AccountView::label_name`]; the IDs are here rather than the names
+    /// because a name can change and a membership must not have to.
+    pub tags: BTreeSet<LabelId>,
+    /// Memberships still in the old shape, which named the label instead of
+    /// pointing at one.
+    ///
+    /// Empty on any device that has opened since the migration ran, which is
+    /// every device after its first launch on this build — so nothing above the
+    /// core reads this, and [`AccountView::labels_on`] folds it in for the one
+    /// launch where it is not yet empty. Kept separate rather than mixed in with
+    /// `tags` so that the migration has something exact to work from.
+    pub legacy_tags: BTreeSet<String>,
 }
 
 impl Placement {
@@ -233,6 +268,13 @@ pub fn normalise_tag(raw: &str) -> Option<String> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountView {
     pub placements: BTreeMap<NoteId, Placement>,
+    /// Every label this person has, by ID, whether or not a note carries it.
+    ///
+    /// A label outlives its last note now: it is a name key of its own, and
+    /// taking it off the last note removes a membership rather than the label.
+    /// Keep does the same, and the alternative — a label vanishing because
+    /// somebody tidied up the one note that had it — is a thing to explain.
+    pub labels: BTreeMap<LabelId, String>,
     /// View settings, by name. Typed accessors live on
     /// [`crate::note::NoteCore`]; the document itself keeps strings so that a
     /// setting added later needs no change here.
@@ -248,31 +290,89 @@ impl AccountView {
         self.settings.get(name).map(|s| s.as_str())
     }
 
-    /// Every label in use on this device, and how many notes carry each.
+    /// What a label is called, or `None` for an ID no name key answers for.
     ///
-    /// A tag exists because a note has it. There is no separate list of labels
-    /// this person has made, so taking the last note out of one takes the label
-    /// with it — which is Keep's behaviour turned round, and the cheaper half of
-    /// the trade: a label nobody uses is a row in a document nothing compacts,
-    /// and an empty label in a filter menu is a thing to explain.
+    /// `None` is reachable and is not a bug: a membership and its label's name
+    /// are separate keys, so a peer can deliver one before the other, and a
+    /// device on an older build could delete a name while this one holds a
+    /// membership. The caller's job is to skip it rather than to invent a name,
+    /// which is what [`AccountView::labels`] listing only named labels does for
+    /// it.
+    pub fn label_name(&self, label: LabelId) -> Option<&str> {
+        self.labels.get(&label).map(|s| s.as_str())
+    }
+
+    /// A label whose name matches, ignoring ASCII case.
     ///
-    /// Sorted the way a menu wants them: case-insensitively, then by the name
-    /// itself so that `Recipes` and `recipes` — which only two devices editing
-    /// offline can produce — hold still rather than swapping places.
-    pub fn tags(&self) -> Vec<(String, usize)> {
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for placement in self.placements.values() {
-            for tag in &placement.tags {
-                *counts.entry(tag.as_str()).or_default() += 1;
+    /// ASCII-insensitive and not Unicode-insensitive, deliberately: a full case
+    /// fold depends on a locale — Turkish dotless i is the standing example —
+    /// and a label that is the same one on a phone and a different one on a
+    /// laptop is worse than one that is only ever folded where every device
+    /// folds it the same way.
+    ///
+    /// Ties are broken by ID so that two labels with the same name — which two
+    /// devices editing offline can produce — resolve to the same one of the pair
+    /// on every device that asks.
+    pub fn label_named(&self, name: &str) -> Option<LabelId> {
+        self.labels
+            .iter()
+            .filter(|(_, held)| held.eq_ignore_ascii_case(name))
+            .map(|(id, _)| *id)
+            .min()
+    }
+
+    /// The labels on a note, by ID, including any the migration has not reached
+    /// yet. Only labels this document has a name for.
+    pub fn labels_on(&self, note: NoteId) -> Vec<LabelId> {
+        let Some(placement) = self.placements.get(&note) else {
+            return Vec::new();
+        };
+        let mut out: Vec<LabelId> = placement
+            .tags
+            .iter()
+            .copied()
+            .filter(|id| self.labels.contains_key(id))
+            .collect();
+        // A legacy membership names its label, so the label it means is the one
+        // with that name — if the migration has already made it. Before that it
+        // contributes nothing, which is the same answer `notes` gives for a note
+        // it cannot open: nothing to show rather than something invented.
+        for name in &placement.legacy_tags {
+            if let Some(id) = self.label_named(name) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
             }
         }
-        let mut tags: Vec<(String, usize)> = counts
+        out.sort();
+        out
+    }
+
+    /// Every label this person has, with how many notes carry each, sorted the
+    /// way a menu wants them.
+    ///
+    /// Case-insensitively by name, then by the name itself, then by ID — so that
+    /// `Recipes` and `recipes`, which only two devices editing offline can
+    /// produce, hold still rather than swapping places between launches.
+    ///
+    /// A count of zero is a real answer, not a filtered-out one: a label with no
+    /// notes exists and is offerable. That is the half of this that changed when
+    /// a label stopped being its own name.
+    pub fn tags(&self) -> Vec<(LabelId, String, usize)> {
+        let mut counts: BTreeMap<LabelId, usize> = self.labels.keys().map(|id| (*id, 0)).collect();
+        for note in self.placements.keys() {
+            for id in self.labels_on(*note) {
+                *counts.entry(id).or_default() += 1;
+            }
+        }
+        let mut tags: Vec<(LabelId, String, usize)> = counts
             .into_iter()
-            .map(|(tag, count)| (tag.to_string(), count))
+            .filter_map(|(id, count)| self.labels.get(&id).map(|name| (id, name.clone(), count)))
             .collect();
         tags.sort_by(|a, b| {
-            a.0.to_lowercase()
-                .cmp(&b.0.to_lowercase())
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.0.cmp(&b.0))
         });
         tags
@@ -308,9 +408,35 @@ pub enum AccountEdit {
     /// labels to one note keep both.
     SetTag {
         note: NoteId,
-        /// Already through [`normalise_tag`]: this is the name as it is stored.
-        tag: String,
+        label: LabelId,
         on: bool,
+    },
+    /// Name a label, or rename one. The same register write either way, which is
+    /// the whole point of a label having an ID: two devices renaming the same
+    /// label converge on one name, and neither note loses its membership.
+    SetLabelName {
+        label: LabelId,
+        /// Already through [`normalise_tag`]: this is the name as it is stored.
+        name: String,
+    },
+    /// Remove a label everywhere: its name, and its membership of every note
+    /// that carries it.
+    ///
+    /// One transaction for the reason [`AccountEdit::ForgetNote`] is one: a peer
+    /// that saw the name go and the memberships stay would hold memberships of a
+    /// label with no name, which [`AccountView::labels_on`] would then drop —
+    /// silently taking labels off notes that nobody asked about.
+    ForgetLabel {
+        label: LabelId,
+        /// Every note that carries it, which the caller reads off
+        /// [`AccountView`] because the keys cannot be named from nothing.
+        notes: Vec<NoteId>,
+    },
+    /// Drop a membership stored in the shape that named its label, which is what
+    /// migrating one off the old `t:` keys takes.
+    DropLegacyTag {
+        note: NoteId,
+        tag: String,
     },
     SetSetting {
         name: String,
@@ -338,7 +464,15 @@ pub enum AccountEdit {
         /// nothing. The caller reads them off
         /// [`AccountView::placement`]; a note this device never labelled passes
         /// an empty list and removes the same five keys it always did.
-        tags: Vec<String>,
+        ///
+        /// The labels themselves are **not** removed. A label outlives the notes
+        /// that carried it, so forgetting the last note with a label leaves a
+        /// label with no notes rather than taking it away — which is
+        /// [`AccountEdit::ForgetLabel`]'s job, and only when somebody asks.
+        tags: Vec<LabelId>,
+        /// Memberships the migration has not reached yet, named rather than
+        /// pointed at. Empty on any device past its first launch on this build.
+        legacy_tags: Vec<String>,
     },
 }
 
@@ -346,11 +480,19 @@ fn placement_key(note: NoteId, field: &str) -> String {
     format!("{PLACEMENT}{}:{field}", note.encode())
 }
 
-/// A colon in a tag name needs no escaping: the note ID is fixed-width and the
-/// name is everything after the *first* colon, so `split_once` gives it back
-/// whole.
-fn tag_key(note: NoteId, tag: &str) -> String {
-    format!("{TAG}{}:{tag}", note.encode())
+fn member_key(note: NoteId, label: LabelId) -> String {
+    format!("{MEMBER}{}:{}", note.encode(), label.encode())
+}
+
+fn label_key(label: LabelId) -> String {
+    format!("{LABEL}{}", label.encode())
+}
+
+/// A colon in a label's name needs no escaping: the note ID is fixed-width and
+/// the name is everything after the *first* colon, so `split_once` gives it back
+/// whole. Only ever used to *remove* one of these now.
+fn legacy_tag_key(note: NoteId, tag: &str) -> String {
+    format!("{LEGACY_TAG}{}:{tag}", note.encode())
 }
 
 impl AccountEdit {
@@ -377,10 +519,26 @@ impl AccountEdit {
                 vec![(placement_key(*note, ORDER), Some(Value::Str(order.clone())))]
             }
             // `None` rather than `Bool(false)`, for the reason the module docs
-            // give: this document is never compacted and the tags one note might
-            // accumulate are not bounded.
-            AccountEdit::SetTag { note, tag, on } => {
-                vec![(tag_key(*note, tag), on.then_some(Value::Bool(true)))]
+            // give: the labels one note might accumulate are not bounded, and a
+            // `false` left behind is replayed at every launch about a label
+            // nobody uses.
+            AccountEdit::SetTag { note, label, on } => {
+                vec![(member_key(*note, *label), on.then_some(Value::Bool(true)))]
+            }
+            AccountEdit::SetLabelName { label, name } => {
+                vec![(label_key(*label), Some(Value::Str(name.clone())))]
+            }
+            // The name last, so that a peer applying this by halves — which it
+            // cannot, since `write` is one transaction, but the order is what
+            // documents the intent — loses memberships before it loses the name
+            // that explains them.
+            AccountEdit::ForgetLabel { label, notes } => notes
+                .iter()
+                .map(|note| (member_key(*note, *label), None))
+                .chain(std::iter::once((label_key(*label), None)))
+                .collect(),
+            AccountEdit::DropLegacyTag { note, tag } => {
+                vec![(legacy_tag_key(*note, tag), None)]
             }
             AccountEdit::SetSetting { name, value } => {
                 vec![(format!("{SETTING}{name}"), Some(Value::Str(value.clone())))]
@@ -390,13 +548,31 @@ impl AccountEdit {
             // five keys on a device that coloured it and on one that never did.
             // The tags cannot be: they are named by the caller, which is the
             // only thing that knows them.
-            AccountEdit::ForgetNote { note, tags } => [COLOUR, PINNED, ARCHIVED, TRASHED, ORDER]
+            AccountEdit::ForgetNote {
+                note,
+                tags,
+                legacy_tags,
+            } => [COLOUR, PINNED, ARCHIVED, TRASHED, ORDER]
                 .into_iter()
                 .map(|field| (placement_key(*note, field), None))
-                .chain(tags.iter().map(|tag| (tag_key(*note, tag), None)))
+                .chain(tags.iter().map(|label| (member_key(*note, *label), None)))
+                .chain(
+                    legacy_tags
+                        .iter()
+                        .map(|tag| (legacy_tag_key(*note, tag), None)),
+                )
                 .collect(),
         }
     }
+}
+
+/// The membership key the old shape wrote, for the one caller that still has to
+/// produce one: a test standing a device up in the state the migration exists
+/// for. Nothing in the app writes this, and `AccountEdit` has no variant that
+/// does — retiring a shape means not being able to write it by accident.
+#[doc(hidden)]
+pub fn legacy_tag_write(note: NoteId, tag: &str) -> (String, Option<Value>) {
+    (legacy_tag_key(note, tag), Some(Value::Bool(true)))
 }
 
 /// Turn what a backend holds into what the app reads. Shared for the same reason
@@ -410,11 +586,37 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
             }
             continue;
         }
-        if let Some(rest) = key.strip_prefix(TAG) {
-            // A tag key holds `true` and exists only while the tag is on the
-            // note, so a `false` — which this build never writes, and an older
-            // or newer one might — is a note without that label rather than a
-            // label named "false".
+        if let Some(id) = key.strip_prefix(LABEL) {
+            let (Ok(id), Value::Str(name)) = (LabelId::decode(id), value) else {
+                continue;
+            };
+            // An empty name is not a label. `normalise_tag` cannot produce one,
+            // so this is only reachable from a build that does not exist yet,
+            // and dropping it is better than a nameless chip.
+            if !name.is_empty() {
+                view.labels.insert(id, name);
+            }
+            continue;
+        }
+        if let Some(rest) = key.strip_prefix(MEMBER) {
+            // A membership key holds `true` and exists only while the label is
+            // on the note, so a `false` — which this build never writes, and an
+            // older or newer one might — is a note without that label.
+            let Some((note, label)) = rest.split_once(':') else {
+                continue;
+            };
+            let (Ok(note), Ok(label)) = (NoteId::decode(note), LabelId::decode(label)) else {
+                continue;
+            };
+            if value == Value::Bool(true) {
+                view.placements.entry(note).or_default().tags.insert(label);
+            }
+            continue;
+        }
+        if let Some(rest) = key.strip_prefix(LEGACY_TAG) {
+            // The shape a membership had before a label had an ID. Reported as
+            // its own field so that the migration has something exact to work
+            // from and everything else can ignore it.
             let Some((note, tag)) = rest.split_once(':') else {
                 continue;
             };
@@ -425,7 +627,7 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
                 view.placements
                     .entry(note)
                     .or_default()
-                    .tags
+                    .legacy_tags
                     .insert(tag.to_string());
             }
             continue;
@@ -533,6 +735,7 @@ mod tests {
         let writes = AccountEdit::ForgetNote {
             note,
             tags: Vec::new(),
+            legacy_tags: Vec::new(),
         }
         .writes();
         // Whatever this person had set, and not only the fields they did set:
@@ -550,45 +753,53 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_a_note_takes_its_labels_with_it() {
-        // The one part of a placement that is not a fixed set of keys, so the one
-        // part a caller has to name. Leaving them would keep a label — and the
-        // label's whole existence is the notes that carry it.
+    fn forgetting_a_note_takes_its_memberships_and_leaves_the_labels() {
+        // Memberships are the one part of a placement that is not a fixed set of
+        // keys, so the one part a caller has to name. The labels themselves are
+        // not touched: a label outlives the notes that carried it.
         let note = NoteId::random();
+        let errands = LabelId::random();
+        let shop = LabelId::random();
         let writes = AccountEdit::ForgetNote {
             note,
-            tags: vec!["errands".into(), "weekly shop".into()],
+            tags: vec![errands, shop],
+            legacy_tags: Vec::new(),
         }
         .writes();
         assert_eq!(writes.len(), 7);
         assert!(writes.iter().all(|(_, value)| value.is_none()));
-        for tag in ["errands", "weekly shop"] {
+        for label in [errands, shop] {
             assert!(writes
                 .iter()
-                .any(|(key, _)| *key == format!("t:{}:{tag}", note.encode())));
+                .any(|(key, _)| *key == format!("m:{}:{}", note.encode(), label.encode())));
         }
+        // Not the label names. Forgetting the last note with a label leaves a
+        // label with no notes, which is a thing this document may hold.
+        assert!(!writes.iter().any(|(key, _)| key.starts_with("l:")));
     }
 
     #[test]
-    fn a_tag_is_a_key_of_its_own_so_two_of_them_cannot_collide() {
+    fn a_membership_is_a_key_of_its_own_so_two_of_them_cannot_collide() {
         let note = NoteId::random();
-        let on = |tag: &str| {
+        let on = |label: LabelId| {
             AccountEdit::SetTag {
                 note,
-                tag: tag.into(),
+                label,
                 on: true,
             }
             .writes()
         };
+        let errands = LabelId::random();
+        let recipes = LabelId::random();
         // Two different labels on one note are two different keys, which is what
         // makes them survive each other.
-        assert_ne!(on("errands")[0].0, on("recipes")[0].0);
-        assert_eq!(on("errands")[0].1, Some(Value::Bool(true)));
+        assert_ne!(on(errands)[0].0, on(recipes)[0].0);
+        assert_eq!(on(errands)[0].1, Some(Value::Bool(true)));
         // And taking one off is a delete, not a `false`.
         assert_eq!(
             AccountEdit::SetTag {
                 note,
-                tag: "errands".into(),
+                label: errands,
                 on: false,
             }
             .writes()[0]
@@ -598,55 +809,264 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_round_trips_through_its_key_colons_and_all() {
-        // The note ID is fixed-width and the name is everything after the first
-        // colon, so a label with a colon in it needs no escaping.
+    fn renaming_a_label_touches_one_key_and_no_membership() {
+        // The whole of why a label has an ID. A rename is a register write on
+        // `l:<id>`, and every membership key is built from the ID, so nothing
+        // that says which notes carry the label is even mentioned.
+        let label = LabelId::random();
+        let writes = AccountEdit::SetLabelName {
+            label,
+            name: "Dinners".into(),
+        }
+        .writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, format!("l:{}", label.encode()));
+        assert_eq!(writes[0].1, Some(Value::Str("Dinners".into())));
+    }
+
+    #[test]
+    fn a_label_and_its_memberships_round_trip() {
         let note = NoteId::random();
-        let tag = "shop: weekly";
-        let writes = AccountEdit::SetTag {
-            note,
-            tag: tag.into(),
-            on: true,
+        let label = LabelId::random();
+        // A colon in the name needs no escaping, because the name is not in a
+        // key any more — it is a value.
+        let name = "shop: weekly";
+        let mut writes = AccountEdit::SetLabelName {
+            label,
+            name: name.into(),
+        }
+        .writes();
+        writes.extend(
+            AccountEdit::SetTag {
+                note,
+                label,
+                on: true,
+            }
+            .writes(),
+        );
+        let view = view_of(writes.into_iter().map(|(k, v)| (k, v.unwrap())));
+        assert_eq!(view.label_name(label), Some(name));
+        assert_eq!(view.labels_on(note), vec![label]);
+        assert_eq!(view.tags(), vec![(label, name.to_string(), 1)]);
+    }
+
+    #[test]
+    fn a_label_with_no_notes_is_still_a_label() {
+        // The other half of what an ID buys. There is nowhere to hold this in a
+        // document where a label is its own name.
+        let label = LabelId::random();
+        let writes = AccountEdit::SetLabelName {
+            label,
+            name: "Someday".into(),
         }
         .writes();
         let view = view_of(writes.into_iter().map(|(k, v)| (k, v.unwrap())));
+        assert_eq!(view.tags(), vec![(label, "Someday".to_string(), 0)]);
+    }
+
+    #[test]
+    fn forgetting_a_label_takes_its_name_and_every_membership() {
+        let label = LabelId::random();
+        let one = NoteId::random();
+        let two = NoteId::random();
+        let writes = AccountEdit::ForgetLabel {
+            label,
+            notes: vec![one, two],
+        }
+        .writes();
+        assert_eq!(writes.len(), 3);
+        assert!(writes.iter().all(|(_, value)| value.is_none()));
+        assert!(writes
+            .iter()
+            .any(|(key, _)| *key == format!("l:{}", label.encode())));
+        for note in [one, two] {
+            assert!(writes
+                .iter()
+                .any(|(key, _)| *key == format!("m:{}:{}", note.encode(), label.encode())));
+        }
+    }
+
+    #[test]
+    fn a_membership_without_a_name_is_not_a_label() {
+        // The two keys can arrive apart — a peer delivers one before the other.
+        // A membership whose label this device has no name for contributes
+        // nothing, rather than a chip with nothing written on it.
+        let note = NoteId::random();
+        let label = LabelId::random();
+        let view = view_of([(
+            format!("m:{}:{}", note.encode(), label.encode()),
+            Value::Bool(true),
+        )]);
+        assert!(view.labels_on(note).is_empty());
+        assert!(view.tags().is_empty());
+        // The membership itself is still held, so the name arriving later is
+        // enough to make the label appear without the membership being re-sent.
         assert_eq!(
             view.placement(note).tags.into_iter().collect::<Vec<_>>(),
-            vec![tag]
+            vec![label]
         );
     }
 
     #[test]
-    fn a_tag_key_that_is_off_or_malformed_is_not_a_label() {
-        let note = NoteId::random();
+    fn a_name_that_matches_ignoring_case_is_the_same_label() {
+        let a = LabelId::random();
+        let b = LabelId::random();
         let view = view_of([
+            (format!("l:{}", a.encode()), Value::Str("Recipes".into())),
+            (format!("l:{}", b.encode()), Value::Str("errands".into())),
+        ]);
+        assert_eq!(view.label_named("recipes"), Some(a));
+        assert_eq!(view.label_named("ERRANDS"), Some(b));
+        assert_eq!(view.label_named("dinners"), None);
+    }
+
+    #[test]
+    fn two_labels_with_one_name_resolve_the_same_way_everywhere() {
+        // What two devices offline can make, and what `rename_tag` can now
+        // repair. Until it does, every device has to pick the same one of the
+        // pair, or one device takes a label off and another does not.
+        let a = LabelId::random();
+        let b = LabelId::random();
+        let view = view_of([
+            (format!("l:{}", a.encode()), Value::Str("Recipes".into())),
+            (format!("l:{}", b.encode()), Value::Str("recipes".into())),
+        ]);
+        assert_eq!(view.label_named("recipes"), Some(a.min(b)));
+    }
+
+    // -- the shape a label used to have -------------------------------------
+
+    #[test]
+    fn a_legacy_membership_is_read_and_kept_apart() {
+        // Read, so that a device upgrading does not appear to lose its labels
+        // between opening the document and the migration running; kept in its
+        // own field, so the migration has something exact to work from.
+        let note = NoteId::random();
+        let view = view_of([(format!("t:{}:errands", note.encode()), Value::Bool(true))]);
+        assert_eq!(
+            view.placement(note)
+                .legacy_tags
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["errands".to_string()]
+        );
+        // It names a label that does not exist yet, so it is on no note until
+        // one does.
+        assert!(view.labels_on(note).is_empty());
+    }
+
+    #[test]
+    fn a_legacy_membership_finds_the_label_the_migration_made() {
+        let note = NoteId::random();
+        let label = LabelId::random();
+        let view = view_of([
+            (format!("t:{}:Errands", note.encode()), Value::Bool(true)),
+            (
+                format!("l:{}", label.encode()),
+                Value::Str("errands".into()),
+            ),
+        ]);
+        // Matched by name, ignoring case, which is what the migration does when
+        // it decides whether to mint a label or reuse one.
+        assert_eq!(view.labels_on(note), vec![label]);
+        assert_eq!(view.tags(), vec![(label, "errands".to_string(), 1)]);
+    }
+
+    #[test]
+    fn a_note_is_not_counted_twice_for_one_label() {
+        // A crash halfway through the migration leaves a note holding both
+        // shapes of the same membership. It is one label on one note.
+        let note = NoteId::random();
+        let label = LabelId::random();
+        let view = view_of([
+            (format!("t:{}:errands", note.encode()), Value::Bool(true)),
+            (
+                format!("m:{}:{}", note.encode(), label.encode()),
+                Value::Bool(true),
+            ),
+            (
+                format!("l:{}", label.encode()),
+                Value::Str("errands".into()),
+            ),
+        ]);
+        assert_eq!(view.labels_on(note), vec![label]);
+        assert_eq!(view.tags(), vec![(label, "errands".to_string(), 1)]);
+    }
+
+    #[test]
+    fn a_membership_key_that_is_off_or_malformed_is_not_a_label() {
+        let note = NoteId::random();
+        let label = LabelId::random();
+        let view = view_of([
+            (
+                format!("l:{}", label.encode()),
+                Value::Str("errands".into()),
+            ),
             // What an older or newer build might leave: this one deletes instead.
-            (format!("t:{}:errands", note.encode()), Value::Bool(false)),
-            // A key with no name in it is not a label called "".
-            (format!("t:{}:", note.encode()), Value::Bool(true)),
+            (
+                format!("m:{}:{}", note.encode(), label.encode()),
+                Value::Bool(false),
+            ),
             // A string where a bool belongs.
             (
-                format!("t:{}:recipes", note.encode()),
+                format!("m:{}:{}", note.encode(), LabelId::random().encode()),
                 Value::Str("x".into()),
             ),
-            ("t:not-a-note-id:errands".to_string(), Value::Bool(true)),
+            (
+                format!("m:not-a-note-id:{}", label.encode()),
+                Value::Bool(true),
+            ),
+            (
+                format!("m:{}:not-a-label-id", note.encode()),
+                Value::Bool(true),
+            ),
+            // And a label key that is not a name.
+            ("l:not-a-label-id".to_string(), Value::Str("x".into())),
+            (
+                format!("l:{}", LabelId::random().encode()),
+                Value::Bool(true),
+            ),
         ]);
         assert!(view.placement(note).tags.is_empty());
-        assert!(view.tags().is_empty());
+        assert!(view.labels_on(note).is_empty());
+        // The one real label is there, carried by nobody.
+        assert_eq!(view.tags(), vec![(label, "errands".to_string(), 0)]);
     }
 
     #[test]
     fn a_label_is_counted_by_the_notes_that_carry_it() {
         let (a, b) = (NoteId::random(), NoteId::random());
+        let errands = LabelId::random();
+        let recipes = LabelId::random();
         let view = view_of([
-            (format!("t:{}:errands", a.encode()), Value::Bool(true)),
-            (format!("t:{}:errands", b.encode()), Value::Bool(true)),
-            (format!("t:{}:Recipes", a.encode()), Value::Bool(true)),
+            (
+                format!("l:{}", errands.encode()),
+                Value::Str("errands".into()),
+            ),
+            (
+                format!("l:{}", recipes.encode()),
+                Value::Str("Recipes".into()),
+            ),
+            (
+                format!("m:{}:{}", a.encode(), errands.encode()),
+                Value::Bool(true),
+            ),
+            (
+                format!("m:{}:{}", b.encode(), errands.encode()),
+                Value::Bool(true),
+            ),
+            (
+                format!("m:{}:{}", a.encode(), recipes.encode()),
+                Value::Bool(true),
+            ),
         ]);
         // Case-insensitively sorted, because a filter menu is read by a person.
         assert_eq!(
             view.tags(),
-            vec![("errands".to_string(), 2), ("Recipes".to_string(), 1)]
+            vec![
+                (errands, "errands".to_string(), 2),
+                (recipes, "Recipes".to_string(), 1)
+            ]
         );
     }
 

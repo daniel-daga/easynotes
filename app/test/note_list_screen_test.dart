@@ -638,10 +638,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.widget<CheckboxListTile>(check).value, isTrue);
 
-    // And off again, from the same checkbox.
+    // And off again, from the same checkbox. Taking a label off names the
+    // label rather than the text on it, because the text is the part that can
+    // change out from under a dialog that is already open.
+    final errands = library.tags.single;
     await tester.tap(check);
     await tester.pumpAndSettle();
-    expect(library.calls, contains('removeTag(hardware, errands)'));
+    expect(library.calls, contains('removeTag(hardware, ${errands.id})'));
     expect(tester.widget<CheckboxListTile>(check).value, isFalse);
   });
 
@@ -699,7 +702,7 @@ void main() {
     expect(library.calls, contains('addTag(note-0, errands)'));
   });
 
-  testWidgets('a shelf whose last label came off goes back to the grid', (
+  testWidgets('a shelf whose last label came off stays, and says so', (
     tester,
   ) async {
     final library = twoLists();
@@ -712,13 +715,107 @@ void main() {
 
     // Taken off from underneath the screen, which is what another device doing
     // it would look like.
-    await library.removeTag('groceries', 'errands');
+    final errands = library.tags.single;
+    await library.removeTag('groceries', errands.id);
     await tester.pumpAndSettle();
 
-    // A shelf that does not exist cannot say why it is empty, so the screen goes
-    // somewhere that can.
+    // The label still exists — it outlives the notes that carried it — so the
+    // shelf is a real place to be standing, and it says what it is: empty.
+    // This is the half that changed when a label stopped being its own name.
+    expect(find.text('errands'), findsWidgets);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    expect(find.textContaining('Nothing here is labelled'), findsOneWidget);
+  });
+
+  testWidgets('a shelf whose label was thrown away goes back to the grid', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+
+    // Gone for good, rather than merely emptied.
+    await library.forgetTag(library.tags.single.id);
+    await tester.pumpAndSettle();
+
+    // A shelf that does not exist cannot say why it is empty, so the screen
+    // goes somewhere that can.
     expect(find.text('EasyNotes'), findsWidgets);
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
+  testWidgets('a label can be renamed from the drawer, and its notes keep it', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-menu-errands')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-rename')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const Key('rename-label-field')),
+      'Chores',
+    );
+    await tester.tap(find.byKey(const Key('rename-label-confirm')));
+    await tester.pumpAndSettle();
+
+    // One label, under its new name, still on the note that had it.
+    expect(library.tags.single.name, 'Chores');
+    expect(find.byKey(const Key('chip:groceries:Chores')), findsOneWidget);
+  });
+
+  testWidgets('renaming the label being looked at keeps the shelf', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+
+    // Renamed from underneath, as another device would.
+    await library.renameTag(library.tags.single.id, 'Chores');
+    await tester.pumpAndSettle();
+
+    // The same shelf, under the new heading — not a bounce back to the grid.
+    // The shelf is the label's identity, which a rename does not touch.
+    expect(find.text('Chores'), findsWidgets);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+  });
+
+  testWidgets('a label can be thrown away from the drawer', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-menu-errands')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-forget')));
+    await tester.pumpAndSettle();
+
+    // It says what it is about to do to notes that are not on screen.
+    expect(find.textContaining('comes off 1 note'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirm-forget-label')));
+    await tester.pumpAndSettle();
+
+    expect(library.tags, isEmpty);
+    // The note is untouched apart from losing the label.
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
   });
 
   testWidgets('a search on a label shelf searches that label', (tester) async {

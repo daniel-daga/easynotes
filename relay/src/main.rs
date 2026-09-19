@@ -2,8 +2,17 @@
 //!
 //! With `DATABASE_URL` set it stores to Postgres; without it, in memory, which is
 //! what `just run-relay` uses for the demo.
+//!
+//! Two more knobs, both for a relay that strangers can reach:
+//!
+//! * `RELAY_ALLOWED_ORIGINS` — a comma-separated list of the origins allowed to
+//!   drive the handshake from a browser. Unset means any, which is what a
+//!   development relay and the browser smoke tests need.
+//! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked. Unset means
+//!   the defaults in [`RelayConfig::public`], because a process listening on a
+//!   socket should not need an environment variable set to refuse a flood.
 
-use easynotes_relay::{MemoryStore, PostgresStore, Relay, RelayStore};
+use easynotes_relay::{MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -31,7 +40,27 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let relay = Relay::serve(store, addr).await?;
+    let mut config = match std::env::var("RELAY_RATE_LIMIT").as_deref() {
+        Ok("off") => {
+            tracing::warn!("RELAY_RATE_LIMIT=off: answering every caller as fast as it asks");
+            RelayConfig::default()
+        }
+        _ => RelayConfig::public(),
+    };
+    match std::env::var("RELAY_ALLOWED_ORIGINS") {
+        Ok(raw) => {
+            // A typo here fails to start rather than falling back to "any": an
+            // allowlist that silently does not apply is worse than none, because
+            // it is the one everybody believes in.
+            config.origins = Origins::parse(&raw).map_err(|e| {
+                anyhow::anyhow!("RELAY_ALLOWED_ORIGINS could not be understood: {e}")
+            })?;
+            tracing::info!(origins = %raw, "the handshake is allowed from these origins");
+        }
+        Err(_) => tracing::info!("RELAY_ALLOWED_ORIGINS is unset: any page may handshake"),
+    }
+
+    let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
     // Hold the relay until the process is killed.
     std::future::pending::<()>().await;

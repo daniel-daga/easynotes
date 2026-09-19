@@ -7,12 +7,9 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/notes.dart';
-
 import 'dart:async';
 import 'dart:convert';
-
 import 'frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -98,10 +95,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ItemView dco_decode_item_view(dynamic raw);
 
   @protected
+  LabelView dco_decode_label_view(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
   List<ItemView> dco_decode_list_item_view(dynamic raw);
+
+  @protected
+  List<LabelView> dco_decode_list_label_view(dynamic raw);
 
   @protected
   List<NoteSummaryView> dco_decode_list_note_summary_view(dynamic raw);
@@ -261,10 +264,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ItemView sse_decode_item_view(SseDeserializer deserializer);
 
   @protected
+  LabelView sse_decode_label_view(SseDeserializer deserializer);
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   List<ItemView> sse_decode_list_item_view(SseDeserializer deserializer);
+
+  @protected
+  List<LabelView> sse_decode_list_label_view(SseDeserializer deserializer);
 
   @protected
   List<NoteSummaryView> sse_decode_list_note_summary_view(
@@ -448,10 +457,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_item_view(ItemView self, SseSerializer serializer);
 
   @protected
+  void sse_encode_label_view(LabelView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_item_view(List<ItemView> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_label_view(
+    List<LabelView> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_note_summary_view(

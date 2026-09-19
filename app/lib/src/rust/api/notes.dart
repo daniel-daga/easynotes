@@ -4,10 +4,9 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
 
@@ -26,13 +25,13 @@ Uint8List? masterKeyBesideTheDatabase({required String dir}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>
 abstract class Library implements RustOpaqueInterface {
-  /// Put a label on a note, and return the name it was stored under.
+  /// Put a label on a note, and return the label it went on under.
   ///
   /// `null` for something that is not a name — whitespace, or nothing — so a
-  /// field submitted empty is a no-op rather than a label called "". The name
-  /// that comes back may not be the one that went in: a label differing only in
-  /// case from one this device already has *is* that one, and the UI has to draw
-  /// the label that exists rather than the casing that was typed.
+  /// field submitted empty is a no-op rather than a label called "". The label
+  /// that comes back may not be a new one: a name differing only in case from
+  /// one this device already has *is* that label, and the UI has to draw the
+  /// label that exists rather than the casing that was typed.
   Future<String?> addTag({required String id, required String tag});
 
   /// Start syncing every note with the relay at `relay` (`http://host:port`
@@ -64,6 +63,10 @@ abstract class Library implements RustOpaqueInterface {
   /// `docs/adr/0010-forgetting-a-note.md`.
   Future<void> forgetNote({required String id});
 
+  /// Throw a label away: off every note that has it, and gone from the menu.
+  /// The notes themselves are untouched.
+  Future<void> forgetTag({required String label});
+
   /// Accept a share blob and add the note it describes to this device.
   ///
   /// An addition, not a replacement — which is the whole difference between
@@ -73,6 +76,10 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Whether the grid is a masonry or one column, as this person last left it.
   NoteLayout layout();
+
+  /// Make a label that no note carries yet, and return it. An existing label
+  /// with this name is returned rather than a second one made.
+  Future<String> makeTag({required String name});
 
   /// Move a note so that it takes `target`'s place in the grid's order.
   ///
@@ -147,7 +154,20 @@ abstract class Library implements RustOpaqueInterface {
   );
 
   /// Take a label off a note. Not an error if it was never on it.
-  Future<void> removeTag({required String id, required String tag});
+  ///
+  /// The label itself stays, with one fewer note on it. Throwing the label
+  /// away is [`NoteLibrary::forget_tag`], and it is a different gesture on
+  /// purpose.
+  Future<void> removeTag({required String id, required String label});
+
+  /// Rename a label. Every note carrying it keeps it, because a membership
+  /// points at the ID and has never mentioned the name.
+  ///
+  /// Returns the label that survived, which is **not** always the one passed
+  /// in: renaming onto a name another label already has merges the two, and
+  /// the survivor is the one that already had the name. `null` for a name that
+  /// is not a name, or a label this device does not have.
+  Future<String?> renameTag({required String label, required String name});
 
   /// Every note whose text contains all of the query's words.
   ///
@@ -286,6 +306,25 @@ class ItemView {
           order == other.order;
 }
 
+/// One label on a note: what it is, and what to call it.
+class LabelView {
+  final String id;
+  final String name;
+
+  const LabelView({required this.id, required this.name});
+
+  @override
+  int get hashCode => id.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LabelView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          name == other.name;
+}
+
 /// A note's colour, as Dart sees it. A fixed palette rather than a number,
 /// because what a colour has to look like is a question for the theme on the
 /// device drawing it — the same name is one thing in daylight and another in
@@ -332,7 +371,11 @@ class NoteSummaryView {
   /// The labels this person has put on the note, sorted. A `Vec` rather than a
   /// set because that is what crosses the bridge; it holds each label once,
   /// which is the document's doing and not this type's.
-  final List<String> tags;
+  ///
+  /// Each carries an ID as well as a name, because the name is the thing that
+  /// can change: a screen draws the name and acts on the ID, and a rename
+  /// landing between the two is then a redraw rather than a lost label.
+  final List<LabelView> tags;
 
   const NoteSummaryView({
     required this.id,
@@ -563,23 +606,26 @@ class SyncStatus {
 
 /// One label, and how many notes carry it.
 ///
-/// The count is what a filter menu shows beside the name, and it is also the
-/// whole of a label's existence: there is no list of labels apart from the notes
-/// that have them, so a label with no notes is not a label.
+/// The count is what a filter menu shows beside the name. It can be **zero**: a
+/// label exists in its own right rather than only through the notes carrying it,
+/// so taking a label off the last note leaves the label. That is what an `id`
+/// separate from the `name` buys, and it is what makes renaming one possible.
 class TagView {
+  final String id;
   final String name;
   final int notes;
 
-  const TagView({required this.name, required this.notes});
+  const TagView({required this.id, required this.name, required this.notes});
 
   @override
-  int get hashCode => name.hashCode ^ notes.hashCode;
+  int get hashCode => id.hashCode ^ name.hashCode ^ notes.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is TagView &&
           runtimeType == other.runtimeType &&
+          id == other.id &&
           name == other.name &&
           notes == other.notes;
 }

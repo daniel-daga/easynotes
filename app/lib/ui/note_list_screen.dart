@@ -54,19 +54,28 @@ enum _Shelf {
 /// place and a modifier.
 @immutable
 class _Where {
-  const _Where.shelf(this.shelf) : tag = null;
+  const _Where.shelf(this.shelf) : tag = null, tagName = null;
 
   /// A label's shelf is the grid, which is what makes a new note made here land
   /// somewhere this person can see it.
-  const _Where.tag(String this.tag) : shelf = _Shelf.notes;
+  const _Where.tag(String this.tag, String this.tagName) : shelf = _Shelf.notes;
 
   final _Shelf shelf;
+
+  /// The label's **ID**, which is what membership is asked in and what survives
+  /// the label being renamed.
   final String? tag;
 
-  String get title => tag ?? shelf.title;
+  /// What that label was called when this shelf was opened. Drawn, never
+  /// matched on — a rename refreshes it, and matching on it would lose the
+  /// shelf the moment somebody renamed the label they were looking at.
+  final String? tagName;
 
-  String get empty =>
-      tag == null ? shelf.empty : 'Nothing here is labelled "$tag".';
+  String get title => tagName ?? shelf.title;
+
+  String get empty => tag == null
+      ? shelf.empty
+      : 'Nothing here is labelled "${tagName ?? ''}".';
 
   /// Whether this is the plain grid, where a list can be joined.
   bool get isGrid => tag == null && shelf == _Shelf.notes;
@@ -80,7 +89,7 @@ class _Where {
       ? shelf.holds(note)
       // A note keeps its labels in the archive and in the trash; what a label
       // shows is what is on the shelf this person actually looks at.
-      : note.inGrid && note.tags.contains(tag);
+      : note.inGrid && note.tagIds.contains(tag);
 
   @override
   bool operator ==(Object other) =>
@@ -151,10 +160,63 @@ class _NoteListScreenState extends State<NoteListScreen> {
     // Made while looking at a label, so it gets that label: otherwise the note
     // would be created, drawn for a frame, and gone from the shelf it was made
     // on as soon as the list refreshed.
-    final tag = _where.tag;
-    if (tag != null) await widget.library.addTag(id, tag);
+    final tagName = _where.tagName;
+    if (tagName != null) await widget.library.addTag(id, tagName);
     if (!mounted) return;
     await _openNote(id);
+  }
+
+  /// Rename a label, everywhere it is.
+  ///
+  /// Every note keeps it: a membership points at the label's ID and has never
+  /// mentioned its name, which is the whole of why this gesture exists at all.
+  /// Renaming onto a name another label already has merges the two, and the
+  /// message says so rather than letting two chips that read the same quietly
+  /// become one.
+  Future<void> _renameLabel(Tag tag) async {
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => _RenameLabelDialog(tag: tag),
+    );
+    if (typed == null || !mounted) return;
+    final survivor = await widget.library.renameTag(tag.id, typed);
+    if (!mounted) return;
+    if (survivor != null && survivor != tag.id) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Merged "${tag.name}" into "$typed".')),
+      );
+    }
+  }
+
+  /// Throw a label away. The notes that had it are untouched apart from losing
+  /// it, and the confirmation says exactly that — this is the one gesture here
+  /// that changes notes the person is not looking at.
+  Future<void> _forgetLabel(Tag tag) async {
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete "${tag.name}"?'),
+        content: Text(
+          tag.notes == 0
+              ? 'Nothing is labelled "${tag.name}", so nothing else changes.'
+              : 'It comes off ${tag.notes} ${tag.notes == 1 ? 'note' : 'notes'}. '
+                    'The notes themselves are kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('confirm-forget-label'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (sure != true || !mounted) return;
+    await widget.library.forgetTag(tag.id);
   }
 
   /// The labels on one note, on a dialog that can put more on and take them off.
@@ -298,17 +360,28 @@ class _NoteListScreenState extends State<NoteListScreen> {
       builder: (context, snapshot) {
         final all = snapshot.data ?? const <NoteSummary>[];
         final notes = all.where(_where.holds).toList();
-        // Read here rather than in the drawer, so that a label appearing or
-        // disappearing follows the same rebuild every other change to the list
-        // does. A label's whole existence is the notes that carry it.
+        // Read here rather than in the drawer, so that a label appearing,
+        // being renamed or being thrown away follows the same rebuild every
+        // other change to the list does.
         final tags = widget.library.tags;
-        // The label this person is looking at, gone: its last note was
-        // relabelled, trashed or deleted. Back to the grid, because a shelf that
-        // does not exist cannot say anything about why it is empty.
+        // The label this person is looking at, gone. That now means thrown away
+        // or merged into another by a rename — *not* merely emptied, because a
+        // label outlives its last note and an empty shelf is a real place to
+        // stand. Back to the grid, because a shelf that does not exist cannot
+        // say anything about why it is empty.
         final tag = _where.tag;
-        if (tag != null && !tags.any((held) => held.name == tag)) {
+        final standing = tag == null
+            ? null
+            : tags.where((held) => held.id == tag).firstOrNull;
+        if (tag != null && standing == null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) _show(const _Where.shelf(_Shelf.notes));
+          });
+        }
+        // Renamed while being looked at: keep the shelf, change the heading.
+        if (standing != null && standing.name != _where.tagName) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _show(_Where.tag(standing.id, standing.name));
           });
         }
         return Scaffold(
@@ -385,6 +458,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
             },
             tags: tags,
             onChosen: _show,
+            onRename: _renameLabel,
+            onForget: _forgetLabel,
           ),
           // Only where a new note would land. One made while looking at the
           // trash would appear in a grid that is not on screen, and one made
@@ -712,16 +787,21 @@ class _Shelves extends StatelessWidget {
     required this.counts,
     required this.tags,
     required this.onChosen,
+    required this.onRename,
+    required this.onForget,
   });
 
   final _Where current;
   final Map<_Shelf, int> counts;
 
-  /// Every label in use, in the order the library gives them. Empty until this
-  /// person makes one, and empty again when they take the last one off — there is
-  /// no list of labels apart from the notes that carry them.
+  /// Every label this person has, in the order the library gives them. Empty
+  /// until they make one, and *not* empty again when they take the last one
+  /// off: a label outlives the notes that carried it, so a shelf here can
+  /// legitimately say `0`.
   final List<Tag> tags;
   final void Function(_Where) onChosen;
+  final void Function(Tag) onRename;
+  final void Function(Tag) onForget;
 
   static const _icons = {
     _Shelf.notes: Icons.lightbulb_outline,
@@ -767,9 +847,41 @@ class _Shelves extends StatelessWidget {
                 key: Key('label-shelf-${tag.name}'),
                 leading: const Icon(Icons.label_outline),
                 title: Text(tag.name),
-                trailing: Text('${tag.notes}'),
-                selected: current.tag == tag.name,
-                onTap: () => go(_Where.tag(tag.name)),
+                // The count, and the way to rename or throw the label away.
+                // Here rather than on a card, because a label is not a property
+                // of any one note: renaming it from a note would look like it
+                // only changed that note's copy, and there are no copies.
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('${tag.notes}'),
+                    PopupMenuButton<void>(
+                      key: Key('label-menu-${tag.name}'),
+                      icon: const Icon(Icons.more_vert),
+                      tooltip: 'What to do with "${tag.name}"',
+                      itemBuilder: (context) => [
+                        PopupMenuItem<void>(
+                          key: const Key('label-rename'),
+                          onTap: () => onRename(tag),
+                          child: const ListTile(
+                            leading: Icon(Icons.edit_outlined),
+                            title: Text('Rename'),
+                          ),
+                        ),
+                        PopupMenuItem<void>(
+                          key: const Key('label-forget'),
+                          onTap: () => onForget(tag),
+                          child: const ListTile(
+                            leading: Icon(Icons.label_off_outlined),
+                            title: Text('Delete label'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                selected: current.tag == tag.id,
+                onTap: () => go(_Where.tag(tag.id, tag.name)),
               ),
           ],
         ],
@@ -848,7 +960,10 @@ class _NoteActions extends StatelessWidget {
               title: const Text('Labels'),
               subtitle: note.tags.isEmpty
                   ? null
-                  : Text(note.tags.join(', '), maxLines: 1),
+                  : Text(
+                      [for (final tag in note.tags) tag.name].join(', '),
+                      maxLines: 1,
+                    ),
               onTap: () => run(onLabels),
             ),
           if (!note.trashed)
@@ -1152,7 +1267,13 @@ class _NoteCard extends StatelessWidget {
                   runSpacing: 4,
                   children: [
                     for (final tag in note.tags)
-                      _Chip(key: Key('chip:${note.id}:$tag'), label: tag),
+                      _Chip(
+                        // Keyed on the name, because that is what a test and a
+                        // person both look for; the label's identity is on the
+                        // summary and is what every gesture uses.
+                        key: Key('chip:${note.id}:${tag.name}'),
+                        label: tag.name,
+                      ),
                   ],
                 ),
               ],
@@ -1188,6 +1309,70 @@ class _NoteCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Ask for a label's new name.
+///
+/// Seeded with the name it has, because a rename is usually a correction rather
+/// than a replacement, and selected so that typing over it still works.
+class _RenameLabelDialog extends StatefulWidget {
+  const _RenameLabelDialog({required this.tag});
+
+  final Tag tag;
+
+  @override
+  State<_RenameLabelDialog> createState() => _RenameLabelDialogState();
+}
+
+class _RenameLabelDialogState extends State<_RenameLabelDialog> {
+  late final _field = TextEditingController(text: widget.tag.name)
+    ..selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: widget.tag.name.length,
+    );
+
+  @override
+  void dispose() {
+    _field.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final typed = _field.text.trim();
+    if (typed.isEmpty) return;
+    Navigator.of(context).pop(typed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      key: const Key('rename-label-dialog'),
+      title: Text('Rename "${widget.tag.name}"'),
+      content: TextField(
+        key: const Key('rename-label-field'),
+        controller: _field,
+        autofocus: true,
+        maxLength: maxLabelLength,
+        decoration: const InputDecoration(
+          border: OutlineInputBorder(),
+          isDense: true,
+          counterText: '',
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('rename-label-confirm'),
+          onPressed: _submit,
+          child: const Text('Rename'),
+        ),
+      ],
     );
   }
 }
@@ -1244,7 +1429,7 @@ class _LabelsDialogState extends State<_LabelsDialog> {
   final _field = TextEditingController();
 
   /// What the note has, and every label this device knows, as of the last answer.
-  late Set<String> _on = widget.note.tags.toSet();
+  late Set<String> _on = widget.note.tagIds;
   late List<Tag> _all = widget.library.tags;
 
   @override
@@ -1262,15 +1447,19 @@ class _LabelsDialogState extends State<_LabelsDialog> {
         .firstOrNull;
     setState(() {
       _all = widget.library.tags;
-      _on = (summary?.tags ?? const <String>[]).toSet();
+      _on = summary?.tagIds ?? const <String>{};
     });
   }
 
-  Future<void> _toggle(String name, bool on) async {
+  /// Toggling is by ID on the way off and by *name* on the way on, and that is
+  /// not an inconsistency: putting a label on goes through the same reuse rule
+  /// a typed name does, so a checkbox and the field below it cannot disagree
+  /// about which label a name means.
+  Future<void> _toggle(Tag tag, bool on) async {
     if (on) {
-      await widget.library.addTag(widget.note.id, name);
+      await widget.library.addTag(widget.note.id, tag.name);
     } else {
-      await widget.library.removeTag(widget.note.id, name);
+      await widget.library.removeTag(widget.note.id, tag.id);
     }
     if (mounted) _reread();
   }
@@ -1337,11 +1526,11 @@ class _LabelsDialogState extends State<_LabelsDialog> {
                     for (final tag in _all)
                       CheckboxListTile(
                         key: Key('label-check-${tag.name}'),
-                        value: _on.contains(tag.name),
+                        value: _on.contains(tag.id),
                         title: Text(tag.name),
                         dense: true,
                         controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (on) => _toggle(tag.name, on ?? false),
+                        onChanged: (on) => _toggle(tag, on ?? false),
                       ),
                   ],
                 ),

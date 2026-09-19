@@ -9,8 +9,10 @@
 use easynotes_core::crdt::account::{AccountDoc, AccountEdit, Value};
 use easynotes_core::crdt::{Colour, Layout, NoteDoc};
 use easynotes_core::crypto::{Envelope, MasterKey};
-use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC, COMPACT_AFTER, INDEX};
+use easynotes_core::ids::{LabelId, NoteId};
+use easynotes_core::note::{
+    NoteCore, NoteKind, NoteSummary, SyncCursor, ACCOUNT_DOC, COMPACT_AFTER, INDEX,
+};
 use easynotes_core::store::{
     master_key_from_file, Keyring, MemoryKeyring, MemoryStore, OpStore, SqliteKeyring, SqliteStore,
 };
@@ -35,6 +37,33 @@ fn on_disk<D: NoteDoc>(dir: &Path) -> NoteCore<D, SqliteStore, SqliteKeyring> {
 
 fn titles(summaries: &[NoteSummary]) -> Vec<&str> {
     summaries.iter().map(|s| s.title.as_str()).collect()
+}
+
+/// A set of label IDs, as the names a person would see. Sorted, because a
+/// `BTreeSet<LabelId>` is in the order random bytes happen to fall in and a test
+/// that asserted on that would be asserting on nothing.
+fn names<D: NoteDoc, S: OpStore, K: Keyring>(
+    core: &NoteCore<D, S, K>,
+    labels: &std::collections::BTreeSet<LabelId>,
+) -> Vec<String> {
+    let mut out: Vec<String> = labels
+        .iter()
+        .filter_map(|id| core.tag_name(*id))
+        .map(|name| name.to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Every label with how many notes carry it, dropping the IDs — which are random
+/// and so cannot be written down in a test.
+fn counted<D: NoteDoc, S: OpStore, K: Keyring>(
+    core: &NoteCore<D, S, K>,
+) -> Vec<(&'static str, usize)> {
+    core.tags()
+        .into_iter()
+        .map(|(_, name, count)| (Box::leak(name.into_boxed_str()) as &'static str, count))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -276,30 +305,24 @@ fn labelling_a_note_puts_nothing_in_the_note<D: NoteDoc>() {
 fn a_label_comes_back_on_the_summary<D: NoteDoc>() {
     let mut core = in_memory::<D>();
     let id = core.create_note(NoteKind::Checklist).unwrap();
-    assert_eq!(
-        core.add_tag(id, "errands").unwrap().as_deref(),
-        Some("errands")
-    );
-    core.add_tag(id, "recipes").unwrap();
+    let errands = core.add_tag(id, "errands").unwrap().unwrap();
+    let recipes = core.add_tag(id, "recipes").unwrap().unwrap();
+    assert_eq!(core.tag_name(errands), Some("errands"));
 
     let notes = core.notes().unwrap();
     assert_eq!(
-        notes[0].placement.tags.iter().cloned().collect::<Vec<_>>(),
+        names(&core, &notes[0].placement.tags),
         ["errands", "recipes"]
     );
-    assert_eq!(
-        core.tags(),
-        vec![("errands".to_string(), 1), ("recipes".to_string(), 1)]
-    );
+    assert_eq!(counted(&core), [("errands", 1), ("recipes", 1)]);
 
-    core.remove_tag(id, "errands").unwrap();
-    assert_eq!(
-        core.placement(id).tags.iter().cloned().collect::<Vec<_>>(),
-        ["recipes"]
-    );
-    // A label is the notes that carry it and nothing else, so taking it off the
-    // last one takes the label away.
-    assert_eq!(core.tags(), vec![("recipes".to_string(), 1)]);
+    core.remove_tag(id, errands).unwrap();
+    assert_eq!(names(&core, &core.placement(id).tags), ["recipes"]);
+    // The label itself stays, carried by nobody. That is the half that changed
+    // when a label stopped being its own name: taking it off the last note is
+    // not the same gesture as throwing it away.
+    assert_eq!(counted(&core), [("errands", 0), ("recipes", 1)]);
+    assert!(core.tags().iter().any(|(id, _, _)| *id == recipes));
 }
 
 /// The reuse rule. Two labels that differ only in case are one label, decided
@@ -309,18 +332,14 @@ fn a_label_that_differs_only_in_case_is_the_one_already_there<D: NoteDoc>() {
     let mut core = in_memory::<D>();
     let first = core.create_note(NoteKind::Checklist).unwrap();
     let second = core.create_note(NoteKind::Checklist).unwrap();
-    core.add_tag(first, "Recipes").unwrap();
+    let recipes = core.add_tag(first, "Recipes").unwrap().unwrap();
 
     // On another note, under another casing, with whitespace around it.
-    assert_eq!(
-        core.add_tag(second, "  recipes ").unwrap().as_deref(),
-        Some("Recipes")
-    );
-    assert_eq!(core.tags(), vec![("Recipes".to_string(), 2)]);
+    assert_eq!(core.add_tag(second, "  recipes ").unwrap(), Some(recipes));
+    assert_eq!(counted(&core), [("Recipes", 2)]);
 
-    // And taking it off is as forgiving as putting it on.
-    core.remove_tag(second, "RECIPES").unwrap();
-    assert_eq!(core.tags(), vec![("Recipes".to_string(), 1)]);
+    core.remove_tag(second, recipes).unwrap();
+    assert_eq!(counted(&core), [("Recipes", 1)]);
 }
 
 fn a_label_that_is_not_a_name_is_not_a_label<D: NoteDoc>() {
@@ -335,7 +354,7 @@ fn a_label_that_is_not_a_name_is_not_a_label<D: NoteDoc>() {
     assert!(core.tags().is_empty());
 
     // Nor does taking off a label that was never on.
-    core.remove_tag(id, "errands").unwrap();
+    core.remove_tag(id, LabelId::random()).unwrap();
     assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), before);
 }
 
@@ -351,22 +370,199 @@ fn a_label_survives_a_relaunch<D: NoteDoc>() {
         id
     };
     let mut core = on_disk::<D>(dir.path());
-    assert_eq!(
-        core.notes().unwrap()[0]
-            .placement
-            .tags
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>(),
-        ["weekly shop"]
-    );
-    assert_eq!(core.tags(), vec![("weekly shop".to_string(), 1)]);
+    let notes = core.notes().unwrap();
+    assert_eq!(names(&core, &notes[0].placement.tags), ["weekly shop"]);
+    assert_eq!(counted(&core), [("weekly shop", 1)]);
     assert_eq!(core.placement(id).tags.len(), 1);
 }
 
-/// Forgetting a note takes its labels with it. Leaving them would keep a label
-/// alive with nothing under it — in a document nothing compacts, so it would be
-/// replayed at every launch for ever.
+// ---------------------------------------------------------------------------
+// Renaming a label
+// ---------------------------------------------------------------------------
+
+/// The thing a label having an identity is for.
+///
+/// One register write: every note keeps the label, because every membership
+/// points at the ID and no membership has ever mentioned the name.
+fn a_label_can_be_renamed_and_its_notes_keep_it<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let one = core.create_note(NoteKind::Checklist).unwrap();
+    let two = core.create_note(NoteKind::Checklist).unwrap();
+    let label = core.add_tag(one, "Recipes").unwrap().unwrap();
+    core.add_tag(two, "Recipes").unwrap();
+
+    assert_eq!(core.rename_tag(label, "  Dinners ").unwrap(), Some(label));
+
+    assert_eq!(core.tag_name(label), Some("Dinners"));
+    assert_eq!(counted(&core), [("Dinners", 2)]);
+    for note in [one, two] {
+        assert_eq!(names(&core, &core.placement(note).tags), ["Dinners"]);
+    }
+    // And the old name is free again.
+    let fresh = core.add_tag(one, "Recipes").unwrap().unwrap();
+    assert_ne!(fresh, label);
+}
+
+/// Renaming onto a name another label already has merges the two.
+///
+/// Keep's behaviour, and the only answer that is not a lie: the person asked for
+/// one label with that name, and refusing would leave them with two that look
+/// identical. It is also the repair for the one residue `add_tag` cannot
+/// prevent — two devices each inventing the same name offline — which nothing
+/// could repair when a label *was* its name.
+fn renaming_a_label_onto_another_merges_them<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let one = core.create_note(NoteKind::Checklist).unwrap();
+    let two = core.create_note(NoteKind::Checklist).unwrap();
+    let three = core.create_note(NoteKind::Checklist).unwrap();
+    let shopping = core.add_tag(one, "shopping").unwrap().unwrap();
+    let errands = core.add_tag(two, "errands").unwrap().unwrap();
+    core.add_tag(three, "errands").unwrap();
+
+    assert_eq!(core.rename_tag(shopping, "Errands").unwrap(), Some(errands));
+
+    // One label, carrying every note either of them had.
+    assert_eq!(counted(&core), [("errands", 3)]);
+    for note in [one, two, three] {
+        assert_eq!(core.tags_on(note), vec![errands]);
+    }
+    assert_eq!(core.tag_name(shopping), None);
+}
+
+/// Renaming a label to what it is already called, up to case, is a recasing
+/// rather than a merge with itself.
+fn a_label_can_be_recased<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    let label = core.add_tag(id, "recipes").unwrap().unwrap();
+
+    assert_eq!(core.rename_tag(label, "Recipes").unwrap(), Some(label));
+    assert_eq!(counted(&core), [("Recipes", 1)]);
+    assert_eq!(core.tags_on(id), vec![label]);
+}
+
+fn renaming_to_nothing_or_renaming_nothing_does_nothing<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    let label = core.add_tag(id, "recipes").unwrap().unwrap();
+    let before = core.store().load(ACCOUNT_DOC).unwrap().len();
+
+    assert_eq!(core.rename_tag(label, "  ").unwrap(), None);
+    assert_eq!(
+        core.rename_tag(LabelId::random(), "anything").unwrap(),
+        None
+    );
+
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), before);
+    assert_eq!(counted(&core), [("recipes", 1)]);
+}
+
+/// A label with no notes is a label. There was nowhere to hold one before.
+fn a_label_can_exist_before_any_note_has_it<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let label = core.make_tag("Someday").unwrap();
+    assert_eq!(counted(&core), [("Someday", 0)]);
+
+    // And asking for it again is the same label, not a second one.
+    assert_eq!(core.make_tag("someday").unwrap(), label);
+
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    assert_eq!(core.add_tag(id, "SOMEDAY").unwrap(), Some(label));
+    assert_eq!(counted(&core), [("Someday", 1)]);
+}
+
+/// Throwing a label away is its own gesture, and it takes the label off every
+/// note that had it without touching the notes themselves.
+fn forgetting_a_label_takes_it_off_every_note<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let one = core.create_note(NoteKind::Checklist).unwrap();
+    let two = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(one, "groceries").unwrap();
+    let errands = core.add_tag(one, "errands").unwrap().unwrap();
+    core.add_tag(two, "errands").unwrap();
+    let recipes = core.add_tag(one, "recipes").unwrap().unwrap();
+
+    core.forget_tag(errands).unwrap();
+
+    assert_eq!(counted(&core), [("recipes", 1)]);
+    assert_eq!(core.tags_on(one), vec![recipes]);
+    assert!(core.tags_on(two).is_empty());
+    // The notes are still there, with everything else about them intact. Newest
+    // first, which is where the grid puts a note nobody has moved.
+    assert_eq!(titles(&core.notes().unwrap()), vec!["", "groceries"]);
+}
+
+// ---------------------------------------------------------------------------
+// The shape a label used to have
+// ---------------------------------------------------------------------------
+
+/// A device that labelled notes on the old build keeps those labels.
+///
+/// The old shape made a label out of its name — `t:<note>:<name>` and nothing
+/// else — so there is no ID to recover and one has to be minted. Names matching
+/// ignoring case land on one label, which is what `add_tag` would have done had
+/// they been typed on this build.
+fn labels_stored_the_old_way_are_adopted_at_launch<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let (one, two) = {
+        let mut core = on_disk::<D>(dir.path());
+        let one = core.create_note(NoteKind::Checklist).unwrap();
+        let two = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(one, "groceries").unwrap();
+        // Written the way the old build wrote them, which is the only way to
+        // produce a device in this state now.
+        for (note, tag) in [(one, "Errands"), (one, "recipes"), (two, "errands")] {
+            core.write_legacy_tag(note, tag).unwrap();
+        }
+        (one, two)
+    };
+
+    let mut core = on_disk::<D>(dir.path());
+    core.notes().unwrap();
+
+    // Two labels, not three: `Errands` and `errands` are one label. Which casing
+    // survives is decided by sorting the names rather than by note order, so it
+    // is the same answer on every device migrating the same document — see
+    // `adopt_legacy_tags`.
+    assert_eq!(counted(&core), [("Errands", 2), ("recipes", 1)]);
+    let errands = core.tags()[0].0;
+    assert!(core.tags_on(one).contains(&errands));
+    assert_eq!(core.tags_on(two), vec![errands]);
+
+    // The old keys are gone, so the next launch finds nothing to do.
+    assert!(core.placement(one).legacy_tags.is_empty());
+    assert!(core.placement(two).legacy_tags.is_empty());
+    let settled = core.store().load(ACCOUNT_DOC).unwrap().len();
+    let mut core = on_disk::<D>(dir.path());
+    core.notes().unwrap();
+    assert_eq!(
+        core.store().load(ACCOUNT_DOC).unwrap().len(),
+        settled,
+        "the migration wrote something on a device with nothing to migrate"
+    );
+    assert_eq!(counted(&core), [("Errands", 2), ("recipes", 1)]);
+}
+
+/// And once adopted they behave like any other label, including the thing they
+/// could never do before.
+fn a_label_adopted_from_the_old_shape_can_be_renamed<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = {
+        let mut core = on_disk::<D>(dir.path());
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        core.write_legacy_tag(id, "errands").unwrap();
+        id
+    };
+
+    let mut core = on_disk::<D>(dir.path());
+    let errands = core.tags()[0].0;
+    assert_eq!(core.rename_tag(errands, "Chores").unwrap(), Some(errands));
+    assert_eq!(counted(&core), [("Chores", 1)]);
+    assert_eq!(core.tags_on(id), vec![errands]);
+}
+
+/// Forgetting a note takes its memberships with it, in both shapes, and leaves
+/// the labels standing.
 fn forgetting_a_note_takes_its_labels_with_it<D: NoteDoc>() {
     let mut core = in_memory::<D>();
     let gone = core.create_note(NoteKind::Checklist).unwrap();
@@ -378,8 +574,9 @@ fn forgetting_a_note_takes_its_labels_with_it<D: NoteDoc>() {
     core.forget_note(gone).unwrap();
     core.notes().unwrap();
 
-    // The label only that note had is gone; the shared one is down to one note.
-    assert_eq!(core.tags(), vec![("recipes".to_string(), 1)]);
+    // The note is off both labels. Both labels are still there — one carried by
+    // the note that kept it, one carried by nobody.
+    assert_eq!(counted(&core), [("errands", 0), ("recipes", 1)]);
     assert!(core.placement(gone).tags.is_empty());
 }
 
@@ -391,18 +588,20 @@ fn two_devices_keep_both_labels<D: NoteDoc>() {
     let note = NoteId::random();
     let mut phone = <D::Account as AccountDoc>::create(&[5u8; 16]);
     let mut laptop = <D::Account as AccountDoc>::create(&[6u8; 16]);
+    let errands_id = LabelId::random();
+    let recipes_id = LabelId::random();
 
     let errands = phone
         .apply_local(&AccountEdit::SetTag {
             note,
-            tag: "errands".into(),
+            label: errands_id,
             on: true,
         })
         .unwrap();
     let recipes = laptop
         .apply_local(&AccountEdit::SetTag {
             note,
-            tag: "recipes".into(),
+            label: recipes_id,
             on: true,
         })
         .unwrap();
@@ -417,12 +616,57 @@ fn two_devices_keep_both_labels<D: NoteDoc>() {
                 .placement(note)
                 .tags
                 .iter()
-                .cloned()
+                .copied()
                 .collect::<Vec<_>>(),
-            ["errands", "recipes"]
+            {
+                let mut both = vec![errands_id, recipes_id];
+                both.sort();
+                both
+            }
         );
     }
     assert_eq!(phone.view(), laptop.view());
+}
+
+/// Two devices renaming one label converge on one name, and neither note loses
+/// its label on the way. The property the whole redesign exists to make true.
+fn two_devices_renaming_one_label_converge<D: NoteDoc>() {
+    let note = NoteId::random();
+    let label = LabelId::random();
+    let mut phone = <D::Account as AccountDoc>::create(&[5u8; 16]);
+    let mut laptop = <D::Account as AccountDoc>::create(&[6u8; 16]);
+
+    // Both start from a note carrying the label.
+    let seed = phone
+        .apply_local(&AccountEdit::SetTag {
+            note,
+            label,
+            on: true,
+        })
+        .unwrap();
+    laptop.apply_remote(&seed).unwrap();
+
+    let a = phone
+        .apply_local(&AccountEdit::SetLabelName {
+            label,
+            name: "Dinners".into(),
+        })
+        .unwrap();
+    let b = laptop
+        .apply_local(&AccountEdit::SetLabelName {
+            label,
+            name: "Chores".into(),
+        })
+        .unwrap();
+    phone.apply_remote(&b).unwrap();
+    laptop.apply_remote(&a).unwrap();
+
+    // One name — whichever the backend's register picked — and both devices
+    // agree on it. The membership is untouched by either write.
+    assert_eq!(phone.view(), laptop.view());
+    let name = phone.view().label_name(label).map(|s| s.to_string());
+    assert!(matches!(name.as_deref(), Some("Dinners" | "Chores")));
+    assert_eq!(phone.view().labels_on(note), vec![label]);
 }
 
 /// A placement is an edit like any other, so the grid has to hear about it the
@@ -587,6 +831,67 @@ fn a_forgotten_note_is_still_gone_after_a_relaunch<D: NoteDoc>() {
     assert!(!core.account().placements.contains_key(&gone));
     assert!(core.keyring().note_key(gone).unwrap().is_none());
     assert!(core.keyring().note_key(kept).unwrap().is_some());
+}
+
+/// The residue a forgotten note can leave, and the sweep that takes it.
+///
+/// Forgetting closes the note's relay connection first, but the engine's task
+/// can already be mid-delivery: the envelope that arrives is rejected — no key —
+/// and the cursor moves past it anyway, which writes a store row for a note that
+/// has just been deleted. That row is a note as far as `store.notes` is
+/// concerned, and before the sweep nothing ever removed it.
+fn a_late_envelope_leaves_no_note_behind<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let gone = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(gone, "tax papers").unwrap();
+    let kept = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(kept, "groceries").unwrap();
+    core.notes().unwrap();
+
+    core.forget_note(gone).unwrap();
+    // The engine's last act for a note it is being disconnected from. Nothing
+    // here is contrived: `run_note` saves the cursor after `apply_remote` fails.
+    core.set_sync_cursor(
+        gone,
+        SyncCursor {
+            last_seq: 7,
+            sent_upto: None,
+        },
+    )
+    .unwrap();
+    assert!(core.store().notes().unwrap().contains(&gone));
+
+    // A list is drawn, which is where the sweep runs.
+    assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);
+    assert!(!core.store().notes().unwrap().contains(&gone));
+    // And it took only the row it was aimed at.
+    assert!(core.store().notes().unwrap().contains(&kept));
+}
+
+/// The sweep tests for ciphertext, not for a key — because a missing key is the
+/// one thing Slice 3 is meant to be able to undo.
+///
+/// This is the shape `copy_store` produces when a log is carried over and its
+/// key is not, and the shape a device will be in between restoring a store and
+/// restoring the keys that open it. There is no placement and no key, so it
+/// reaches the sweep; the log is what stops it.
+fn a_note_whose_key_never_arrived_is_not_swept<D: NoteDoc>() {
+    let mut source = in_memory::<D>();
+    let id = source.create_note(NoteKind::Checklist).unwrap();
+    source.set_title(id, "somebody else's").unwrap();
+    let log = source.store().load(id).unwrap();
+    assert!(!log.is_empty());
+
+    let mut store = MemoryStore::new();
+    for envelope in &log {
+        store.append(id, envelope).unwrap();
+    }
+    let mut core: Memory<D> = NoteCore::open(store, MemoryKeyring::new()).unwrap();
+
+    // It cannot be drawn, and it is still on the disk.
+    assert!(core.notes().unwrap().is_empty());
+    assert!(core.store().notes().unwrap().contains(&id));
+    assert_eq!(core.store().load(id).unwrap().len(), log.len());
 }
 
 /// Emptying the trash takes the trash and only the trash.
@@ -901,7 +1206,13 @@ fn a_compacted_account_log_is_still_the_whole_document<D: NoteDoc>() {
     assert_eq!(view.placements.len(), 6);
     assert_eq!(view.placement(id).colour, Some(Colour::Teal));
     assert!(view.placement(id).pinned);
-    assert!(view.placement(id).tags.iter().any(|t| t == "errands"));
+    assert_eq!(
+        view.labels_on(id)
+            .iter()
+            .filter_map(|l| view.label_name(*l))
+            .collect::<Vec<_>>(),
+        ["errands"]
+    );
     assert_eq!(view.tags().len(), 1);
 }
 
@@ -1114,6 +1425,42 @@ macro_rules! backend_suite {
                 super::forgetting_a_note_takes_its_labels_with_it::<$backend>()
             }
             #[test]
+            fn a_label_can_be_renamed_and_its_notes_keep_it() {
+                super::a_label_can_be_renamed_and_its_notes_keep_it::<$backend>()
+            }
+            #[test]
+            fn renaming_a_label_onto_another_merges_them() {
+                super::renaming_a_label_onto_another_merges_them::<$backend>()
+            }
+            #[test]
+            fn a_label_can_be_recased() {
+                super::a_label_can_be_recased::<$backend>()
+            }
+            #[test]
+            fn renaming_to_nothing_or_renaming_nothing_does_nothing() {
+                super::renaming_to_nothing_or_renaming_nothing_does_nothing::<$backend>()
+            }
+            #[test]
+            fn a_label_can_exist_before_any_note_has_it() {
+                super::a_label_can_exist_before_any_note_has_it::<$backend>()
+            }
+            #[test]
+            fn forgetting_a_label_takes_it_off_every_note() {
+                super::forgetting_a_label_takes_it_off_every_note::<$backend>()
+            }
+            #[test]
+            fn labels_stored_the_old_way_are_adopted_at_launch() {
+                super::labels_stored_the_old_way_are_adopted_at_launch::<$backend>()
+            }
+            #[test]
+            fn a_label_adopted_from_the_old_shape_can_be_renamed() {
+                super::a_label_adopted_from_the_old_shape_can_be_renamed::<$backend>()
+            }
+            #[test]
+            fn two_devices_renaming_one_label_converge() {
+                super::two_devices_renaming_one_label_converge::<$backend>()
+            }
+            #[test]
             fn two_devices_keep_both_labels() {
                 super::two_devices_keep_both_labels::<$backend>()
             }
@@ -1164,6 +1511,14 @@ macro_rules! backend_suite {
             #[test]
             fn a_forgotten_note_is_still_gone_after_a_relaunch() {
                 super::a_forgotten_note_is_still_gone_after_a_relaunch::<$backend>()
+            }
+            #[test]
+            fn a_late_envelope_leaves_no_note_behind() {
+                super::a_late_envelope_leaves_no_note_behind::<$backend>()
+            }
+            #[test]
+            fn a_note_whose_key_never_arrived_is_not_swept() {
+                super::a_note_whose_key_never_arrived_is_not_swept::<$backend>()
             }
             #[test]
             fn emptying_the_trash_forgets_what_is_in_it() {

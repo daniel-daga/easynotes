@@ -18,7 +18,7 @@ use crate::frb_generated::StreamSink;
 use crate::relay::Connection;
 use crate::storage::{Pending, Queue};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
-use easynotes_core::ids::{ItemId, NoteId};
+use easynotes_core::ids::{ItemId, LabelId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
 use flutter_rust_bridge::frb;
@@ -98,7 +98,17 @@ pub struct NoteSummaryView {
     /// The labels this person has put on the note, sorted. A `Vec` rather than a
     /// set because that is what crosses the bridge; it holds each label once,
     /// which is the document's doing and not this type's.
-    pub tags: Vec<String>,
+    ///
+    /// Each carries an ID as well as a name, because the name is the thing that
+    /// can change: a screen draws the name and acts on the ID, and a rename
+    /// landing between the two is then a redraw rather than a lost label.
+    pub tags: Vec<LabelView>,
+}
+
+/// One label on a note: what it is, and what to call it.
+pub struct LabelView {
+    pub id: String,
+    pub name: String,
 }
 
 impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
@@ -113,17 +123,26 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
             pinned: s.placement.pinned,
             archived: s.placement.archived,
             trashed: s.placement.trashed,
-            tags: s.placement.tags.into_iter().collect(),
+            tags: s
+                .labels
+                .into_iter()
+                .map(|(id, name)| LabelView {
+                    id: id.encode(),
+                    name,
+                })
+                .collect(),
         }
     }
 }
 
 /// One label, and how many notes carry it.
 ///
-/// The count is what a filter menu shows beside the name, and it is also the
-/// whole of a label's existence: there is no list of labels apart from the notes
-/// that have them, so a label with no notes is not a label.
+/// The count is what a filter menu shows beside the name. It can be **zero**: a
+/// label exists in its own right rather than only through the notes carrying it,
+/// so taking a label off the last note leaves the label. That is what an `id`
+/// separate from the `name` buys, and it is what makes renaming one possible.
 pub struct TagView {
+    pub id: String,
     pub name: String,
     pub notes: u32,
 }
@@ -685,6 +704,10 @@ fn note_id(s: &str) -> Result<NoteId, String> {
     NoteId::decode(s).map_err(|e| e.to_string())
 }
 
+fn label_id(s: &str) -> Result<LabelId, String> {
+    LabelId::decode(s).map_err(|e| e.to_string())
+}
+
 /// Every note this device holds.
 ///
 /// One per app. Opening it reads each note's sealed index entry rather than each
@@ -989,34 +1012,80 @@ impl Library {
             .locked()?
             .tags()
             .into_iter()
-            .map(|(name, notes)| TagView {
+            .map(|(id, name, notes)| TagView {
+                id: id.encode(),
                 name,
                 notes: notes as u32,
             })
             .collect())
     }
 
-    /// Put a label on a note, and return the name it was stored under.
+    /// Put a label on a note, and return the label it went on under.
     ///
     /// `null` for something that is not a name — whitespace, or nothing — so a
-    /// field submitted empty is a no-op rather than a label called "". The name
-    /// that comes back may not be the one that went in: a label differing only in
-    /// case from one this device already has *is* that one, and the UI has to draw
-    /// the label that exists rather than the casing that was typed.
+    /// field submitted empty is a no-op rather than a label called "". The label
+    /// that comes back may not be a new one: a name differing only in case from
+    /// one this device already has *is* that label, and the UI has to draw the
+    /// label that exists rather than the casing that was typed.
     pub fn add_tag(&self, id: String, tag: String) -> Result<Option<String>, String> {
         let id = note_id(&id)?;
-        self.shared
+        Ok(self
+            .shared
             .locked()?
             .add_tag(id, &tag)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?
+            .map(|label| label.encode()))
+    }
+
+    /// Make a label that no note carries yet, and return it. An existing label
+    /// with this name is returned rather than a second one made.
+    pub fn make_tag(&self, name: String) -> Result<String, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .make_tag(&name)
+            .map_err(|e| e.to_string())?
+            .encode())
     }
 
     /// Take a label off a note. Not an error if it was never on it.
-    pub fn remove_tag(&self, id: String, tag: String) -> Result<(), String> {
+    ///
+    /// The label itself stays, with one fewer note on it. Throwing the label
+    /// away is [`NoteLibrary::forget_tag`], and it is a different gesture on
+    /// purpose.
+    pub fn remove_tag(&self, id: String, label: String) -> Result<(), String> {
         let id = note_id(&id)?;
+        let label = label_id(&label)?;
         self.shared
             .locked()?
-            .remove_tag(id, &tag)
+            .remove_tag(id, label)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rename a label. Every note carrying it keeps it, because a membership
+    /// points at the ID and has never mentioned the name.
+    ///
+    /// Returns the label that survived, which is **not** always the one passed
+    /// in: renaming onto a name another label already has merges the two, and
+    /// the survivor is the one that already had the name. `null` for a name that
+    /// is not a name, or a label this device does not have.
+    pub fn rename_tag(&self, label: String, name: String) -> Result<Option<String>, String> {
+        let label = label_id(&label)?;
+        Ok(self
+            .shared
+            .locked()?
+            .rename_tag(label, &name)
+            .map_err(|e| e.to_string())?
+            .map(|survivor| survivor.encode()))
+    }
+
+    /// Throw a label away: off every note that has it, and gone from the menu.
+    /// The notes themselves are untouched.
+    pub fn forget_tag(&self, label: String) -> Result<(), String> {
+        let label = label_id(&label)?;
+        self.shared
+            .locked()?
+            .forget_tag(label)
             .map_err(|e| e.to_string())
     }
 
