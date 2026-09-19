@@ -75,7 +75,7 @@ class RustNoteLibrary implements NoteLibrary {
         keys: await db.rows(rust.StorageArea.keys),
         masterKey: masterKey,
       ),
-      canJoin: false,
+      canJoin: true,
       db: db,
     );
     // Opening a device for the first time writes its identity, and nothing has
@@ -90,6 +90,11 @@ class RustNoteLibrary implements NoteLibrary {
   /// not give the app a database — some private-browsing modes will not, and it
   /// can be switched off outright. Everything above the store is the same Rust
   /// the native build runs.
+  ///
+  /// [canJoin] is false here and nowhere else: a tab like this can reach a
+  /// relay perfectly well, but a list joined into it would be gone on the next
+  /// reload, and a share that evaporates is worse than a button that is not
+  /// there.
   static Future<RustNoteLibrary> openEphemeral() async {
     await RustNoteCore.ensureInitialized();
     return RustNoteLibrary._(rust.Library.openEphemeral(), canJoin: false);

@@ -12,9 +12,11 @@ flutter_rust_bridge = "=2.13.0"
 # engine is native-only and is pulled in below.
 tokio = { version = "1", default-features = false, features = ["sync"] }
 
-# The relay client needs a reactor, and a browser tab cannot have one. The web
-# build therefore gets the same core without `sync-native`, and `src/relay.rs`
-# carries the one type whose implementation differs.
+# The native relay client needs a reactor and a browser tab cannot have one, so
+# the web build gets `sync-web` instead — the same engine over the browser's own
+# WebSocket. `src/relay.rs` carries the one type whose implementation differs,
+# which is now only about what drives the engine rather than whether there is
+# one.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 easynotes-core = { path = "../../core", features = ["sync-native"] }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time", "net"] }
@@ -25,7 +27,10 @@ tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-t
 # not have. `web-store` is the one a browser gets instead — it holds no browser
 # API itself, only the rules; see `crate::api::notes` for where the two meet.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-easynotes-core = { path = "../../core", default-features = false, features = ["automerge-backend", "yrs-backend", "web-store"] }
+easynotes-core = { path = "../../core", default-features = false, features = ["automerge-backend", "yrs-backend", "web-store", "sync-web"] }
+# The engine needs somewhere to run, and in a tab that is the page's own event
+# loop rather than a runtime we start.
+wasm-bindgen-futures = "0.4.78"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

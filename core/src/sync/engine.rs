@@ -19,7 +19,11 @@
 //!   between the socket and the core. It cannot read them and does not have the
 //!   keys to try.
 
-use super::client::{authenticate, Incoming, NoteSync};
+// From the module rather than from one transport: which of `client` and
+// `client_web` these come from is the target's business, and this file must not
+// be able to tell.
+use super::wire::Incoming;
+use super::{authenticate, NoteSync};
 use crate::crdt::NoteDoc;
 use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
@@ -452,7 +456,10 @@ async fn wait(
     commands: &mut mpsc::UnboundedReceiver<Command>,
     live: &mut Live,
 ) -> bool {
-    let deadline = tokio::time::sleep(backoff);
+    // `super::timer` rather than `tokio::time`, because a browser tab has no
+    // runtime to drive a tokio timer and cannot be given one. It is the only
+    // line in this file that differs between a device and a tab.
+    let deadline = super::timer::sleep(backoff);
     tokio::pin!(deadline);
     loop {
         tokio::select! {

@@ -12,7 +12,10 @@ pub mod note;
 pub mod order;
 pub mod store;
 
-#[cfg(feature = "sync-native")]
+// Always, though the transports inside it are not: `sync::wire` is the protocol
+// both of them speak and is the only part of talking to a relay that a plain
+// `cargo test` can reach, so gating the module would mean the thing the two
+// transports must agree about were tested by neither.
 pub mod sync;
 
 pub use error::{CoreError, Result};

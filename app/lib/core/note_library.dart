@@ -145,9 +145,11 @@ abstract class NoteLibrary {
 
   /// Whether this device can join someone else's list.
   ///
-  /// False in a browser, which holds its notes in memory and cannot reach a
-  /// relay: joining there would add a list that could never receive a word of
-  /// its content. The button is not offered rather than offered and useless.
+  /// True wherever a relay can be reached, which since the browser transport
+  /// landed is everywhere except a tab that has to keep its notes in memory —
+  /// there a joined list could be received but not kept, and the tab would lose
+  /// it on the next reload. The button is not offered rather than offered and
+  /// disappointing.
   bool get canJoin;
 
   /// Add the note a share blob describes. Returns its ID.

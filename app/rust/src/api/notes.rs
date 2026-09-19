@@ -278,7 +278,6 @@ impl SyncStatus {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
     fn from(s: easynotes_core::sync::SyncStatus) -> Self {
         use easynotes_core::sync::SyncState as Core;
@@ -368,10 +367,6 @@ impl Statuses {
     /// An engine said something. Tell that note's watchers, then everyone
     /// watching the device as a whole.
     ///
-    /// Nothing calls it in a browser: the web `Connection` is a connection that
-    /// is never made, so there is no engine there to have an opinion. The
-    /// allowance goes away when the browser transport lands.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn report(&self, note: NoteId, epoch: u64, status: SyncStatus) {
         // `existing` rather than `entry`: a report can arrive for a note that has
         // just been forgotten, from an engine whose task had not yet noticed, and

@@ -634,6 +634,7 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "hex",
+ "js-sys",
  "rand 0.9.5",
  "reqwest",
  "rusqlite",
@@ -643,6 +644,9 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "x25519-dalek",
  "yrs",
  "zeroize",
@@ -2016,6 +2020,7 @@ dependencies = [
  "easynotes-core",
  "flutter_rust_bridge",
  "tokio",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

@@ -1,14 +1,18 @@
 //! Talking to the relay.
 //!
-//! Two layers, deliberately separated. [`client`] is the protocol and nothing
-//! else: one socket, one note, messages in and out. [`engine`] is the policy on
-//! top — when to connect, what to do when the connection dies, what to re-send,
-//! and what the UI is told about any of it.
+//! Three layers, deliberately separated. [`wire`] is the protocol and nothing
+//! else — messages, base64, what counts as nonsense — with no socket in it.
+//! `client` and `client_web` are the two transports that carry it: one socket,
+//! one note, four methods. [`engine`] is the policy on top — when to connect,
+//! what to do when the connection dies, what to re-send, and what the UI is
+//! told about any of it.
 //!
-//! The split is what lets the web build reuse the second half. A browser needs
-//! its own transport, so `client` will gain a second implementation; the
-//! reconnect loop, the outbox and the cursor are the same decisions in both
-//! places and should not be made twice.
+//! That split is what lets a browser have the second and third layers for free.
+//! A tab needs its own transport because it cannot open a TCP socket, and it
+//! needs nothing else of its own: the reconnect loop, the outbox and the cursor
+//! are the same decisions in both places, and the message shapes are the same
+//! bytes. Only the middle layer is written twice, and [`wire`] is what keeps
+//! the two halves of it from drifting apart.
 //!
 //! The client is deliberately dumb in the opposite direction from the relay: it
 //! trusts the relay for *ordering and delivery* and for nothing else. Every
@@ -16,10 +20,37 @@
 //! the document, so a hostile relay can withhold updates or reorder them, but it
 //! cannot forge one.
 
-mod client;
-mod engine;
+mod wire;
+pub use wire::Incoming;
 
-pub use client::{authenticate, Incoming, NoteSync};
+// Exactly one transport is compiled, and which one is not a choice a caller
+// makes: a device has no browser to borrow a socket from and a tab cannot open
+// a TCP one. They present the same `authenticate` and `NoteSync`, so nothing
+// above here has a `cfg` in it.
+#[cfg(feature = "sync-native")]
+mod client;
+#[cfg(feature = "sync-native")]
+pub use client::{authenticate, NoteSync};
+
+#[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
+mod client_web;
+#[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
+pub use client_web::{authenticate, NoteSync};
+
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+mod engine;
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+mod timer;
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
 pub use engine::{
     RelayEndpoint, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus, FIRST_RETRY, MAX_RETRY,
 };

@@ -56,6 +56,11 @@ web-store = []
 # the browser's own WebSocket, which is M4 work and a different transport behind
 # the same `SyncClient` shape.
 sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "tokio/rt", "tokio/macros", "tokio/time"]
+# The same engine over the browser's own WebSocket and `fetch`. Only the
+# transport differs — see `sync::wire` for everything the two share — and the
+# dependencies it needs exist only for wasm32, so the feature is inert
+# elsewhere and the module behind it is `cfg`-ed on the target as well.
+sync-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "tokio/macros"]
 
 [dev-dependencies]
 # The store tests reach past the trait to check what is actually in the file.
@@ -69,3 +74,19 @@ tempfile = "3.27.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+# The web transport (`sync-web`). Pinned to the versions flutter_rust_bridge
+# already brings, so enabling this adds no crate to the tree that the web build
+# did not have.
+wasm-bindgen = { version = "0.2.128", optional = true }
+wasm-bindgen-futures = { version = "0.4.78", optional = true }
+js-sys = { version = "0.3.105", optional = true }
+web-sys = { version = "0.3.105", optional = true, features = [
+    "WebSocket",
+    "MessageEvent",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Headers",
+    "Window",
+    "WorkerGlobalScope",
+] }

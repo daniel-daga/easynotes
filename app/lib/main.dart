@@ -46,11 +46,12 @@ Future<NoteLibrary> openLibrary() async {
   return library;
 }
 
-/// Open this browser's notes out of IndexedDB.
+/// Open this browser's notes out of IndexedDB, and start syncing them.
 ///
-/// A tab still cannot reach a relay — that is the other unfinished half of the
-/// web build, and [ADR 0002](../../docs/adr/0002-web-core.md) records it — but
-/// what it holds now survives the tab closing.
+/// A tab is a device like any other now: it keeps what it holds and it reaches
+/// the relay, over the browser's own WebSocket rather than a TCP socket it
+/// cannot open. What is still true of a tab and not of a phone is written down
+/// in [ADR 0011](../../docs/adr/0011-the-web-store.md).
 ///
 /// A browser that will not give the app a database is not an error worth
 /// refusing to start over: some private-browsing modes do not, and it can be
@@ -58,15 +59,20 @@ Future<NoteLibrary> openLibrary() async {
 /// every tab had before this, and the app runs.
 Future<NoteLibrary> openInBrowser() async {
   final masterKey = await MasterKeyStore().forBrowser();
+  NoteLibrary library;
   try {
-    return await RustNoteLibrary.openInBrowser(
+    library = await RustNoteLibrary.openInBrowser(
       await openBrowserStore(browserDatabase),
       masterKey,
     );
   } on Object catch (error) {
     debugPrint('keeping this tab\'s notes in memory only: $error');
-    return RustNoteLibrary.openEphemeral();
+    library = await RustNoteLibrary.openEphemeral();
   }
+  // As on a device: with no relay there the app is a local notes app, and the
+  // status button says so.
+  if (relayUrl.isNotEmpty) await library.connect(relayUrl);
+  return library;
 }
 
 /// The name of the IndexedDB database. One per origin, so it says what it is
