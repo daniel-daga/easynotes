@@ -1,9 +1,14 @@
 name: CI
 
+# Only on `main`, and by hand. A pull request does not run this: the three jobs
+# below are half an hour of runners between them, and the justfile recipes they
+# wrap are the ones a contributor runs locally before pushing, so the pull
+# request was paying for a second opinion on a claim it had already made.
+# `workflow_dispatch` is the escape hatch for asking anyway, on any branch.
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
