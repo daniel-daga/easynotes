@@ -396,6 +396,11 @@ pub use web::{Change, ChangeSink, WebKeyring, WebStore};
 /// A metadata row is sealed against the note it belongs to and the name it is
 /// filed under, so that a row cannot be moved to another note or another name
 /// and still open.
+///
+/// Gated because the relay builds this crate with no stores at all — it needs
+/// the wire format and nothing else — and an ungated helper nothing calls is a
+/// warning in that build.
+#[cfg(any(feature = "sqlite-store", feature = "web-store"))]
 pub(crate) fn meta_context<'a>(note: &'a NoteId, key: &'a str) -> [&'a [u8]; 3] {
     [b"meta", note.as_bytes(), key.as_bytes()]
 }
@@ -404,6 +409,7 @@ pub(crate) fn meta_context<'a>(note: &'a NoteId, key: &'a str) -> [&'a [u8]; 3] 
 /// is for, so a note key cannot be handed back as the device seed by rewriting
 /// one column. The device seed is the one row with no note, and passes an empty
 /// ID.
+#[cfg(any(feature = "sqlite-store", feature = "web-store"))]
 pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
     [kind.as_bytes(), id]
 }

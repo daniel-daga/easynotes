@@ -19,6 +19,10 @@ serde_json.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
+# Only the CORS layer. Hand-rolling preflight handling is a well-known way to
+# write a subtly wrong one, and everything under it is already in the tree
+# behind axum.
+tower-http = { version = "0.6.6", features = ["cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 

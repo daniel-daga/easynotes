@@ -68,12 +68,40 @@ impl AppState {
     }
 }
 
+/// The handshake is reachable from a browser, and that needs saying out loud.
+///
+/// A page served from anywhere may POST to `/v1/challenge` and `/v1/token`. The
+/// WebSocket needs nothing here — sockets are not subject to CORS — so this is
+/// only about the two JSON calls that get a token, and those are a JSON POST,
+/// which means a preflight rather than a simple request.
+///
+/// **Why any origin.** The relay has no cookies, no sessions and no ambient
+/// authority of any kind: the only way to get a token is to sign a nonce with a
+/// device's private key, which a hostile page does not have. So the most a page
+/// can do by calling these is ask for a nonce for a device key it names and read
+/// it back, and a nonce without the key it was minted for opens nothing. There
+/// is no request a browser could be tricked into making here that it could not
+/// already make from anywhere else, and nothing it could read that is worth
+/// reading.
+///
+/// What this does *not* do is rate-limit or restrict anything, and a public
+/// relay will want both. It is on the same list as the tokens living in memory:
+/// [`plan-slice-02.md`](../../docs/plan-slice-02.md) carries it.
+fn browser_access() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, Method};
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([Method::POST])
+        .allow_headers([header::CONTENT_TYPE])
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
         .route("/v1/notes/{note_id}", get(notes_ws))
         .route("/v1/health", get(|| async { StatusCode::OK }))
+        .layer(browser_access())
         .with_state(state)
 }
 

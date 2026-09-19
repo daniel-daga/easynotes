@@ -341,6 +341,55 @@ async fn refuses_a_blob_that_is_not_an_envelope() {
     assert!(store.all_envelopes().is_empty());
 }
 
+/// The handshake has to be reachable from a page, or the web build cannot get a
+/// token at all — and a JSON POST is a preflighted request, so the browser asks
+/// before it tries. Both halves are asserted, because passing one and failing
+/// the other still leaves the app unable to connect.
+#[tokio::test]
+async fn a_browser_may_do_the_handshake() {
+    let (relay, _store) = relay().await;
+    let http = reqwest::Client::new();
+
+    let preflight = http
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/v1/challenge", relay.http_base()),
+        )
+        .header("Origin", "https://notes.example")
+        .header("Access-Control-Request-Method", "POST")
+        .header("Access-Control-Request-Headers", "content-type")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        preflight.status().is_success(),
+        "the preflight was refused: {}",
+        preflight.status()
+    );
+    let allowed = |r: &reqwest::Response| {
+        r.headers()
+            .get("access-control-allow-origin")
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+    assert_eq!(allowed(&preflight).as_deref(), Some("*"));
+
+    let identity = DeviceIdentity::generate();
+    let real = http
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .header("Origin", "https://notes.example")
+        .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+        .send()
+        .await
+        .unwrap();
+    assert!(real.status().is_success());
+    assert_eq!(
+        allowed(&real).as_deref(),
+        Some("*"),
+        "the response a page is allowed to read has to say so on the response too, \
+         not only on the preflight"
+    );
+}
+
 #[test]
 fn caps_match_the_core() {
     // The relay's cap and the core's must agree, or one of them silently becomes
