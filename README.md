@@ -142,6 +142,7 @@ threaded and will not start without cross-origin isolation.
 | [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
 | [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
 | [ADR 0011](docs/adr/0011-the-web-store.md) | The store a browser gets: reads from memory, writes through Dart |
+| [ADR 0012](docs/adr/0012-compacting-the-account-document.md) | Compacting the account document: the snapshot goes in the log |
 
 ## Security, in one paragraph
 

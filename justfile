@@ -148,8 +148,8 @@ bench-compaction:
     cargo run --release -p easynotes-core --example bench_compaction
 
 # What opening a device's whole note list costs, at three sizes, and what the
-# account document adds before the first note is read. Prints the tables in
-# ADR 0007 and ADR 0008.
+# account document adds before the first note is read — with its log intact and
+# once compacted. Prints the tables in ADR 0007, ADR 0008 and ADR 0012.
 bench-library:
     cargo run --release -p easynotes-core --example bench_library
 

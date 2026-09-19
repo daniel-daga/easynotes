@@ -8,9 +8,9 @@
 
 use easynotes_core::crdt::account::{AccountDoc, AccountEdit, Value};
 use easynotes_core::crdt::{Colour, Layout, NoteDoc};
-use easynotes_core::crypto::MasterKey;
+use easynotes_core::crypto::{Envelope, MasterKey};
 use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC, INDEX};
+use easynotes_core::note::{NoteCore, NoteKind, NoteSummary, ACCOUNT_DOC, COMPACT_AFTER, INDEX};
 use easynotes_core::store::{
     master_key_from_file, Keyring, MemoryKeyring, MemoryStore, OpStore, SqliteKeyring, SqliteStore,
 };
@@ -730,6 +730,246 @@ fn a_backend_keeps_a_key_it_does_not_understand<D: NoteDoc>() {
 }
 
 // ---------------------------------------------------------------------------
+// Compacting it
+// ---------------------------------------------------------------------------
+
+/// A device whose account document has been edited more times than
+/// [`COMPACT_AFTER`], and says enough for "it came back" to mean something.
+///
+/// A few notes with a colour, a label and an archive between them, because a
+/// document of two keys would be reconstructed correctly by almost any mistake;
+/// then one note pinned and unpinned until the log is long, because what grows
+/// this log is placements *made* rather than notes held. The returned note is
+/// the one being toggled.
+fn with_a_long_account_log<D: NoteDoc>(edits: usize) -> (Memory<D>, NoteId) {
+    let mut core = in_memory::<D>();
+    for n in 0..5 {
+        let other = core.create_note(NoteKind::Checklist).unwrap();
+        core.set_title(other, format!("list {n}")).unwrap();
+        core.set_colour(other, Some(Colour::ALL[n % Colour::ALL.len()]))
+            .unwrap();
+        core.add_tag(other, "errands").unwrap();
+        if n % 2 == 0 {
+            core.set_archived(other, true).unwrap();
+        }
+    }
+    core.set_layout(Layout::List).unwrap();
+
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_title(id, "groceries").unwrap();
+    for n in 0..edits {
+        core.set_pinned(id, n % 2 == 0).unwrap();
+    }
+    assert!(
+        core.store().load(ACCOUNT_DOC).unwrap().len() > COMPACT_AFTER,
+        "the log this is about is not long enough to be compacted"
+    );
+    (core, id)
+}
+
+/// Relaunch the same store and keyring, which is what the app killed and started
+/// again does.
+fn relaunch<D: NoteDoc>(core: Memory<D>) -> Memory<D> {
+    let (store, keyring) = core.into_parts();
+    NoteCore::open(store, keyring).unwrap()
+}
+
+/// The launch after the threshold is passed replaces the whole log with one
+/// envelope, and the document it comes back as is the one that went in.
+fn a_long_account_log_is_compacted_at_launch<D: NoteDoc>() {
+    let (core, id) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let before = core.store().load(ACCOUNT_DOC).unwrap().len();
+    let placement = core.placement(id);
+    let layout = core.layout();
+
+    let core = relaunch(core);
+
+    assert_eq!(
+        core.store().load(ACCOUNT_DOC).unwrap().len(),
+        1,
+        "a compacted account document is one envelope, whatever it was before"
+    );
+    assert!(before > 1);
+    assert_eq!(core.placement(id), placement, "a placement did not survive");
+    assert_eq!(core.layout(), layout);
+
+    // And the launch after that reads what the first one wrote, rather than
+    // being the first to read it.
+    let core = relaunch(core);
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), 1);
+    assert_eq!(core.placement(id), placement);
+}
+
+/// The whole of [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md)'s
+/// safety argument, and the reason this may drop what a note's compaction may
+/// not: the snapshot is an envelope *in the log*, so the log is still the whole
+/// document to anyone who replays it — which is what a second device would do,
+/// and what the outbox hands a relay.
+///
+/// Replayed here the way a peer would: into a document this device has never
+/// touched, through `apply_remote` and not `load`.
+fn a_compacted_account_log_is_still_the_whole_document<D: NoteDoc>() {
+    let (core, id) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let mut core = relaunch(core);
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), 1);
+    core.set_colour(id, Some(Colour::Teal)).unwrap();
+    core.set_pinned(id, true).unwrap();
+    core.add_tag(id, "errands").unwrap();
+
+    let key = core.keyring().note_key(ACCOUNT_DOC).unwrap().unwrap();
+    let mut peer = <D::Account as AccountDoc>::create(&[9u8; 16]);
+    for raw in core.store().load(ACCOUNT_DOC).unwrap() {
+        let envelope = Envelope::decode(&raw).unwrap();
+        peer.apply_remote(&envelope.open(&key).unwrap()).unwrap();
+    }
+
+    assert_eq!(
+        peer.view(),
+        *core.account(),
+        "a device replaying the compacted log did not arrive at this document"
+    );
+    // Not vacuously: there are six notes placed, five of them coloured and
+    // labelled, one of them pinned and coloured here, and a layout.
+    let view = peer.view();
+    assert_eq!(view.placements.len(), 6);
+    assert_eq!(view.placement(id).colour, Some(Colour::Teal));
+    assert!(view.placement(id).pinned);
+    assert!(view.placement(id).tags.iter().any(|t| t == "errands"));
+    assert_eq!(view.tags().len(), 1);
+}
+
+/// The outbox is derived from the log, so what a relay would be told is whatever
+/// compaction left there — and it has to be our own, above the cursor, and
+/// enough to rebuild the document. One envelope, and it is the snapshot.
+fn a_compacted_account_document_has_the_whole_document_in_its_outbox<D: NoteDoc>() {
+    let (core, _) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let sent = core.unsent(ACCOUNT_DOC, None).unwrap().len();
+    assert!(
+        sent > COMPACT_AFTER,
+        "nothing was acknowledged, so all of it"
+    );
+
+    let core = relaunch(core);
+    let outbox = core.unsent(ACCOUNT_DOC, None).unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(
+        outbox[0].1,
+        core.store().load(ACCOUNT_DOC).unwrap()[0],
+        "the outbox and the log disagree about what this device has to send"
+    );
+}
+
+/// [ADR 0006](../../docs/adr/0006-compaction.md)'s decision 4, for this
+/// document: the snapshot is sealed with a counter from this device's own
+/// sequence, so the counter survives a compaction that removed every envelope it
+/// could otherwise be read from. Reusing one would make this device's next edit
+/// look like a replay to a peer that had already seen the number.
+fn a_compacted_account_document_does_not_reuse_a_counter<D: NoteDoc>() {
+    let (core, id) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let highest = |core: &Memory<D>| {
+        core.store()
+            .load(ACCOUNT_DOC)
+            .unwrap()
+            .iter()
+            .map(|raw| Envelope::decode(raw).unwrap().counter)
+            .max()
+            .unwrap()
+    };
+    let before = highest(&core);
+
+    let mut core = relaunch(core);
+    let snapshot_counter = highest(&core);
+    assert!(
+        snapshot_counter > before,
+        "the snapshot took a counter this device had already used"
+    );
+
+    core.set_colour(id, Some(Colour::Teal)).unwrap();
+    assert!(
+        highest(&core) > snapshot_counter,
+        "the edit after a compaction reused the snapshot's counter"
+    );
+
+    // And the launch after that carries on from there rather than from zero.
+    let mut core = relaunch(core);
+    let carried = highest(&core);
+    core.set_pinned(id, true).unwrap();
+    assert!(highest(&core) > carried);
+}
+
+/// A log that has not passed the threshold is left exactly as it was. Rewriting
+/// it would cost a signature and a store write on every launch for nothing.
+fn a_short_account_log_is_left_alone<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    core.set_colour(id, Some(Colour::Purple)).unwrap();
+    let before = core.store().load(ACCOUNT_DOC).unwrap();
+    assert!(before.len() > 1 && before.len() <= COMPACT_AFTER);
+
+    let core = relaunch(core);
+    assert_eq!(
+        core.store().load(ACCOUNT_DOC).unwrap(),
+        before,
+        "an account document under the threshold was rewritten anyway"
+    );
+}
+
+/// Compacting what is already one envelope is not worth a second one, so asking
+/// twice writes once.
+fn compacting_the_account_document_again_changes_nothing<D: NoteDoc>() {
+    let (core, _) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let mut core = relaunch(core);
+    let compacted = core.store().load(ACCOUNT_DOC).unwrap();
+
+    assert_eq!(core.compact_account().unwrap(), 0);
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap(), compacted);
+}
+
+/// The first thing that ever took something *out* of this document
+/// ([ADR 0010](../../docs/adr/0010-forgetting-a-note.md)) still takes it out
+/// when what it is removing from is a snapshot rather than a log of appends.
+fn a_note_forgotten_after_a_compaction_stays_forgotten<D: NoteDoc>() {
+    let (core, gone) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);
+    let mut core = relaunch(core);
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), 1);
+    let kept = core.create_note(NoteKind::Checklist).unwrap();
+
+    core.set_trashed(gone, true).unwrap();
+    core.forget_note(gone).unwrap();
+
+    let core = relaunch(core);
+    assert!(
+        !core.account().placements.contains_key(&gone),
+        "a note forgotten after a compaction came back with the next one"
+    );
+    assert!(core.account().placements.contains_key(&kept));
+}
+
+/// The same on the store the app actually uses, opened the way a relaunch opens
+/// it. The store is where the atomicity of `replace_log` lives, and a memory one
+/// cannot fail to be atomic.
+fn an_account_document_on_disk_is_compacted_once<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = on_disk::<D>(dir.path());
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    for n in 0..COMPACT_AFTER + 4 {
+        core.set_pinned(id, n % 2 == 0).unwrap();
+    }
+    let placement = core.placement(id);
+    drop(core);
+
+    let core = on_disk::<D>(dir.path());
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), 1);
+    assert_eq!(core.placement(id), placement);
+    drop(core);
+
+    let mut core = on_disk::<D>(dir.path());
+    assert_eq!(core.store().load(ACCOUNT_DOC).unwrap().len(), 1);
+    assert_eq!(core.placement(id), placement);
+    assert_eq!(core.notes().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
 
 macro_rules! backend_suite {
     ($name:ident, $backend:ty) => {
@@ -861,6 +1101,38 @@ macro_rules! backend_suite {
             #[test]
             fn forgetting_a_note_reaches_the_list() {
                 super::forgetting_a_note_reaches_the_list::<$backend>()
+            }
+            #[test]
+            fn a_long_account_log_is_compacted_at_launch() {
+                super::a_long_account_log_is_compacted_at_launch::<$backend>()
+            }
+            #[test]
+            fn a_compacted_account_log_is_still_the_whole_document() {
+                super::a_compacted_account_log_is_still_the_whole_document::<$backend>()
+            }
+            #[test]
+            fn a_compacted_account_document_has_the_whole_document_in_its_outbox() {
+                super::a_compacted_account_document_has_the_whole_document_in_its_outbox::<$backend>()
+            }
+            #[test]
+            fn a_compacted_account_document_does_not_reuse_a_counter() {
+                super::a_compacted_account_document_does_not_reuse_a_counter::<$backend>()
+            }
+            #[test]
+            fn a_short_account_log_is_left_alone() {
+                super::a_short_account_log_is_left_alone::<$backend>()
+            }
+            #[test]
+            fn compacting_the_account_document_again_changes_nothing() {
+                super::compacting_the_account_document_again_changes_nothing::<$backend>()
+            }
+            #[test]
+            fn a_note_forgotten_after_a_compaction_stays_forgotten() {
+                super::a_note_forgotten_after_a_compaction_stays_forgotten::<$backend>()
+            }
+            #[test]
+            fn an_account_document_on_disk_is_compacted_once() {
+                super::an_account_document_on_disk_is_compacted_once::<$backend>()
             }
         }
     };

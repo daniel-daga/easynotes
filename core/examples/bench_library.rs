@@ -1,6 +1,8 @@
-//! What it costs to open a device's whole note list.
+//! What it costs to open a device: its whole note list, and its placements.
 //!
-//! Prints the table in `docs/adr/0007-note-list.md`. Run it with:
+//! Prints the tables in `docs/adr/0007-note-list.md`,
+//! `docs/adr/0008-account-document.md` and
+//! `docs/adr/0012-compacting-the-account-document.md`. Run it with:
 //!
 //! ```sh
 //! cargo run --release -p easynotes-core --example bench_library
@@ -18,14 +20,23 @@
 //! an update still costs; the same device once its logs are compacted; and with
 //! the index, which is every launch after the first.
 //!
+//! The second table is the other half of a launch, and the one the first table
+//! made visible: opening the account document, before a single note is read.
+//! Same three sizes, measured with its log as the placements left it and again
+//! once it has been compacted — which is
+//! [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md), and is
+//! why the number stopped growing with placements ever made.
+//!
 //! Unlike `bench_compaction` this runs against SQLite in a real directory,
 //! because a launch reads a disk and that read is part of the answer.
 
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Edit, NoteDoc};
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::ids::NoteId;
-use easynotes_core::note::{NoteCore, NoteKind, SyncCursor, ADDED, SYNC_CURSOR};
-use easynotes_core::store::{copy_store, master_key_from_file, SqliteKeyring, SqliteStore};
+use easynotes_core::note::{NoteCore, NoteKind, SyncCursor, ACCOUNT_DOC, ADDED, SYNC_CURSOR};
+use easynotes_core::store::{
+    copy_store, master_key_from_file, OpStore, SqliteKeyring, SqliteStore,
+};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -136,6 +147,10 @@ fn time(mut f: impl FnMut()) -> Duration {
 struct Row {
     notes: usize,
     account: Duration,
+    account_compacted: Duration,
+    account_log: usize,
+    account_bytes: usize,
+    snapshot_bytes: usize,
     from_logs: Duration,
     from_snapshots: Duration,
     from_index: Duration,
@@ -146,6 +161,50 @@ fn measure(notes: usize) -> Row {
     let mut core = open(dir.path());
     let ids = fill(&mut core, notes);
     drop(core);
+
+    // Opening the device is opening the account document: its log is replayed
+    // before the first note is, because a note cannot be placed in a grid whose
+    // order is not known yet. It is measured here, before anything else reopens
+    // this directory, because the first reopen is the one that compacts it.
+    //
+    // The log is counted through the store rather than through a core, for the
+    // same reason: a core would compact it on the way to answering.
+    let (account_log, account_bytes) = {
+        let master = master_key_from_file(dir.path().join("master.key")).unwrap();
+        let log = SqliteStore::open(dir.path().join("notes.db"), master)
+            .unwrap()
+            .load(ACCOUNT_DOC)
+            .unwrap();
+        // As stored: a sealed envelope with its header and tag, because that is
+        // what is on the disk and what a relay would be sent.
+        (log.len(), log.iter().map(Vec::len).sum::<usize>())
+    };
+    // The first launch after those placements were made: the whole log replayed,
+    // plus the compaction it triggers if the log has passed the threshold —
+    // which at 200 notes it has and at the two smaller sizes it has not.
+    let account = time(|| {
+        drop(open(dir.path()));
+    });
+    // And every launch after that. Compacted by hand so the column means the
+    // same thing at all three sizes; past the threshold this is a no-op,
+    // because the launch above already did it.
+    {
+        let mut core = open(dir.path());
+        core.compact_account().unwrap();
+    }
+    let account_compacted = time(|| {
+        drop(open(dir.path()));
+    });
+    let snapshot_bytes = {
+        let master = master_key_from_file(dir.path().join("master.key")).unwrap();
+        SqliteStore::open(dir.path().join("notes.db"), master)
+            .unwrap()
+            .load(ACCOUNT_DOC)
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
+    };
 
     // A launch with no index, on a device whose notes still have their logs: 53
     // envelopes each, every one of them signature-verified before it is
@@ -178,13 +237,6 @@ fn measure(notes: usize) -> Row {
     drop(core);
     drop(bare);
 
-    // Opening the device is opening the account document: its log is replayed
-    // before the first note is, because a note cannot be placed in a grid whose
-    // order is not known yet. Nothing compacts it, so this is the whole of it.
-    let account = time(|| {
-        drop(open(dir.path()));
-    });
-
     // And the launch the app actually does: one sealed row a note, no document
     // replayed and no signature verified.
     let mut core = open(dir.path());
@@ -196,6 +248,10 @@ fn measure(notes: usize) -> Row {
     Row {
         notes,
         account,
+        account_compacted,
+        account_log,
+        account_bytes,
+        snapshot_bytes,
         from_logs,
         from_snapshots,
         from_index,
@@ -207,25 +263,42 @@ fn main() {
         "{} backend, {ITEMS} items and {EDITS} edits a note, SQLite on this disk\n",
         DefaultNoteDoc::backend_name()
     );
+
+    let rows: Vec<Row> = COUNTS.iter().map(|&count| measure(count)).collect();
+
+    println!("Opening the note list — ADR 0007 and ADR 0009\n");
     println!(
-        "{:>6}  {:>16}  {:>16}  {:>16}  {:>14}  {:>16}",
-        "notes",
-        "no index, logs",
-        "no index, snaps",
-        "from the index",
-        "per note",
-        "account document"
+        "{:>6}  {:>16}  {:>16}  {:>16}  {:>14}",
+        "notes", "no index, logs", "no index, snaps", "from the index", "per note"
     );
-    for &count in COUNTS {
-        let row = measure(count);
+    for row in &rows {
         println!(
-            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>13.1} ms  {:>11.3} ms  {:>13.1} ms",
+            "{:>6}  {:>13.1} ms  {:>13.1} ms  {:>13.1} ms  {:>11.3} ms",
             row.notes,
             row.from_logs.as_secs_f64() * 1e3,
             row.from_snapshots.as_secs_f64() * 1e3,
             row.from_index.as_secs_f64() * 1e3,
             row.from_index.as_secs_f64() * 1e3 / row.notes as f64,
+        );
+    }
+
+    // What happens before a single note is read, and what compacting it is
+    // worth. ADR 0008 measured the left-hand side of this and ADR 0012 is the
+    // right-hand side.
+    println!("\nOpening the account document — ADR 0008 and ADR 0012\n");
+    println!(
+        "{:>6}  {:>10}  {:>12}  {:>12}  {:>16}  {:>16}",
+        "notes", "envelopes", "log", "compacted", "launch, intact", "launch, compacted"
+    );
+    for row in &rows {
+        println!(
+            "{:>6}  {:>10}  {:>9} B  {:>9} B  {:>13.1} ms  {:>13.1} ms",
+            row.notes,
+            row.account_log,
+            row.account_bytes,
+            row.snapshot_bytes,
             row.account.as_secs_f64() * 1e3,
+            row.account_compacted.as_secs_f64() * 1e3,
         );
     }
 }
