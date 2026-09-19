@@ -28,7 +28,11 @@ IndexedDB — so a tab that is closed and opened again has the list it had, whic
 until now it did not. [ADR 0011](docs/adr/0011-the-web-store.md) says what it
 took to fit an asynchronous database behind a synchronous trait, and the one
 promise a browser makes more weakly than a phone: an edit is kept shortly after
-it is made rather than by the time it returns. A log that has grown past a few hundred edits is compacted
+it is made rather than by the time it returns. A tab going away empties the
+queue rather than waiting for the next tick, which narrows that window without
+closing it — and on the rare occasion a browser refuses to store an edit at all,
+out of quota or with its database cleared underneath the tab, the app says so
+across the top of whichever screen is open instead of carrying on looking saved. A log that has grown past a few hundred edits is compacted
 to a snapshot when the note is opened, minus whatever the relay has not
 acknowledged yet — which is the only copy of those edits anywhere.
 

@@ -778,4 +778,42 @@ void main() {
       reason: 'a placement is part of what a card shows',
     );
   });
+
+  testWidgets('says so when an edit could not be kept', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    // Nothing at all while the device is keeping what it is given, which is
+    // every platform but the web and most of the web.
+    expect(find.byKey(const Key('storage-error')), findsNothing);
+
+    library.pushStorageError('QuotaExceededError');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('storage-error')), findsOneWidget);
+    // Above the notes, not instead of them: what was already stored is still
+    // there and still worth reading.
+    expect(find.text('Groceries'), findsOneWidget);
+  });
+
+  testWidgets('reading the detail is not the same as it being fixed', (
+    tester,
+  ) async {
+    // There is no dismiss button, and opening the browser's own words must not
+    // become one: the edit is still gone when the dialog closes. Whether the
+    // library ever stops saying this is the library's decision and is held in
+    // `rust_bridge_test.dart`; what this holds is that the screen does not make
+    // it for it.
+    final library = twoLists();
+    await pumpList(tester, library);
+    library.pushStorageError('QuotaExceededError');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('storage-error')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('storage-error-detail')), findsOneWidget);
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('storage-error')), findsOneWidget);
+  });
 }

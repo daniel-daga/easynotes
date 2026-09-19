@@ -12,6 +12,9 @@ import '../src/rust/api/notes.dart' as rust;
 import 'browser_store.dart';
 import 'note_core.dart';
 import 'note_library.dart';
+import 'page_visibility_stub.dart'
+    if (dart.library.js_interop) 'page_visibility.dart'
+    as page;
 import 'rust_note_core.dart';
 import 'sync_status.dart';
 
@@ -33,6 +36,9 @@ class RustNoteLibrary implements NoteLibrary {
     );
     if (_db != null) {
       _drain = Timer.periodic(writeInterval, (_) => _writeOut());
+      // And once more the moment the tab goes away, because [writeInterval] is
+      // a window in which an edit is on the screen and nowhere else.
+      _stopWatchingPage = page.whenPageHidden(_writeOut);
     }
   }
 
@@ -109,6 +115,11 @@ class RustNoteLibrary implements NoteLibrary {
   /// takes to close a tab after typing. The native store has no equivalent gap —
   /// it fsyncs before `append` returns — and [ADR
   /// 0011](../../../docs/adr/0011-the-web-store.md) says why a browser cannot.
+  ///
+  /// The window is narrower than this number, because a page being hidden
+  /// empties the queue too rather than waiting for the next tick. It is not
+  /// closed: what the browser then has is a transaction it has been asked to
+  /// run, and nothing in `visibilitychange` can wait for one to finish.
   static const writeInterval = Duration(milliseconds: 50);
 
   final rust.Library _library;
@@ -118,9 +129,13 @@ class RustNoteLibrary implements NoteLibrary {
   final BrowserStore? _db;
   Timer? _drain;
 
+  /// Stops the `visibilitychange` listener, and does nothing off the web.
+  void Function()? _stopWatchingPage;
+
   /// The write in progress, so that two ticks cannot apply batches out of order.
   Future<void> _writing = Future.value();
-  Object? _writeError;
+  String? _storageError;
+  final _storage = StreamController<String?>.broadcast();
   final _notes = StreamController<List<NoteSummary>>.broadcast();
   late final StreamSubscription<List<rust.NoteSummaryView>> _upstream;
   final _sync = StreamController<SyncStatus>.broadcast();
@@ -230,21 +245,23 @@ class RustNoteLibrary implements NoteLibrary {
 
   /// Hand every queued write to the browser and wait for it to land.
   ///
-  /// Called on a timer, at open, and at close. It is also the only thing that
-  /// surfaces a failed write: the core hands each batch over exactly once and
-  /// does not keep a copy, so a browser that refuses one — out of quota, or a
-  /// database deleted under the tab — has lost that edit, and the app should
-  /// say so rather than carry on looking saved.
+  /// Called on a timer, at open, when the page is hidden, and at close. A
+  /// refusal goes to [storageError] rather than out of here: the timer is what
+  /// calls this most of the time and there is nobody at the other end of that
+  /// call to throw to.
   Future<void> flush() {
     _writeOut();
     return _writing;
   }
 
-  /// Whether a write has failed since this library was opened, and which.
-  ///
-  /// Nothing draws this yet. It is here because the queue is the only place the
-  /// failure exists — see the Slice 2 plan, item 4.
-  Object? get writeError => _writeError;
+  @override
+  String? get storageError => _storageError;
+
+  @override
+  Stream<String?> watchStorageError() async* {
+    yield _storageError;
+    yield* _storage.stream;
+  }
 
   void _writeOut() {
     final db = _db;
@@ -254,13 +271,25 @@ class RustNoteLibrary implements NoteLibrary {
     // Chained rather than awaited in place: the batches are ordered, and a
     // second tick starting before the first finished would let a later write
     // overtake an earlier one.
-    _writing = _writing.then((_) async {
-      for (final batch in batches) {
-        await db.apply(batch);
-      }
-    }).catchError((Object error) {
-      _writeError ??= error;
-    });
+    _writing = _writing
+        .then((_) async {
+          for (final batch in batches) {
+            await db.apply(batch);
+          }
+        })
+        .catchError(_writeFailed);
+  }
+
+  /// The browser refused a batch, which means an edit is gone.
+  ///
+  /// The first one is the one reported, for the reason [storageError] latches:
+  /// a database that has started refusing writes will refuse the next one too,
+  /// and the tenth message says nothing the first did not. Nothing here retries
+  /// — there is nothing left to retry, the batch was handed over and dropped.
+  void _writeFailed(Object error) {
+    if (_storageError != null) return;
+    _storageError = '$error';
+    _storage.add(_storageError);
   }
 
   @override
@@ -272,6 +301,7 @@ class RustNoteLibrary implements NoteLibrary {
     // Whatever is still queued, before anything stops: this is the last chance
     // those bytes have to reach the browser.
     _drain?.cancel();
+    _stopWatchingPage?.call();
     await flush();
     await _db?.close();
     // Then stop the Rust watchers: cancelling an upstream subscription waits for
@@ -281,6 +311,7 @@ class RustNoteLibrary implements NoteLibrary {
     await _syncUpstream.cancel();
     await _notes.close();
     await _sync.close();
+    await _storage.close();
   }
 
   static NoteSummary _toSummary(rust.NoteSummaryView s) => NoteSummary(

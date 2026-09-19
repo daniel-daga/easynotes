@@ -19,7 +19,8 @@ import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:easynotes/src/rust/api/notes.dart' show StorageArea;
+import 'package:easynotes/src/rust/api/notes.dart'
+    show StorageArea, StorageBatch, StorageRow;
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -642,7 +643,7 @@ void main() {
 
       /// Open a library over [db], as a tab would, and tear it down.
       Future<RustNoteLibrary> openTab(
-        MemoryBrowserStore db,
+        BrowserStore db,
         Uint8List masterKey,
       ) async {
         final library = await RustNoteLibrary.openInBrowser(db, masterKey);
@@ -744,6 +745,36 @@ void main() {
         }
       });
 
+      test('a write the browser refuses is not kept quiet', () async {
+        // The one case where a person is looking at a note that is not being
+        // kept. The core hands each batch over exactly once and keeps no copy,
+        // so a refusal here is an edit that is gone — and the only place it
+        // exists at all is the failure this asserts on.
+        final db = _RefusingStore(MemoryBrowserStore());
+        final library = await openTab(db, MasterKeyStore.newKey());
+        expect(library.storageError, isNull);
+
+        // Whatever this library says next, in order, so that the value the UI
+        // starts with and the value it is pushed are both covered.
+        final seen = library.watchStorageError().take(2).toList();
+
+        db.refuse = true;
+        final note = library.openNote(await library.createNote());
+        addTearDown(note.dispose);
+        await note.addItem('asparagus');
+        await library.flush();
+
+        expect(library.storageError, contains('out of space'));
+        expect(await seen, [null, library.storageError]);
+
+        // And it stays: a device that has started refusing writes has not got
+        // the edit back by refusing the next one differently.
+        db.message = 'the browser abandoned the write';
+        await note.addItem('bread');
+        await library.flush();
+        expect(library.storageError, contains('out of space'));
+      });
+
       test('the wrong key does not quietly open an empty tab', () async {
         final db = MemoryBrowserStore();
         final library = await openTab(db, MasterKeyStore.newKey());
@@ -760,4 +791,30 @@ void main() {
         ? 'set EASYNOTES_NATIVE_LIB to the built cdylib to run these'
         : null,
   );
+}
+
+/// A [BrowserStore] that can be told to start refusing writes.
+///
+/// What a browser out of quota, or one whose database has been cleared under
+/// the tab, looks like from here: reads still work, and `apply` throws. It
+/// wraps a real map rather than replacing one so that everything before the
+/// refusal is stored exactly as it would have been.
+class _RefusingStore implements BrowserStore {
+  _RefusingStore(this._inner);
+
+  final MemoryBrowserStore _inner;
+  bool refuse = false;
+  String message = 'out of space';
+
+  @override
+  Future<List<StorageRow>> rows(StorageArea area) => _inner.rows(area);
+
+  @override
+  Future<void> apply(StorageBatch batch) async {
+    if (refuse) throw StateError(message);
+    await _inner.apply(batch);
+  }
+
+  @override
+  Future<void> close() => _inner.close();
 }

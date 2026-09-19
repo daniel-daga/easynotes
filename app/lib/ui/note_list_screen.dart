@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import 'checklist_screen.dart';
+import 'storage_banner.dart';
 import 'sync_button.dart';
 
 /// Where a note can be: in the grid, out of the way, or thrown away.
@@ -137,7 +138,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final core = widget.library.openNote(id);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => ChecklistScreen(core: core),
+        builder: (context) =>
+            ChecklistScreen(core: core, storage: widget.library),
       ),
     );
     await core.dispose();
@@ -394,32 +396,45 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   child: const Icon(Icons.add),
                 )
               : null,
-          body: _query.trim().isNotEmpty
-              // The shelf still decides what is on screen: searching the trash
-              // searches the trash. The library answers for the whole device and
-              // this is where that is narrowed, exactly as the list is.
-              ? _SearchResults(
-                  library: widget.library,
-                  query: _query.trim(),
-                  where: _where,
-                  // Changes when anything about the notes changes, which is what
-                  // makes a result follow an edit someone else just made.
-                  notes: all,
-                  layout: _layout,
-                  onTap: _openNote,
-                  onHold: _actionsFor,
-                )
-              : notes.isEmpty
-              ? Center(key: const Key('no-notes'), child: Text(_where.empty))
-              : _NoteCollection(
-                  notes: notes,
-                  layout: _layout,
-                  onTap: _openNote,
-                  onHold: _actionsFor,
-                ),
+          // The banner above whatever is on screen, rather than beside the
+          // sync button: this is not a state to glance at, and a person who has
+          // lost an edit should not have to notice an icon to find out.
+          body: Column(
+            children: [
+              StorageBanner(storage: widget.library),
+              Expanded(child: _body(all, notes)),
+            ],
+          ),
         );
       },
     );
+  }
+
+  /// The grid, the results or the empty line, whichever this screen is showing.
+  Widget _body(List<NoteSummary> all, List<NoteSummary> notes) {
+    // The shelf still decides what is on screen: searching the trash searches
+    // the trash. The library answers for the whole device and this is where
+    // that is narrowed, exactly as the list is.
+    return _query.trim().isNotEmpty
+        ? _SearchResults(
+            library: widget.library,
+            query: _query.trim(),
+            where: _where,
+            // Changes when anything about the notes changes, which is what
+            // makes a result follow an edit someone else just made.
+            notes: all,
+            layout: _layout,
+            onTap: _openNote,
+            onHold: _actionsFor,
+          )
+        : notes.isEmpty
+        ? Center(key: const Key('no-notes'), child: Text(_where.empty))
+        : _NoteCollection(
+            notes: notes,
+            layout: _layout,
+            onTap: _openNote,
+            onHold: _actionsFor,
+          );
   }
 }
 
