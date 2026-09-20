@@ -327,6 +327,54 @@ class FakeNoteLibrary implements NoteLibrary {
     _layout = layout;
   }
 
+  /// The twelve words this fake hands out, so a test can assert on what a
+  /// screen showed without minting real entropy for it.
+  static const phrase = [
+    'abandon',
+    'ability',
+    'able',
+    'about',
+    'above',
+    'absent',
+    'absorb',
+    'abstract',
+    'absurd',
+    'abuse',
+    'access',
+    'accident',
+  ];
+
+  bool _hasAccount = false;
+
+  @override
+  bool get hasAccount => _hasAccount;
+
+  @override
+  Future<List<String>> createAccount() async {
+    calls.add('createAccount()');
+    if (_hasAccount) {
+      throw StateError('this device already has an account');
+    }
+    _hasAccount = true;
+    return phrase;
+  }
+
+  @override
+  Future<void> adoptAccount(String words) async {
+    calls.add('adoptAccount($words)');
+    if (_hasAccount) {
+      throw StateError('this device already has an account');
+    }
+    // Twelve of them or it is not a phrase. The real one also checks that they
+    // are words and that the checksum holds; a fake that refused everything
+    // real would make the screen untestable, and one that accepted anything
+    // would let a screen skip the error path altogether.
+    if (words.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length != 12) {
+      throw ArgumentError('a recovery phrase is twelve words');
+    }
+    _hasAccount = true;
+  }
+
   @override
   Future<void> connect(String url) async {
     calls.add('connect($url)');

@@ -190,6 +190,20 @@ struct OpenAccount<A: AccountDoc> {
     seen: HashSet<(AuthorKey, u64)>,
 }
 
+/// Where a sealed account-document envelope goes the moment it is made.
+///
+/// The account document's edits have no return value to hand back — there are
+/// twenty entry points to it and several of them write more than once — so the
+/// envelope is pushed here instead of being returned the way a note's is. What
+/// receives it is the same publish a note edit reaches
+/// ([`NoteCore::set_title`] and the bridge above it); this is only about who
+/// does the handing over.
+///
+/// Set once, by whoever owns the core, and never called on a device that sets
+/// none — which is every test that does not care, and the core itself, which
+/// is not allowed to know that a relay exists.
+pub type AccountEnvelopeSink = Box<dyn Fn(NoteId, &[u8]) + Send>;
+
 pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     identity: DeviceIdentity,
     actor: [u8; 16],
@@ -226,6 +240,9 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// every time a view changes, which is cheap because a summary is four
     /// fields off a document that is already in memory.
     library: watch::Sender<Vec<NoteSummary>>,
+    /// Where a local account-document envelope goes. `None` until something
+    /// asks for them, which on a device is the library wiring up its sync.
+    account_sink: Option<AccountEnvelopeSink>,
 }
 
 impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
@@ -267,6 +284,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             placements,
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
+            account_sink: None,
         };
         // The same moment `open_note` compacts at, for the same reason: the
         // document has just been rebuilt, so the snapshot is free, and the replay
@@ -1460,11 +1478,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// list.
     ///
     /// The same path a note edit takes, minus the return value. A note hands its
-    /// envelope back so the bridge can publish it; there is no relay for this
-    /// document yet, and when there is one the engine will read the envelope out
-    /// of the log like every other outbox does
-    /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)) rather than being handed
-    /// it here.
+    /// envelope back so the bridge can publish it; this document has twenty
+    /// entry points rather than six, several of which write more than once, so
+    /// it pushes to [`AccountEnvelopeSink`] instead. Either way the envelope is
+    /// in the log before it is offered to anybody
+    /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)): the relay hearing about
+    /// it is a separate thing from it being safe.
     fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
         let update = self.account.doc.apply_local(&edit)?;
         self.seal_account_update(update)
@@ -1488,10 +1507,27 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             &update,
         )?;
         self.account.seen.insert((envelope.author, counter));
-        self.store.append(self.account_id, &envelope.encode())?;
+        let encoded = envelope.encode();
+        self.store.append(self.account_id, &encoded)?;
         self.placements = self.account.doc.view();
         self.refresh_library();
+        // Last, and after the append: a sink that publishes to a relay is
+        // offering an edit that is already kept. An account this device does not
+        // have has no relay connection to reach, so the sink is handed the
+        // reserved ID and finds nothing listening under it.
+        if let Some(sink) = &self.account_sink {
+            sink(self.account_id, &encoded);
+        }
         Ok(())
+    }
+
+    /// Say where local account-document envelopes should go as they are made.
+    ///
+    /// The one call a device makes that a test does not: without it the document
+    /// is still written, still read and still correct, and simply never leaves
+    /// the device.
+    pub fn on_account_envelope(&mut self, sink: AccountEnvelopeSink) {
+        self.account_sink = Some(sink);
     }
 
     /// Every key the account document holds, for a test that needs to check the
@@ -1969,6 +2005,36 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // because the store is here, and because they have to work for a note that
     // is not open — a relaunch reads the cursor before it decides what to ask
     // the relay for.
+
+    /// Every note this device should be talking to a relay about.
+    ///
+    /// Not [`NoteCore::notes`], which is the *grid*: a card is built from an
+    /// index entry, and a device that has just adopted an account holds a note
+    /// key and nothing else — no log, no entry, no row in the store. That note
+    /// has no card and must still be connected, because connecting is how the
+    /// log it is missing arrives. Going the other way, a note whose key this
+    /// device does not have is left out however much of its log it holds: an
+    /// envelope it cannot open is an envelope it cannot use, and a connection
+    /// for one would be a socket held open to no purpose.
+    ///
+    /// The account document is not in here. It is not a note, its ID comes from
+    /// [`NoteCore::account_id`], and a caller that syncs it does so knowingly.
+    pub fn syncable(&self) -> Result<Vec<NoteId>> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let from_store = self.store.notes()?;
+        let placed = self.placements.placements.keys().copied();
+        for id in from_store.into_iter().chain(placed) {
+            if self.is_account(id) || !seen.insert(id) {
+                continue;
+            }
+            if self.keyring.note_key(id)?.is_none() {
+                continue;
+            }
+            out.push(id);
+        }
+        Ok(out)
+    }
 
     pub fn sync_cursor(&self, id: NoteId) -> Result<SyncCursor> {
         match self.store.get_meta(id, SYNC_CURSOR)? {

@@ -17,6 +17,7 @@ import 'dart:io';
 
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
+import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
@@ -186,6 +187,80 @@ void main() {
       expect(joinedHardware.current.title, isEmpty);
     });
   }, skip: skip);
+
+  group("one person's two devices", () {
+    test(
+      'a device adopted from a recovery phrase gets the notes and the '
+      'placements',
+      () async {
+        // The slice's definition of done, point 2, from the app's own API.
+        // `relay/tests/account.rs` holds it over cores and engines; this is the
+        // same claim with the bridge, the library and a real Keystore-shaped
+        // master key in the way.
+        final a = await device();
+        final phrase = await a.createAccount();
+        expect(phrase, hasLength(12));
+        expect(a.hasAccount, isTrue);
+
+        final noteId = await a.createNote();
+        final groceries = a.openNote(noteId);
+        addTearDown(groceries.dispose);
+        await groceries.setTitle('Groceries');
+        await groceries.addItem('milk');
+        await a.setColour(noteId, NoteColour.teal);
+        await a.setPinned(noteId, true);
+
+        // B has never seen a share blob. Twelve words is all it is given.
+        final b = await device();
+        expect(b.hasAccount, isFalse);
+        await b.adoptAccount(phrase.join(' '));
+        expect(b.hasAccount, isTrue);
+
+        await _untilNotes(
+          b.watchNotes(),
+          (notes) => notes.any(
+            (note) =>
+                note.id == noteId &&
+                note.title == 'Groceries' &&
+                note.colour == NoteColour.teal &&
+                note.pinned,
+          ),
+          "B never received A's note with A's placements on it",
+        );
+
+        // And it is the note rather than a card of one: B can open it and read
+        // what is inside, which means the key travelled too.
+        final bGroceries = b.openNote(noteId);
+        addTearDown(bGroceries.dispose);
+        await _until(
+          bGroceries.watch(),
+          (view) => view.items.any((item) => item.text == 'milk'),
+          'B never received the note contents',
+        );
+      },
+    );
+
+    test('a phrase that is not a phrase is refused with something to say', () async {
+      final library = await device();
+      await expectLater(
+        library.adoptAccount('milk bread eggs'),
+        throwsA(anything),
+      );
+      expect(library.hasAccount, isFalse);
+    });
+  }, skip: skip);
+}
+
+Future<void> _untilNotes(
+  Stream<List<NoteSummary>> lists,
+  bool Function(List<NoteSummary>) ready,
+  String complaint,
+) async {
+  try {
+    await lists.firstWhere(ready).timeout(patience);
+  } on TimeoutException {
+    fail(complaint);
+  }
 }
 
 /// The address the relay logged. Reading it beats guessing a port, and lets the

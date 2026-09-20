@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `close`, `closed`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `offline`, `on_disk`, `open`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `offline`, `on_disk`, `open`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -33,6 +33,19 @@ abstract class Library implements RustOpaqueInterface {
   /// one this device already has *is* that label, and the UI has to draw the
   /// label that exists rather than the casing that was typed.
   Future<String?> addTag({required String id, required String tag});
+
+  /// Adopt the account twelve words name, keeping what this device already
+  /// has.
+  ///
+  /// Nothing is fetched here and nothing appears at once: this makes the
+  /// device *able* to open that person's account document, and the notes,
+  /// their keys and their placements arrive over the relay afterwards. A
+  /// device with no relay named adopts perfectly well and simply waits.
+  ///
+  /// The words are forgiving about case and spacing and not about themselves:
+  /// a swap or a typo is refused with a message to show, rather than deriving
+  /// a perfectly good account that has nothing in it.
+  Future<void> adoptAccount({required String phrase});
 
   /// Shut the store. The library is unusable afterwards, and every method on
   /// it — or on a [`Note`] still held from it — answers "the library is
@@ -64,6 +77,19 @@ abstract class Library implements RustOpaqueInterface {
   /// the device to a different relay.
   Future<void> connect({required String relay});
 
+  /// Mint an account for this device and return its recovery phrase, once.
+  ///
+  /// The twelve words are returned one at a time because a screen numbers
+  /// them; they are not stored, here or anywhere, and this is the only moment
+  /// they exist. **The caller must make somebody write them down before the
+  /// moment passes** — a phrase nobody has is the one state this design cannot
+  /// recover from, and the design doc's risk row asks for a backup check for
+  /// exactly that reason.
+  ///
+  /// The account document starts syncing immediately if a relay has been
+  /// named, which is what makes the second device possible.
+  Future<List<String>> createAccount();
+
   /// Make a new, empty note and return its ID.
   Future<String> createNote();
 
@@ -87,6 +113,10 @@ abstract class Library implements RustOpaqueInterface {
   /// Throw a label away: off every note that has it, and gone from the menu.
   /// The notes themselves are untouched.
   Future<void> forgetTag({required String label});
+
+  /// Whether this device has an account, and so whether its notes can reach
+  /// another device of the same person.
+  bool hasAccount();
 
   /// Accept a share blob and add the note it describes to this device.
   ///

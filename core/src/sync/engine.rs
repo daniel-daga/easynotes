@@ -61,6 +61,29 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
 
     /// Our own envelopes the relay has not acknowledged, oldest first.
     fn unsent(&self, note: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>>;
+
+    /// The relay has said `Caught`: everything it had for this note, we have.
+    ///
+    /// The one thing the engine says about a *batch* rather than about an
+    /// envelope, and the account document needs it. Taking a note key out of a
+    /// replay one envelope at a time walks through states the document was never
+    /// left in — a note created and later forgotten appears, with its key, in the
+    /// middle of a log whose end does not mention it — and adoption only ever
+    /// adds, so that key would be kept for ever. `Caught` is precisely the
+    /// message that says the backlog is drained; see [ADR
+    /// 0013](../../docs/adr/0013-recovery-phrase.md) decision 5. Afterwards
+    /// every arriving envelope is its own settled batch, and this is called for
+    /// each — a live edit is one edit, from a device that was up to date.
+    ///
+    /// It must therefore be cheap and idempotent: it runs per envelope for as
+    /// long as a connection is up.
+    ///
+    /// Nothing for a note, hence the default: a note's envelopes mean the same
+    /// thing whether they arrived in a backlog or one at a time.
+    fn settled(&self, note: NoteId) -> Result<()> {
+        let _ = note;
+        Ok(())
+    }
 }
 
 fn poisoned() -> CoreError {
@@ -92,10 +115,16 @@ where
     K: Keyring + Send + 'static,
 {
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> Result<()> {
-        self.lock()
-            .map_err(|_| poisoned())?
-            .apply_remote(note, envelope)
-            .map(|_| ())
+        let mut core = self.lock().map_err(|_| poisoned())?;
+        // The account document arrives through a socket like a note and is not
+        // one: it is an `AccountDoc`, sealed under a different key, and
+        // `apply_remote` would open it as a checklist. Which of the two this is
+        // is the core's own answer, so the engine never has to hold two kinds of
+        // peer.
+        if core.account_id() == Some(note) {
+            return core.apply_remote_account(envelope);
+        }
+        core.apply_remote(note, envelope).map(|_| ())
     }
 
     fn cursor(&self, note: NoteId) -> Result<SyncCursor> {
@@ -110,6 +139,14 @@ where
 
     fn unsent(&self, note: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
         self.lock().map_err(|_| poisoned())?.unsent(note, after)
+    }
+
+    fn settled(&self, note: NoteId) -> Result<()> {
+        let mut core = self.lock().map_err(|_| poisoned())?;
+        if core.account_id() == Some(note) {
+            core.adopt_note_keys()?;
+        }
+        Ok(())
     }
 }
 
@@ -428,10 +465,23 @@ async fn session<P: SyncPeer>(
             incoming = sync.next() => match incoming {
                 Ok(Some(Incoming::Envelope { seq, envelope })) => {
                     live.receive(peer, note, me, seq, &envelope);
+                    // Once the backlog is drained, every envelope is its own
+                    // settled batch: it is one edit, made by a device that was
+                    // itself up to date, so the state it leaves the document in
+                    // is a state that device meant. During the backlog it is not,
+                    // which is the whole reason `settled` exists — hence the
+                    // flag rather than calling this unconditionally.
+                    if caught {
+                        settle(peer, note, live);
+                    }
                 }
                 Ok(Some(Incoming::Caught { seq })) => {
                     caught = true;
                     live.advance(peer, note, seq);
+                    // After the cursor has moved, so that a peer that does work
+                    // here and then fails does not also lose its place in the
+                    // log it has already applied.
+                    settle(peer, note, live);
                     live.set_state(SyncState::Synced);
                 }
                 Ok(Some(Incoming::Rejected(message))) => {
@@ -443,6 +493,17 @@ async fn session<P: SyncPeer>(
                 Err(e) => return lost(caught, e.to_string()),
             },
         }
+    }
+}
+
+/// Tell the peer the batch has settled, and keep going if it complains.
+///
+/// A peer that cannot finish its end-of-batch work has not invalidated anything
+/// the connection has already applied, so this is a line for the UI rather than
+/// a reason to drop a socket.
+fn settle<P: SyncPeer>(peer: &P, note: NoteId, live: &mut Live) {
+    if let Err(e) = peer.settled(note) {
+        live.note_error(e.to_string());
     }
 }
 

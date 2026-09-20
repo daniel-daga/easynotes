@@ -24,7 +24,7 @@ use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
 use flutter_rust_bridge::frb;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
 /// The store and keyring are boxed so one `Library` type serves every platform:
@@ -502,20 +502,33 @@ impl Statuses {
 /// draining when the library closes has to be told the core is gone, not handed
 /// one that is not there.
 #[derive(Clone)]
-pub(crate) struct Peer(Arc<Mutex<Option<Core>>>);
+pub(crate) struct Peer {
+    core: Arc<Mutex<Option<Core>>>,
+    /// The device this core belongs to, for the one thing an engine asks for
+    /// that is not a read or a write: a note whose key has just arrived in the
+    /// account document needs a connection of its own, and only [`Shared`] can
+    /// make one.
+    ///
+    /// Weak, because `Shared` holds this peer: an `Arc` here would be a cycle
+    /// and the library would never be dropped.
+    device: Weak<Shared>,
+}
 
 fn closed() -> String {
     "the library is closed".to_string()
 }
 
 impl Peer {
-    fn new(core: Core) -> Self {
-        Self(Arc::new(Mutex::new(Some(core))))
+    fn new(core: Core, device: Weak<Shared>) -> Self {
+        Self {
+            core: Arc::new(Mutex::new(Some(core))),
+            device,
+        }
     }
 
     fn locked(&self) -> Result<Open<'_>, String> {
         let guard = self
-            .0
+            .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?;
         if guard.is_none() {
@@ -529,7 +542,7 @@ impl Peer {
     /// error: the second one has nothing to do.
     fn close(&self) -> Result<(), String> {
         let taken = self
-            .0
+            .core
             .lock()
             .map_err(|_| "core lock poisoned".to_string())?
             .take();
@@ -574,7 +587,15 @@ impl easynotes_core::crypto::DeviceSigner for Peer {
 
 impl easynotes_core::sync::SyncPeer for Peer {
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> easynotes_core::error::Result<()> {
-        self.open()?.apply_remote(note, envelope).map(|_| ())
+        let mut core = self.open()?;
+        // One of these connections is not a note. The account document reaches
+        // the relay as a topic like any other and is an `AccountDoc` when it
+        // gets here, so it has an entry point of its own; which of the two this
+        // is is the core's answer rather than this layer's.
+        if core.account_id() == Some(note) {
+            return core.apply_remote_account(envelope);
+        }
+        core.apply_remote(note, envelope).map(|_| ())
     }
 
     fn cursor(
@@ -598,6 +619,31 @@ impl easynotes_core::sync::SyncPeer for Peer {
         after: Option<u64>,
     ) -> easynotes_core::error::Result<Vec<(u64, Vec<u8>)>> {
         self.open()?.unsent(note, after)
+    }
+
+    /// The account document's backlog has landed: take the note keys it carries,
+    /// and connect whatever they turned into a note this device can read.
+    ///
+    /// The second half is why a peer knows about its device at all. A note
+    /// adopted this way has a key and nothing else — no log, no index entry, no
+    /// card — so nothing else on this device would ever notice it, and its
+    /// contents arrive only over a connection it does not yet have.
+    fn settled(&self, note: NoteId) -> easynotes_core::error::Result<()> {
+        let adopted = {
+            let mut core = self.open()?;
+            if core.account_id() != Some(note) {
+                return Ok(());
+            }
+            core.adopt_note_keys()?
+        };
+        if adopted > 0 {
+            if let Some(device) = self.device.upgrade() {
+                device
+                    .connect_new_documents()
+                    .map_err(easynotes_core::error::CoreError::Storage)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -658,6 +704,45 @@ impl Shared {
             .insert(note, connection);
         if let Some(previous) = previous {
             previous.shutdown();
+        }
+        Ok(())
+    }
+
+    /// Connect everything this device can open and is not connected to already.
+    ///
+    /// Called when a relay is named and again whenever the account document
+    /// settles, because that is when a note key can arrive: a note adopted from
+    /// a key has no card and no log, so [`NoteCore::syncable`] rather than the
+    /// note list is what knows about it.
+    ///
+    /// The account document is in the list. To a relay it *is* a note — an ID,
+    /// a log and a sequence number, with a body it cannot read — and the only
+    /// thing that sets it apart is that its ID comes from the recovery phrase
+    /// rather than from the note list. A device with no account has no such ID
+    /// and nothing is connected for it: its document is local-only, under the
+    /// reserved ID that must never reach a relay ([ADR
+    /// 0013](../../docs/adr/0013-recovery-phrase.md)).
+    ///
+    /// The locks are taken one at a time and in this order on purpose. The
+    /// account sink publishes while the core lock is held, and publishing takes
+    /// the connection lock; holding the connections here and then asking for the
+    /// core would be the other order, and the two together are a deadlock.
+    fn connect_new_documents(&self) -> Result<(), String> {
+        let mut wanted: Vec<NoteId> = {
+            let core = self.locked()?;
+            let mut wanted = core.syncable().map_err(|e| e.to_string())?;
+            wanted.extend(core.account_id());
+            wanted
+        };
+        {
+            let open = self
+                .connections
+                .lock()
+                .map_err(|_| "sync lock poisoned".to_string())?;
+            wanted.retain(|id| !open.contains_key(id));
+        }
+        for id in wanted {
+            self.connect_note(id)?;
         }
         Ok(())
     }
@@ -992,13 +1077,28 @@ impl Library {
         // Everything on the disk, read once, so that the list is populated
         // before the first frame asks for it.
         core.notes().map_err(|e| e.to_string())?;
-        Ok(Library {
-            shared: Arc::new(Shared {
-                core: Peer::new(core),
+        // Cyclic because the device holds the core and the core has to be able
+        // to reach back: an account-document edit has no envelope to return —
+        // there are twenty ways to make one and several of them write twice — so
+        // the core pushes it here, where a note edit hands it over explicitly.
+        // Both ends up in the same `publish`. Weak both ways round, so that the
+        // library is still dropped when Dart lets go of it.
+        let shared = Arc::new_cyclic(move |device: &Weak<Shared>| {
+            let sink = device.clone();
+            core.on_account_envelope(Box::new(move |id, envelope| {
+                if let Some(device) = sink.upgrade() {
+                    device.publish(id, envelope.to_vec());
+                }
+            }));
+            Shared {
+                core: Peer::new(core, device.clone()),
                 relay: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
                 statuses: Arc::new(Statuses::new()),
-            }),
+            }
+        });
+        Ok(Library {
+            shared,
             stop: Arc::new(AtomicBool::new(false)),
             pending,
         })
@@ -1328,6 +1428,64 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    // -- the person ---------------------------------------------------------
+    //
+    // Twelve words, and what they unlock. There is no server-side account here:
+    // no password, no email address, no login. A person *is* a recovery phrase,
+    // and a device belongs to them if it can derive the same account root from
+    // it — see [ADR 0013](../../docs/adr/0013-recovery-phrase.md).
+
+    /// Whether this device has an account, and so whether its notes can reach
+    /// another device of the same person.
+    #[frb(sync)]
+    pub fn has_account(&self) -> Result<bool, String> {
+        Ok(self.shared.locked()?.account_id().is_some())
+    }
+
+    /// Mint an account for this device and return its recovery phrase, once.
+    ///
+    /// The twelve words are returned one at a time because a screen numbers
+    /// them; they are not stored, here or anywhere, and this is the only moment
+    /// they exist. **The caller must make somebody write them down before the
+    /// moment passes** — a phrase nobody has is the one state this design cannot
+    /// recover from, and the design doc's risk row asks for a backup check for
+    /// exactly that reason.
+    ///
+    /// The account document starts syncing immediately if a relay has been
+    /// named, which is what makes the second device possible.
+    pub fn create_account(&self) -> Result<Vec<String>, String> {
+        let words = {
+            let mut core = self.shared.locked()?;
+            core.create_account()
+                .map_err(|e| e.to_string())?
+                .word_list()
+        };
+        self.shared.connect_new_documents()?;
+        Ok(words)
+    }
+
+    /// Adopt the account twelve words name, keeping what this device already
+    /// has.
+    ///
+    /// Nothing is fetched here and nothing appears at once: this makes the
+    /// device *able* to open that person's account document, and the notes,
+    /// their keys and their placements arrive over the relay afterwards. A
+    /// device with no relay named adopts perfectly well and simply waits.
+    ///
+    /// The words are forgiving about case and spacing and not about themselves:
+    /// a swap or a typo is refused with a message to show, rather than deriving
+    /// a perfectly good account that has nothing in it.
+    pub fn adopt_account(&self, phrase: String) -> Result<(), String> {
+        let phrase =
+            easynotes_core::account::RecoveryPhrase::parse(&phrase).map_err(|e| e.to_string())?;
+        self.shared
+            .locked()?
+            .adopt_account(&phrase)
+            .map_err(|e| e.to_string())?;
+        self.shared.connect_new_documents()?;
+        Ok(())
+    }
+
     // -- sync ---------------------------------------------------------------
 
     /// Start syncing every note with the relay at `relay` (`http://host:port`
@@ -1343,16 +1501,18 @@ impl Library {
             .relay
             .lock()
             .map_err(|_| "relay lock poisoned".to_string())? = Some(relay);
-        let notes: Vec<NoteId> = {
-            let mut core = self.shared.locked()?;
-            core.notes()
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|s| s.id)
-                .collect()
+        // `syncable` rather than the note list: the list is the grid, and a
+        // note this device holds only a key for — one that arrived in the
+        // account document and whose log has never been fetched — has no card
+        // and is exactly the note that most needs a connection.
+        let documents: Vec<NoteId> = {
+            let core = self.shared.locked()?;
+            let mut documents = core.syncable().map_err(|e| e.to_string())?;
+            documents.extend(core.account_id());
+            documents
         };
-        for note in notes {
-            self.shared.connect_note(note)?;
+        for document in documents {
+            self.shared.connect_note(document)?;
         }
         Ok(())
     }

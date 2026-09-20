@@ -244,6 +244,16 @@ class RustNoteLibrary implements NoteLibrary {
   );
 
   @override
+  bool get hasAccount => _library.hasAccount();
+
+  @override
+  Future<List<String>> createAccount() => _library.createAccount();
+
+  @override
+  Future<void> adoptAccount(String phrase) =>
+      _library.adoptAccount(phrase: phrase);
+
+  @override
   Future<void> connect(String url) => _library.connect(relay: url);
 
   @override
