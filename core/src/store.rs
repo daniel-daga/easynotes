@@ -430,6 +430,20 @@ pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
 pub trait Keyring {
     fn device_seed(&self) -> Result<Option<crate::crypto::DeviceSeed>>;
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()>;
+
+    /// This device's account root, if it has been given one.
+    ///
+    /// The second device-wide secret, and here rather than in [`OpStore`] for
+    /// exactly the reason the device seed is: it is key material, and the log
+    /// holds only ciphertext. `None` is the ordinary state of a device that has
+    /// notes and no account yet, not a fault.
+    ///
+    /// The recovery phrase itself is **never** stored — this is what it
+    /// derives, and a device that has it can reopen the account document
+    /// without asking anybody to type twelve words again. See
+    /// [`crate::account`].
+    fn account_root(&self) -> Result<Option<crate::account::AccountRoot>>;
+    fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()>;
     fn note_key(&self, note: NoteId) -> Result<Option<crate::crypto::NoteKey>>;
     fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()>;
 
@@ -446,6 +460,7 @@ pub trait Keyring {
 #[derive(Default)]
 pub struct MemoryKeyring {
     seed: Option<crate::crypto::DeviceSeed>,
+    root: Option<crate::account::AccountRoot>,
     keys: HashMap<NoteId, crate::crypto::NoteKey>,
 }
 
@@ -462,6 +477,15 @@ impl Keyring for MemoryKeyring {
 
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()> {
         self.seed = Some(seed.clone());
+        Ok(())
+    }
+
+    fn account_root(&self) -> Result<Option<crate::account::AccountRoot>> {
+        Ok(self.root.clone())
+    }
+
+    fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()> {
+        self.root = Some(root.clone());
         Ok(())
     }
 
@@ -520,6 +544,20 @@ pub mod file_keyring {
 
         fn put_device_seed(&mut self, seed: &DeviceSeed) -> Result<()> {
             fs::write(self.root.join("device.seed"), seed.0).map_err(io)
+        }
+
+        fn account_root(&self) -> Result<Option<crate::account::AccountRoot>> {
+            let p = self.root.join("account.root");
+            if !p.exists() {
+                return Ok(None);
+            }
+            Ok(Some(crate::account::AccountRoot::from_slice(
+                &fs::read(&p).map_err(io)?,
+            )?))
+        }
+
+        fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()> {
+            fs::write(self.root.join("account.root"), root.as_bytes()).map_err(io)
         }
 
         fn note_key(&self, note: NoteId) -> Result<Option<NoteKey>> {
@@ -650,6 +688,12 @@ pub fn copy_store(
         // a different author to every peer, and its own log would look forged.
         to_keys.put_device_seed(&seed)?;
     }
+    if let Some(root) = from_keys.account_root()? {
+        // For the same reason, one level up: a device that moved store and
+        // forgot which account it was would keep its notes and lose its other
+        // devices, which is the harder half to notice.
+        to_keys.put_account_root(&root)?;
+    }
 
     let notes = from.notes()?;
     for note in &notes {
@@ -718,6 +762,12 @@ impl Keyring for Box<dyn Keyring + Send> {
     }
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()> {
         (**self).put_device_seed(seed)
+    }
+    fn account_root(&self) -> Result<Option<crate::account::AccountRoot>> {
+        (**self).account_root()
+    }
+    fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()> {
+        (**self).put_account_root(root)
     }
     fn note_key(&self, note: NoteId) -> Result<Option<crate::crypto::NoteKey>> {
         (**self).note_key(note)

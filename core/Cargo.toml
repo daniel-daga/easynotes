@@ -12,11 +12,18 @@ name = "easynotes_core"
 [dependencies]
 automerge = { version = "0.7", optional = true }
 base64 = "0.23.1"
+# The recovery phrase. English wordlist only — the phrase is this account's root
+# secret and a person who wrote it down in one language reads it back in the
+# same one, so the other nine lists are 20 KB of bundle nobody reaches.
+bip39 = { version = "2", default-features = false, features = ["std", "zeroize"] }
 chacha20poly1305 = "0.10.1"
 ed25519-dalek = "2.2.0"
 futures-util = { version = "0.3.34", optional = true }
 getrandom = "0.3.4"
 hex = "0.4.3"
+# Key derivation for the account root. Both were already in the tree under
+# `ed25519-dalek`, so naming them here adds no crate to any of the six targets.
+hkdf = "0.12.4"
 rand = "0.9.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 # `bundled` compiles the SQLite amalgamation, so there is no system library to
@@ -24,6 +31,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 thiserror.workspace = true
 tokio = { version = "1", default-features = false, features = ["sync"] }
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-native-roots"], optional = true }

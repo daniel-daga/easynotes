@@ -80,9 +80,24 @@ and it says how many notes it is about to come off. [ADR
 0008](docs/adr/0008-account-document.md) says why the name is a register rather
 than the key, and what the shape before it could not do.
 
-What the account document does not do yet is sync: a colour stays on the device
-that chose it, and so does a rename, because there is no such thing as one
-person's two devices until accounts land. Reminders are the rest of that
+**There is such a thing as one person's two devices now.** An account is twelve
+words — a BIP-39 recovery phrase, generated once and shown once — and everything
+it derives is the account document's key and the ID it syncs under. A second
+device that can say the words arrives at the same document, and therefore at the
+same colours, labels, pins and placements, and at the note keys it needs to
+*open* the notes rather than only store them. The relay is told none of this: two
+devices of one person are two unrelated device keys to it, indistinguishable from
+two people sharing a note. [ADR 0013](docs/adr/0013-recovery-phrase.md) says what
+the phrase derives and — just as much the point — what it deliberately does not,
+and [ADR 0014](docs/adr/0014-what-the-relay-learns.md) says what the relay is not
+told and what that costs.
+
+What is built is the core of it, with the property the whole item exists for held
+against both CRDT backends: two devices adopted from one phrase agree about a
+note's contents *and* about its placement. What is not built yet is the wiring —
+nothing subscribes to the account document over a relay, and the app has no
+screen for any of it, which includes the forced backup check that makes somebody
+write the phrase down while it still exists. Reminders are the rest of that
 document's remit and are not built.
 
 Android and iOS have still never been built — that is the largest open gap, two
@@ -166,12 +181,19 @@ reading the whole database at open.
 | [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
 | [ADR 0011](docs/adr/0011-the-web-store.md) | The store a browser gets: reads from memory, writes through Dart |
 | [ADR 0012](docs/adr/0012-compacting-the-account-document.md) | Compacting the account document: the snapshot goes in the log |
+| [ADR 0013](docs/adr/0013-recovery-phrase.md) | The recovery phrase: twelve words deriving one document, and not the note keys |
+| [ADR 0014](docs/adr/0014-what-the-relay-learns.md) | What the relay learns about a person: nothing new |
 
 ## Security, in one paragraph
 
 Each note has its own key, and a master key — kept in the OS keychain, or in a
-browser in the nearest thing one has — wraps those and the device seed on this
-device. Every update is encrypted with XChaCha20-Poly1305 and
+browser in the nearest thing one has — wraps those, the device seed, and the
+account root on this device. The account root is what a recovery phrase derives;
+the phrase itself is never stored anywhere, which is why losing it cannot be
+recovered from and why the relay cannot help. Note keys are **not** derived from
+it — they stay random and ride inside the account document's ciphertext, so that
+a key can be rotated later, and so that a key somebody else shared with you has
+somewhere to live. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.

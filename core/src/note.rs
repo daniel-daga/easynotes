@@ -11,6 +11,7 @@
 //! the same path, which is why the two-device case cannot drift from the one-device
 //! case.
 
+use crate::account::{AccountRoot, RecoveryPhrase};
 use crate::crdt::{
     account, AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NoteDoc, NoteView,
     Placement,
@@ -199,6 +200,16 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// trash, the order of the grid and the view settings. One per device, open
     /// from the moment the core is.
     account: OpenAccount<D::Account>,
+    /// Where the account document lives, for this device, today.
+    ///
+    /// [`ACCOUNT_DOC`] — sixteen zero bytes — until this device has an account,
+    /// and the ID derived from the recovery phrase after that. It has to move,
+    /// because the reserved ID is a fine *local* address and an impossible wire
+    /// one: the relay's path is `/v1/notes/{note_id}`, so every user in the
+    /// world syncing under zeros would be one topic. See
+    /// [`crate::account`] and [ADR
+    /// 0013](../../docs/adr/0013-recovery-phrase.md).
+    account_id: NoteId,
     /// What that document currently says, kept beside it so that refreshing the
     /// list does not re-read the whole document on every keystroke.
     placements: AccountView,
@@ -232,7 +243,18 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let identity = DeviceIdentity::from_seed(&seed);
         let mut actor = [0u8; 16];
         actor.copy_from_slice(&identity.public_key().0[..16]);
-        let (account, length) = Self::open_account(&mut store, &mut keyring, &identity, &actor)?;
+        // Which account document this device opens, and under which key, is the
+        // whole of what having an account means down here. Everything after
+        // this line is the same code for both cases.
+        let (account_id, account_key) = Self::account_address(&mut keyring)?;
+        let (account, length) = Self::open_account(
+            &mut store,
+            &mut keyring,
+            &identity,
+            &actor,
+            account_id,
+            account_key,
+        )?;
         let placements = account.doc.view();
         let mut core = Self {
             identity,
@@ -241,6 +263,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             keyring,
             open: HashMap::new(),
             account,
+            account_id,
             placements,
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
@@ -259,7 +282,37 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // every device after its first launch on this build — writes nothing
         // here.
         core.adopt_legacy_tags()?;
+        // What the account document knows about note keys, the keyring may not
+        // yet: a device adopted from a phrase learns its keys by syncing this
+        // document, and the sync happened during the *last* run. Cheap on every
+        // other launch — it compares what is already in memory against a
+        // keyring lookup per note and writes nothing.
+        core.adopt_note_keys()?;
         Ok(core)
+    }
+
+    /// Where this device's account document lives and what opens it.
+    ///
+    /// Two cases, and the difference between them is the whole of item 2. With
+    /// no account root the document is local-only, addressed by the reserved
+    /// ID, under a random key minted here and kept in the keyring — exactly
+    /// what [ADR 0008](../../docs/adr/0008-account-document.md) built. With one,
+    /// both the ID and the key are *derived*, so any device that can say the
+    /// twelve words arrives at the same two values and needs nothing carried
+    /// between them.
+    fn account_address(keyring: &mut K) -> Result<(NoteId, NoteKey)> {
+        if let Some(root) = keyring.account_root()? {
+            return Ok((root.document_id(), root.document_key()));
+        }
+        let key = match keyring.note_key(ACCOUNT_DOC)? {
+            Some(key) => key,
+            None => {
+                let key = NoteKey::random();
+                keyring.put_note_key(ACCOUNT_DOC, &key)?;
+                key
+            }
+        };
+        Ok((ACCOUNT_DOC, key))
     }
 
     /// Read the account document out of the store, minting its key on first run.
@@ -276,27 +329,21 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         keyring: &mut K,
         identity: &DeviceIdentity,
         actor: &[u8; 16],
+        id: NoteId,
+        key: NoteKey,
     ) -> Result<(OpenAccount<D::Account>, usize)> {
-        let key = match keyring.note_key(ACCOUNT_DOC)? {
-            Some(key) => key,
-            None => {
-                let key = NoteKey::random();
-                keyring.put_note_key(ACCOUNT_DOC, &key)?;
-                key
-            }
-        };
-
+        let _ = keyring;
         let me = identity.public_key();
         let mut doc = <D::Account as AccountDoc>::create(actor);
         let mut next_counter = 0u64;
         let mut seen = HashSet::new();
         let mut length = 0usize;
-        for raw in store.load(ACCOUNT_DOC)? {
+        for raw in store.load(id)? {
             length += 1;
             let env = Envelope::decode(&raw)?;
-            if env.note_id != ACCOUNT_DOC {
+            if env.note_id != id {
                 return Err(CoreError::WrongNote {
-                    expected: ACCOUNT_DOC.encode(),
+                    expected: id.encode(),
                     got: env.note_id.encode(),
                 });
             }
@@ -320,6 +367,254 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         ))
     }
 
+    /// Is this ID the account document rather than a note?
+    ///
+    /// Both addresses, always. The derived one because that is where this
+    /// person's placements actually are, and the reserved one because it stays
+    /// reserved for ever: a device that has an account must still refuse a
+    /// share blob claiming sixteen zero bytes, and must still keep that ID out
+    /// of the note list, or a peer on an older build could hand it one.
+    fn is_account(&self, id: NoteId) -> bool {
+        id == self.account_id || id == ACCOUNT_DOC
+    }
+
+    // -- the account --------------------------------------------------------
+    //
+    // One person, as twelve words. There is no server-side account here, no
+    // password and no email address: a phrase derives an account root, the root
+    // derives this document's ID and key, and a device belongs to the person who
+    // can say the words. See [ADR 0013](../../docs/adr/0013-recovery-phrase.md).
+
+    /// The ID this device's account document syncs under, if it has an account.
+    ///
+    /// `None` is the ordinary state of a device nobody has set an account up on,
+    /// and it is what tells the sync engine there is nothing here to subscribe
+    /// to: the local-only document under [`ACCOUNT_DOC`] must never reach a
+    /// relay, because every device in the world would be sharing that topic.
+    pub fn account_id(&self) -> Option<NoteId> {
+        (self.account_id != ACCOUNT_DOC).then_some(self.account_id)
+    }
+
+    pub fn has_account(&self) -> bool {
+        self.account_id != ACCOUNT_DOC
+    }
+
+    /// Mint a new account and return its recovery phrase, to be shown once.
+    ///
+    /// The phrase is **not stored**, here or anywhere else. What is kept is the
+    /// root it derives, which is enough to reopen the document on this device
+    /// for ever and not enough to reconstruct the words. That is the whole
+    /// reason the design doc asks for a forced backup check at setup: this is
+    /// the only moment the phrase exists, and the app has to make somebody write
+    /// it down before the moment passes.
+    ///
+    /// Refuses on a device that already has an account rather than replacing it,
+    /// because replacing one would strand every other device of that person with
+    /// no way back.
+    pub fn create_account(&mut self) -> Result<RecoveryPhrase> {
+        if self.has_account() {
+            return Err(CoreError::Crypto("this device already has an account"));
+        }
+        let phrase = RecoveryPhrase::generate();
+        self.adopt_root(phrase.root())?;
+        Ok(phrase)
+    }
+
+    /// Adopt the account a phrase names.
+    ///
+    /// The second device. It keeps everything this device already had -- its
+    /// notes, their keys and its placements are carried into the adopted
+    /// document rather than dropped -- because a person who has been using the
+    /// app and then recovers their account on the same device must not watch
+    /// their colours disappear as the price of setting up sync. The cost is
+    /// that a placement this device holds and the account also holds resolve
+    /// last-writer-wins like any other concurrent register, which for a
+    /// genuinely new device is a choice between a value and nothing.
+    ///
+    /// Nothing is fetched here. This makes the device *able* to open the
+    /// account document; filling it is the sync engine's job on the next
+    /// connection, and [`NoteCore::adopt_note_keys`] is what turns the keys that
+    /// arrive into notes this device can read.
+    pub fn adopt_account(&mut self, phrase: &RecoveryPhrase) -> Result<()> {
+        if self.has_account() {
+            return Err(CoreError::Crypto("this device already has an account"));
+        }
+        self.adopt_root(phrase.root())
+    }
+
+    /// Move this device's account document onto the address and key a root
+    /// derives, carrying what it already says.
+    ///
+    /// One `replace_log` at the new ID and then a `forget` of the old, in that
+    /// order, so that a crash in the middle leaves the document readable at
+    /// *both* addresses rather than at neither. The next launch reads the new
+    /// one -- the root is written first -- and the stale zeros log is so much
+    /// dead weight until the `forget` that follows it is retried, which is
+    /// exactly the shape [ADR 0010](../../docs/adr/0010-forgetting-a-note.md)
+    /// gives an interrupted delete.
+    ///
+    /// The document is re-sealed rather than re-keyed in place, because there is
+    /// no such thing as re-keying an envelope: every one of them binds its note
+    /// ID into the AAD and its author's signature, so an envelope written for
+    /// the reserved ID cannot be presented under the derived one. Rewriting the
+    /// whole document as a single snapshot envelope is [ADR
+    /// 0012](../../docs/adr/0012-compacting-the-account-document.md)'s
+    /// compaction doing double duty, and it drops the history of placements this
+    /// person set before they had an account -- which nothing was ever going to
+    /// show them.
+    fn adopt_root(&mut self, root: AccountRoot) -> Result<()> {
+        let old_id = self.account_id;
+        let new_id = root.document_id();
+        if new_id == ACCOUNT_DOC {
+            // Sixteen zero bytes out of HKDF is not going to happen, and a
+            // silent collision here would put this person's account on the
+            // topic every account-less device uses locally.
+            return Err(CoreError::Crypto("that account root is not usable"));
+        }
+
+        // Every key this device holds goes into the document before it moves,
+        // so that the other devices of this account can open the notes this one
+        // already had. Notes created from now on write their key as they are
+        // made; this is the sweep for everything that came first.
+        self.record_held_note_keys()?;
+
+        let key = root.document_key();
+        let blob = self.account.doc.snapshot();
+        let envelope = Envelope::seal(&self.identity, new_id, &key, 0, &blob)?;
+
+        // The root first. It is what `account_address` reads on the next
+        // launch, so writing it last would mean a crash after the log moved
+        // reopened the *old* document and quietly lost everything since.
+        self.keyring.put_account_root(&root)?;
+        self.store.replace_log(new_id, &[envelope.encode()])?;
+
+        self.account.key = key;
+        self.account.next_counter = 1;
+        self.account.seen.clear();
+        self.account.seen.insert((self.identity.public_key(), 0));
+        self.account_id = new_id;
+
+        if old_id != new_id {
+            self.store.forget(old_id)?;
+            self.keyring.forget_note_key(old_id)?;
+        }
+        Ok(())
+    }
+
+    /// Put every note key this device holds into the account document.
+    ///
+    /// Reads the notes from the *store* rather than the keyring, because a
+    /// keyring answers about one note at a time by design -- it is a place keys
+    /// go in, not a list of what this person has.
+    fn record_held_note_keys(&mut self) -> Result<()> {
+        let known = account::note_keys_of(self.account.doc.entries());
+        let mut writes = Vec::new();
+        for id in self.store.notes()? {
+            if self.is_account(id) || known.contains_key(&id) {
+                continue;
+            }
+            if let Some(key) = self.keyring.note_key(id)? {
+                writes.push(account::AccountEdit::SetNoteKey {
+                    note: id,
+                    key: account::encode_note_key(&key),
+                });
+            }
+        }
+        for edit in writes {
+            self.apply_account(edit)?;
+        }
+        Ok(())
+    }
+
+    /// Take into the keyring any note key the account document holds and this
+    /// device does not.
+    ///
+    /// This is how a second device comes to be able to *read* the notes it
+    /// syncs, rather than merely to store their ciphertext.
+    ///
+    /// Run when a batch of updates has **settled** — at launch, and on the
+    /// relay's `Caught` ([`crate::sync::wire::Incoming`]), which is exactly the
+    /// message that says the backlog is drained — and not after each envelope.
+    /// The difference is not an optimisation. Replaying a history one envelope
+    /// at a time walks through states the document was never left in: a note
+    /// created and later forgotten appears, with its key, in the middle of a
+    /// log whose end does not mention it. Adopting per envelope would take that
+    /// key and keep it, because this only ever adds. Adopting once the batch has
+    /// settled reads the document as it actually stands.
+    ///
+    /// Only ever fills a gap. A note this device already has a key for is left
+    /// exactly as it is, even if the document names a different one, because
+    /// swapping a key that opens this device's envelopes for one that might not
+    /// would lose the note rather than update it.
+    ///
+    /// **Item 4 has to revisit this**, and it is worth being plain that it is
+    /// not solved here. Rotating a note's key is writing a new value into this
+    /// register — that is the whole reason [ADR
+    /// 0013](../../docs/adr/0013-recovery-phrase.md) kept note keys out of the
+    /// derivation — but a device acting on it needs more than this loop: it
+    /// needs to re-encrypt what it holds under the new key, and it needs to know
+    /// which of the two a given envelope used. Neither exists yet, so the honest
+    /// thing today is to fill gaps and leave disagreements alone rather than to
+    /// half-build a rotation that could drop a note.
+    pub fn adopt_note_keys(&mut self) -> Result<usize> {
+        let mut taken = 0;
+        for (note, key) in account::note_keys_of(self.account.doc.entries()) {
+            if self.is_account(note) || self.keyring.note_key(note)?.is_some() {
+                continue;
+            }
+            self.keyring.put_note_key(note, &key)?;
+            taken += 1;
+        }
+        if taken > 0 {
+            // A note this device could not read a moment ago now has a key, so
+            // the list it was missing from has changed.
+            self.adopt_unplaced()?;
+            self.refresh_library();
+        }
+        Ok(taken)
+    }
+
+    /// Apply an envelope the relay had for the account document.
+    ///
+    /// The note path's [`NoteCore::apply_remote`] cannot serve here -- it opens
+    /// a `NoteDoc` and this is an `AccountDoc`, a deliberately much narrower
+    /// thing -- but everything that makes it safe is the same and in the same
+    /// order: the ID must match, the signature is verified before anything is
+    /// decrypted, a repeat is dropped rather than re-applied, and the envelope
+    /// is appended only once it has been believed.
+    pub fn apply_remote_account(&mut self, envelope: &[u8]) -> Result<()> {
+        if !self.has_account() {
+            // Nothing can have arrived for a document that has never been on a
+            // relay, so this is a bug or a lie either way.
+            return Err(CoreError::NoAccount);
+        }
+        let env = Envelope::decode(envelope)?;
+        if env.note_id != self.account_id {
+            return Err(CoreError::WrongNote {
+                expected: self.account_id.encode(),
+                got: env.note_id.encode(),
+            });
+        }
+        let plain = env.open(&self.account.key)?;
+        if !self.account.seen.insert((env.author, env.counter)) {
+            return Ok(());
+        }
+        self.account.doc.apply_remote(&plain)?;
+        self.store.append(self.account_id, envelope)?;
+        if env.author == self.identity.public_key() {
+            self.account.next_counter = self.account.next_counter.max(env.counter + 1);
+        }
+        self.placements = self.account.doc.view();
+        // Note keys are deliberately *not* adopted here. This is one envelope of
+        // what may be a long replay, and a key taken out of a passing state is a
+        // key this device would then keep for ever; see
+        // [`NoteCore::adopt_note_keys`] for the case that breaks. The caller
+        // runs it when the batch has settled.
+        self.adopt_unplaced()?;
+        self.refresh_library();
+        Ok(())
+    }
+
     pub fn device_key(&self) -> AuthorKey {
         self.identity.public_key()
     }
@@ -334,6 +629,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let id = NoteId::random();
         let key = NoteKey::random();
         self.keyring.put_note_key(id, &key)?;
+        let recorded = account::encode_note_key(&key);
         let doc = D::create(&self.actor);
         let (tx, _) = watch::channel(doc.view());
         let added = self.next_ordinal()?;
@@ -363,6 +659,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // the top of the grid. `place` refreshes the list, which is why nothing
         // here does.
         self.place(id, 0)?;
+        // And the key, so this person's other devices can open it. A register in
+        // the account document is the only channel one person's devices have
+        // that nobody else can read; see `crate::crdt::account`.
+        self.apply_account(account::AccountEdit::SetNoteKey {
+            note: id,
+            key: recorded,
+        })?;
         // `kind` does not change the document shape in Slice 1 (a text note is a
         // checklist with no items); it is recorded so the UI can branch later.
         let _ = kind;
@@ -372,7 +675,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Open a note that is already in the store, replaying its snapshot and log.
     /// This is what makes demo step 6 — relaunch with no network — work.
     pub fn open_note(&mut self, id: NoteId) -> Result<NoteView> {
-        if id == ACCOUNT_DOC {
+        if self.is_account(id) {
             // Not a note, whatever the caller was handed. Opening it as one would
             // replay this person's placements into an empty checklist and put a
             // blank card in their grid.
@@ -489,7 +792,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// here, which costs exactly what every launch used to cost and happens once.
     pub fn notes(&mut self) -> Result<Vec<NoteSummary>> {
         for id in self.store.notes()? {
-            if id == ACCOUNT_DOC || self.index.contains_key(&id) {
+            if self.is_account(id) || self.index.contains_key(&id) {
                 continue;
             }
             if self.load_index(id)? {
@@ -1019,7 +1322,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// reason [`OpStore::forget`] says so: it is what finishing an interrupted
     /// delete looks like.
     pub fn forget_note(&mut self, id: NoteId) -> Result<()> {
-        if id == ACCOUNT_DOC {
+        if self.is_account(id) {
             // Not a note, and forgetting it would take this person's every
             // colour, pin and placement with it — under a reserved ID no caller
             // can have been handed by the note list.
@@ -1179,16 +1482,24 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.account.next_counter += 1;
         let envelope = Envelope::seal(
             &self.identity,
-            ACCOUNT_DOC,
+            self.account_id,
             &self.account.key,
             counter,
             &update,
         )?;
         self.account.seen.insert((envelope.author, counter));
-        self.store.append(ACCOUNT_DOC, &envelope.encode())?;
+        self.store.append(self.account_id, &envelope.encode())?;
         self.placements = self.account.doc.view();
         self.refresh_library();
         Ok(())
+    }
+
+    /// Every key the account document holds, for a test that needs to check the
+    /// document itself rather than the view built from it — the note-key
+    /// registers in particular, which `AccountView` deliberately does not carry.
+    #[doc(hidden)]
+    pub fn account_entries(&self) -> Vec<(String, crate::crdt::account::Value)> {
+        self.account.doc.entries()
     }
 
     /// Write a membership in the shape a label used to have, so that a test can
@@ -1259,7 +1570,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     fn adopt_unplaced(&mut self) -> Result<()> {
         let mut unplaced: Vec<(u64, NoteId)> = Vec::new();
         for id in self.store.notes()? {
-            if id == ACCOUNT_DOC || self.placements.placements.contains_key(&id) {
+            if self.is_account(id) || self.placements.placements.contains_key(&id) {
                 continue;
             }
             // A note this device has no key for gets no placement, for the same
@@ -1478,7 +1789,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// as updates from the relay.
     pub fn import_share_blob(&mut self, blob: &str) -> Result<NoteId> {
         let (id, key) = crate::crypto::import_share_blob(blob)?;
-        if id == ACCOUNT_DOC {
+        if self.is_account(id) {
             // Nobody shares the account document, and a blob that claims to would
             // put a key of someone else's choosing where this device's placements
             // are sealed with its own — which is to say, throw them away.
@@ -1490,6 +1801,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             return Ok(id);
         }
         self.keyring.put_note_key(id, &key)?;
+        // And into the account document, so that a note somebody shared with
+        // this person is a note they can open on their other devices too. A
+        // shared note is still one of their notes; the key travels the same way
+        // one they made themselves does.
+        let recorded = account::encode_note_key(&key);
+        self.apply_account(account::AccountEdit::SetNoteKey {
+            note: id,
+            key: recorded,
+        })?;
         if self.ordinal(id)? == 0 {
             let next = self.next_ordinal()?;
             self.store.put_meta(id, ADDED, &next.to_be_bytes())?;
@@ -1605,7 +1925,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// between them that a note's snapshot-then-truncate has to be ordered
     /// around.
     pub fn compact_account(&mut self) -> Result<usize> {
-        let before = self.store.log_len(ACCOUNT_DOC)?;
+        let before = self.store.log_len(self.account_id)?;
         if before <= 1 {
             // One envelope is already the shortest this log gets, and rewriting
             // it as a snapshot of itself is work for its own sake.
@@ -1616,13 +1936,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.account.next_counter += 1;
         let envelope = Envelope::seal(
             &self.identity,
-            ACCOUNT_DOC,
+            self.account_id,
             &self.account.key,
             counter,
             &blob,
         )?;
         self.account.seen.insert((envelope.author, counter));
-        self.store.replace_log(ACCOUNT_DOC, &[envelope.encode()])?;
+        self.store
+            .replace_log(self.account_id, &[envelope.encode()])?;
         Ok(before)
     }
 

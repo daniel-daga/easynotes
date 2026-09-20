@@ -10,6 +10,12 @@ pub enum CoreError {
     BadSignature,
     #[error("envelope is for note {got}, expected {expected}")]
     WrongNote { expected: String, got: String },
+    #[error("malformed recovery phrase: {0}")]
+    MalformedPhrase(&'static str),
+    /// Asking for the account when there is not one yet. A device has notes
+    /// before it has an account and that is the ordinary case, not a fault.
+    #[error("this device has no account yet")]
+    NoAccount,
     #[error("malformed share blob: {0}")]
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]

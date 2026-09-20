@@ -143,6 +143,7 @@ fn meta_key(note: NoteId, name: &str) -> String {
 }
 
 const DEVICE_SEED_KEY: &str = "device-seed";
+const ACCOUNT_ROOT_KEY: &str = "account-root";
 
 fn note_key_key(note: NoteId) -> String {
     format!("k/{}", note.encode())
@@ -397,6 +398,7 @@ impl OpStore for WebStore {
 /// master key on the web, which is the honest half of this.
 pub struct WebKeyring {
     seed: Option<Vec<u8>>,
+    root: Option<Vec<u8>>,
     keys: BTreeMap<NoteId, Vec<u8>>,
     master: MasterKey,
     sink: Box<dyn ChangeSink>,
@@ -406,6 +408,7 @@ impl WebKeyring {
     pub fn new(master: MasterKey, sink: Box<dyn ChangeSink>) -> Self {
         Self {
             seed: None,
+            root: None,
             keys: BTreeMap::new(),
             master,
             sink,
@@ -421,6 +424,8 @@ impl WebKeyring {
         for (key, value) in rows {
             if key == DEVICE_SEED_KEY {
                 keyring.seed = Some(value);
+            } else if key == ACCOUNT_ROOT_KEY {
+                keyring.root = Some(value);
             } else if let Some(id) = key.strip_prefix("k/") {
                 keyring
                     .keys
@@ -454,6 +459,28 @@ impl Keyring for WebKeyring {
             value: sealed.clone(),
         }]);
         self.seed = Some(sealed);
+        Ok(())
+    }
+
+    fn account_root(&self) -> Result<Option<crate::account::AccountRoot>> {
+        let Some(sealed) = &self.root else {
+            return Ok(None);
+        };
+        let raw = self
+            .master
+            .open(&key_context("account-root", &[]), sealed)?;
+        Ok(Some(crate::account::AccountRoot::from_slice(&raw)?))
+    }
+
+    fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()> {
+        let sealed = self
+            .master
+            .seal(&key_context("account-root", &[]), root.as_bytes())?;
+        self.sink.changed(&[Change::Put {
+            key: ACCOUNT_ROOT_KEY.to_string(),
+            value: sealed.clone(),
+        }]);
+        self.root = Some(sealed);
         Ok(())
     }
 

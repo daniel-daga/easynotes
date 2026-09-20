@@ -426,6 +426,20 @@ impl Keyring for SqliteKeyring {
         self.put("device-seed", DEVICE_SEED_ID, &seed.0)
     }
 
+    fn account_root(&self) -> Result<Option<crate::account::AccountRoot>> {
+        // A `kind` of its own, so the AAD binding a row to what it is keeps an
+        // account root from ever being handed back as the device seed, which is
+        // the property `key_context` exists for.
+        match self.get("account-root", DEVICE_SEED_ID)? {
+            Some(raw) => Ok(Some(crate::account::AccountRoot::from_slice(&raw)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn put_account_root(&mut self, root: &crate::account::AccountRoot) -> Result<()> {
+        self.put("account-root", DEVICE_SEED_ID, root.as_bytes())
+    }
+
     fn note_key(&self, note: NoteId) -> Result<Option<NoteKey>> {
         match self.get("note-key", note.as_bytes())? {
             Some(raw) => {

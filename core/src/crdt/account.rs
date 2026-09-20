@@ -28,6 +28,7 @@
 //! "l:<label id>"            -> string   a label's name
 //! "m:<note id>:<label id>"  -> bool     that note carries that label
 //! "s:<name>"                -> string   a setting
+//! "k:<note id>"             -> string   that note's key, base64url
 //!
 //! "t:<note id>:<name>"      -> bool     a label, as it used to be stored
 //! ```
@@ -74,6 +75,28 @@
 //! memberships of a label that has no ID yet, and [`view_of`] reports them as
 //! such so that nothing between here and that migration has to know.
 //!
+//! ## Why a note's key is in here
+//!
+//! This document is the only thing one person's two devices share that nobody
+//! else can read, so it is the only place a note key can travel between them.
+//! A `k:` register per note is what makes a second device adopted from a
+//! recovery phrase able to *open* the notes it syncs, rather than merely to
+//! hold their ciphertext ([ADR
+//! 0013](../../../docs/adr/0013-recovery-phrase.md)).
+//!
+//! These are registers like any other, which is what keeps item 4's rotation
+//! possible: rotating a note's key is writing a new value here, not a migration.
+//! Two devices that somehow wrote different keys for one note would converge on
+//! one of them — that is last-writer-wins doing exactly what it does everywhere
+//! else in this document, and the losing key is not lost, because a key only
+//! ever gets here from the device that minted it or from a share blob.
+//!
+//! **[`view_of`] ignores them, on purpose.** An [`AccountView`] is handed out by
+//! [`NoteCore::account`](crate::note::NoteCore::account), cloned on every
+//! change and printed by `Debug`, and key material has no business in a
+//! structure like that. The keys come out through [`note_keys_of`] instead,
+//! which has exactly one caller.
+//!
 //! A key this version does not understand is ignored rather than dropped, so a
 //! device on an older build shows a note it cannot colour instead of deleting the
 //! colour a newer one set.
@@ -88,6 +111,9 @@ const PLACEMENT: &str = "p:";
 const LABEL: &str = "l:";
 const MEMBER: &str = "m:";
 const SETTING: &str = "s:";
+/// A note's key, so that this person's other devices can open the note and not
+/// merely store it. See the module docs.
+const NOTE_KEY: &str = "k:";
 /// A membership as it was stored before a label had an ID. Read, migrated and
 /// never written. See the module docs.
 const LEGACY_TAG: &str = "t:";
@@ -442,6 +468,18 @@ pub enum AccountEdit {
         name: String,
         value: String,
     },
+    /// Record a note's key, so this person's other devices can open it.
+    ///
+    /// Written when a note is created and when one arrives by share blob —
+    /// the two moments a key enters this device — and carried as base64url
+    /// because the document stores scalars and a `Value::Str` is the scalar a
+    /// backend already has. The bytes are no more exposed for being text: this
+    /// document is sealed under a key only the recovery phrase derives.
+    SetNoteKey {
+        note: NoteId,
+        /// base64url, no padding: 43 characters for a 32-byte key.
+        key: String,
+    },
     /// Drop everything this person ever said about one note, because the note
     /// itself is gone.
     ///
@@ -482,6 +520,10 @@ fn placement_key(note: NoteId, field: &str) -> String {
 
 fn member_key(note: NoteId, label: LabelId) -> String {
     format!("{MEMBER}{}:{}", note.encode(), label.encode())
+}
+
+fn note_key_key(note: NoteId) -> String {
+    format!("{NOTE_KEY}{}", note.encode())
 }
 
 fn label_key(label: LabelId) -> String {
@@ -543,6 +585,9 @@ impl AccountEdit {
             AccountEdit::SetSetting { name, value } => {
                 vec![(format!("{SETTING}{name}"), Some(Value::Str(value.clone())))]
             }
+            AccountEdit::SetNoteKey { note, key } => {
+                vec![(note_key_key(*note), Some(Value::Str(key.clone())))]
+            }
             // The five fields are named rather than collected from whatever the
             // document happens to hold, so that forgetting a note is the same
             // five keys on a device that coloured it and on one that never did.
@@ -555,6 +600,12 @@ impl AccountEdit {
             } => [COLOUR, PINNED, ARCHIVED, TRASHED, ORDER]
                 .into_iter()
                 .map(|field| (placement_key(*note, field), None))
+                // The key goes with them. A note that has been forgotten is one
+                // this person cannot open on *any* of their devices, and a key
+                // register left behind would hand it back to the next device
+                // they set up — which is precisely the promise ADR 0010's
+                // `forget` makes and this document would quietly break.
+                .chain(std::iter::once((note_key_key(*note), None)))
                 .chain(tags.iter().map(|label| (member_key(*note, *label), None)))
                 .chain(
                     legacy_tags
@@ -575,8 +626,54 @@ pub fn legacy_tag_write(note: NoteId, tag: &str) -> (String, Option<Value>) {
     (legacy_tag_key(note, tag), Some(Value::Bool(true)))
 }
 
+/// The note keys this document carries, for the one caller that needs them.
+///
+/// Deliberately not part of [`view_of`], and deliberately not a field on
+/// [`AccountView`]. That view is cloned on every change, handed out by
+/// [`NoteCore::account`](crate::note::NoteCore::account) and derives `Debug`;
+/// key material in it would be key material in a log line one day. This
+/// function is called once, at the moment a device reconciles what the document
+/// knows with what its keyring holds, and the result goes straight into the
+/// keyring.
+///
+/// A malformed or wrong-length value is skipped rather than fatal, for the
+/// reason an unknown key is kept: a build that writes something else here must
+/// not be able to stop this one from opening the notes it *can* read.
+pub fn note_keys_of(
+    entries: impl IntoIterator<Item = (String, Value)>,
+) -> BTreeMap<NoteId, crate::crypto::NoteKey> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    let mut keys = BTreeMap::new();
+    for (key, value) in entries {
+        let (Some(id), Value::Str(encoded)) = (key.strip_prefix(NOTE_KEY), value) else {
+            continue;
+        };
+        let (Ok(note), Ok(raw)) = (NoteId::decode(id), URL_SAFE_NO_PAD.decode(&encoded)) else {
+            continue;
+        };
+        let Ok(bytes) = <[u8; crate::crypto::NOTE_KEY_LEN]>::try_from(raw.as_slice()) else {
+            continue;
+        };
+        keys.insert(note, crate::crypto::NoteKey(bytes));
+    }
+    keys
+}
+
+/// Write a note's key into the document, as [`AccountEdit::SetNoteKey`] wants it.
+pub fn encode_note_key(key: &crate::crypto::NoteKey) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    URL_SAFE_NO_PAD.encode(key.0)
+}
+
 /// Turn what a backend holds into what the app reads. Shared for the same reason
 /// [`AccountEdit::writes`] is.
+///
+/// `k:` keys fall through to the "a key from a future version" arm at the
+/// bottom and are ignored, which is what keeps note keys out of this structure.
+/// See [`note_keys_of`].
 pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountView {
     let mut view = AccountView::default();
     for (key, value) in entries {
@@ -741,10 +838,21 @@ mod tests {
         // Whatever this person had set, and not only the fields they did set:
         // the edit is the same on a device that coloured the note and on one
         // that never touched it.
-        assert_eq!(writes.len(), 5);
-        assert!(writes.iter().all(|(key, value)| {
-            key.starts_with(&format!("p:{}:", note.encode())) && value.is_none()
-        }));
+        assert_eq!(writes.len(), 6);
+        assert!(writes.iter().all(|(_, value)| value.is_none()));
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|(key, _)| key.starts_with(&format!("p:{}:", note.encode())))
+                .count(),
+            5
+        );
+        // And the key. A forgotten note is one this person cannot open on any
+        // of their devices, so the register that would hand it back to the next
+        // device they set up goes with the placements.
+        assert!(writes
+            .iter()
+            .any(|(key, _)| *key == format!("k:{}", note.encode())));
         // Nothing about any other note, and no setting.
         let other = NoteId::random();
         assert!(!writes
@@ -766,7 +874,7 @@ mod tests {
             legacy_tags: Vec::new(),
         }
         .writes();
-        assert_eq!(writes.len(), 7);
+        assert_eq!(writes.len(), 8);
         assert!(writes.iter().all(|(_, value)| value.is_none()));
         for label in [errands, shop] {
             assert!(writes
