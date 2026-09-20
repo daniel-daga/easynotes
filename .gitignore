@@ -16,3 +16,12 @@
 /tools/web-smoke/package*.json
 /tools/web-bench/node_modules/
 /tools/web-bench/package*.json
+
+# Gradle writes here even though the build directory is redirected to app/build.
+/app/android/build/
+
+# IntelliJ/Android Studio project files. Deliberately not shared: the Dart SDK
+# library records an absolute path to whichever machine set it up, which is
+# wrong for CI and for a cloud session, and the run configurations carry a
+# developer's own relay address.
+/.idea/

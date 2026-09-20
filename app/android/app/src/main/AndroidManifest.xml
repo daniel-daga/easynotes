@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The app syncs ciphertext to a relay. Only the stock debug and profile
+         manifests used to declare this, which are there for the Flutter tool's
+         own channel — so a release build could not reach a relay at all, and
+         said "offline" rather than "no permission". -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="easynotes"
         android:name="${applicationName}"

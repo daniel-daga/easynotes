@@ -4,4 +4,10 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- targetSdk 36; Android has refused cleartext by default since 28. The
+         two-device demo is run against `just run-relay` over plain http on the
+         LAN, so debug builds are allowed it. Release builds are not, and a
+         shipped relay is https. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>

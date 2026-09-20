@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'core/browser_store.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
+import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
 import 'ui/note_list_screen.dart';
 
@@ -34,6 +35,14 @@ Future<void> main() async {
 Future<NoteLibrary> openLibrary() async {
   if (kIsWeb) return openInBrowser();
   final directory = (await getApplicationSupportDirectory()).path;
+  // The bridge before the key, because reading the key can cross it. Every
+  // `RustNoteLibrary` entry point initialises the bridge itself, but
+  // [MasterKeyStore.forDirectory] calls `masterKeyBesideTheDatabase` to look
+  // for a Slice 1 file, and that call comes first. It is reached only on a
+  // device whose keychain has nothing yet, so the crash it caused was a
+  // first-launch one and a relaunch looked fine — which is the kind of bug that
+  // hides until somebody installs the app rather than restarts it.
+  await RustNoteCore.ensureInitialized();
   // The keychain first, because it is what says whether this device has a key
   // at all — and because a device that updated into this version has one in a
   // file that has to be adopted rather than replaced.
