@@ -8,6 +8,13 @@ library;
 import 'package:flutter/foundation.dart';
 
 enum SyncState {
+  /// There is nothing to sync: this device holds no notes.
+  ///
+  /// Its own state rather than [offline] because the two look the same to a
+  /// reader and mean opposite things — a fresh install used to say "Not
+  /// syncing" with a perfectly healthy relay behind it.
+  empty,
+
   /// Not connected. Everything still works — the relay just has not heard it.
   offline,
 

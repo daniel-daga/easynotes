@@ -35,13 +35,11 @@ Future<void> main() async {
 Future<NoteLibrary> openLibrary() async {
   if (kIsWeb) return openInBrowser();
   final directory = (await getApplicationSupportDirectory()).path;
-  // The bridge before the key, because reading the key can cross it. Every
-  // `RustNoteLibrary` entry point initialises the bridge itself, but
-  // [MasterKeyStore.forDirectory] calls `masterKeyBesideTheDatabase` to look
-  // for a Slice 1 file, and that call comes first. It is reached only on a
-  // device whose keychain has nothing yet, so the crash it caused was a
-  // first-launch one and a relaunch looked fine — which is the kind of bug that
-  // hides until somebody installs the app rather than restarts it.
+  // The bridge up front. Not load-bearing any more — every entry point below
+  // brings it up itself, including [MasterKeyStore.forDirectory], which is the
+  // one that crashed a real device's first launch by crossing the bridge before
+  // anything had opened it. Kept because this is where the app would rather
+  // find out that the native library is missing than three calls later.
   await RustNoteCore.ensureInitialized();
   // The keychain first, because it is what says whether this device has a key
   // at all — and because a device that updated into this version has one in a

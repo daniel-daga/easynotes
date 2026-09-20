@@ -247,6 +247,17 @@ impl From<NoteLayout> for Layout {
 /// Where this note's sync stands, as Dart sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyncState {
+    /// There is nothing to sync: this device holds no notes.
+    ///
+    /// Distinct from [`SyncState::Offline`] because they look identical to a
+    /// user and mean opposite things. A fresh install reported `Offline` — "Not
+    /// syncing" — with a perfectly healthy relay, which is the first screen
+    /// anyone sees and a false negative for anyone debugging one.
+    ///
+    /// First in the ordering, so that if one ever did reach the fold below it
+    /// would be the *worst* state rather than silently outranking a real one.
+    /// Nothing produces it per note; only the empty fold does.
+    Empty,
     /// Not connected. Everything still works; the relay just has not heard it yet.
     Offline,
     Connecting,
@@ -278,6 +289,16 @@ impl SyncStatus {
         }
     }
 
+    /// What a device with no notes on it shows. See [`SyncState::Empty`].
+    pub(crate) fn nothing_to_sync() -> Self {
+        Self {
+            state: SyncState::Empty,
+            pending: 0,
+            last_seq: 0,
+            last_error: None,
+        }
+    }
+
     /// One status for a device with several notes.
     ///
     /// The state is the *worst* of them, because the question the status button
@@ -301,7 +322,12 @@ impl SyncStatus {
             }
         }
         if !seen {
-            return Self::offline();
+            // Not `offline()`: a device with no notes is not a device that
+            // cannot reach the relay, and saying so cost a session's debugging
+            // once. `Synced` would be the fold's identity element and is the
+            // other tempting answer, but it claims a relay agrees with us when
+            // we have never spoken to one.
+            return Self::nothing_to_sync();
         }
         Self {
             state: worst,
@@ -361,7 +387,11 @@ impl Statuses {
     fn new() -> Self {
         Self {
             per_note: Mutex::new(HashMap::new()),
-            overall: Arc::new(watch::channel(SyncStatus::offline()).0),
+            // Not `offline()`: there are no notes yet, by construction, so this
+            // is the empty fold's answer and has to agree with it — otherwise a
+            // library that never refreshes (because it never gets a note) keeps
+            // reporting a relay problem it does not have.
+            overall: Arc::new(watch::channel(SyncStatus::nothing_to_sync()).0),
         }
     }
 
@@ -456,9 +486,133 @@ impl Statuses {
 // The device
 // ---------------------------------------------------------------------------
 
+/// The core as everything that is not the core holds it: behind a lock, and
+/// only *maybe* there.
+///
+/// The `Option` is what [`Library::close`] needs and the reason this is a type
+/// rather than a bare `Arc<Mutex<Core>>`. Letting the `Arc` fall out of scope
+/// cannot be how a database is closed here, because the `Arc` has other holders
+/// — every live [`Note`] handle, and every sync engine, which took a clone as
+/// its peer — and the bridge keeps *its* side of those alive until Dart
+/// collects them, at a moment nobody chooses. So closing is something the app
+/// says, and this is where it is recorded.
+///
+/// `SyncPeer` is implemented here rather than taken from the core's blanket impl
+/// on `Arc<Mutex<NoteCore>>` for the same reason: an engine that is still
+/// draining when the library closes has to be told the core is gone, not handed
+/// one that is not there.
+#[derive(Clone)]
+pub(crate) struct Peer(Arc<Mutex<Option<Core>>>);
+
+fn closed() -> String {
+    "the library is closed".to_string()
+}
+
+impl Peer {
+    fn new(core: Core) -> Self {
+        Self(Arc::new(Mutex::new(Some(core))))
+    }
+
+    fn locked(&self) -> Result<Open<'_>, String> {
+        let guard = self
+            .0
+            .lock()
+            .map_err(|_| "core lock poisoned".to_string())?;
+        if guard.is_none() {
+            return Err(closed());
+        }
+        Ok(Open(guard))
+    }
+
+    /// Drop the core, and with it the store — which is what shuts the SQLite
+    /// connection and lets the last WAL checkpoint run. Closing twice is not an
+    /// error: the second one has nothing to do.
+    fn close(&self) -> Result<(), String> {
+        let taken = self
+            .0
+            .lock()
+            .map_err(|_| "core lock poisoned".to_string())?
+            .take();
+        drop(taken);
+        Ok(())
+    }
+}
+
+/// A locked core that is known to be open, so that the 30-odd callers of
+/// [`Peer::locked`] read as if the `Option` were not there.
+pub(crate) struct Open<'a>(std::sync::MutexGuard<'a, Option<Core>>);
+
+impl std::ops::Deref for Open<'_> {
+    type Target = Core;
+
+    fn deref(&self) -> &Core {
+        self.0.as_ref().expect("checked by Peer::locked")
+    }
+}
+
+impl std::ops::DerefMut for Open<'_> {
+    fn deref_mut(&mut self) -> &mut Core {
+        self.0.as_mut().expect("checked by Peer::locked")
+    }
+}
+
+/// An engine that outlives the close sees `Err` rather than a core: every one of
+/// these is a call the engine makes from its own task, and the honest answer
+/// once the store is shut is that there is nothing to read or write.
+impl easynotes_core::crypto::DeviceSigner for Peer {
+    fn device_key(&self) -> easynotes_core::error::Result<easynotes_core::crypto::AuthorKey> {
+        Ok(self.open()?.device_key())
+    }
+
+    fn sign_challenge(
+        &self,
+        nonce: &[u8],
+    ) -> easynotes_core::error::Result<[u8; easynotes_core::crypto::SIG_LEN]> {
+        self.open()?.identity().sign_challenge(nonce)
+    }
+}
+
+impl easynotes_core::sync::SyncPeer for Peer {
+    fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> easynotes_core::error::Result<()> {
+        self.open()?.apply_remote(note, envelope).map(|_| ())
+    }
+
+    fn cursor(
+        &self,
+        note: NoteId,
+    ) -> easynotes_core::error::Result<easynotes_core::note::SyncCursor> {
+        self.open()?.sync_cursor(note)
+    }
+
+    fn save_cursor(
+        &self,
+        note: NoteId,
+        cursor: easynotes_core::note::SyncCursor,
+    ) -> easynotes_core::error::Result<()> {
+        self.open()?.set_sync_cursor(note, cursor)
+    }
+
+    fn unsent(
+        &self,
+        note: NoteId,
+        after: Option<u64>,
+    ) -> easynotes_core::error::Result<Vec<(u64, Vec<u8>)>> {
+        self.open()?.unsent(note, after)
+    }
+}
+
+impl Peer {
+    /// [`Peer::locked`] for the engine's side, whose errors are the core's own
+    /// type rather than the bridge's strings.
+    fn open(&self) -> easynotes_core::error::Result<Open<'_>> {
+        self.locked()
+            .map_err(easynotes_core::error::CoreError::Storage)
+    }
+}
+
 /// What every note on this device shares.
 pub(crate) struct Shared {
-    core: Arc<Mutex<Core>>,
+    core: Peer,
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
@@ -467,10 +621,8 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn locked(&self) -> Result<std::sync::MutexGuard<'_, Core>, String> {
-        self.core
-            .lock()
-            .map_err(|_| "core lock poisoned".to_string())
+    fn locked(&self) -> Result<Open<'_>, String> {
+        self.core.locked()
     }
 
     /// Start syncing one note, replacing whatever connection it had.
@@ -842,7 +994,7 @@ impl Library {
         core.notes().map_err(|e| e.to_string())?;
         Ok(Library {
             shared: Arc::new(Shared {
-                core: Arc::new(Mutex::new(core)),
+                core: Peer::new(core),
                 relay: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
                 statuses: Arc::new(Statuses::new()),
@@ -1257,6 +1409,29 @@ impl Library {
         // wake. Re-sending the list it already has changes nothing and moves it.
         self.shared.locked()?.touch_notes();
         Ok(())
+    }
+
+    /// Shut the store. The library is unusable afterwards, and every method on
+    /// it — or on a [`Note`] still held from it — answers "the library is
+    /// closed".
+    ///
+    /// This is the last thing `dispose()` does on the Dart side, and it has to
+    /// exist rather than being left to the handle going out of scope. The
+    /// bridge frees a `RustOpaque` when Dart collects it, which is not a moment
+    /// the app picks, so without this the SQLite file stays open for an
+    /// unbounded time after the app believes it let go — and the last WAL
+    /// checkpoint, the one `forget_note` relies on to get a deleted string off
+    /// the disk, never runs.
+    ///
+    /// It went unnoticed because POSIX lets you unlink an open file: the tests
+    /// delete their temp directory in teardown and Linux allows it. Windows
+    /// does not, which is how this was found.
+    ///
+    /// Call [`Library::disconnect`] and [`Library::stop_watching`] first, as
+    /// `dispose()` does — closing does not wait for an engine mid-flight, it
+    /// only makes sure the engine finds nothing to write to.
+    pub fn close(&self) -> Result<(), String> {
+        self.shared.core.close()
     }
 }
 

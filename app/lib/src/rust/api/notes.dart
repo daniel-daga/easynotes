@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `new`, `note_id`, `offline`, `on_disk`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `cmp`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `close`, `closed`, `combined`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `offline`, `on_disk`, `open`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Open`, `Peer`, `Shared`, `Statuses`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -33,6 +33,27 @@ abstract class Library implements RustOpaqueInterface {
   /// one this device already has *is* that label, and the UI has to draw the
   /// label that exists rather than the casing that was typed.
   Future<String?> addTag({required String id, required String tag});
+
+  /// Shut the store. The library is unusable afterwards, and every method on
+  /// it — or on a [`Note`] still held from it — answers "the library is
+  /// closed".
+  ///
+  /// This is the last thing `dispose()` does on the Dart side, and it has to
+  /// exist rather than being left to the handle going out of scope. The
+  /// bridge frees a `RustOpaque` when Dart collects it, which is not a moment
+  /// the app picks, so without this the SQLite file stays open for an
+  /// unbounded time after the app believes it let go — and the last WAL
+  /// checkpoint, the one `forget_note` relies on to get a deleted string off
+  /// the disk, never runs.
+  ///
+  /// It went unnoticed because POSIX lets you unlink an open file: the tests
+  /// delete their temp directory in teardown and Linux allows it. Windows
+  /// does not, which is how this was found.
+  ///
+  /// Call [`Library::disconnect`] and [`Library::stop_watching`] first, as
+  /// `dispose()` does — closing does not wait for an engine mid-flight, it
+  /// only makes sure the engine finds nothing to write to.
+  Future<void> close();
 
   /// Start syncing every note with the relay at `relay` (`http://host:port`
   /// or `wss://host`), and every note made or joined after this.
@@ -560,6 +581,18 @@ enum StorageWriteKind {
 
 /// Where this note's sync stands, as Dart sees it.
 enum SyncState {
+  /// There is nothing to sync: this device holds no notes.
+  ///
+  /// Distinct from [`SyncState::Offline`] because they look identical to a
+  /// user and mean opposite things. A fresh install reported `Offline` — "Not
+  /// syncing" — with a perfectly healthy relay, which is the first screen
+  /// anyone sees and a false negative for anyone debugging one.
+  ///
+  /// First in the ordering, so that if one ever did reach the fold below it
+  /// would be the *worst* state rather than silently outranking a real one.
+  /// Nothing produces it per note; only the empty fold does.
+  empty,
+
   /// Not connected. Everything still works; the relay just has not heard it yet.
   offline,
   connecting,

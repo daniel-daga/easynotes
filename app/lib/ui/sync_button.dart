@@ -21,6 +21,9 @@ String syncSentence(SyncStatus status) {
     _ => ', ${status.pending} edits waiting',
   };
   return switch (status.state) {
+    // No note has ever been made here, so there is nothing a relay could be
+    // behind on. Saying "Not syncing" here reads as a fault and is not one.
+    SyncState.empty => 'Nothing to sync yet',
     SyncState.offline => 'Not syncing$waiting',
     SyncState.connecting => 'Connecting$waiting',
     SyncState.online => 'Catching up$waiting',
@@ -69,6 +72,7 @@ class SyncButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final icon = switch (status.state) {
+      SyncState.empty => Icons.cloud_outlined,
       SyncState.offline => Icons.cloud_off_outlined,
       SyncState.connecting => Icons.cloud_queue_outlined,
       SyncState.online => Icons.cloud_sync_outlined,

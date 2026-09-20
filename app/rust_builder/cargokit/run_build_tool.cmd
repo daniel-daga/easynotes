@@ -89,3 +89,13 @@ If %ERRORLEVEL% equ 253 (
     "%DART%" compile kernel bin/build_tool_runner.dart
     "%DART%" "%PRECOMPILED%" %*
 )
+
+REM Local change, not upstream Cargokit. Without it this script always exits 0:
+REM a batch file returns the code of its last command, and the `If` above is the
+REM last command whenever it does not match — so a build tool that failed with,
+REM say, "rustup not found in PATH" was reported to Gradle as a success. The
+REM build then packaged whatever librust_lib_easynotes.so happened to still be in
+REM the jniLibs directory from an earlier run, which is how a stale core shipped
+REM unnoticed for a whole session. Gradle does check the exit code; it was never
+REM given a truthful one.
+exit /b %ERRORLEVEL%

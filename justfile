@@ -9,8 +9,14 @@
 # "WebAssembly.Memory could not be cloned".
 wasm_rustflags := "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-args=--shared-memory -C link-args=--max-memory=1073741824 -C link-args=--import-memory -C link-args=--export=__heap_base -C link-args=--export=__wasm_init_tls -C link-args=--export=__tls_size -C link-args=--export=__tls_align -C link-args=--export=__tls_base --cfg getrandom_backend=\"wasm_js\""
 
-native_lib := justfile_directory() / "target/debug/librust_lib_easynotes.so"
-relay_bin := justfile_directory() / "target/debug/easynotes-relay"
+# The two binaries the bridge and relay-sync tests load. Both test files *skip*
+# when they are missing rather than failing, so a wrong name here reads as a
+# smaller green run instead of a broken one — name them per platform.
+lib_name := if os() == "windows" { "rust_lib_easynotes.dll" } else if os() == "macos" { "librust_lib_easynotes.dylib" } else { "librust_lib_easynotes.so" }
+exe_suffix := if os() == "windows" { ".exe" } else { "" }
+
+native_lib := justfile_directory() / "target/debug" / lib_name
+relay_bin := justfile_directory() / "target/debug/easynotes-relay" + exe_suffix
 
 default:
     @just --list
@@ -70,7 +76,10 @@ test-relay:
 test-app:
     cargo build -p rust_lib_easynotes
     cargo build -p easynotes-relay
-    cd app && EASYNOTES_NATIVE_LIB={{native_lib}} EASYNOTES_RELAY_BIN={{relay_bin}} flutter test
+    # Quoted: on Windows these are backslash paths, and an unquoted `\U` is an
+    # escape to the shell — which silently yields a path with the separators
+    # gone and a dlopen that can only say `error code 126`.
+    cd app && EASYNOTES_NATIVE_LIB='{{native_lib}}' EASYNOTES_RELAY_BIN='{{relay_bin}}' flutter test
 
 # Does the web build run in a browser and keep what it is given?
 #
@@ -102,7 +111,7 @@ web-sync-smoke port="8099":
     cargo build -p easynotes-relay
     cd {{justfile_directory()}}/tools/web-smoke
     [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
-    {{relay_bin}} &
+    '{{relay_bin}}' &
     relay=$!
     python3 serve.py {{justfile_directory()}}/app/build/web {{port}} &
     server=$!

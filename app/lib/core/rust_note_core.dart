@@ -49,7 +49,17 @@ class RustNoteCore implements NoteCore {
   /// [library] is for tests, which load the cdylib from the Cargo target
   /// directory rather than from wherever the bundled app would put it.
   static Future<void> ensureInitialized({ExternalLibrary? library}) =>
-      _initialized ??= RustLib.init(externalLibrary: library);
+      _initialized ??= RustLib.init(externalLibrary: library ?? defaultLibrary);
+
+  /// What [ensureInitialized] loads when the caller names nothing.
+  ///
+  /// Null in the app, where the bridge's own loader finds the library the
+  /// bundle ships. Tests set it to the cdylib in the Cargo target directory, so
+  /// that a code path which initialises the bridge *itself* — which is what a
+  /// first launch does, through `MasterKeyStore.forDirectory` — can be run
+  /// without the test having initialised it first and hidden the thing under
+  /// test.
+  static ExternalLibrary? defaultLibrary;
 
   final rust.Note _note;
   final _controller = StreamController<NoteView>.broadcast();
@@ -130,6 +140,7 @@ class RustNoteCore implements NoteCore {
   /// `toInt` clamps rather than wraps if one ever did.
   static SyncStatus toStatus(rust.SyncStatus s) => SyncStatus(
     state: switch (s.state) {
+      rust.SyncState.empty => SyncState.empty,
       rust.SyncState.offline => SyncState.offline,
       rust.SyncState.connecting => SyncState.connecting,
       rust.SyncState.online => SyncState.online,

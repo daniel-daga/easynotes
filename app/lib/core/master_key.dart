@@ -18,6 +18,7 @@ import 'dart:typed_data';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../src/rust/api/notes.dart' as rust;
+import 'rust_note_core.dart';
 
 /// How many bytes a master key is. `MasterKey::from_slice` rejects anything
 /// else, which is the check that matters; this is here so the generator and the
@@ -60,6 +61,16 @@ class MasterKeyStore {
     final stored = await _storage.read(key: _key);
     if (stored != null) return _decode(stored);
 
+    // This is the one place in the app where the bridge is crossed before a
+    // library exists, so it is the one place that has to bring the bridge up
+    // itself. It used to rely on the caller having done it, and the app
+    // crashed on a real device with `flutter_rust_bridge has not been
+    // initialized` — only ever on a *first* launch, because the read above
+    // returns early once the keychain has a key, and only on a device,
+    // because the browser has no file to adopt and the desktop app was never
+    // run. An ordering a caller has to remember is one a caller will forget;
+    // `ensureInitialized` is idempotent, so asking here costs nothing.
+    await RustNoteCore.ensureInitialized();
     final carriedOver = rust.masterKeyBesideTheDatabase(dir: directory);
     final key = carriedOver ?? newKey();
     await _storage.write(key: _key, value: base64Encode(key));

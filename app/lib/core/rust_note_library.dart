@@ -307,8 +307,17 @@ class RustNoteLibrary implements NoteLibrary {
     _storage.add(_storageError);
   }
 
+  /// Set by the first [dispose]. Disposing twice is ordinary — a caller that
+  /// closes explicitly often has a teardown registered as well — and it used to
+  /// be harmless because every step was idempotent on its own. Closing the store
+  /// is not: the second pass would ask a shut library to stop watching and be
+  /// told, correctly, that it is closed.
+  bool _disposed = false;
+
   @override
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
     // The relay connections go first: their engines hold a reference to the
     // core and would otherwise keep applying updates to notes nothing is
     // watching.
@@ -327,6 +336,11 @@ class RustNoteLibrary implements NoteLibrary {
     await _notes.close();
     await _sync.close();
     await _storage.close();
+    // And last, the store itself. This has to be asked for: the bridge frees
+    // the Rust object when Dart collects it, which is not a moment this app
+    // chooses, so until this call existed the database stayed open long after
+    // `dispose()` returned. Last because everything above may still read.
+    await _library.close();
   }
 
   static NoteSummary _toSummary(rust.NoteSummaryView s) => NoteSummary(
