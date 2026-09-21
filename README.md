@@ -92,6 +92,18 @@ the phrase derives and — just as much the point — what it deliberately does 
 and [ADR 0014](docs/adr/0014-what-the-relay-learns.md) says what the relay is not
 told and what that costs.
 
+**A list is shared by a link now, and the link is not the key.** Share makes an
+invite link that carries one secret and no note key. Whoever opens it asks to
+join under a name; the owner sees the request with six digits the guest's screen
+shows too, and lets them in or turns them away. Only then is the key handed over,
+sealed to that one guest. A link admits one person and stops after seven days,
+and the relay that holds the invite in between cannot read who asked or which
+note it is for, and is never told which devices are on either side. [ADR
+0015](docs/adr/0015-invites.md) has the decisions and what they cost: the
+owner's device has to be reachable to let anyone in, both sides poll rather than
+being woken, and the link is pasted rather than tapped until the platforms
+register it.
+
 What is built is the core of it, with the property the whole item exists for held
 against both CRDT backends: two devices adopted from one phrase agree about a
 note's contents *and* about its placement. What is not built yet is the wiring —
