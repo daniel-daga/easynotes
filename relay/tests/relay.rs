@@ -47,6 +47,7 @@ async fn drain(sync: &mut NoteSync) -> Vec<Vec<u8>> {
         match sync.next().await.unwrap() {
             Some(Incoming::Envelope { envelope, .. }) => out.push(envelope),
             Some(Incoming::Caught { .. }) => return out,
+            Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             None => return out,
         }
@@ -64,6 +65,7 @@ async fn take(sync: &mut NoteSync, n: usize) -> Vec<Vec<u8>> {
         match next {
             Some(Incoming::Envelope { envelope, .. }) => out.push(envelope),
             Some(Incoming::Caught { .. }) => {}
+            Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
         }
@@ -179,6 +181,31 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
         Envelope::decode(&missed[0]).unwrap().open(&key).unwrap(),
         b"while away"
     );
+}
+
+/// A relay restored behind a persisted cursor says `reset` rather than
+/// pretending that its empty backlog is caught up.
+#[tokio::test]
+async fn a_restored_relay_resets_an_ahead_per_note_client() {
+    let (relay, store) = relay().await;
+    let identity = DeviceIdentity::generate();
+    let note = NoteId::random();
+    let key = NoteKey::random();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), &identity)
+        .await
+        .unwrap();
+    let stored = envelope(&identity, note, &key, 0, b"restored");
+    store.append(&note.encode(), &stored).await.unwrap();
+
+    let mut ahead = NoteSync::connect(&relay.ws_base(), &token, note, 3)
+        .await
+        .unwrap();
+    assert!(matches!(ahead.next().await, Ok(Some(Incoming::Reset))));
+
+    let mut recovered = NoteSync::connect(&relay.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    assert_eq!(drain(&mut recovered).await, [stored]);
 }
 
 #[tokio::test]

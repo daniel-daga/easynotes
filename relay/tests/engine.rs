@@ -472,6 +472,53 @@ async fn a_relaunch_does_not_resend_what_the_relay_already_has() {
     assert_eq!(note.encode().len(), 22);
 }
 
+/// Restoring a relay behind a client's cursor used to drop the echo of its next
+/// append, leaving `pending` at one forever. The reset handshake makes the
+/// client persist a zero cursor, reconnect, and rebuild the relay from its log.
+#[tokio::test]
+async fn a_restored_relay_rebuilds_the_outbox_instead_of_leaving_an_edit_sending() {
+    let (old_relay, old_log, _) = relay().await;
+    let wire = Wire::to(old_relay.addr, "127.0.0.1:0".parse().unwrap()).await;
+    let endpoint = wire.endpoint();
+
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    for (seq, item) in ["milk", "bread", "eggs"].into_iter().enumerate() {
+        a.add_item(item);
+        wait_for_head(&old_log, a.note, (seq + 1) as i64).await;
+        a.wait_until_synced().await;
+    }
+    let old_cursor = a.core.lock().unwrap().sync_cursor(a.note).unwrap();
+    assert_eq!(old_cursor.last_seq, 3);
+
+    // The public address survives, but its upstream is a new, empty relay —
+    // the shape of restoring an old store behind a stable deployment.
+    let address = wire.addr;
+    wire.cut();
+    drop(wire);
+    a.add_item("coffee");
+    a.wait_until("an edit waiting behind the cut", || a.pending() > 0)
+        .await;
+
+    let (restored_relay, restored_log, _) = relay().await;
+    let _wire = Wire::to(restored_relay.addr, address).await;
+    a.wait_until_synced().await;
+
+    let cursor = a.core.lock().unwrap().sync_cursor(a.note).unwrap();
+    assert_eq!(
+        cursor.last_seq,
+        restored_log.head(&a.note.encode()).await.unwrap()
+    );
+    assert!(
+        cursor.sent_upto.is_some(),
+        "the rebuilt outbox was not acknowledged"
+    );
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk", "bread", "eggs", "coffee"]).await;
+}
+
 /// Compaction and the outbox share the log, and compaction runs while the network
 /// is down as readily as when it is up. The edits the relay has never seen have to
 /// survive it — they exist nowhere else.

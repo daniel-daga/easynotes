@@ -149,6 +149,7 @@ impl Device {
                         });
                 }
                 Some(Incoming::Caught { .. }) => {}
+                Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
                 None => {
                     self.sync = None;

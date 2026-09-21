@@ -68,6 +68,10 @@ pub enum ServerMessage {
     Update { seq: i64, envelope: String },
     /// The backlog is drained; everything after this is live.
     Caught { seq: i64 },
+    /// The client cursor is beyond this relay's log. This happens when the
+    /// relay has been restored from an earlier backup; the client must reset
+    /// its local cursor and resubscribe from the beginning.
+    Reset,
     /// The append was rejected. The connection stays open.
     Error { message: String },
 }
@@ -115,6 +119,9 @@ pub enum SyncServerMessage {
     /// This note's backlog is drained. Per note, so a client can tell which
     /// notes are live while another is still catching up.
     Caught { note: String, seq: i64 },
+    /// This note's cursor is beyond the relay's current log. The client must
+    /// reset its local cursor and resubscribe from the beginning.
+    Reset { note: String },
     /// Something was refused. `note` is absent when the message it answers
     /// could not be read far enough to say which note it was about.
     Error {

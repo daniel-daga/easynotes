@@ -612,6 +612,15 @@ enum Next {
     Stop,
 }
 
+/// What an incoming note message did to this connection.
+enum Received {
+    Continue,
+    Caught,
+    /// The relay was restored behind a local cursor. The cursor has been
+    /// persisted at zero; reconnect so the outbox is derived again from it.
+    Reset,
+}
+
 /// One connection, from handshake to whatever ends it.
 async fn session<P: SyncPeer>(
     peer: &P,
@@ -682,7 +691,15 @@ async fn session<P: SyncPeer>(
             // dropping this future when another branch wins loses nothing.
             incoming = sync.next() => match incoming {
                 Ok(Some(Routed::Note(id, incoming))) => {
-                    caught |= device.receive(peer, &me, id, incoming);
+                    match device.receive(peer, &me, id, incoming) {
+                        Ok(Received::Continue) => {}
+                        Ok(Received::Caught) => caught = true,
+                        Ok(Received::Reset) => {
+                            let _ = sync.close().await;
+                            return lost(true, "the relay was restored; rebuilding its copy".into());
+                        }
+                        Err(e) => return lost(caught, e),
+                    }
                 }
                 Ok(Some(Routed::Unrouted(message))) => {
                     // The relay refused something without saying what it was
@@ -1024,18 +1041,17 @@ impl Device {
         })
     }
 
-    /// Something arrived for a note. Returns true if it was the note catching
-    /// up.
+    /// Something arrived for a note.
     fn receive<P: SyncPeer>(
         &mut self,
         peer: &P,
         me: &AuthorKey,
         id: NoteId,
         incoming: Incoming,
-    ) -> bool {
+    ) -> std::result::Result<Received, String> {
         // A note unsubscribed a moment ago can still have messages in flight.
         let Some(live) = self.notes.get_mut(&id) else {
-            return false;
+            return Ok(Received::Continue);
         };
         match incoming {
             Incoming::Envelope { seq, envelope } => {
@@ -1049,7 +1065,7 @@ impl Device {
                 if live.caught {
                     settle(peer, id, live);
                 }
-                false
+                Ok(Received::Continue)
             }
             Incoming::Caught { seq } => {
                 live.caught = true;
@@ -1059,13 +1075,17 @@ impl Device {
                 // it has already applied.
                 settle(peer, id, live);
                 live.set_state(SyncState::Synced);
-                true
+                Ok(Received::Caught)
+            }
+            Incoming::Reset => {
+                live.reset(peer, id)?;
+                Ok(Received::Reset)
             }
             Incoming::Rejected(message) => {
                 // The relay refused one envelope. The connection is fine and the
                 // rest of the outbox still goes.
                 live.note_error(message);
-                false
+                Ok(Received::Continue)
             }
         }
     }
@@ -1245,6 +1265,22 @@ impl Live {
             Some(sent) => sent.max(counter),
             None => counter,
         });
+    }
+
+    /// The relay explicitly says its log is older than this device's cursor.
+    /// This is the sole allowed cursor rewind: normal updates and `caught`
+    /// messages stay monotonic. Clearing `sent_upto` is what makes the next
+    /// connection derive every locally retained envelope into its outbox.
+    fn reset<P: SyncPeer>(&mut self, peer: &P, note: NoteId) -> std::result::Result<(), String> {
+        let cursor = SyncCursor::default();
+        peer.save_cursor(note, cursor).map_err(|e| e.to_string())?;
+        self.cursor = cursor;
+        self.saved = cursor;
+        self.caught = false;
+        self.outbox.clear();
+        self.covered = None;
+        self.publish();
+        Ok(())
     }
 
     fn advance<P: SyncPeer>(&mut self, peer: &P, note: NoteId, seq: i64) {

@@ -264,11 +264,26 @@ async fn handle(
             if subs.0.len() >= MAX_SUBSCRIPTIONS {
                 return refuse(out, Some(note), "too many notes on one socket");
             }
+            let since = since.max(0);
+            let head = match state.store.head(&note).await {
+                Ok(head) => head,
+                Err(e) => return refuse(out, Some(note), &e.to_string()),
+            };
+            if since > head {
+                // Do not install a subscription: appends queued behind this
+                // subscribe belong to the recovery connection, after its client
+                // has rebuilt the cursor and outbox. `caught` cannot carry this
+                // signal, because an append can advance a restored log before
+                // the backlog is sent.
+                tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
+                let _ = out.send(SyncServerMessage::Reset { note }).await;
+                return;
+            }
             let forwarder = forward(state, note.clone(), fanned.clone());
             subs.0.insert(
                 note.clone(),
                 Subscription {
-                    last_sent: since.max(0),
+                    last_sent: since,
                     catching_up: true,
                     caught: false,
                     forwarder,

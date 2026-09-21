@@ -50,6 +50,7 @@ enum ClientMessage {
 enum ServerMessage {
     Update { seq: i64, envelope: String },
     Caught { seq: i64 },
+    Reset,
     Error { message: String },
 }
 
@@ -59,6 +60,9 @@ pub enum Incoming {
     Envelope { seq: i64, envelope: Vec<u8> },
     /// The backlog is drained; everything after this is live.
     Caught { seq: i64 },
+    /// The relay was restored behind this device's cursor. Reset the local
+    /// cursor and acknowledgement watermark, then subscribe again from zero.
+    Reset,
     /// The relay refused something. Not fatal — the connection stays up.
     Rejected(String),
 }
@@ -101,6 +105,10 @@ pub(crate) fn parse(text: &str, last_seq: &mut i64) -> Result<Incoming> {
             *last_seq = (*last_seq).max(seq);
             Incoming::Caught { seq }
         }
+        ServerMessage::Reset => {
+            *last_seq = 0;
+            Incoming::Reset
+        }
         ServerMessage::Error { message } => Incoming::Rejected(message),
     })
 }
@@ -134,6 +142,9 @@ enum DeviceReply {
     Caught {
         note: String,
         seq: i64,
+    },
+    Reset {
+        note: String,
     },
     Error {
         #[serde(default)]
@@ -203,6 +214,7 @@ pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
         DeviceReply::Caught { note: raw, seq } => {
             Routed::Note(note(&raw)?, Incoming::Caught { seq })
         }
+        DeviceReply::Reset { note: raw } => Routed::Note(note(&raw)?, Incoming::Reset),
         DeviceReply::Error { note: raw, message } => {
             match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
                 Some(note) => Routed::Note(note, Incoming::Rejected(message)),
@@ -371,6 +383,16 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_rewinds_the_cursor_on_purpose() {
+        let mut seq = 9;
+        assert!(matches!(
+            parse(r#"{"type":"reset"}"#, &mut seq).unwrap(),
+            Incoming::Reset
+        ));
+        assert_eq!(seq, 0);
+    }
+
+    #[test]
     fn a_rejection_is_not_an_error() {
         // The relay refused one envelope; the connection is fine and the rest of
         // the outbox still goes.
@@ -431,6 +453,10 @@ mod tests {
             Routed::Note(n, Incoming::Caught { seq: 3 }) => assert_eq!(n, note),
             _ => panic!("expected caught for the note"),
         }
+        assert!(matches!(
+            parse_routed(r#"{"type":"reset","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
+            Routed::Note(n, Incoming::Reset) if n == note
+        ));
         // A refusal that names no note, or one that does not parse, still
         // reaches somebody.
         for text in [

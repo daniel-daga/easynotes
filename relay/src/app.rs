@@ -327,12 +327,6 @@ async fn session(socket: WebSocket, state: Arc<AppState>, note: String) {
 async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> anyhow::Result<()> {
     let (mut tx, mut rx) = socket.split();
 
-    // Subscribe to the fan-out *before* reading the backlog. Do it the other way
-    // round and an append landing in between is lost to this subscriber for good:
-    // it is past the backlog and before the subscription. Anything that arrives
-    // twice is deduplicated by `seq` below.
-    let mut live = state.channel(note).subscribe();
-
     // The first message must be `subscribe`; it carries the cursor to replay from.
     let since = loop {
         match rx.next().await {
@@ -348,6 +342,18 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> any
             Some(Err(e)) => return Err(e.into()),
         }
     };
+
+    let head = state.store.head(note).await?;
+    if since > head {
+        tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
+        send(&mut tx, &ServerMessage::Reset).await?;
+        return Ok(());
+    }
+
+    // Subscribe to the fan-out before reading the backlog. The head check above
+    // establishes the lower edge of that backlog, so an append between the two
+    // is either in the store when it is read or in this receiver.
+    let mut live = state.channel(note).subscribe();
 
     let mut last_sent = since;
     for stored in state.store.since(note, since).await? {

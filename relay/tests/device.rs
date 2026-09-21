@@ -276,6 +276,37 @@ async fn token(relay: &Relay) -> String {
         .unwrap()
 }
 
+/// A cursor is meaningful only against one incarnation of a relay log. If a
+/// restore puts its head behind us, the relay says so before accepting the
+/// subscription; a retry from zero then reads the restored history.
+#[tokio::test]
+async fn a_restored_relay_tells_ahead_clients_to_reset() {
+    let (relay, log) = relay().await;
+    let (note, envelope) = an_envelope(16);
+    log.append(&note.encode(), &envelope).await.unwrap();
+
+    let token = token(&relay).await;
+    let mut ahead = DeviceSync::connect(&relay.ws_base(), &token).await.unwrap();
+    ahead.subscribe(note, 3).await.unwrap();
+    assert!(matches!(
+        ahead.next().await,
+        Ok(Some(Routed::Note(n, Incoming::Reset))) if n == note
+    ));
+    ahead.close().await.unwrap();
+
+    let mut recovered = DeviceSync::connect(&relay.ws_base(), &token).await.unwrap();
+    recovered.subscribe(note, 0).await.unwrap();
+    assert!(matches!(
+        recovered.next().await,
+        Ok(Some(Routed::Note(n, Incoming::Envelope { seq: 1, envelope: got })))
+            if n == note && got == envelope
+    ));
+    assert!(matches!(
+        recovered.next().await,
+        Ok(Some(Routed::Note(n, Incoming::Caught { seq: 1 }))) if n == note
+    ));
+}
+
 /// A guest joining a list with months of history must not stop every other
 /// note on the device from catching up while that history arrives.
 #[tokio::test]
