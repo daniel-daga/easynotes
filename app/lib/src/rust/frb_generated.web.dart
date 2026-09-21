@@ -134,6 +134,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NoteColour dco_decode_note_colour(dynamic raw);
 
   @protected
+  NoteKindView dco_decode_note_kind_view(dynamic raw);
+
+  @protected
   NoteLayout dco_decode_note_layout(dynamic raw);
 
   @protected
@@ -309,6 +312,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   NoteColour sse_decode_note_colour(SseDeserializer deserializer);
+
+  @protected
+  NoteKindView sse_decode_note_kind_view(SseDeserializer deserializer);
 
   @protected
   NoteLayout sse_decode_note_layout(SseDeserializer deserializer);
@@ -515,6 +521,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_note_colour(NoteColour self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_note_kind_view(NoteKindView self, SseSerializer serializer);
 
   @protected
   void sse_encode_note_layout(NoteLayout self, SseSerializer serializer);

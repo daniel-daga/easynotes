@@ -4,16 +4,28 @@
 //! plus one nested map per item ID — so the two are compared on the same workload
 //! and not on two different data models. See `automerge_doc` for why items hang
 //! off the root rather than off a nested container.
+//!
+//! The body is the exception to "same shape": it is a *root-level* `Y.Text`
+//! named `"body"`, beside the root map rather than inside it. A root type is
+//! addressed by name, so every replica resolves it to the same object and two
+//! devices that both start typing into a note that has never had a body merge
+//! their text instead of each creating one and losing the other's. Automerge has
+//! no such thing; see `automerge_doc` for what it does instead.
 
-use super::{sort_items, Edit, ItemView, NoteDoc, NoteView};
+use super::{sort_items, splice, Edit, ItemView, NoteDoc, NoteKind, NoteView};
 use crate::error::{CoreError, Result};
 use crate::ids::ItemId;
 use std::sync::{Arc, Mutex};
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Doc, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Transact, Update};
+use yrs::{
+    Any, Doc, GetString, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Text, TextRef,
+    Transact, TransactionMut, Update,
+};
 
 const ROOT: &str = "note";
+const BODY: &str = "body";
 const TITLE: &str = "title";
+const KIND: &str = "kind";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
@@ -21,6 +33,7 @@ const ORDER: &str = "order";
 pub struct YrsNote {
     doc: Doc,
     root: MapRef,
+    body: TextRef,
     /// The update produced by the most recent transaction, captured by the
     /// observer below.
     ///
@@ -60,13 +73,19 @@ impl YrsNote {
     /// same object without anyone having to create it in a bootstrap transaction.
     fn open(doc: Doc) -> Self {
         let root = doc.get_or_insert_map(ROOT);
+        let body = doc.get_or_insert_text(BODY);
         let pending: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
         let sink = pending.clone();
         doc.observe_update_v1_with("easynotes", move |_txn, event| {
             *sink.lock().expect("the update sink is never poisoned") = Some(event.update.clone());
         })
         .expect("a freshly created document has no open transaction");
-        Self { doc, root, pending }
+        Self {
+            doc,
+            root,
+            body,
+            pending,
+        }
     }
 
     fn take_pending(&self) -> Option<Vec<u8>> {
@@ -74,6 +93,20 @@ impl YrsNote {
             .lock()
             .expect("the update sink is never poisoned")
             .take()
+    }
+
+    /// Splice the body towards `text`. Nothing is written when it already says
+    /// that, so a conversion that leaves the body alone costs no ops for it.
+    fn set_body(&self, txn: &mut TransactionMut, text: &str) {
+        let old = self.body.get_string(txn);
+        if let Some((at, deleted, inserted)) = splice(&old, text) {
+            if deleted > 0 {
+                self.body.remove_range(txn, at as u32, deleted as u32);
+            }
+            if !inserted.is_empty() {
+                self.body.insert(txn, at as u32, inserted);
+            }
+        }
     }
 
     fn item(&self, txn: &impl ReadTxn, id: ItemId) -> Option<MapRef> {
@@ -145,6 +178,30 @@ impl NoteDoc for YrsNote {
                 Edit::RemoveItem { id } => {
                     items.remove(&mut txn, &id.encode());
                 }
+                Edit::SetKind(kind) => {
+                    self.root.insert(&mut txn, KIND, kind.as_str());
+                }
+                Edit::SetBody(text) => {
+                    self.set_body(&mut txn, text);
+                }
+                Edit::ToChecklist { items: new } => {
+                    self.root
+                        .insert(&mut txn, KIND, NoteKind::Checklist.as_str());
+                    self.set_body(&mut txn, "");
+                    for item in new {
+                        let obj = items.insert(&mut txn, item.id.encode(), MapPrelim::default());
+                        obj.insert(&mut txn, TEXT, item.text.as_str());
+                        obj.insert(&mut txn, CHECKED, false);
+                        obj.insert(&mut txn, ORDER, item.order.as_str());
+                    }
+                }
+                Edit::ToText { body, remove } => {
+                    self.root.insert(&mut txn, KIND, NoteKind::Text.as_str());
+                    self.set_body(&mut txn, body);
+                    for id in remove {
+                        items.remove(&mut txn, &id.encode());
+                    }
+                }
             }
         }
         self.take_pending()
@@ -169,11 +226,13 @@ impl NoteDoc for YrsNote {
     fn view(&self) -> NoteView {
         let txn = self.doc.transact();
         let title = any_str(self.root.get(&txn, TITLE));
+        let kind = NoteKind::parse(&any_str(self.root.get(&txn, KIND)));
+        let body = self.body.get_string(&txn);
         let mut items = Vec::new();
         {
             let items_map = &self.root;
             for (key, _) in items_map.iter(&txn) {
-                if key == TITLE {
+                if key == TITLE || key == KIND {
                     continue;
                 }
                 let Ok(id) = ItemId::decode(key) else {
@@ -191,7 +250,12 @@ impl NoteDoc for YrsNote {
             }
         }
         sort_items(&mut items);
-        NoteView { title, items }
+        NoteView {
+            kind,
+            title,
+            body,
+            items,
+        }
     }
 
     fn snapshot(&self) -> Vec<u8> {

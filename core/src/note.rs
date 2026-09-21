@@ -13,8 +13,8 @@
 
 use crate::account::{AccountRoot, RecoveryPhrase};
 use crate::crdt::{
-    account, AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NoteDoc, NoteView,
-    Placement,
+    account, AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NewItem, NoteDoc,
+    NoteView, Placement,
 };
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
 use crate::error::{CoreError, Result};
@@ -97,12 +97,13 @@ pub const LAYOUT: &str = "layout";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteSummary {
     pub id: NoteId,
+    pub kind: NoteKind,
     pub title: String,
     /// Every item, checked or not.
     pub items: usize,
     pub checked: usize,
-    /// The first few items, in display order, so a card can show what the note
-    /// is about. Most shopping lists never get a title.
+    /// The first few lines of the body, then the first few items, so a card can
+    /// show what the note is about. Most shopping lists never get a title.
     pub preview: Vec<String>,
     /// What this person has done with the note: its colour, whether it is
     /// pinned, and whether it is in the archive or the trash. Personal, and from
@@ -155,13 +156,9 @@ pub const PREVIEW_ITEMS: usize = 4;
 /// [ADR 0006](../../docs/adr/0006-compaction.md) reads it.
 pub const COMPACT_AFTER: usize = 256;
 
-/// Slice 1 builds checklists. `Text` is here because the design doc's data model
-/// has both and the share blob format should not change when text notes land.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoteKind {
-    Checklist,
-    Text,
-}
+/// Re-exported here because this is where callers have always found it: it was
+/// a parameter of [`NoteCore::create_note`] long before a document recorded it.
+pub use crate::crdt::NoteKind;
 
 struct OpenNote<D: NoteDoc> {
     doc: D,
@@ -684,9 +681,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             note: id,
             key: recorded,
         })?;
-        // `kind` does not change the document shape in Slice 1 (a text note is a
-        // checklist with no items); it is recorded so the UI can branch later.
-        let _ = kind;
+        // A checklist is what a document that records no kind already is, so
+        // only a text note says so — and says it in its first change, which is
+        // also what gives the Automerge backend a body every peer shares (see
+        // `crdt::automerge_doc`). Its envelope waits in the log like any offline
+        // edit and goes when the note is connected.
+        if kind == NoteKind::Text {
+            self.apply_local(id, Edit::SetKind(kind))?;
+        }
         Ok(id)
     }
 
@@ -883,7 +885,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let view = note.doc.view();
         let entry = IndexEntry {
             version: crate::index::ENTRY_VERSION,
+            kind: view.kind,
             title: view.title,
+            body: crate::index::body_lines(&view.body),
             checked: view.items.iter().filter(|i| i.checked).count(),
             items: view.items.into_iter().map(|i| i.text).collect(),
             log_len: self.store.log_len(id)?,
@@ -968,10 +972,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .iter()
             .map(|(id, entry)| NoteSummary {
                 id: *id,
+                kind: entry.kind,
                 title: entry.title.clone(),
                 items: entry.items.len(),
                 checked: entry.checked,
-                preview: entry.items.iter().take(PREVIEW_ITEMS).cloned().collect(),
+                preview: entry.preview().take(PREVIEW_ITEMS).cloned().collect(),
                 placement: self.placements.placement(*id),
                 labels: self.labels_of(*id),
             })
@@ -1730,6 +1735,85 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     pub fn set_title(&mut self, id: NoteId, title: impl Into<String>) -> Result<Vec<u8>> {
         self.apply_local(id, Edit::SetTitle(title.into()))
+    }
+
+    /// Replace the body's text, or `None` if it already says exactly that.
+    ///
+    /// `None` rather than an empty envelope because an edit that changes nothing
+    /// produces no update to seal, and a screen that sends its text on every
+    /// change will sometimes send the text that is already there.
+    pub fn set_body(&mut self, id: NoteId, text: impl Into<String>) -> Result<Option<Vec<u8>>> {
+        self.ensure_open(id)?;
+        let text = text.into();
+        if self.view(id)?.body == text {
+            return Ok(None);
+        }
+        self.apply_local(id, Edit::SetBody(text)).map(Some)
+    }
+
+    /// Record that this person changed the body from `from` to `to`, or `None`
+    /// if that leaves it as it is.
+    ///
+    /// What a screen calls, rather than [`NoteCore::set_body`]: a screen knows
+    /// what it was showing, not what the body says by the time the call lands,
+    /// and a peer's edit may have arrived in between. Writing `to` over that
+    /// would delete the peer's words, so the edit is replayed onto the current
+    /// body instead — see [`crate::text::rebase`].
+    pub fn edit_body(&mut self, id: NoteId, from: &str, to: &str) -> Result<Option<Vec<u8>>> {
+        self.ensure_open(id)?;
+        let current = self.view(id)?.body;
+        let body = crate::text::rebase(from, to, &current);
+        self.set_body(id, body)
+    }
+
+    /// Switch a note between text and checklist, carrying its content across —
+    /// the button Keep calls "show checkboxes". `None` if it is that kind already.
+    ///
+    /// To a checklist, every line of the body that has anything on it becomes an
+    /// unchecked item, after whatever items the note already had. To text, every
+    /// item becomes a line, checked or not, after whatever the body already said —
+    /// ticks are the one thing that does not survive the trip, as in Keep.
+    /// "Already had" is not hypothetical: a merge can leave content on the side
+    /// that was emptied (see [`NoteView`]), and converting is what tidies it up
+    /// rather than what throws it away.
+    ///
+    /// Either way it is one edit and one envelope, so a peer sees the note switch
+    /// rather than half of it.
+    pub fn set_kind(&mut self, id: NoteId, kind: NoteKind) -> Result<Option<Vec<u8>>> {
+        self.ensure_open(id)?;
+        let view = self.view(id)?;
+        if view.kind == kind {
+            return Ok(None);
+        }
+        let edit = match kind {
+            NoteKind::Checklist => {
+                let mut keys = view.order_keys();
+                let mut items = Vec::new();
+                for line in view.body.lines().filter(|l| !l.trim().is_empty()) {
+                    let order = order::key_for_index(&keys, keys.len());
+                    keys.push(order.clone());
+                    items.push(NewItem {
+                        id: ItemId::random(),
+                        text: line.to_owned(),
+                        order,
+                    });
+                }
+                Edit::ToChecklist { items }
+            }
+            NoteKind::Text => {
+                let mut lines: Vec<&str> = Vec::new();
+                let kept = view.body.trim_end_matches('\n');
+                if !kept.is_empty() {
+                    lines.push(kept);
+                }
+                lines.extend(view.items.iter().map(|i| i.text.as_str()));
+                Edit::ToText {
+                    body: lines.join("\n"),
+                    remove: view.items.iter().map(|i| i.id).collect(),
+                }
+            }
+        };
+        self.apply_local(id, edit).map(Some)
     }
 
     /// Append an item and return `(item id, envelope)`.

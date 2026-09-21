@@ -42,13 +42,34 @@ class ItemView {
   String toString() => 'ItemView($id, "$text", checked: $checked)';
 }
 
+/// Whether a note is prose or a list of things to tick off.
+///
+/// Shared, unlike a colour: it lives in the note's own document, so switching a
+/// note switches it for everyone on it.
+enum NoteKind { checklist, text }
+
 @immutable
 class NoteView {
-  const NoteView({required this.title, required this.items});
+  const NoteView({
+    required this.title,
+    required this.items,
+    this.kind = NoteKind.checklist,
+    this.body = '',
+  });
 
-  const NoteView.empty() : title = '', items = const [];
+  const NoteView.empty()
+    : title = '',
+      items = const [],
+      kind = NoteKind.checklist,
+      body = '';
 
+  final NoteKind kind;
   final String title;
+
+  /// The note's text. Present whatever [kind] says, as [items] are: a merge can
+  /// leave content on the side a conversion emptied, and the rule is that a
+  /// screen draws it rather than hiding it.
+  final String body;
 
   /// Already in display order: the core sorts by `(order, id)` so that two
   /// devices showing the same data show it in the same sequence.
@@ -59,9 +80,11 @@ class NoteView {
   @override
   bool operator ==(Object other) =>
       other is NoteView &&
+      other.kind == kind &&
       other.title == title &&
+      other.body == body &&
       listEquals(other.items, items);
 
   @override
-  int get hashCode => Object.hash(title, Object.hashAll(items));
+  int get hashCode => Object.hash(kind, title, body, Object.hashAll(items));
 }

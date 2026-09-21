@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1759293442;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -453443298;
 
 // Section: executor
 
@@ -325,6 +325,7 @@ fn wire__crate__api__notes__Library_create_note_impl(
             let api_that = <RustOpaqueMoi<
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
             >>::sse_decode(&mut deserializer);
+            let api_kind = <crate::api::notes::NoteKindView>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
@@ -342,7 +343,8 @@ fn wire__crate__api__notes__Library_create_note_impl(
                         }
                     }
                     let api_that_guard = api_that_guard.unwrap();
-                    let output_ok = crate::api::notes::Library::create_note(&*api_that_guard)?;
+                    let output_ok =
+                        crate::api::notes::Library::create_note(&*api_that_guard, api_kind)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1828,6 +1830,58 @@ fn wire__crate__api__notes__Note_add_item_impl(
         },
     )
 }
+fn wire__crate__api__notes__Note_edit_body_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Note_edit_body",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>,
+            >>::sse_decode(&mut deserializer);
+            let api_from = <String>::sse_decode(&mut deserializer);
+            let api_to = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::notes::Note::edit_body(&*api_that_guard, api_from, api_to)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__notes__Note_id_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -2084,6 +2138,56 @@ fn wire__crate__api__notes__Note_set_item_text_impl(
                         api_item,
                         api_text,
                     )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__notes__Note_set_kind_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Note_set_kind",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>,
+            >>::sse_decode(&mut deserializer);
+            let api_kind = <crate::api::notes::NoteKindView>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::api::notes::Note::set_kind(&*api_that_guard, api_kind)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2801,6 +2905,18 @@ impl SseDecode for crate::api::notes::NoteColour {
     }
 }
 
+impl SseDecode for crate::api::notes::NoteKindView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::notes::NoteKindView::Checklist,
+            1 => crate::api::notes::NoteKindView::Text,
+            _ => unreachable!("Invalid variant for NoteKindView: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::notes::NoteLayout {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2817,6 +2933,7 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_kind = <crate::api::notes::NoteKindView>::sse_decode(deserializer);
         let mut var_title = <String>::sse_decode(deserializer);
         let mut var_items = <u32>::sse_decode(deserializer);
         let mut var_checked = <u32>::sse_decode(deserializer);
@@ -2828,6 +2945,7 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
         let mut var_tags = <Vec<crate::api::notes::LabelView>>::sse_decode(deserializer);
         return crate::api::notes::NoteSummaryView {
             id: var_id,
+            kind: var_kind,
             title: var_title,
             items: var_items,
             checked: var_checked,
@@ -2844,10 +2962,14 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
 impl SseDecode for crate::api::notes::NoteView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_kind = <crate::api::notes::NoteKindView>::sse_decode(deserializer);
         let mut var_title = <String>::sse_decode(deserializer);
+        let mut var_body = <String>::sse_decode(deserializer);
         let mut var_items = <Vec<crate::api::notes::ItemView>>::sse_decode(deserializer);
         return crate::api::notes::NoteView {
+            kind: var_kind,
             title: var_title,
+            body: var_body,
             items: var_items,
         };
     }
@@ -3070,15 +3192,17 @@ fn pde_ffi_dispatcher_primary_impl(
         34 => wire__crate__api__notes__Library_watch_notes_impl(port, ptr, rust_vec_len, data_len),
         35 => wire__crate__api__notes__Library_watch_sync_impl(port, ptr, rust_vec_len, data_len),
         36 => wire__crate__api__notes__Note_add_item_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__notes__Note_move_item_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__notes__Note_remove_item_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__notes__Note_set_checked_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__notes__Note_set_item_text_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__notes__Note_set_title_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__notes__Note_stop_watching_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__notes__Note_watch_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__notes__Note_watch_sync_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__notes__init_app_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__notes__Note_edit_body_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__notes__Note_move_item_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__notes__Note_remove_item_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__notes__Note_set_checked_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__notes__Note_set_item_text_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__notes__Note_set_kind_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__notes__Note_set_title_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__notes__Note_stop_watching_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__notes__Note_watch_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__notes__Note_watch_sync_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__notes__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -3104,11 +3228,11 @@ fn pde_ffi_dispatcher_sync_impl(
             wire__crate__api__notes__Library_take_storage_batches_impl(ptr, rust_vec_len, data_len)
         }
         33 => wire__crate__api__notes__Library_unwritten_batches_impl(ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__notes__Note_id_impl(ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__notes__Note_share_blob_impl(ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__notes__Note_sync_status_impl(ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__notes__Note_view_impl(ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__notes__master_key_beside_the_database_impl(
+        38 => wire__crate__api__notes__Note_id_impl(ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__notes__Note_share_blob_impl(ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__notes__Note_sync_status_impl(ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__notes__Note_view_impl(ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__notes__master_key_beside_the_database_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -3214,6 +3338,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::notes::NoteColour>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteKindView {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Checklist => 0.into_dart(),
+            Self::Text => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::notes::NoteKindView
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::notes::NoteKindView>
+    for crate::api::notes::NoteKindView
+{
+    fn into_into_dart(self) -> crate::api::notes::NoteKindView {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteLayout {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -3236,6 +3381,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteSummaryView {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
             self.items.into_into_dart().into_dart(),
             self.checked.into_into_dart().into_dart(),
@@ -3264,7 +3410,9 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::notes::NoteSummaryView>
 impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteView {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.kind.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
+            self.body.into_into_dart().into_dart(),
             self.items.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -3704,6 +3852,22 @@ impl SseEncode for crate::api::notes::NoteColour {
     }
 }
 
+impl SseEncode for crate::api::notes::NoteKindView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::notes::NoteKindView::Checklist => 0,
+                crate::api::notes::NoteKindView::Text => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::notes::NoteLayout {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3724,6 +3888,7 @@ impl SseEncode for crate::api::notes::NoteSummaryView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.id, serializer);
+        <crate::api::notes::NoteKindView>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.title, serializer);
         <u32>::sse_encode(self.items, serializer);
         <u32>::sse_encode(self.checked, serializer);
@@ -3739,7 +3904,9 @@ impl SseEncode for crate::api::notes::NoteSummaryView {
 impl SseEncode for crate::api::notes::NoteView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::notes::NoteKindView>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.title, serializer);
+        <String>::sse_encode(self.body, serializer);
         <Vec<crate::api::notes::ItemView>>::sse_encode(self.items, serializer);
     }
 }

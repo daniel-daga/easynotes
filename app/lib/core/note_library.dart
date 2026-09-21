@@ -14,7 +14,10 @@ library;
 import 'package:flutter/foundation.dart';
 
 import 'note_core.dart';
+import 'note_view.dart';
 import 'sync_status.dart';
+
+export 'note_view.dart' show NoteKind;
 
 /// A note's colour, as this person chose it.
 ///
@@ -107,6 +110,7 @@ class NoteSummary {
     required this.title,
     required this.items,
     required this.checked,
+    this.kind = NoteKind.checklist,
     this.preview = const [],
     this.colour,
     this.pinned = false,
@@ -116,14 +120,15 @@ class NoteSummary {
   });
 
   final String id;
+  final NoteKind kind;
   final String title;
 
   /// Every item on the list, checked or not.
   final int items;
   final int checked;
 
-  /// The first few items, in display order, so a card can show what the list is
-  /// about. Most shopping lists never get a title.
+  /// The first few lines of the body, then the first few items, so a card can
+  /// show what the note is about. Most shopping lists never get a title.
   final List<String> preview;
 
   /// What this person has done with the note. Personal: it comes from the
@@ -150,6 +155,7 @@ class NoteSummary {
   bool operator ==(Object other) =>
       other is NoteSummary &&
       other.id == id &&
+      other.kind == kind &&
       other.title == title &&
       other.items == items &&
       other.checked == checked &&
@@ -163,6 +169,7 @@ class NoteSummary {
   @override
   int get hashCode => Object.hash(
     id,
+    kind,
     title,
     items,
     checked,
@@ -242,8 +249,8 @@ abstract class NoteLibrary implements StorageHealth {
   /// The list now, and every version of it after that. Emits immediately.
   Stream<List<NoteSummary>> watchNotes();
 
-  /// Make a new, empty note and return its ID.
-  Future<String> createNote();
+  /// Make a new, empty note of [kind] and return its ID.
+  Future<String> createNote({NoteKind kind = NoteKind.checklist});
 
   /// Whether this device can join someone else's list.
   ///

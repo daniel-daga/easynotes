@@ -86,6 +86,13 @@ class RustNoteCore implements NoteCore {
   Future<void> setTitle(String title) => _note.setTitle(title: title);
 
   @override
+  Future<void> editBody(String from, String to) =>
+      _note.editBody(from: from, to: to);
+
+  @override
+  Future<void> setKind(NoteKind kind) => _note.setKind(kind: toRustKind(kind));
+
+  @override
   Future<String> addItem(String text) => _note.addItem(text: text);
 
   @override
@@ -151,8 +158,22 @@ class RustNoteCore implements NoteCore {
     lastError: s.lastError,
   );
 
+  /// Shared with [RustNoteLibrary], which creates notes of a kind and lists
+  /// them with theirs.
+  static NoteKind fromRustKind(rust.NoteKindView kind) => switch (kind) {
+    rust.NoteKindView.checklist => NoteKind.checklist,
+    rust.NoteKindView.text => NoteKind.text,
+  };
+
+  static rust.NoteKindView toRustKind(NoteKind kind) => switch (kind) {
+    NoteKind.checklist => rust.NoteKindView.checklist,
+    NoteKind.text => rust.NoteKindView.text,
+  };
+
   static NoteView _toView(rust.NoteView v) => NoteView(
+    kind: fromRustKind(v.kind),
     title: v.title,
+    body: v.body,
     items: [
       for (final i in v.items)
         ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),

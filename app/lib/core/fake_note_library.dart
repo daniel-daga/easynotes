@@ -95,10 +95,12 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Future<String> createNote() async {
-    calls.add('createNote()');
+  Future<String> createNote({NoteKind kind = NoteKind.checklist}) async {
+    calls.add(
+      kind == NoteKind.checklist ? 'createNote()' : 'createNote(${kind.name})',
+    );
     final id = 'note-${_counter++}';
-    _add(id, FakeNoteCore());
+    _add(id, FakeNoteCore(kind: kind));
     _emit();
     return id;
   }
@@ -114,7 +116,8 @@ class FakeNoteLibrary implements NoteLibrary {
 
   /// The same rule the core follows: every whitespace-separated word has to
   /// appear somewhere in the note, case ignored, and the line that comes back is
-  /// the first one — title, then items — holding any of them.
+  /// the first one — title, then the body's lines, then items — holding any
+  /// of them.
   @override
   Future<List<SearchHit>> search(String query) async {
     calls.add('search($query)');
@@ -124,7 +127,11 @@ class FakeNoteLibrary implements NoteLibrary {
     final hits = <SearchHit>[];
     for (final note in _summaries) {
       final view = _cores[note.id]!.current;
-      final lines = [view.title, for (final item in view.items) item.text];
+      final lines = [
+        view.title,
+        ..._bodyLines(view.body),
+        for (final item in view.items) item.text,
+      ];
       bool holds(String term) =>
           lines.any((line) => line.toLowerCase().contains(term));
       if (!terms.every(holds)) continue;
@@ -454,17 +461,25 @@ class FakeNoteLibrary implements NoteLibrary {
     _watchers.remove(id)?.cancel();
   }
 
+  /// A body as the real index keeps it: its lines, minus the blank ones.
+  static List<String> _bodyLines(String body) => [
+    for (final line in body.split('\n'))
+      if (line.trim().isNotEmpty) line,
+  ];
+
   void _emit() {
     final summaries = [
       for (final id in _order)
         NoteSummary(
           id: id,
+          kind: _cores[id]!.current.kind,
           title: _cores[id]!.current.title,
           items: _cores[id]!.current.items.length,
           checked: _cores[id]!.current.checkedCount,
           preview: [
-            for (final item in _cores[id]!.current.items.take(4)) item.text,
-          ],
+            ..._bodyLines(_cores[id]!.current.body),
+            for (final item in _cores[id]!.current.items) item.text,
+          ].take(4).toList(),
           colour: _placements[id]?.colour,
           pinned: _placements[id]?.pinned ?? false,
           archived: _placements[id]?.archived ?? false,
@@ -486,16 +501,17 @@ class FakeNoteLibrary implements NoteLibrary {
 extension on FakeNoteLibrary {
   List<Label> _labelsOn(String id) {
     final on = _placements[id]?.tags ?? const <String>{};
-    final labels = [
-      for (final labelId in on)
-        if (_labels[labelId] != null)
-          Label(id: labelId, name: _labels[labelId]!),
-    ]..sort((a, b) {
-      final folded = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      if (folded != 0) return folded;
-      final exact = a.name.compareTo(b.name);
-      return exact != 0 ? exact : a.id.compareTo(b.id);
-    });
+    final labels =
+        [
+          for (final labelId in on)
+            if (_labels[labelId] != null)
+              Label(id: labelId, name: _labels[labelId]!),
+        ]..sort((a, b) {
+          final folded = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          if (folded != 0) return folded;
+          final exact = a.name.compareTo(b.name);
+          return exact != 0 ? exact : a.id.compareTo(b.id);
+        });
     return labels;
   }
 }
@@ -506,6 +522,7 @@ class _Placement {
   bool pinned = false;
   bool archived = false;
   bool trashed = false;
+
   /// Label IDs, not names — the same separation the account document makes.
   final Set<String> tags = {};
 }

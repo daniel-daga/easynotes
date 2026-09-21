@@ -20,7 +20,7 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import 'account_screen.dart';
-import 'checklist_screen.dart';
+import 'note_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
 
@@ -156,15 +156,16 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final core = widget.library.openNote(id);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) =>
-            ChecklistScreen(core: core, storage: widget.library),
+        builder: (context) => NoteScreen(core: core, storage: widget.library),
       ),
     );
     await core.dispose();
   }
 
-  Future<void> _createNote() async {
-    final id = await widget.library.createNote();
+  /// A text note unless asked for a list, as in Keep: most quick notes are not
+  /// lists, and one that turns out to be is a tap away.
+  Future<void> _createNote({NoteKind kind = NoteKind.text}) async {
+    final id = await widget.library.createNote(kind: kind);
     // Made while looking at a label, so it gets that label: otherwise the note
     // would be created, drawn for a frame, and gone from the shelf it was made
     // on as soon as the list refreshed.
@@ -487,11 +488,25 @@ class _NoteListScreenState extends State<NoteListScreen> {
           // trash would appear in a grid that is not on screen, and one made
           // while searching would appear in results it does not match.
           floatingActionButton: _where.takesNewNotes && !_searching
-              ? FloatingActionButton(
-                  key: const Key('new-note-button'),
-                  tooltip: 'New list',
-                  onPressed: _createNote,
-                  child: const Icon(Icons.add),
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FloatingActionButton.small(
+                      key: const Key('new-list-button'),
+                      heroTag: 'new-list',
+                      tooltip: 'New list',
+                      onPressed: () => _createNote(kind: NoteKind.checklist),
+                      child: const Icon(Icons.check_box_outlined),
+                    ),
+                    const SizedBox(height: 12),
+                    FloatingActionButton(
+                      key: const Key('new-note-button'),
+                      heroTag: 'new-note',
+                      tooltip: 'New note',
+                      onPressed: _createNote,
+                      child: const Icon(Icons.add),
+                    ),
+                  ],
                 )
               : null,
           // The banner above whatever is on screen, rather than beside the
@@ -1226,7 +1241,11 @@ class _NoteCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final hidden = note.items - note.preview.length;
+    final isList = note.kind == NoteKind.checklist;
+    // Only a list counts what it is not showing: a text note's preview is lines
+    // of prose, and "+3 more" under a paragraph would be counting items it
+    // does not have.
+    final hidden = isList ? note.items - note.preview.length : 0;
     return Card(
       margin: EdgeInsets.zero,
       color: cardColour(context, note.colour),
@@ -1270,7 +1289,7 @@ class _NoteCard extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 1),
                   child: Text(
-                    '• $text',
+                    isList ? '• $text' : text,
                     style: theme.textTheme.bodyMedium,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1284,14 +1303,14 @@ class _NoteCard extends StatelessWidget {
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
-              if (note.title.isEmpty && note.items == 0)
+              if (note.title.isEmpty && note.preview.isEmpty)
                 Text(
-                  'Untitled list',
+                  isList ? 'Untitled list' : 'Empty note',
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: theme.disabledColor,
                   ),
                 ),
-              if (note.items > 0) ...[
+              if (isList && note.items > 0) ...[
                 const SizedBox(height: 8),
                 Text(
                   '${note.checked} of ${note.items} done',

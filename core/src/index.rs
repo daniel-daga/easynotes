@@ -35,6 +35,7 @@
 //! the property that makes it safe to put a copy of the note's text somewhere
 //! the CRDT does not control.
 
+use crate::crdt::NoteKind;
 use crate::crypto::NoteKey;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
@@ -43,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 1;
+pub const ENTRY_VERSION: u8 = 2;
 
 /// One note, as the list and the search read it.
 ///
@@ -56,7 +57,11 @@ pub const ENTRY_VERSION: u8 = 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub version: u8,
+    pub kind: NoteKind,
     pub title: String,
+    /// The body, one entry per line with something on it. Lines rather than one
+    /// string because a card previews lines and a search reports one.
+    pub body: Vec<String>,
     /// Every item's text, in display order.
     pub items: Vec<String>,
     pub checked: usize,
@@ -88,7 +93,13 @@ impl IndexEntry {
         Some(entry)
     }
 
-    /// The first line — the title, then the items in display order — that
+    /// What a card previews: the body's lines, then the items. Both, whatever
+    /// the kind, for the reason [`crate::crdt::NoteView`] gives.
+    pub fn preview(&self) -> impl Iterator<Item = &String> {
+        self.body.iter().chain(self.items.iter())
+    }
+
+    /// The first line — the title, the body, then the items in display order — that
     /// contains any of `terms`, if every term appears somewhere in the note.
     ///
     /// This is the whole of the matching rule, and it is deliberately the
@@ -106,7 +117,7 @@ impl IndexEntry {
         if terms.is_empty() {
             return None;
         }
-        let lines = || std::iter::once(&self.title).chain(self.items.iter());
+        let lines = || std::iter::once(&self.title).chain(self.preview());
         let holds = |line: &str, term: &String| line.to_lowercase().contains(term.as_str());
         if !terms
             .iter()
@@ -126,5 +137,13 @@ pub fn terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
         .map(|term| term.to_lowercase())
+        .collect()
+}
+
+/// A body as the index keeps it: its lines, minus the blank ones.
+pub fn body_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
         .collect()
 }

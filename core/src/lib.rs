@@ -12,6 +12,7 @@ pub mod index;
 pub mod note;
 pub mod order;
 pub mod store;
+pub mod text;
 
 // Always, though the transports inside it are not: `sync::wire` is the protocol
 // both of them speak and is the only part of talking to a relay that a plain

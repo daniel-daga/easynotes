@@ -1,4 +1,4 @@
-/// Widget tests for the checklist screen, against a faked core.
+/// Widget tests for the note screen, against a faked core.
 ///
 /// These check one thing above all: that the screen is a function of the view it
 /// is given. A gesture must produce an *edit* and nothing else, and the rendered
@@ -9,7 +9,7 @@ import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/sync_status.dart';
-import 'package:easynotes/ui/checklist_screen.dart';
+import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -20,10 +20,7 @@ Future<void> pumpScreen(
 }) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: ChecklistScreen(
-        core: core,
-        storage: storage ?? FakeStorageHealth(),
-      ),
+      home: NoteScreen(core: core, storage: storage ?? FakeStorageHealth()),
     ),
   );
   await tester.pumpAndSettle();
@@ -221,9 +218,7 @@ void main() {
     await pumpScreen(tester, core);
     final id = core.current.items[0].id;
 
-    final state = tester.state<State<ChecklistScreen>>(
-      find.byType(ChecklistScreen),
-    );
+    final state = tester.state<State<NoteScreen>>(find.byType(NoteScreen));
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
@@ -341,5 +336,116 @@ void main() {
     await tester.tap(find.byKey(const Key('storage-error')));
     await tester.pumpAndSettle();
     expect(find.text('QuotaExceededError'), findsOneWidget);
+  });
+
+  group('text notes', () {
+    TextField bodyField(WidgetTester tester) =>
+        tester.widget<TextField>(find.byKey(const Key('body-text')));
+
+    testWidgets('a text note is a body, with no list under it', (tester) async {
+      await pumpScreen(
+        tester,
+        FakeNoteCore(kind: NoteKind.text, body: 'Call the plumber'),
+      );
+      expect(bodyField(tester).controller!.text, 'Call the plumber');
+      expect(find.byKey(const Key('new-item-field')), findsNothing);
+      expect(find.byTooltip('Show checkboxes'), findsOneWidget);
+    });
+
+    testWidgets('typing sends the body as it is typed', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text);
+      await pumpScreen(tester, core);
+
+      await tester.enterText(find.byKey(const Key('body-text')), 'milk');
+      await tester.pumpAndSettle();
+      expect(core.edits, ['editBody( -> milk)']);
+      expect(core.current.body, 'milk');
+    });
+
+    testWidgets('the switch turns lines into items, and back', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk\nbread\n');
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('kind-toggle')));
+      await tester.pumpAndSettle();
+      expect(core.edits, ['setKind(checklist)']);
+      expect(visibleItems(tester), ['milk', 'bread']);
+      expect(find.byKey(const Key('body-text')), findsNothing);
+      expect(find.byTooltip('Hide checkboxes'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('kind-toggle')));
+      await tester.pumpAndSettle();
+      expect(bodyField(tester).controller!.text, 'milk\nbread');
+      expect(visibleItems(tester), isEmpty);
+    });
+
+    testWidgets('a checklist that a merge left text on shows the text', (
+      tester,
+    ) async {
+      // What the peer who was typing while this device converted sees: the
+      // rule is that a merge never hides anything.
+      final core = FakeNoteCore(items: const ['milk']);
+      await pumpScreen(tester, core);
+      core.pushRemote(
+        NoteView(title: '', body: 'coffee', items: core.current.items),
+      );
+      await tester.pumpAndSettle();
+
+      expect(bodyField(tester).controller!.text, 'coffee');
+      expect(visibleItems(tester), ['milk']);
+    });
+
+    testWidgets('a text note that a merge left items on shows the items', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await pumpScreen(tester, core);
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'milk',
+          items: [
+            ItemView(id: 'late', text: 'coffee', checked: false, order: 'a'),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['coffee']);
+    });
+
+    testWidgets('someone else typing does not move the caret', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk and bread');
+      await pumpScreen(tester, core);
+      final controller = bodyField(tester).controller!;
+      // The caret after "milk", as if this person were about to type there.
+      controller.selection = const TextSelection.collapsed(offset: 4);
+
+      // The other device adds a word in front of it, and one after it.
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'oat milk and bread',
+          items: [],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.text, 'oat milk and bread');
+      expect(controller.selection, const TextSelection.collapsed(offset: 8));
+
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'oat milk and rye bread',
+          items: [],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(controller.selection, const TextSelection.collapsed(offset: 8));
+      expect(core.edits, isEmpty);
+    });
   });
 }

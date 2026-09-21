@@ -157,7 +157,8 @@ class RustNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Future<String> createNote() => _library.createNote();
+  Future<String> createNote({NoteKind kind = NoteKind.checklist}) =>
+      _library.createNote(kind: RustNoteCore.toRustKind(kind));
 
   @override
   Future<String> join(String blob) => _library.join(blob: blob);
@@ -355,6 +356,7 @@ class RustNoteLibrary implements NoteLibrary {
 
   static NoteSummary _toSummary(rust.NoteSummaryView s) => NoteSummary(
     id: s.id,
+    kind: RustNoteCore.fromRustKind(s.kind),
     title: s.title,
     items: s.items,
     checked: s.checked,

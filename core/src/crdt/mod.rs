@@ -19,6 +19,7 @@
 
 use crate::error::Result;
 use crate::ids::ItemId;
+use serde::{Deserialize, Serialize};
 
 pub mod account;
 
@@ -52,12 +53,57 @@ pub struct ItemView {
     pub order: String,
 }
 
+/// Whether a note is written as prose or as a list of things to tick off.
+///
+/// It is shared rather than personal: it lives in the note's own document, so
+/// turning a note into a checklist turns it into one for everyone on it. A
+/// colour is a matter of taste; whether the shopping is a list is not.
+///
+/// A document that has never recorded a kind is a checklist, because every note
+/// written before this field existed was one. That default is what saves those
+/// notes a migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKind {
+    #[default]
+    Checklist,
+    Text,
+}
+
+impl NoteKind {
+    /// The value written into the document. Stable: it is on other devices.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoteKind::Checklist => "checklist",
+            NoteKind::Text => "text",
+        }
+    }
+
+    /// Read a recorded kind. Anything unrecognised — missing, or written by a
+    /// later version — is a checklist, the one kind every build can draw.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "text" => NoteKind::Text,
+            _ => NoteKind::Checklist,
+        }
+    }
+}
+
 /// The whole note as the UI sees it. Items are sorted by `(order, id)`; the ID
 /// breaks ties so two devices that generate the same order key still agree on
 /// the displayed sequence.
+///
+/// `body` and `items` are both always present, whatever `kind` says. Converting
+/// a note moves its content from one to the other, but a peer who was typing
+/// into the side that was just emptied still has their edit merged in — and the
+/// rule is that a merge never *hides* anything. So a checklist can arrive with
+/// text in its body, and a text note with items on it, and a screen draws both
+/// rather than choosing. See `docs/plan-note-kinds.md`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoteView {
+    pub kind: NoteKind,
     pub title: String,
+    pub body: String,
     pub items: Vec<ItemView>,
 }
 
@@ -105,6 +151,67 @@ pub enum Edit {
     RemoveItem {
         id: ItemId,
     },
+    /// Record the kind and nothing else. What a new text note is created with.
+    SetKind(NoteKind),
+    /// Replace the body's text. The backend works out the smallest splice that
+    /// turns the old text into this one and applies only that, so a peer typing
+    /// elsewhere in the same body keeps their characters — which is the whole
+    /// reason the body is the backend's text type rather than a register like
+    /// an item's text.
+    SetBody(String),
+    /// Turn the note into a checklist in one transaction: record the kind, empty
+    /// the body, and add these items. One transaction so that a peer never sees
+    /// the items arrive before the body empties, or the other way round.
+    ToChecklist {
+        items: Vec<NewItem>,
+    },
+    /// Turn the note into text in one transaction: record the kind, set the body
+    /// (as [`Edit::SetBody`] does, by splice) and remove these items.
+    ToText {
+        body: String,
+        remove: Vec<ItemId>,
+    },
+}
+
+/// An item as [`Edit::ToChecklist`] adds it: unchecked, with its order key
+/// already worked out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewItem {
+    pub id: ItemId,
+    pub text: String,
+    pub order: String,
+}
+
+/// The one splice that turns `old` into `new`: `(byte offset, bytes to delete,
+/// text to insert)`, found by trimming the prefix and suffix the two share.
+///
+/// Byte offsets on `char` boundaries, which is what Yrs counts in by default.
+/// It is not a minimal diff in general — two separate changes become one splice
+/// spanning both — but the UI sends one body per keystroke, and a keystroke is
+/// one change, so in practice it is exactly the edit that was made.
+#[cfg(feature = "yrs-backend")]
+pub(crate) fn splice<'a>(old: &str, new: &'a str) -> Option<(usize, usize, &'a str)> {
+    if old == new {
+        return None;
+    }
+    let prefix: usize = old
+        .char_indices()
+        .zip(new.chars())
+        .take_while(|((_, a), b)| a == b)
+        .last()
+        .map(|((i, c), _)| i + c.len_utf8())
+        .unwrap_or(0);
+    let (old_rest, new_rest) = (&old[prefix..], &new[prefix..]);
+    let suffix: usize = old_rest
+        .chars()
+        .rev()
+        .zip(new_rest.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(c, _)| c.len_utf8())
+        .sum();
+    let deleted = old_rest.len() - suffix;
+    let inserted = &new_rest[..new_rest.len() - suffix];
+    Some((prefix, deleted, inserted))
 }
 
 /// A note's CRDT state.

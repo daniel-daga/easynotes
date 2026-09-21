@@ -13,8 +13,15 @@ import 'note_view.dart';
 import 'sync_status.dart';
 
 class FakeNoteCore implements NoteCore {
-  FakeNoteCore({String title = '', List<String> items = const []}) {
+  FakeNoteCore({
+    String title = '',
+    List<String> items = const [],
+    NoteKind kind = NoteKind.checklist,
+    String body = '',
+  }) {
     _title = title;
+    _kind = kind;
+    _body = body;
     for (final text in items) {
       _items.add(_Item(id: _nextId(), text: text, order: _appendKey()));
     }
@@ -25,6 +32,8 @@ class FakeNoteCore implements NoteCore {
   final _sync = StreamController<SyncStatus>.broadcast();
   final List<_Item> _items = [];
   String _title = '';
+  NoteKind _kind = NoteKind.checklist;
+  String _body = '';
   int _counter = 0;
 
   /// Every edit the screen has asked for, in order. Tests assert on this to show
@@ -50,6 +59,42 @@ class FakeNoteCore implements NoteCore {
   Future<void> setTitle(String title) async {
     edits.add('setTitle($title)');
     _title = title;
+    _emit();
+  }
+
+  /// Takes [to] as it is: rebasing onto a body that moved is the real core's
+  /// job, and is tested there.
+  @override
+  Future<void> editBody(String from, String to) async {
+    if (to == _body) return;
+    edits.add('editBody($from -> $to)');
+    _body = to;
+    _emit();
+  }
+
+  /// The same carrying-across the real core does, so a screen test sees what a
+  /// person would: lines with something on them become unchecked items after
+  /// any items already there, and items become lines after any body.
+  @override
+  Future<void> setKind(NoteKind kind) async {
+    if (kind == _kind) return;
+    edits.add('setKind(${kind.name})');
+    switch (kind) {
+      case NoteKind.checklist:
+        for (final line in _body.split('\n')) {
+          if (line.trim().isEmpty) continue;
+          _items.add(_Item(id: _nextId(), text: line, order: _appendKey()));
+        }
+        _body = '';
+      case NoteKind.text:
+        final kept = _body.replaceFirst(RegExp(r'\n+$'), '');
+        _body = [
+          if (kept.isNotEmpty) kept,
+          for (final i in _items) i.text,
+        ].join('\n');
+        _items.clear();
+    }
+    _kind = kind;
     _emit();
   }
 
@@ -131,7 +176,9 @@ class FakeNoteCore implements NoteCore {
 
   void _emit() {
     _view = NoteView(
+      kind: _kind,
       title: _title,
+      body: _body,
       items: [
         for (final i in _items)
           ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),

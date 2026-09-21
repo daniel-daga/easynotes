@@ -14,15 +14,29 @@
 //! deterministically across replicas, so two devices that each bootstrapped their
 //! own `items` map would produce two conflicting objects and silently lose one
 //! side's items on merge. Root keys, by contrast, are just names both sides agree
-//! on. `"title"` is the one reserved key; every other key is an item ID.
+//! on. `"title"`, `"kind"` and `"body"` are the reserved keys; every other key
+//! is an item ID.
+//!
+//! `"body"` is the one place that rule has to bend, because a body is a text
+//! *object* and there is no root-level text type to name the way Yrs has one.
+//! It is created lazily, by the first edit that needs it, and a text note makes
+//! that edit when it is created — so the body exists in the note's first change
+//! and every peer that joins receives it rather than making its own. What is
+//! left is the note written before bodies existed that two devices both start
+//! typing into offline: each creates a body, Automerge keeps one, and the other
+//! device's text is lost. That is a real difference from Yrs, and one more reason
+//! Yrs is the default ([ADR 0001](../../../docs/adr/0001-crdt.md)).
 
-use super::{sort_items, Edit, ItemView, NoteDoc, NoteView};
+use super::{sort_items, Edit, ItemView, NoteDoc, NoteKind, NoteView};
 use crate::error::{CoreError, Result};
 use crate::ids::ItemId;
 use automerge::transaction::Transactable;
+use automerge::transaction::Transaction;
 use automerge::{Automerge, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 
 const TITLE: &str = "title";
+const KIND: &str = "kind";
+const BODY: &str = "body";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
@@ -51,6 +65,25 @@ impl AutomergeNote {
             },
             _ => String::new(),
         }
+    }
+
+    fn body_obj(doc: &impl ReadDoc) -> Option<ObjId> {
+        match doc.get(ROOT, BODY) {
+            Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
+            _ => None,
+        }
+    }
+
+    /// Set the body's text, creating the text object first if this is the first
+    /// edit to need one. `update_text` does the diffing, and counts in whatever
+    /// unit this build of Automerge counts in, so nothing here has to.
+    fn set_body(tx: &mut Transaction, text: &str) -> std::result::Result<(), AutomergeError> {
+        let obj = match Self::body_obj(tx) {
+            Some(obj) => obj,
+            None if text.is_empty() => return Ok(()),
+            None => tx.put_object(ROOT, BODY, ObjType::Text)?,
+        };
+        tx.update_text(&obj, text)
     }
 
     fn bool_at(doc: &Automerge, obj: &ObjId, prop: &str) -> bool {
@@ -111,6 +144,34 @@ impl NoteDoc for AutomergeNote {
                     Edit::RemoveItem { id } => {
                         tx.delete(ROOT, id.encode())?;
                     }
+                    Edit::SetKind(kind) => {
+                        tx.put(ROOT, KIND, kind.as_str())?;
+                        // A text note's body exists from its first change, for
+                        // the reason the module docs give.
+                        if *kind == NoteKind::Text && Self::body_obj(tx).is_none() {
+                            tx.put_object(ROOT, BODY, ObjType::Text)?;
+                        }
+                    }
+                    Edit::SetBody(text) => {
+                        Self::set_body(tx, text)?;
+                    }
+                    Edit::ToChecklist { items } => {
+                        tx.put(ROOT, KIND, NoteKind::Checklist.as_str())?;
+                        Self::set_body(tx, "")?;
+                        for item in items {
+                            let obj = tx.put_object(ROOT, item.id.encode(), ObjType::Map)?;
+                            tx.put(&obj, TEXT, item.text.as_str())?;
+                            tx.put(&obj, CHECKED, false)?;
+                            tx.put(&obj, ORDER, item.order.as_str())?;
+                        }
+                    }
+                    Edit::ToText { body, remove } => {
+                        tx.put(ROOT, KIND, NoteKind::Text.as_str())?;
+                        Self::set_body(tx, body)?;
+                        for id in remove {
+                            tx.delete(ROOT, id.encode())?;
+                        }
+                    }
                 }
                 Ok(())
             })
@@ -134,9 +195,14 @@ impl NoteDoc for AutomergeNote {
             _ => String::new(),
         };
 
+        let kind = NoteKind::parse(&Self::str_at(&self.doc, &ROOT, KIND));
+        let body = Self::body_obj(&self.doc)
+            .and_then(|obj| self.doc.text(&obj).ok())
+            .unwrap_or_default();
+
         let mut items = Vec::new();
         for key in self.doc.keys(ROOT) {
-            if key == TITLE {
+            if key == TITLE || key == KIND || key == BODY {
                 continue;
             }
             // Anything that is not a well-formed item ID is a key from a future
@@ -155,7 +221,12 @@ impl NoteDoc for AutomergeNote {
             });
         }
         sort_items(&mut items);
-        NoteView { title, items }
+        NoteView {
+            kind,
+            title,
+            body,
+            items,
+        }
     }
 
     fn snapshot(&self) -> Vec<u8> {

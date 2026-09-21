@@ -25,6 +25,17 @@ abstract class NoteCore {
 
   Future<void> setTitle(String title);
 
+  /// Say that this person changed the body from [from] — what the screen was
+  /// showing — to [to]. The core replays that change onto the body as it now
+  /// stands, so a peer's edit that arrived after the screen last drew is kept
+  /// rather than typed over. Only the change travels.
+  Future<void> editBody(String from, String to);
+
+  /// Switch between text and checklist, carrying the content across: each line
+  /// with something on it becomes an item, or each item becomes a line. Ticks
+  /// do not survive the trip to text. Nothing happens if it is [kind] already.
+  Future<void> setKind(NoteKind kind);
+
   /// Append an item. Returns its ID.
   Future<String> addItem(String text);
 

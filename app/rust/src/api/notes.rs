@@ -53,15 +53,49 @@ pub struct ItemView {
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
+///
+/// `body` and `items` both arrive whatever `kind` says, because a merge can
+/// leave content on the side a conversion emptied and a screen draws it rather
+/// than hiding it — see `easynotes_core::crdt::NoteView`.
 pub struct NoteView {
+    pub kind: NoteKindView,
     pub title: String,
+    pub body: String,
     pub items: Vec<ItemView>,
+}
+
+/// Whether a note is prose or a checklist. Shared: it is in the note's own
+/// document, so switching it switches it for everyone on the note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteKindView {
+    Checklist,
+    Text,
+}
+
+impl From<NoteKind> for NoteKindView {
+    fn from(k: NoteKind) -> Self {
+        match k {
+            NoteKind::Checklist => NoteKindView::Checklist,
+            NoteKind::Text => NoteKindView::Text,
+        }
+    }
+}
+
+impl From<NoteKindView> for NoteKind {
+    fn from(k: NoteKindView) -> Self {
+        match k {
+            NoteKindView::Checklist => NoteKind::Checklist,
+            NoteKindView::Text => NoteKind::Text,
+        }
+    }
 }
 
 impl From<easynotes_core::crdt::NoteView> for NoteView {
     fn from(v: easynotes_core::crdt::NoteView) -> Self {
         Self {
+            kind: v.kind.into(),
             title: v.title,
+            body: v.body,
             items: v
                 .items
                 .into_iter()
@@ -79,11 +113,12 @@ impl From<easynotes_core::crdt::NoteView> for NoteView {
 /// One card in the grid: enough to draw a note without opening it.
 pub struct NoteSummaryView {
     pub id: String,
+    pub kind: NoteKindView,
     pub title: String,
     pub items: u32,
     pub checked: u32,
-    /// The first few items, in display order. A card shows these when the note
-    /// has no title, which most shopping lists do not.
+    /// The first few lines of the body, then the first few items. A card shows
+    /// these under the title, and most shopping lists do not have one.
     pub preview: Vec<String>,
     /// What this person has done with the note. From the account document, so
     /// none of it is shared with whoever else is on the note.
@@ -115,6 +150,7 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
     fn from(s: easynotes_core::note::NoteSummary) -> Self {
         Self {
             id: s.id.encode(),
+            kind: s.kind.into(),
             title: s.title,
             items: s.items as u32,
             checked: s.checked as u32,
@@ -1161,12 +1197,11 @@ impl Library {
             .collect())
     }
 
-    /// Make a new, empty note and return its ID.
-    pub fn create_note(&self) -> Result<String, String> {
+    /// Make a new, empty note of `kind` and return its ID.
+    pub fn create_note(&self, kind: NoteKindView) -> Result<String, String> {
         let id = {
             let mut core = self.shared.locked()?;
-            core.create_note(NoteKind::Checklist)
-                .map_err(|e| e.to_string())?
+            core.create_note(kind.into()).map_err(|e| e.to_string())?
         };
         self.shared.connect_note(id)?;
         Ok(id.encode())
@@ -1708,6 +1743,35 @@ impl Note {
             core.set_title(self.id, title).map_err(|e| e.to_string())?
         };
         self.shared.publish(self.id, envelope);
+        Ok(())
+    }
+
+    /// Say that this person changed the body from `from` to `to`. The core
+    /// replays that change onto the body as it now stands, so a peer's edit
+    /// that arrived after the screen last drew is kept rather than typed over.
+    pub fn edit_body(&self, from: String, to: String) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.edit_body(self.id, &from, &to)
+                .map_err(|e| e.to_string())?
+        };
+        if let Some(envelope) = envelope {
+            self.shared.publish(self.id, envelope);
+        }
+        Ok(())
+    }
+
+    /// Switch the note between text and checklist, carrying its content across:
+    /// lines become items, or items become lines.
+    pub fn set_kind(&self, kind: NoteKindView) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.set_kind(self.id, kind.into())
+                .map_err(|e| e.to_string())?
+        };
+        if let Some(envelope) = envelope {
+            self.shared.publish(self.id, envelope);
+        }
         Ok(())
     }
 

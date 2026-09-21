@@ -79,16 +79,52 @@ void main() {
     expect(find.text('• jam'), findsOneWidget);
   });
 
-  testWidgets('the new-note button makes one and opens it', (tester) async {
+  testWidgets('the new-note button makes a text note and opens it', (
+    tester,
+  ) async {
     final library = FakeNoteLibrary();
     await pumpList(tester, library);
 
     await tester.tap(find.byKey(const Key('new-note-button')));
     await tester.pumpAndSettle();
 
+    expect(library.calls, contains('createNote(text)'));
+    // On the screen for the note it just made, ready to be typed into.
+    expect(find.byKey(const Key('body-text')), findsOneWidget);
+    expect(find.byKey(const Key('new-item-field')), findsNothing);
+  });
+
+  testWidgets('the new-list button makes a checklist and opens it', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary();
+    await pumpList(tester, library);
+
+    await tester.tap(find.byKey(const Key('new-list-button')));
+    await tester.pumpAndSettle();
+
     expect(library.calls, contains('createNote()'));
-    // On the checklist screen for the note it just made, ready to be typed into.
     expect(find.byKey(const Key('new-item-field')), findsOneWidget);
+  });
+
+  testWidgets('a text note\'s card shows its lines, and no tally', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'memo': FakeNoteCore(
+          kind: NoteKind.text,
+          title: 'Plumber',
+          body: 'Call on Monday\n\nabout the boiler',
+        ),
+      },
+    );
+    await pumpList(tester, library);
+
+    expect(find.text('Call on Monday'), findsOneWidget);
+    expect(find.text('about the boiler'), findsOneWidget);
+    expect(find.textContaining('•'), findsNothing);
+    expect(find.textContaining('done'), findsNothing);
   });
 
   testWidgets('tapping a card opens that note', (tester) async {

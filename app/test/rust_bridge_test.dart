@@ -124,6 +124,33 @@ void main() {
         ]);
       });
 
+      test(
+        'a text note keeps its body and switches to a list and back',
+        () async {
+          final library = await openLibraryInTempDir();
+          final id = await library.createNote(kind: NoteKind.text);
+          final core = library.openNote(id);
+          addTearDown(core.dispose);
+          expect(core.current.kind, NoteKind.text);
+
+          await core.editBody('', 'milk\nbread');
+          // The same text again is not an edit, and must not fail as one.
+          await core.editBody('milk\nbread', 'milk\nbread');
+          expect(core.current.body, 'milk\nbread');
+          expect(library.notes.single.kind, NoteKind.text);
+          expect(library.notes.single.preview, ['milk', 'bread']);
+
+          await core.setKind(NoteKind.checklist);
+          expect(core.current.kind, NoteKind.checklist);
+          expect(core.current.body, isEmpty);
+          expect(core.current.items.map((i) => i.text), ['milk', 'bread']);
+
+          await core.setKind(NoteKind.text);
+          expect(core.current.body, 'milk\nbread');
+          expect(core.current.items, isEmpty);
+        },
+      );
+
       test('checking, renaming and deleting an item all round-trip', () async {
         final core = await openInTempDir();
         final milk = await core.addItem('milk');

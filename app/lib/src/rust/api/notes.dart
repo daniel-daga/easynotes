@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `offline`, `on_disk`, `open`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -90,8 +90,8 @@ abstract class Library implements RustOpaqueInterface {
   /// named, which is what makes the second device possible.
   Future<List<String>> createAccount();
 
-  /// Make a new, empty note and return its ID.
-  Future<String> createNote();
+  /// Make a new, empty note of `kind` and return its ID.
+  Future<String> createNote({required NoteKindView kind});
 
   /// Stop syncing everything. Edits still work and still queue; nothing is
   /// lost.
@@ -293,6 +293,11 @@ abstract class Library implements RustOpaqueInterface {
 abstract class Note implements RustOpaqueInterface {
   Future<String> addItem({required String text});
 
+  /// Say that this person changed the body from `from` to `to`. The core
+  /// replays that change onto the body as it now stands, so a peer's edit
+  /// that arrived after the screen last drew is kept rather than typed over.
+  Future<void> editBody({required String from, required String to});
+
   String id();
 
   Future<void> moveItem({required String item, required int toIndex});
@@ -302,6 +307,10 @@ abstract class Note implements RustOpaqueInterface {
   Future<void> setChecked({required String item, required bool checked});
 
   Future<void> setItemText({required String item, required String text});
+
+  /// Switch the note between text and checklist, carrying its content across:
+  /// lines become items, or items become lines.
+  Future<void> setKind({required NoteKindView kind});
 
   Future<void> setTitle({required String title});
 
@@ -393,6 +402,10 @@ enum NoteColour {
   grey,
 }
 
+/// Whether a note is prose or a checklist. Shared: it is in the note's own
+/// document, so switching it switches it for everyone on the note.
+enum NoteKindView { checklist, text }
+
 /// Whether the note list is a masonry grid or one column. A view setting, and
 /// so a personal one: it lives in the account document with the placements.
 enum NoteLayout { grid, list }
@@ -400,12 +413,13 @@ enum NoteLayout { grid, list }
 /// One card in the grid: enough to draw a note without opening it.
 class NoteSummaryView {
   final String id;
+  final NoteKindView kind;
   final String title;
   final int items;
   final int checked;
 
-  /// The first few items, in display order. A card shows these when the note
-  /// has no title, which most shopping lists do not.
+  /// The first few lines of the body, then the first few items. A card shows
+  /// these under the title, and most shopping lists do not have one.
   final List<String> preview;
 
   /// What this person has done with the note. From the account document, so
@@ -430,6 +444,7 @@ class NoteSummaryView {
 
   const NoteSummaryView({
     required this.id,
+    required this.kind,
     required this.title,
     required this.items,
     required this.checked,
@@ -444,6 +459,7 @@ class NoteSummaryView {
   @override
   int get hashCode =>
       id.hashCode ^
+      kind.hashCode ^
       title.hashCode ^
       items.hashCode ^
       checked.hashCode ^
@@ -460,6 +476,7 @@ class NoteSummaryView {
       other is NoteSummaryView &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          kind == other.kind &&
           title == other.title &&
           items == other.items &&
           checked == other.checked &&
@@ -472,21 +489,35 @@ class NoteSummaryView {
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
+///
+/// `body` and `items` both arrive whatever `kind` says, because a merge can
+/// leave content on the side a conversion emptied and a screen draws it rather
+/// than hiding it — see `easynotes_core::crdt::NoteView`.
 class NoteView {
+  final NoteKindView kind;
   final String title;
+  final String body;
   final List<ItemView> items;
 
-  const NoteView({required this.title, required this.items});
+  const NoteView({
+    required this.kind,
+    required this.title,
+    required this.body,
+    required this.items,
+  });
 
   @override
-  int get hashCode => title.hashCode ^ items.hashCode;
+  int get hashCode =>
+      kind.hashCode ^ title.hashCode ^ body.hashCode ^ items.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is NoteView &&
           runtimeType == other.runtimeType &&
+          kind == other.kind &&
           title == other.title &&
+          body == other.body &&
           items == other.items;
 }
 
