@@ -15,12 +15,16 @@
 //! disagree.
 
 use crate::frb_generated::StreamSink;
-use crate::relay::Connection;
+use crate::relay::{on_network, Connection};
 use crate::storage::{Pending, Queue};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
-use easynotes_core::ids::{ItemId, LabelId, NoteId};
-use easynotes_core::note::{NoteCore, NoteKind};
+use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId};
+use easynotes_core::invite::{GuestKey, InviteSecret};
+use easynotes_core::note::{NoteCore, NoteKind, OutgoingInvite, PendingJoin};
 use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
+use easynotes_core::sync::invite::{self, Answer};
+use easynotes_core::sync::RequestState;
+use easynotes_core::CoreError;
 use flutter_rust_bridge::frb;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -744,6 +748,33 @@ impl Shared {
         Ok(())
     }
 
+    /// The relay's HTTP address, for the calls that are not a socket.
+    fn http_base(&self) -> Result<String, String> {
+        let relay = self.relay.lock().map_err(|_| "relay lock poisoned")?;
+        let relay = relay
+            .as_ref()
+            .ok_or("Sharing needs a relay, and this device is not connected to one.")?;
+        easynotes_core::sync::RelayEndpoint::parse(relay)
+            .map(|e| e.http_base)
+            .map_err(|e| e.to_string())
+    }
+
+    /// An invite this device has open, by the ID the screen was given.
+    fn outgoing(&self, invite: &str) -> Result<OutgoingInvite, String> {
+        let core = self.locked()?;
+        core.invites()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|i| i.secret.id().encode() == invite)
+            .ok_or_else(|| "This device has no such invite open.".to_string())
+    }
+
+    fn forget_invite(&self, invite: &OutgoingInvite) -> Result<(), String> {
+        self.locked()?
+            .forget_invite(invite.secret.id())
+            .map_err(|e| e.to_string())
+    }
+
     /// Connect everything this device can open and is not connected to already.
     ///
     /// Called when a relay is named and again whenever the account document
@@ -979,6 +1010,140 @@ fn note_id(s: &str) -> Result<NoteId, String> {
 
 fn label_id(s: &str) -> Result<LabelId, String> {
     LabelId::decode(s).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Invites
+// ---------------------------------------------------------------------------
+
+/// How long an invite lasts. The design doc's seven days: long enough for a
+/// link sent to a partner to be opened after a weekend, short enough that a
+/// link left in an old chat stops working on its own.
+const INVITE_TTL_SECS: u64 = easynotes_core::sync::invite::DEFAULT_TTL_SECS;
+
+/// Seconds as Dart gets them: an `int` everywhere, which a `u64` is not — the
+/// bridge makes that a `BigInt` — and thirty days fits many times over.
+fn clamp_secs(secs: u64) -> u32 {
+    secs.min(u32::MAX as u64) as u32
+}
+
+/// Unix seconds. `SystemTime` panics in a browser, which has a clock of its own.
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now() -> i64 {
+    (js_sys::Date::now() / 1000.0) as i64
+}
+
+/// An invite this device has open.
+pub struct InviteView {
+    pub id: String,
+    pub note: String,
+    /// What to send. Carries a secret and no key.
+    pub link: String,
+    /// How long it has left by this device's clock; the relay's is the one
+    /// that holds.
+    pub expires_in_secs: u32,
+}
+
+impl From<&OutgoingInvite> for InviteView {
+    fn from(invite: &OutgoingInvite) -> Self {
+        Self {
+            id: invite.secret.id().encode(),
+            note: invite.note.encode(),
+            link: invite.secret.link(),
+            expires_in_secs: clamp_secs((invite.expires_at - now()).max(0) as u64),
+        }
+    }
+}
+
+pub enum RequestStateView {
+    Pending,
+    Approved,
+    Declined,
+}
+
+impl From<RequestState> for RequestStateView {
+    fn from(state: RequestState) -> Self {
+        match state {
+            RequestState::Pending => Self::Pending,
+            RequestState::Approved => Self::Approved,
+            RequestState::Declined => Self::Declined,
+        }
+    }
+}
+
+/// Somebody asking to join, as the owner is shown them.
+pub struct JoinRequestView {
+    pub id: String,
+    /// What they typed. Their word only.
+    pub name: String,
+    /// The six digits their screen shows too.
+    pub code: String,
+    pub state: RequestStateView,
+    /// False for a request that does not open under the invite's key: it was
+    /// not made by anyone holding the link, and cannot be approved.
+    pub readable: bool,
+}
+
+pub struct InviteRequestsView {
+    /// False once somebody has been let in, or the invite has expired.
+    pub open: bool,
+    pub expires_in_secs: u32,
+    pub requests: Vec<JoinRequestView>,
+}
+
+/// A join request this device is waiting on.
+pub struct PendingJoinView {
+    pub invite: String,
+    pub name: String,
+    /// What to read to the owner, if they ask.
+    pub code: String,
+}
+
+impl From<&PendingJoin> for PendingJoinView {
+    fn from(join: &PendingJoin) -> Self {
+        Self {
+            invite: join.secret.id().encode(),
+            name: join.name.clone(),
+            code: join.code(),
+        }
+    }
+}
+
+pub enum JoinStateView {
+    /// Nobody has answered yet.
+    Waiting,
+    /// Let in: the note is on this device and syncing.
+    Joined,
+    /// Turned away.
+    Declined,
+    /// Expired, used by someone else, or withdrawn. `message` says which, as
+    /// far as the relay would say.
+    Gone,
+}
+
+pub struct JoinCheckView {
+    pub state: JoinStateView,
+    /// The note, once joined.
+    pub note: Option<String>,
+    pub message: Option<String>,
+}
+
+impl JoinCheckView {
+    fn waiting() -> Self {
+        Self {
+            state: JoinStateView::Waiting,
+            note: None,
+            message: None,
+        }
+    }
 }
 
 /// Every note this device holds.
@@ -1519,6 +1684,315 @@ impl Library {
             .map_err(|e| e.to_string())?;
         self.shared.connect_new_documents()?;
         Ok(())
+    }
+
+    // -- invites ------------------------------------------------------------
+    //
+    // How a note reaches another person: a link that carries no key, a request
+    // the owner sees, and a key handed over only when they say so. The core
+    // keeps what must survive a restart and does the cryptography; the calls
+    // to the relay are `easynotes_core::sync::invite`; what is here is the
+    // order they go in and the lock never being held across one of them.
+    //
+    // See `docs/adr/0015-invites.md`.
+
+    /// Open an invite to a note and return the link to send.
+    ///
+    /// Needs a relay: the invite lives on it until somebody asks to join.
+    pub async fn create_invite(&self, note: String) -> Result<InviteView, String> {
+        let note = note_id(&note)?;
+        let http = self.shared.http_base()?;
+        let mut invite = {
+            let core = self.shared.locked()?;
+            core.new_invite(note).map_err(|e| e.to_string())?
+        };
+        let (secret, owner) = (invite.secret.clone(), invite.owner.clone());
+        let granted = on_network(async move {
+            invite::open(&http, &secret, &owner, INVITE_TTL_SECS)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        invite.expires_at = now() + granted as i64;
+        self.shared
+            .locked()?
+            .remember_invite(&invite)
+            .map_err(|e| e.to_string())?;
+        Ok(InviteView::from(&invite))
+    }
+
+    /// The invites this device has open to `note`, oldest first. Local: it asks
+    /// the relay nothing, so an invite that has quietly expired is still here
+    /// until [`Library::invite_requests`] finds out.
+    #[frb(sync)]
+    pub fn invites(&self, note: String) -> Result<Vec<InviteView>, String> {
+        let note = note_id(&note)?;
+        let core = self.shared.locked()?;
+        Ok(core
+            .invites()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter(|i| i.note == note)
+            .map(InviteView::from)
+            .collect())
+    }
+
+    /// Every invite this device has open, to any note.
+    #[frb(sync)]
+    pub fn all_invites(&self) -> Result<Vec<InviteView>, String> {
+        let core = self.shared.locked()?;
+        Ok(core
+            .invites()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(InviteView::from)
+            .collect())
+    }
+
+    /// Who has asked to join through an invite, as the owner is shown them.
+    ///
+    /// An invite the relay no longer has, or that has closed, is forgotten
+    /// here on the way: there is nothing more it can be used for, and a list of
+    /// open invites that included it would be a list of things to wonder about.
+    pub async fn invite_requests(&self, invite: String) -> Result<InviteRequestsView, String> {
+        let outgoing = self.shared.outgoing(&invite)?;
+        let http = self.shared.http_base()?;
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        // The relay saying no is an answer and a network failing is not, and
+        // only the first means the invite is gone.
+        let listed = on_network(async move {
+            Ok(invite::list(&http, &secret, &owner)
+                .await
+                .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
+        })
+        .await?;
+        let listing = match listed {
+            Ok(listing) => listing,
+            Err((gone, message)) => {
+                if gone {
+                    self.shared.forget_invite(&outgoing)?;
+                }
+                return Err(message);
+            }
+        };
+        if !listing.open {
+            self.shared.forget_invite(&outgoing)?;
+        }
+        Ok(InviteRequestsView {
+            open: listing.open,
+            expires_in_secs: clamp_secs(listing.expires_in),
+            requests: listing
+                .requests
+                .iter()
+                .map(|r| JoinRequestView {
+                    id: r.request.clone(),
+                    name: r.join.as_ref().map(|j| j.name.clone()).unwrap_or_default(),
+                    code: r
+                        .join
+                        .as_ref()
+                        .map(|j| j.code(&outgoing.secret))
+                        .unwrap_or_default(),
+                    state: r.state.into(),
+                    readable: r.join.is_some(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Let the person who made `request` in: seal the note to them and close
+    /// the invite. Every other request on it is declined by the relay.
+    pub async fn approve_request(&self, invite: String, request: String) -> Result<(), String> {
+        let outgoing = self.shared.outgoing(&invite)?;
+        let http = self.shared.http_base()?;
+
+        // The request is fetched again rather than taken from the screen, so
+        // what is sealed to is exactly what the relay holds under that name.
+        let (secret, owner, base) = (
+            outgoing.secret.clone(),
+            outgoing.owner.clone(),
+            http.clone(),
+        );
+        let listing = on_network(async move {
+            invite::list(&base, &secret, &owner)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        let join = listing
+            .requests
+            .into_iter()
+            .find(|r| r.request == request)
+            .ok_or("That request is no longer there.")?
+            .join
+            .ok_or("That request cannot be read, so it cannot be approved.")?;
+
+        let grant = {
+            let core = self.shared.locked()?;
+            core.seal_grant(&outgoing, &join)
+                .map_err(|e| e.to_string())?
+        };
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        on_network(async move {
+            invite::approve(&http, &secret, &owner, &request, &grant)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        self.shared.forget_invite(&outgoing)
+    }
+
+    /// Turn a request away. The invite stays open for someone else.
+    pub async fn decline_request(&self, invite: String, request: String) -> Result<(), String> {
+        let outgoing = self.shared.outgoing(&invite)?;
+        let http = self.shared.http_base()?;
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        on_network(async move {
+            invite::decline(&http, &secret, &owner, &request)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    /// Take an invite down, on the relay and here. Anyone holding the link is
+    /// told it does not exist.
+    pub async fn withdraw_invite(&self, invite: String) -> Result<(), String> {
+        let outgoing = self.shared.outgoing(&invite)?;
+        let http = self.shared.http_base()?;
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        let withdrawn = on_network(async move {
+            Ok(invite::withdraw(&http, &secret, &owner)
+                .await
+                .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
+        })
+        .await?;
+        match withdrawn {
+            // Already gone from the relay is as good as withdrawn.
+            Ok(()) | Err((true, _)) => self.shared.forget_invite(&outgoing),
+            Err((false, message)) => Err(message),
+        }
+    }
+
+    /// Ask to join through a link, calling yourself `name` to the owner.
+    ///
+    /// Returns what to show while waiting, including the six digits the owner
+    /// will see beside the request.
+    pub async fn request_join(
+        &self,
+        link: String,
+        name: String,
+    ) -> Result<PendingJoinView, String> {
+        let secret = InviteSecret::from_link(&link).map_err(|e| e.to_string())?;
+        let http = self.shared.http_base()?;
+        let guest = GuestKey::random();
+        let (s, g, n) = (secret.clone(), guest.clone(), name.clone());
+        let request = on_network(async move {
+            invite::request(&http, &s, &g, &n)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        let join = PendingJoin {
+            secret,
+            request,
+            guest,
+            name: name.trim().to_string(),
+        };
+        self.shared
+            .locked()?
+            .remember_join(&join)
+            .map_err(|e| e.to_string())?;
+        Ok(PendingJoinView::from(&join))
+    }
+
+    /// The join requests this device is waiting on.
+    #[frb(sync)]
+    pub fn pending_joins(&self) -> Result<Vec<PendingJoinView>, String> {
+        let core = self.shared.locked()?;
+        Ok(core
+            .joins()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(PendingJoinView::from)
+            .collect())
+    }
+
+    /// Ask the relay how a join request went, and act on the answer: an
+    /// approved one adds the note and starts syncing it; a declined, expired
+    /// or withdrawn one stops being waited on.
+    pub async fn check_join(&self, invite: String) -> Result<JoinCheckView, String> {
+        let join = {
+            let core = self.shared.locked()?;
+            core.joins()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|j| j.secret.id().encode() == invite)
+                .ok_or("This device is not waiting on that invite.")?
+        };
+        let http = self.shared.http_base()?;
+        let (secret, guest, request) = (
+            join.secret.clone(),
+            join.guest.clone(),
+            join.request.clone(),
+        );
+        let answer = on_network(async move {
+            match invite::poll(&http, &secret, &guest, &request).await {
+                Ok(answer) => Ok(Ok(answer)),
+                Err(CoreError::Invite(message)) => Ok(Err(message)),
+                Err(other) => Err(other.to_string()),
+            }
+        })
+        .await?;
+        let id = join.secret.id();
+        match answer {
+            Ok(Answer::Pending { .. }) => Ok(JoinCheckView::waiting()),
+            Ok(Answer::Approved { note, key }) => {
+                let note = {
+                    let mut core = self.shared.locked()?;
+                    core.accept_grant(id, note, key)
+                        .map_err(|e| e.to_string())?
+                };
+                self.shared.connect_note(note)?;
+                Ok(JoinCheckView {
+                    state: JoinStateView::Joined,
+                    note: Some(note.encode()),
+                    message: None,
+                })
+            }
+            Ok(Answer::Declined) => {
+                self.shared
+                    .locked()?
+                    .forget_join(id)
+                    .map_err(|e| e.to_string())?;
+                Ok(JoinCheckView {
+                    state: JoinStateView::Declined,
+                    note: None,
+                    message: None,
+                })
+            }
+            Err(message) => {
+                self.shared
+                    .locked()?
+                    .forget_join(id)
+                    .map_err(|e| e.to_string())?;
+                Ok(JoinCheckView {
+                    state: JoinStateView::Gone,
+                    note: None,
+                    message: Some(message),
+                })
+            }
+        }
+    }
+
+    /// Stop waiting on a join request. The relay keeps the request until the
+    /// invite expires; the owner may still approve it, and nothing here will
+    /// be listening.
+    pub fn cancel_join(&self, invite: String) -> Result<(), String> {
+        let id = InviteId::decode(&invite).map_err(|e| e.to_string())?;
+        self.shared
+            .locked()?
+            .forget_join(id)
+            .map_err(|e| e.to_string())
     }
 
     // -- sync ---------------------------------------------------------------

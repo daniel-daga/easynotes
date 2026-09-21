@@ -163,6 +163,91 @@ class RustNoteLibrary implements NoteLibrary {
   @override
   Future<String> join(String blob) => _library.join(blob: blob);
 
+  // -- invites --------------------------------------------------------------
+
+  static Invite _toInvite(rust.InviteView invite) => Invite(
+    id: invite.id,
+    noteId: invite.note,
+    link: invite.link,
+    expiresIn: Duration(seconds: invite.expiresInSecs),
+  );
+
+  @override
+  Future<Invite> createInvite(String noteId) async =>
+      _toInvite(await _library.createInvite(note: noteId));
+
+  @override
+  List<Invite> invitesFor(String noteId) =>
+      _library.invites(note: noteId).map(_toInvite).toList();
+
+  @override
+  List<Invite> get allInvites => _library.allInvites().map(_toInvite).toList();
+
+  @override
+  Future<InviteRequests> inviteRequests(String inviteId) async {
+    final listing = await _library.inviteRequests(invite: inviteId);
+    return InviteRequests(
+      open: listing.open,
+      expiresIn: Duration(seconds: listing.expiresInSecs),
+      requests: [
+        for (final r in listing.requests)
+          JoinRequest(
+            id: r.id,
+            name: r.name,
+            code: r.code,
+            readable: r.readable,
+            state: switch (r.state) {
+              rust.RequestStateView.pending => JoinRequestState.pending,
+              rust.RequestStateView.approved => JoinRequestState.approved,
+              rust.RequestStateView.declined => JoinRequestState.declined,
+            },
+          ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> approveRequest(String inviteId, String requestId) =>
+      _library.approveRequest(invite: inviteId, request: requestId);
+
+  @override
+  Future<void> declineRequest(String inviteId, String requestId) =>
+      _library.declineRequest(invite: inviteId, request: requestId);
+
+  @override
+  Future<void> withdrawInvite(String inviteId) =>
+      _library.withdrawInvite(invite: inviteId);
+
+  static PendingJoin _toJoin(rust.PendingJoinView join) =>
+      PendingJoin(inviteId: join.invite, name: join.name, code: join.code);
+
+  @override
+  Future<PendingJoin> requestJoin(String link, {String name = ''}) async =>
+      _toJoin(await _library.requestJoin(link: link, name: name));
+
+  @override
+  List<PendingJoin> get pendingJoins =>
+      _library.pendingJoins().map(_toJoin).toList();
+
+  @override
+  Future<JoinCheck> checkJoin(String inviteId) async {
+    final check = await _library.checkJoin(invite: inviteId);
+    return JoinCheck(
+      switch (check.state) {
+        rust.JoinStateView.waiting => JoinState.waiting,
+        rust.JoinStateView.joined => JoinState.joined,
+        rust.JoinStateView.declined => JoinState.declined,
+        rust.JoinStateView.gone => JoinState.gone,
+      },
+      noteId: check.note,
+      message: check.message,
+    );
+  }
+
+  @override
+  Future<void> cancelJoin(String inviteId) =>
+      _library.cancelJoin(invite: inviteId);
+
   @override
   Future<List<SearchHit>> search(String query) async {
     final hits = await _library.search(query: query);

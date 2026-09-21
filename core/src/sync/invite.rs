@@ -19,6 +19,10 @@ use base64::Engine;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+/// How long an invite lasts unless asked otherwise: the design doc's seven
+/// days, which is also the relay's own default.
+pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
 async fn call<Q: Serialize>(url: &str, body: &Q) -> Result<String> {
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;

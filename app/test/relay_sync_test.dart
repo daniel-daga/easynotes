@@ -249,6 +249,115 @@ void main() {
       expect(library.hasAccount, isFalse);
     });
   }, skip: skip);
+
+  group('sharing with another person by invite', () {
+    test(
+      'a guest asks with a link, the owner lets them in, and the list arrives',
+      () async {
+        final (owner, a) = await open();
+        await a.setTitle('Groceries');
+        await a.addItem('oat milk');
+        final noteId = owner.notes.single.id;
+
+        final invite = await owner.createInvite(noteId);
+        expect(invite.link, startsWith('easynotes://join#'));
+        expect(owner.invitesFor(noteId).single.id, invite.id);
+
+        // Only the link crosses. It carries no key: the guest's library has
+        // nothing to open until the owner says so.
+        final guest = await device();
+        final waiting = await guest.requestJoin(invite.link, name: 'Anna');
+        expect(guest.pendingJoins.single.inviteId, waiting.inviteId);
+        expect(
+          (await guest.checkJoin(waiting.inviteId)).state,
+          JoinState.waiting,
+        );
+        expect(guest.notes, isEmpty);
+
+        final asked = await owner.inviteRequests(invite.id);
+        expect(asked.open, isTrue);
+        final request = asked.pending.single;
+        expect(request.name, 'Anna');
+        expect(request.code, waiting.code, reason: 'the two screens disagree');
+
+        await owner.approveRequest(invite.id, request.id);
+        expect(owner.invitesFor(noteId), isEmpty);
+
+        final joined = await guest.checkJoin(waiting.inviteId);
+        expect(joined.state, JoinState.joined);
+        expect(joined.noteId, noteId);
+        expect(guest.pendingJoins, isEmpty);
+
+        final b = guest.openNote(joined.noteId!);
+        addTearDown(b.dispose);
+        await _until(
+          b.watch(),
+          (view) =>
+              view.title == 'Groceries' &&
+              view.items.map((i) => i.text).join(',') == 'oat milk',
+          'the guest was let in and never received the list',
+        );
+
+        // And it is a membership, not a copy: an edit goes back.
+        await b.setChecked(b.current.items.single.id, true);
+        await _until(
+          a.watch(),
+          (view) => view.items.single.checked,
+          'the owner never saw the guest tick an item',
+        );
+      },
+    );
+
+    test('a spent link says so to the next person', () async {
+      final (owner, _) = await open();
+      final noteId = owner.notes.single.id;
+      final invite = await owner.createInvite(noteId);
+      final first = await device();
+      final waiting = await first.requestJoin(invite.link, name: 'Anna');
+      final request = (await owner.inviteRequests(invite.id)).pending.single;
+      await owner.approveRequest(invite.id, request.id);
+      expect((await first.checkJoin(waiting.inviteId)).state, JoinState.joined);
+
+      final late = await device();
+      await expectLater(
+        late.requestJoin(invite.link, name: 'Late'),
+        throwsA(contains('already been used')),
+      );
+    });
+
+    test('a withdrawn link is gone for the guest waiting on it', () async {
+      final (owner, _) = await open();
+      final invite = await owner.createInvite(owner.notes.single.id);
+      final guest = await device();
+      final waiting = await guest.requestJoin(invite.link);
+
+      await owner.withdrawInvite(invite.id);
+
+      final check = await guest.checkJoin(waiting.inviteId);
+      expect(check.state, JoinState.gone);
+      expect(check.message, contains('does not exist'));
+      expect(guest.pendingJoins, isEmpty);
+    });
+
+    test('a turned-away guest is told, and the link still works', () async {
+      final (owner, _) = await open();
+      final invite = await owner.createInvite(owner.notes.single.id);
+      final stranger = await device();
+      final waiting = await stranger.requestJoin(invite.link, name: 'Stranger');
+      final request = (await owner.inviteRequests(invite.id)).pending.single;
+
+      await owner.declineRequest(invite.id, request.id);
+
+      expect(
+        (await stranger.checkJoin(waiting.inviteId)).state,
+        JoinState.declined,
+      );
+      final anna = await device();
+      await anna.requestJoin(invite.link, name: 'Anna');
+      final asked = await owner.inviteRequests(invite.id);
+      expect(asked.pending.single.name, 'Anna');
+    });
+  }, skip: skip);
 }
 
 Future<void> _untilNotes(

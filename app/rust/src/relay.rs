@@ -41,6 +41,23 @@ mod native {
         Ok(RUNTIME.get_or_init(|| built))
     }
 
+    /// Run a call to the relay where a call to the relay can run.
+    ///
+    /// The bridge's own executor runs the `async fn`s in the generated API and
+    /// has no reactor, so an HTTP request started on it would never be woken.
+    /// The sync runtime has one; the work goes there and the bridge awaits the
+    /// handle, which any executor can.
+    pub async fn on_network<F, T>(work: F) -> Result<T, String>
+    where
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+        T: Send + 'static,
+    {
+        runtime()?
+            .spawn(work)
+            .await
+            .map_err(|e| format!("the network call did not finish: {e}"))?
+    }
+
     pub struct Connection {
         handle: SyncHandle,
     }
@@ -119,6 +136,16 @@ mod web {
     /// memory rather than an `Rc` that cannot leave its thread. Without
     /// `+atomics` this would be unsound, which is one more reason the threading
     /// flags in the justfile stay together.
+    /// Run a call to the relay. In a tab that is simply awaiting it: `fetch`
+    /// needs the page's event loop, and an `async` bridge method is already on
+    /// it.
+    pub async fn on_network<F, T>(work: F) -> Result<T, String>
+    where
+        F: std::future::Future<Output = Result<T, String>>,
+    {
+        work.await
+    }
+
     pub struct Connection {
         handle: SyncHandle,
     }
@@ -163,6 +190,6 @@ mod web {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::Connection;
+pub use native::{on_network, Connection};
 #[cfg(target_arch = "wasm32")]
-pub use web::Connection;
+pub use web::{on_network, Connection};

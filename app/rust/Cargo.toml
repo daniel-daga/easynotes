@@ -31,6 +31,9 @@ easynotes-core = { path = "../../core", default-features = false, features = ["a
 # The engine needs somewhere to run, and in a tab that is the page's own event
 # loop rather than a runtime we start.
 wasm-bindgen-futures = "0.4.78"
+# The page's clock, for how long an invite has left. `SystemTime` panics in a
+# browser. Already in the tree under the bridge.
+js-sys = "0.3.105"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

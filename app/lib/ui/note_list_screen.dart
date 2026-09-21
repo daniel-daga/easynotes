@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import 'account_screen.dart';
+import 'invites.dart';
 import 'note_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
@@ -156,7 +157,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final core = widget.library.openNote(id);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => NoteScreen(core: core, storage: widget.library),
+        builder: (context) => NoteScreen(
+          core: core,
+          storage: widget.library,
+          noteId: id,
+          invites: widget.library,
+        ),
       ),
     );
     await core.dispose();
@@ -243,27 +249,53 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// only way in, so it closes itself.
   void _show(_Where where) => setState(() => _where = where);
 
+  /// Ask to join a list by its invite link, and wait to be let in.
+  ///
+  /// The wait is a dialog because somebody who has just pasted a link is
+  /// usually on the phone to the person who sent it; closing it keeps the
+  /// request, and [InviteBanners] keeps waiting where the dialog left off.
   Future<void> _join() async {
-    final blob = await showDialog<String>(
+    final join = await showDialog<PendingJoin>(
       context: context,
-      builder: (context) => const _JoinDialog(),
+      builder: (context) => JoinDialog(invites: widget.library),
     );
-    if (blob == null || blob.isEmpty || !mounted) return;
-    final String id;
-    try {
-      id = await widget.library.join(blob);
-    } catch (e) {
-      if (!mounted) return;
-      // The blob is pasted by hand, so a bad one is an ordinary thing to do and
-      // not a crash. Its own words, because "invalid" would not help anyone fix
-      // a truncated paste.
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e', key: const Key('join-error'))),
-      );
-      return;
-    }
-    if (!mounted) return;
+    if (join == null || !mounted) return;
+    final id = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => WaitingDialog(invites: widget.library, join: join),
+    );
+    if (id == null || !mounted) return;
     await _openNote(id);
+  }
+
+  /// Answer whoever asked to join one of this device's lists.
+  Future<void> _review(String noteId) => showDialog<void>(
+    context: context,
+    builder: (context) => ShareDialog(invites: widget.library, noteId: noteId),
+  );
+
+  /// A request that was waiting in the background was let in.
+  void _joinedInBackground(String noteId) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        key: const Key('joined-in-background'),
+        content: const Text('You were let in to a list.'),
+        action: SnackBarAction(
+          label: 'Open',
+          onPressed: () => _openNote(noteId),
+        ),
+      ),
+    );
+  }
+
+  String _titleOf(String noteId) {
+    final title = widget.library.notes
+        .where((n) => n.id == noteId)
+        .firstOrNull
+        ?.title;
+    return title == null || title.isEmpty ? 'a list' : '"$title"';
   }
 
   /// Where this device becomes one of a person's devices. Rebuilt on the way
@@ -515,6 +547,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
           body: Column(
             children: [
               StorageBanner(storage: widget.library),
+              InviteBanners(
+                invites: widget.library,
+                titleOf: _titleOf,
+                onReview: _review,
+                onJoined: _joinedInBackground,
+              ),
               Expanded(child: _body(all, notes)),
             ],
           ),
@@ -1605,68 +1643,6 @@ class _LabelsDialogState extends State<_LabelsDialog> {
           key: const Key('labels-done'),
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Done'),
-        ),
-      ],
-    );
-  }
-}
-
-/// Asks for a share blob and pops with it.
-///
-/// A widget of its own rather than a closure in the screen, because the text
-/// controller has to outlive the dialog's own teardown and be disposed after it
-/// — which is exactly what a `State` does and a local variable does not.
-class _JoinDialog extends StatefulWidget {
-  const _JoinDialog();
-
-  @override
-  State<_JoinDialog> createState() => _JoinDialogState();
-}
-
-class _JoinDialogState extends State<_JoinDialog> {
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Join a list'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Paste the blob from the device that has the list. It is added to '
-            'the lists already here.',
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: const Key('join-blob-field'),
-            controller: _controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Share blob',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          key: const Key('join-confirm'),
-          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
-          child: const Text('Join'),
         ),
       ],
     );

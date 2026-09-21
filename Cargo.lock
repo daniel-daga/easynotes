@@ -2068,6 +2068,7 @@ version = "0.1.0"
 dependencies = [
  "easynotes-core",
  "flutter_rust_bridge",
+ "js-sys",
  "tokio",
  "wasm-bindgen-futures",
 ]

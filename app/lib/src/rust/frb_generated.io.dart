@@ -90,7 +90,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_i_64(dynamic raw);
 
   @protected
+  InviteRequestsView dco_decode_invite_requests_view(dynamic raw);
+
+  @protected
+  InviteView dco_decode_invite_view(dynamic raw);
+
+  @protected
   ItemView dco_decode_item_view(dynamic raw);
+
+  @protected
+  JoinCheckView dco_decode_join_check_view(dynamic raw);
+
+  @protected
+  JoinRequestView dco_decode_join_request_view(dynamic raw);
+
+  @protected
+  JoinStateView dco_decode_join_state_view(dynamic raw);
 
   @protected
   LabelView dco_decode_label_view(dynamic raw);
@@ -99,13 +114,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<InviteView> dco_decode_list_invite_view(dynamic raw);
+
+  @protected
   List<ItemView> dco_decode_list_item_view(dynamic raw);
+
+  @protected
+  List<JoinRequestView> dco_decode_list_join_request_view(dynamic raw);
 
   @protected
   List<LabelView> dco_decode_list_label_view(dynamic raw);
 
   @protected
   List<NoteSummaryView> dco_decode_list_note_summary_view(dynamic raw);
+
+  @protected
+  List<PendingJoinView> dco_decode_list_pending_join_view(dynamic raw);
 
   @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
@@ -151,6 +175,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  PendingJoinView dco_decode_pending_join_view(dynamic raw);
+
+  @protected
+  RequestStateView dco_decode_request_state_view(dynamic raw);
 
   @protected
   SearchHitView dco_decode_search_hit_view(dynamic raw);
@@ -262,7 +292,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
 
   @protected
+  InviteRequestsView sse_decode_invite_requests_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  InviteView sse_decode_invite_view(SseDeserializer deserializer);
+
+  @protected
   ItemView sse_decode_item_view(SseDeserializer deserializer);
+
+  @protected
+  JoinCheckView sse_decode_join_check_view(SseDeserializer deserializer);
+
+  @protected
+  JoinRequestView sse_decode_join_request_view(SseDeserializer deserializer);
+
+  @protected
+  JoinStateView sse_decode_join_state_view(SseDeserializer deserializer);
 
   @protected
   LabelView sse_decode_label_view(SseDeserializer deserializer);
@@ -271,13 +318,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<InviteView> sse_decode_list_invite_view(SseDeserializer deserializer);
+
+  @protected
   List<ItemView> sse_decode_list_item_view(SseDeserializer deserializer);
+
+  @protected
+  List<JoinRequestView> sse_decode_list_join_request_view(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<LabelView> sse_decode_list_label_view(SseDeserializer deserializer);
 
   @protected
   List<NoteSummaryView> sse_decode_list_note_summary_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PendingJoinView> sse_decode_list_pending_join_view(
     SseDeserializer deserializer,
   );
 
@@ -333,6 +393,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  PendingJoinView sse_decode_pending_join_view(SseDeserializer deserializer);
+
+  @protected
+  RequestStateView sse_decode_request_state_view(SseDeserializer deserializer);
 
   @protected
   SearchHitView sse_decode_search_hit_view(SseDeserializer deserializer);
@@ -458,7 +524,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
 
   @protected
+  void sse_encode_invite_requests_view(
+    InviteRequestsView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_invite_view(InviteView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_item_view(ItemView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_join_check_view(JoinCheckView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_join_request_view(
+    JoinRequestView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_join_state_view(JoinStateView self, SseSerializer serializer);
 
   @protected
   void sse_encode_label_view(LabelView self, SseSerializer serializer);
@@ -467,7 +554,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_invite_view(
+    List<InviteView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_item_view(List<ItemView> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_join_request_view(
+    List<JoinRequestView> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_label_view(
@@ -478,6 +577,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_note_summary_view(
     List<NoteSummaryView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_pending_join_view(
+    List<PendingJoinView> self,
     SseSerializer serializer,
   );
 
@@ -547,6 +652,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
     Uint8List? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_pending_join_view(
+    PendingJoinView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_request_state_view(
+    RequestStateView self,
     SseSerializer serializer,
   );
 

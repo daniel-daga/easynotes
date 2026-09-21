@@ -13,10 +13,12 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'invites.dart';
 import 'note_core.dart';
 import 'note_view.dart';
 import 'sync_status.dart';
 
+export 'invites.dart';
 export 'note_view.dart' show NoteKind;
 
 /// A note's colour, as this person chose it.
@@ -242,7 +244,7 @@ abstract interface class StorageHealth {
   Stream<String?> watchStorageError();
 }
 
-abstract class NoteLibrary implements StorageHealth {
+abstract class NoteLibrary implements StorageHealth, Invites {
   /// The notes right now, newest first, for the first frame.
   List<NoteSummary> get notes;
 
@@ -262,6 +264,10 @@ abstract class NoteLibrary implements StorageHealth {
   bool get canJoin;
 
   /// Add the note a share blob describes. Returns its ID.
+  ///
+  /// What the tests and the two-emulator walkthroughs use to put one note on
+  /// two devices in a line. The app does not offer it any more: a blob is the
+  /// note key, forever, and [Invites] is how a person shares a list.
   Future<String> join(String blob);
 
   /// Every note whose text contains all of the query's words.

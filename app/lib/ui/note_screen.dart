@@ -17,13 +17,27 @@ import 'package:flutter/material.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
+import 'invites.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
 
 class NoteScreen extends StatefulWidget {
-  const NoteScreen({super.key, required this.core, required this.storage});
+  const NoteScreen({
+    super.key,
+    required this.core,
+    required this.storage,
+    required this.noteId,
+    required this.invites,
+  });
 
   final NoteCore core;
+
+  /// Which note this is, for the invite made from here.
+  final String noteId;
+
+  /// How this note is shared with another person. The device's, like
+  /// [storage], because an invite lives on the relay the device talks to.
+  final Invites invites;
 
   /// Whether the device is keeping what is typed here.
   ///
@@ -58,34 +72,11 @@ class _NoteScreenState extends State<NoteScreen> {
     _newItemFocus.requestFocus();
   }
 
-  Future<void> _showShareBlob() async {
-    final blob = await widget.core.exportShareBlob();
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Share this list'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Paste this on the other device. It carries the note key, so treat '
-              'it like a password.',
-            ),
-            const SizedBox(height: 12),
-            SelectableText(blob, key: const Key('share-blob')),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-  }
+  Future<void> _share() => showDialog<void>(
+    context: context,
+    builder: (context) =>
+        ShareDialog(invites: widget.invites, noteId: widget.noteId),
+  );
 
   _ItemRow _row(ItemView item) => _ItemRow(
     key: ValueKey(item.id),
@@ -212,7 +203,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 key: const Key('share-button'),
                 icon: const Icon(Icons.ios_share),
                 tooltip: 'Share this list',
-                onPressed: _showShareBlob,
+                onPressed: _share,
               ),
             ],
           ),

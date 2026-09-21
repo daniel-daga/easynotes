@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget`, `forget`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `offline`, `on_disk`, `open`, `publish`, `refresh`, `report`, `watch_status`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish`, `refresh`, `report`, `waiting`, `watch_status`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -46,6 +46,26 @@ abstract class Library implements RustOpaqueInterface {
   /// a swap or a typo is refused with a message to show, rather than deriving
   /// a perfectly good account that has nothing in it.
   Future<void> adoptAccount({required String phrase});
+
+  /// Every invite this device has open, to any note.
+  List<InviteView> allInvites();
+
+  /// Let the person who made `request` in: seal the note to them and close
+  /// the invite. Every other request on it is declined by the relay.
+  Future<void> approveRequest({
+    required String invite,
+    required String request,
+  });
+
+  /// Stop waiting on a join request. The relay keeps the request until the
+  /// invite expires; the owner may still approve it, and nothing here will
+  /// be listening.
+  Future<void> cancelJoin({required String invite});
+
+  /// Ask the relay how a join request went, and act on the answer: an
+  /// approved one adds the note and starts syncing it; a declined, expired
+  /// or withdrawn one stops being waited on.
+  Future<JoinCheckView> checkJoin({required String invite});
 
   /// Shut the store. The library is unusable afterwards, and every method on
   /// it — or on a [`Note`] still held from it — answers "the library is
@@ -90,8 +110,19 @@ abstract class Library implements RustOpaqueInterface {
   /// named, which is what makes the second device possible.
   Future<List<String>> createAccount();
 
+  /// Open an invite to a note and return the link to send.
+  ///
+  /// Needs a relay: the invite lives on it until somebody asks to join.
+  Future<InviteView> createInvite({required String note});
+
   /// Make a new, empty note of `kind` and return its ID.
   Future<String> createNote({required NoteKindView kind});
+
+  /// Turn a request away. The invite stays open for someone else.
+  Future<void> declineRequest({
+    required String invite,
+    required String request,
+  });
 
   /// Stop syncing everything. Edits still work and still queue; nothing is
   /// lost.
@@ -117,6 +148,18 @@ abstract class Library implements RustOpaqueInterface {
   /// Whether this device has an account, and so whether its notes can reach
   /// another device of the same person.
   bool hasAccount();
+
+  /// Who has asked to join through an invite, as the owner is shown them.
+  ///
+  /// An invite the relay no longer has, or that has closed, is forgotten
+  /// here on the way: there is nothing more it can be used for, and a list of
+  /// open invites that included it would be a list of things to wonder about.
+  Future<InviteRequestsView> inviteRequests({required String invite});
+
+  /// The invites this device has open to `note`, oldest first. Local: it asks
+  /// the relay nothing, so an invite that has quietly expired is still here
+  /// until [`Library::invite_requests`] finds out.
+  List<InviteView> invites({required String note});
 
   /// Accept a share blob and add the note it describes to this device.
   ///
@@ -204,6 +247,9 @@ abstract class Library implements RustOpaqueInterface {
     masterKey: masterKey,
   );
 
+  /// The join requests this device is waiting on.
+  List<PendingJoinView> pendingJoins();
+
   /// Take a label off a note. Not an error if it was never on it.
   ///
   /// The label itself stays, with one fewer note on it. Throwing the label
@@ -219,6 +265,15 @@ abstract class Library implements RustOpaqueInterface {
   /// the survivor is the one that already had the name. `null` for a name that
   /// is not a name, or a label this device does not have.
   Future<String?> renameTag({required String label, required String name});
+
+  /// Ask to join through a link, calling yourself `name` to the owner.
+  ///
+  /// Returns what to show while waiting, including the six digits the owner
+  /// will see beside the request.
+  Future<PendingJoinView> requestJoin({
+    required String link,
+    required String name,
+  });
 
   /// Every note whose text contains all of the query's words.
   ///
@@ -287,6 +342,10 @@ abstract class Library implements RustOpaqueInterface {
   Stream<List<NoteSummaryView>> watchNotes();
 
   Stream<SyncStatus> watchSync();
+
+  /// Take an invite down, on the relay and here. Anyone holding the link is
+  /// told it does not exist.
+  Future<void> withdrawInvite({required String invite});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>>
@@ -337,6 +396,66 @@ abstract class Note implements RustOpaqueInterface {
   Stream<SyncStatus> watchSync();
 }
 
+class InviteRequestsView {
+  /// False once somebody has been let in, or the invite has expired.
+  final bool open;
+  final int expiresInSecs;
+  final List<JoinRequestView> requests;
+
+  const InviteRequestsView({
+    required this.open,
+    required this.expiresInSecs,
+    required this.requests,
+  });
+
+  @override
+  int get hashCode =>
+      open.hashCode ^ expiresInSecs.hashCode ^ requests.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InviteRequestsView &&
+          runtimeType == other.runtimeType &&
+          open == other.open &&
+          expiresInSecs == other.expiresInSecs &&
+          requests == other.requests;
+}
+
+/// An invite this device has open.
+class InviteView {
+  final String id;
+  final String note;
+
+  /// What to send. Carries a secret and no key.
+  final String link;
+
+  /// How long it has left by this device's clock; the relay's is the one
+  /// that holds.
+  final int expiresInSecs;
+
+  const InviteView({
+    required this.id,
+    required this.note,
+    required this.link,
+    required this.expiresInSecs,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ note.hashCode ^ link.hashCode ^ expiresInSecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InviteView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          note == other.note &&
+          link == other.link &&
+          expiresInSecs == other.expiresInSecs;
+}
+
 /// One checklist item, as Dart sees it.
 class ItemView {
   final String id;
@@ -364,6 +483,86 @@ class ItemView {
           text == other.text &&
           checked == other.checked &&
           order == other.order;
+}
+
+class JoinCheckView {
+  final JoinStateView state;
+
+  /// The note, once joined.
+  final String? note;
+  final String? message;
+
+  const JoinCheckView({required this.state, this.note, this.message});
+
+  @override
+  int get hashCode => state.hashCode ^ note.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is JoinCheckView &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          note == other.note &&
+          message == other.message;
+}
+
+/// Somebody asking to join, as the owner is shown them.
+class JoinRequestView {
+  final String id;
+
+  /// What they typed. Their word only.
+  final String name;
+
+  /// The six digits their screen shows too.
+  final String code;
+  final RequestStateView state;
+
+  /// False for a request that does not open under the invite's key: it was
+  /// not made by anyone holding the link, and cannot be approved.
+  final bool readable;
+
+  const JoinRequestView({
+    required this.id,
+    required this.name,
+    required this.code,
+    required this.state,
+    required this.readable,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      name.hashCode ^
+      code.hashCode ^
+      state.hashCode ^
+      readable.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is JoinRequestView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          name == other.name &&
+          code == other.code &&
+          state == other.state &&
+          readable == other.readable;
+}
+
+enum JoinStateView {
+  /// Nobody has answered yet.
+  waiting,
+
+  /// Let in: the note is on this device and syncing.
+  joined,
+
+  /// Turned away.
+  declined,
+
+  /// Expired, used by someone else, or withdrawn. `message` says which, as
+  /// far as the relay would say.
+  gone,
 }
 
 /// One label on a note: what it is, and what to call it.
@@ -520,6 +719,35 @@ class NoteView {
           body == other.body &&
           items == other.items;
 }
+
+/// A join request this device is waiting on.
+class PendingJoinView {
+  final String invite;
+  final String name;
+
+  /// What to read to the owner, if they ask.
+  final String code;
+
+  const PendingJoinView({
+    required this.invite,
+    required this.name,
+    required this.code,
+  });
+
+  @override
+  int get hashCode => invite.hashCode ^ name.hashCode ^ code.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PendingJoinView &&
+          runtimeType == other.runtimeType &&
+          invite == other.invite &&
+          name == other.name &&
+          code == other.code;
+}
+
+enum RequestStateView { pending, approved, declined }
 
 /// One note a search found, and the line it was found on.
 ///

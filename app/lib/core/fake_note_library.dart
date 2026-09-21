@@ -114,6 +114,156 @@ class FakeNoteLibrary implements NoteLibrary {
     return id;
   }
 
+  // -- invites --------------------------------------------------------------
+  //
+  // A relay in a map. The two `fake…` methods at the end are the other person:
+  // a guest arriving on this device's invite, and an owner answering this
+  // device's request.
+
+  final Map<String, Invite> _invites = {};
+  final Map<String, List<JoinRequest>> _requests = {};
+  final Set<String> _closed = {};
+  final Map<String, PendingJoin> _joins = {};
+  final Map<String, JoinCheck> _answers = {};
+
+  /// What [createInvite] and [requestJoin] throw, to stand in for a device
+  /// with no relay.
+  String? relayError;
+
+  @override
+  Future<Invite> createInvite(String noteId) async {
+    calls.add('createInvite($noteId)');
+    if (relayError != null) throw relayError!;
+    final id = 'invite-${_counter++}';
+    final invite = Invite(
+      id: id,
+      noteId: noteId,
+      link: 'easynotes://join#$id',
+      expiresIn: const Duration(days: 7),
+    );
+    _invites[id] = invite;
+    _requests[id] = [];
+    return invite;
+  }
+
+  @override
+  List<Invite> invitesFor(String noteId) => [
+    for (final invite in _invites.values)
+      if (invite.noteId == noteId) invite,
+  ];
+
+  @override
+  List<Invite> get allInvites => _invites.values.toList();
+
+  @override
+  Future<InviteRequests> inviteRequests(String inviteId) async {
+    final requests = _requests[inviteId];
+    if (requests == null) throw 'This device has no such invite open.';
+    final open = !_closed.contains(inviteId);
+    if (!open) _invites.remove(inviteId);
+    return InviteRequests(
+      open: open,
+      expiresIn: const Duration(days: 7),
+      requests: List.of(requests),
+    );
+  }
+
+  void _answer(String inviteId, String requestId, JoinRequestState state) {
+    final requests = _requests[inviteId]!;
+    for (var i = 0; i < requests.length; i++) {
+      final r = requests[i];
+      final approvedOther =
+          state == JoinRequestState.approved &&
+          r.id != requestId &&
+          r.state == JoinRequestState.pending;
+      if (r.id == requestId || approvedOther) {
+        requests[i] = JoinRequest(
+          id: r.id,
+          name: r.name,
+          code: r.code,
+          readable: r.readable,
+          state: r.id == requestId ? state : JoinRequestState.declined,
+        );
+      }
+    }
+  }
+
+  @override
+  Future<void> approveRequest(String inviteId, String requestId) async {
+    calls.add('approveRequest($inviteId, $requestId)');
+    _answer(inviteId, requestId, JoinRequestState.approved);
+    _closed.add(inviteId);
+    _invites.remove(inviteId);
+  }
+
+  @override
+  Future<void> declineRequest(String inviteId, String requestId) async {
+    calls.add('declineRequest($inviteId, $requestId)');
+    _answer(inviteId, requestId, JoinRequestState.declined);
+  }
+
+  @override
+  Future<void> withdrawInvite(String inviteId) async {
+    calls.add('withdrawInvite($inviteId)');
+    _invites.remove(inviteId);
+    _requests.remove(inviteId);
+  }
+
+  @override
+  Future<PendingJoin> requestJoin(String link, {String name = ''}) async {
+    calls.add('requestJoin($link, $name)');
+    if (relayError != null) throw relayError!;
+    if (!link.contains('#')) throw 'that is not an invite link: not base64url';
+    final id = link.split('#').last;
+    final join = PendingJoin(inviteId: id, name: name.trim(), code: '123 456');
+    _joins[id] = join;
+    return join;
+  }
+
+  @override
+  List<PendingJoin> get pendingJoins => _joins.values.toList();
+
+  @override
+  Future<JoinCheck> checkJoin(String inviteId) async {
+    calls.add('checkJoin($inviteId)');
+    final answer = _answers.remove(inviteId);
+    if (answer == null) return const JoinCheck(JoinState.waiting);
+    _joins.remove(inviteId);
+    return answer;
+  }
+
+  @override
+  Future<void> cancelJoin(String inviteId) async {
+    calls.add('cancelJoin($inviteId)');
+    _joins.remove(inviteId);
+  }
+
+  /// Somebody opened this device's invite and asked to join.
+  void fakeRequest(String inviteId, {required String name, String? code}) {
+    final requests = _requests[inviteId]!;
+    requests.add(
+      JoinRequest(
+        id: 'request-${requests.length}',
+        name: name,
+        code: code ?? '${100 + requests.length}${' 000'}',
+        state: JoinRequestState.pending,
+      ),
+    );
+  }
+
+  /// The owner of the invite this device is waiting on answered. Approving
+  /// adds a note, as the real one does.
+  void fakeAnswer(String inviteId, JoinState state, {String? message}) {
+    if (state == JoinState.joined) {
+      final id = 'joined-${_counter++}';
+      _add(id, FakeNoteCore(title: 'Shared list'));
+      _emit();
+      _answers[inviteId] = JoinCheck(state, noteId: id);
+    } else {
+      _answers[inviteId] = JoinCheck(state, message: message);
+    }
+  }
+
   /// The same rule the core follows: every whitespace-separated word has to
   /// appear somewhere in the note, case ignored, and the line that comes back is
   /// the first one — title, then the body's lines, then items — holding any

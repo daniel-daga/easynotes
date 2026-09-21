@@ -9,6 +9,7 @@ import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/sync_status.dart';
+import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,13 +18,28 @@ Future<void> pumpScreen(
   WidgetTester tester,
   FakeNoteCore core, {
   FakeStorageHealth? storage,
+  FakeNoteLibrary? invites,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: NoteScreen(core: core, storage: storage ?? FakeStorageHealth()),
+      home: NoteScreen(
+        core: core,
+        storage: storage ?? FakeStorageHealth(),
+        noteId: 'this-note',
+        invites: invites ?? FakeNoteLibrary(),
+      ),
     ),
   );
   await tester.pumpAndSettle();
+}
+
+/// Open the share dialog and make a link, returning the invite it made.
+Future<String> makeLink(WidgetTester tester, FakeNoteLibrary invites) async {
+  await tester.tap(find.byKey(const Key('share-button')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('create-invite')));
+  await tester.pumpAndSettle();
+  return invites.invitesFor('this-note').single.id;
 }
 
 List<String> visibleItems(WidgetTester tester) => tester
@@ -135,17 +151,110 @@ void main() {
     expect(visibleItems(tester), ['bread']);
   });
 
-  testWidgets('the share blob is shown so another device can join', (
-    tester,
-  ) async {
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core);
+  group('sharing', () {
+    setUp(() => invitePollInterval = const Duration(milliseconds: 100));
 
-    await tester.tap(find.byKey(const Key('share-button')));
-    await tester.pumpAndSettle();
+    testWidgets('share makes a link that carries no key', (tester) async {
+      final core = FakeNoteCore(items: const ['milk']);
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, core, invites: invites);
 
-    expect(core.edits, contains('exportShareBlob()'));
-    expect(find.byKey(const Key('share-blob')), findsOneWidget);
+      await makeLink(tester, invites);
+
+      expect(invites.calls, contains('createInvite(this-note)'));
+      expect(find.byKey(const Key('invite-link')), findsOneWidget);
+      expect(find.byKey(const Key('invite-waiting')), findsOneWidget);
+      // The old blob is the note key; the screen must not reach for it.
+      expect(core.edits, isNot(contains('exportShareBlob()')));
+    });
+
+    testWidgets('someone who asks is shown with their code and can be let in', (
+      tester,
+    ) async {
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      final id = await makeLink(tester, invites);
+
+      invites.fakeRequest(id, name: 'Anna', code: '482 913');
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Anna wants to join'), findsOneWidget);
+      expect(find.textContaining('482 913'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('approve-request-0')));
+      await tester.pumpAndSettle();
+
+      expect(invites.calls, contains('approveRequest($id, request-0)'));
+      expect(find.byKey(const Key('invite-admitted')), findsOneWidget);
+      expect(find.byKey(const Key('invite-link')), findsNothing);
+    });
+
+    testWidgets('turning someone away keeps the link for someone else', (
+      tester,
+    ) async {
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      final id = await makeLink(tester, invites);
+
+      invites.fakeRequest(id, name: 'Not Anna');
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('decline-request-0')));
+      await tester.pumpAndSettle();
+
+      expect(invites.calls, contains('declineRequest($id, request-0)'));
+      expect(find.text('Not Anna wants to join'), findsNothing);
+      expect(find.byKey(const Key('invite-link')), findsOneWidget);
+    });
+
+    testWidgets('a link can be cancelled', (tester) async {
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      final id = await makeLink(tester, invites);
+
+      await tester.tap(find.byKey(const Key('withdraw-invite')));
+      await tester.pumpAndSettle();
+
+      expect(invites.calls, contains('withdrawInvite($id)'));
+      expect(invites.invitesFor('this-note'), isEmpty);
+      expect(find.byKey(const Key('invite-link')), findsNothing);
+    });
+
+    testWidgets('coming back finds the link that was sent', (tester) async {
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      await makeLink(tester, invites);
+      await tester.tap(find.byKey(const Key('share-done')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('share-button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('invite-link')), findsOneWidget);
+      expect(
+        invites.calls.where((c) => c.startsWith('createInvite')),
+        hasLength(1),
+      );
+    });
+
+    testWidgets('with no relay it says so rather than showing a link', (
+      tester,
+    ) async {
+      final invites = FakeNoteLibrary()
+        ..relayError =
+            'Sharing needs a relay, and this device is not '
+            'connected to one.';
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+
+      await tester.tap(find.byKey(const Key('share-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('create-invite')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('needs a relay'), findsOneWidget);
+      expect(find.byKey(const Key('invite-link')), findsNothing);
+    });
   });
 
   testWidgets('the screen follows the stream, not its own state', (
