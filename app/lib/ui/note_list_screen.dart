@@ -111,7 +111,14 @@ class NoteListScreen extends StatefulWidget {
 
 class _NoteListScreenState extends State<NoteListScreen> {
   /// What this person last chose, which the library remembers for them.
-  late NoteLayout _layout = widget.library.layout;
+  ///
+  /// Asked for on every build rather than read once, because it is in the
+  /// account document and so another of this person's devices can change it.
+  /// Nothing streams the layout on its own, and nothing needs to: a remote edit
+  /// to the account document refreshes the note list, which rebuilds this
+  /// screen. A copy taken when the screen opened was right until the first
+  /// device was adopted, and then stayed wrong until a restart.
+  NoteLayout get _layout => widget.library.layout;
   _Where _where = const _Where.shelf(_Shelf.notes);
 
   /// The search box, when it is open, and what is in it.
@@ -272,8 +279,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
-    setState(() => _layout = next);
     await widget.library.setLayout(next);
+    if (mounted) setState(() {});
   }
 
   /// Delete one note for good, if this person says so a second time.

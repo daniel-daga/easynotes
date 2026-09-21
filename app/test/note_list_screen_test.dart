@@ -173,6 +173,38 @@ void main() {
     expect(find.text('Not syncing, 3 edits waiting'), findsOneWidget);
   });
 
+  testWidgets('a layout chosen on another device is drawn without a restart', (
+    tester,
+  ) async {
+    // Found on two emulators: the second device adopted the account, got the
+    // first one's pins live, and kept drawing a grid until it was relaunched,
+    // because the screen had read the layout once when it opened.
+    final library = twoLists();
+    await pumpList(tester, library);
+    final inGrid = tester.getSize(find.byKey(const Key('note:hardware'))).width;
+
+    // The account document changes underneath the screen, and the list is
+    // refreshed — which is what the core does for any remote account edit.
+    await library.setLayout(NoteLayout.list);
+    library
+        .core('groceries')
+        .pushRemote(
+          const NoteView(
+            title: 'Groceries',
+            items: [
+              ItemView(id: 'a', text: 'milk', checked: false, order: '0000'),
+            ],
+          ),
+        );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byKey(const Key('note:hardware'))).width,
+      greaterThan(inGrid),
+      reason: 'still drawn as a grid after the account said list',
+    );
+  });
+
   testWidgets('the layout it was left in is the layout it opens in', (
     tester,
   ) async {
