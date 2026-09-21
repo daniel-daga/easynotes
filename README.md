@@ -236,7 +236,9 @@ note has, and what a browser does with the freed space is the browser's, which
 [ADR 0011](docs/adr/0011-the-web-store.md) says along with the rest of what the
 web is weaker at —  the master key there is obfuscation over `localStorage` and
 is not claimed to be more; it is this device's copy and no other, and a note that
-was shared stays with whoever holds its key until Slice 3 brings revocation. The sync engine that moves those envelopes
+was shared remains readable to someone who already copied or decrypted it, but
+future access can be revoked by rotating the note key and replacing the history
+with an owner-authorized snapshot. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.
 

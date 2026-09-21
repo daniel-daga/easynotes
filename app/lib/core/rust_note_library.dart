@@ -218,6 +218,10 @@ class RustNoteLibrary implements NoteLibrary {
   Future<void> withdrawInvite(String inviteId) =>
       _library.withdrawInvite(invite: inviteId);
 
+  @override
+  Future<void> revokeCollaborators(String noteId) =>
+      _library.revokeCollaborators(id: noteId);
+
   static PendingJoin _toJoin(rust.PendingJoinView join) =>
       PendingJoin(inviteId: join.invite, name: join.name, code: join.code);
 

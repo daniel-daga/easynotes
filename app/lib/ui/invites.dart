@@ -51,6 +51,7 @@ class _ShareDialogState extends State<ShareDialog> {
 
   /// Who was let in, for the line that says so once the invite has closed.
   String? _admitted;
+  bool _revoked = false;
   bool _busy = false;
   Timer? _poll;
 
@@ -162,6 +163,45 @@ class _ShareDialogState extends State<ShareDialog> {
     });
   });
 
+  Future<void> _revoke() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove everyone else?'),
+        content: const Text(
+          'They will lose this list and cannot read new changes. This cannot '
+          'erase anything they already copied or decrypted.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('cancel-revoke'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep sharing'),
+          ),
+          FilledButton(
+            key: const Key('confirm-revoke'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove everyone'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _act(() async {
+      final invite = _invite;
+      if (invite != null) await widget.invites.withdrawInvite(invite.id);
+      await widget.invites.revokeCollaborators(widget.noteId);
+      if (!mounted) return;
+      _poll?.cancel();
+      setState(() {
+        _invite = null;
+        _requests = null;
+        _admitted = null;
+        _revoked = true;
+      });
+    });
+  }
+
   Widget _request(JoinRequest request) {
     final name = request.name.isEmpty ? 'Someone' : request.name;
     return Card(
@@ -214,7 +254,12 @@ class _ShareDialogState extends State<ShareDialog> {
     final invite = _invite;
     if (invite == null) {
       return [
-        if (_admitted != null)
+        if (_revoked)
+          const Text(
+            'Everyone else has been removed. New changes use a new key.',
+            key: Key('sharing-revoked'),
+          )
+        else if (_admitted != null)
           Text(
             '${_admitted!.isEmpty ? 'They' : _admitted} can open this list now.',
             key: const Key('invite-admitted'),
@@ -293,6 +338,11 @@ class _ShareDialogState extends State<ShareDialog> {
         ),
       ),
       actions: [
+        TextButton(
+          key: const Key('revoke-collaborators'),
+          onPressed: _busy ? null : _revoke,
+          child: const Text('Remove everyone'),
+        ),
         if (_invite != null)
           TextButton(
             key: const Key('withdraw-invite'),

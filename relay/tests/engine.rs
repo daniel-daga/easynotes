@@ -197,6 +197,16 @@ impl App {
         self.handle.as_ref().expect("not connected").flush();
     }
 
+    fn revoke_collaborators(&self) {
+        let envelope = self
+            .core
+            .lock()
+            .unwrap()
+            .revoke_collaborators(self.note)
+            .unwrap();
+        self.handle.as_ref().expect("not connected").rekey(envelope);
+    }
+
     /// Hand the envelope to the engine if there is one. With no engine the edit
     /// is still made and still logged — that is the whole point of local-first —
     /// and the next connection finds it.
@@ -702,6 +712,29 @@ async fn a_flush_sends_what_is_held() {
     a.flush();
     a.wait_until_synced().await;
     wait_for_head(&log, a.note, 2).await;
+}
+
+/// The rotated snapshot already contains held typing. Sending those old-key
+/// envelopes after it would both leak superseded ciphertext and make peers
+/// reject a stale generation after the cutover.
+#[tokio::test]
+async fn a_rotation_supersedes_typing_held_under_the_old_key() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, never());
+    a.add_item("m");
+    a.wait_until_synced().await;
+    let milk = a.item_called("m");
+
+    a.type_word(milk, "ilk");
+    a.wait_until("the typing held back", || a.pending() == 3)
+        .await;
+    a.revoke_collaborators();
+    a.wait_until_synced().await;
+
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 2);
+    assert_eq!(a.text_of(milk), "milk");
 }
 
 /// Held is not lost. The app is killed with typing waiting, and it goes on the

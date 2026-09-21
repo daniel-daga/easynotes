@@ -16,11 +16,13 @@ use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Wire-format version. Bound into the AAD and the signature, so an attacker
 /// cannot re-present a v1 envelope as some future version.
-pub const ENVELOPE_VERSION: u8 = 1;
+pub const ENVELOPE_VERSION: u8 = 2;
+const LEGACY_ENVELOPE_VERSION: u8 = 1;
 
 pub const NONCE_LEN: usize = 24;
 pub const SIG_LEN: usize = 64;
@@ -28,7 +30,10 @@ pub const PUBKEY_LEN: usize = 32;
 pub const NOTE_KEY_LEN: usize = 32;
 
 /// version | note_id | author | counter | nonce | signature
-pub const ENVELOPE_HEADER_LEN: usize = 1 + 16 + PUBKEY_LEN + 8 + NONCE_LEN + SIG_LEN;
+pub const KEY_ID_LEN: usize = 8;
+pub const ENVELOPE_HEADER_LEN: usize =
+    1 + 16 + PUBKEY_LEN + 8 + KEY_ID_LEN + 1 + NONCE_LEN + SIG_LEN;
+const LEGACY_ENVELOPE_HEADER_LEN: usize = 1 + 16 + PUBKEY_LEN + 8 + NONCE_LEN + SIG_LEN;
 
 /// The relay enforces this too; see `relay::protocol`. Big enough for a snapshot of
 /// a few thousand checklist items, small enough that a single client cannot use the
@@ -169,6 +174,16 @@ impl NoteKey {
         XChaCha20Poly1305::new((&self.0).into())
     }
 
+    /// A non-secret identifier for the generation of key that sealed an
+    /// envelope. Eight bytes are enough to make accidental collisions
+    /// negligible; this is routing metadata, never key material.
+    pub fn id(&self) -> [u8; KEY_ID_LEN] {
+        let digest = Sha256::digest(self.0);
+        digest[..KEY_ID_LEN]
+            .try_into()
+            .expect("the slice has eight bytes")
+    }
+
     /// Seal this note's row in the local search index, bound to the note it
     /// summarises.
     ///
@@ -216,14 +231,39 @@ impl std::fmt::Debug for NoteKey {
 /// One encrypted, signed CRDT update. This is the only thing that ever reaches the relay.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Envelope {
+    version: u8,
     pub note_id: NoteId,
     pub author: AuthorKey,
     /// Per-author monotonic counter. Bound into the AAD, so an update cannot be
     /// replayed under a different counter, and gives receivers a cheap dedup key.
     pub counter: u64,
+    /// Which note-key generation encrypted this envelope. Absent only on the
+    /// legacy v1 format, whose notes have never been rotated.
+    pub key_id: Option<[u8; KEY_ID_LEN]>,
+    pub kind: EnvelopeKind,
     pub nonce: [u8; NONCE_LEN],
     pub signature: [u8; SIG_LEN],
     pub ciphertext: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EnvelopeKind {
+    #[default]
+    Update = 0,
+    Snapshot = 1,
+    Revocation = 2,
+}
+
+impl EnvelopeKind {
+    fn decode(raw: u8) -> Result<Self> {
+        match raw {
+            0 => Ok(Self::Update),
+            1 => Ok(Self::Snapshot),
+            2 => Ok(Self::Revocation),
+            _ => Err(CoreError::MalformedEnvelope("unknown envelope kind")),
+        }
+    }
 }
 
 impl std::fmt::Debug for Envelope {
@@ -232,6 +272,8 @@ impl std::fmt::Debug for Envelope {
             .field("note_id", &self.note_id)
             .field("author", &self.author)
             .field("counter", &self.counter)
+            .field("key_id", &self.key_id)
+            .field("kind", &self.kind)
             .field("ciphertext_len", &self.ciphertext.len())
             .finish()
     }
@@ -240,31 +282,43 @@ impl std::fmt::Debug for Envelope {
 /// What the cipher authenticates but does not hide: which note, which author,
 /// which counter. The relay can read all three anyway — binding them here stops
 /// an envelope being cut and pasted onto a different note or author.
-fn aad(note_id: &NoteId, author: &AuthorKey, counter: u64) -> Vec<u8> {
-    let mut a = Vec::with_capacity(1 + 16 + PUBKEY_LEN + 8);
-    a.push(ENVELOPE_VERSION);
-    a.extend_from_slice(note_id.as_bytes());
-    a.extend_from_slice(&author.0);
-    a.extend_from_slice(&counter.to_be_bytes());
-    a
-}
-
-/// Signed bytes: the AAD plus the nonce and ciphertext. Covering the ciphertext
-/// means a tampered blob fails at the signature, before the cipher is touched.
-fn signed_bytes(
+fn aad(
+    version: u8,
     note_id: &NoteId,
     author: &AuthorKey,
     counter: u64,
-    nonce: &[u8; NONCE_LEN],
-    ct: &[u8],
+    key_id: Option<&[u8; KEY_ID_LEN]>,
+    kind: EnvelopeKind,
 ) -> Vec<u8> {
-    let mut m = aad(note_id, author, counter);
-    m.extend_from_slice(nonce);
-    m.extend_from_slice(ct);
-    m
+    let mut a = Vec::with_capacity(1 + 16 + PUBKEY_LEN + 8 + KEY_ID_LEN + 1);
+    a.push(version);
+    a.extend_from_slice(note_id.as_bytes());
+    a.extend_from_slice(&author.0);
+    a.extend_from_slice(&counter.to_be_bytes());
+    if let Some(key_id) = key_id {
+        a.extend_from_slice(key_id);
+        a.push(kind as u8);
+    }
+    a
 }
 
 impl Envelope {
+    /// The authenticated header plus nonce and ciphertext. The signature field
+    /// itself is deliberately absent.
+    fn signed_bytes(&self) -> Vec<u8> {
+        let mut bytes = aad(
+            self.version,
+            &self.note_id,
+            &self.author,
+            self.counter,
+            self.key_id.as_ref(),
+            self.kind,
+        );
+        bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(&self.ciphertext);
+        bytes
+    }
+
     /// Encrypt `plaintext` for `note_id` and sign it as `identity`.
     pub fn seal(
         identity: &DeviceIdentity,
@@ -273,7 +327,26 @@ impl Envelope {
         counter: u64,
         plaintext: &[u8],
     ) -> Result<Self> {
+        Self::seal_kind(
+            identity,
+            note_id,
+            key,
+            counter,
+            EnvelopeKind::Update,
+            plaintext,
+        )
+    }
+
+    pub fn seal_kind(
+        identity: &DeviceIdentity,
+        note_id: NoteId,
+        key: &NoteKey,
+        counter: u64,
+        kind: EnvelopeKind,
+        plaintext: &[u8],
+    ) -> Result<Self> {
         let author = identity.public_key();
+        let key_id = key.id();
         let mut nonce = [0u8; NONCE_LEN];
         random_bytes(&mut nonce);
 
@@ -283,27 +356,30 @@ impl Envelope {
                 XNonce::from_slice(&nonce),
                 Payload {
                     msg: plaintext,
-                    aad: &aad(&note_id, &author, counter),
+                    aad: &aad(
+                        ENVELOPE_VERSION,
+                        &note_id,
+                        &author,
+                        counter,
+                        Some(&key_id),
+                        kind,
+                    ),
                 },
             )
             .map_err(|_| CoreError::Crypto("encryption failed"))?;
 
-        let signature = identity.sign(&signed_bytes(
-            &note_id,
-            &author,
-            counter,
-            &nonce,
-            &ciphertext,
-        ));
-
-        let envelope = Self {
+        let mut envelope = Self {
+            version: ENVELOPE_VERSION,
             note_id,
             author,
             counter,
+            key_id: Some(key_id),
+            kind,
             nonce,
-            signature,
+            signature: [0u8; SIG_LEN],
             ciphertext,
         };
+        envelope.signature = identity.sign(&envelope.signed_bytes());
         if envelope.encoded_len() > MAX_ENVELOPE_BYTES {
             return Err(CoreError::TooLarge {
                 limit: MAX_ENVELOPE_BYTES,
@@ -320,7 +396,14 @@ impl Envelope {
                 XNonce::from_slice(&self.nonce),
                 Payload {
                     msg: &self.ciphertext,
-                    aad: &aad(&self.note_id, &self.author, self.counter),
+                    aad: &aad(
+                        self.version,
+                        &self.note_id,
+                        &self.author,
+                        self.counter,
+                        self.key_id.as_ref(),
+                        self.kind,
+                    ),
                 },
             )
             .map_err(|_| CoreError::Crypto("decryption failed"))
@@ -331,29 +414,28 @@ impl Envelope {
     pub fn verify(&self) -> Result<()> {
         let vk = self.author.verifying_key()?;
         let sig = Signature::from_bytes(&self.signature);
-        vk.verify(
-            &signed_bytes(
-                &self.note_id,
-                &self.author,
-                self.counter,
-                &self.nonce,
-                &self.ciphertext,
-            ),
-            &sig,
-        )
+        vk.verify(&self.signed_bytes(), &sig)
         .map_err(|_| CoreError::BadSignature)
     }
 
     pub fn encoded_len(&self) -> usize {
-        ENVELOPE_HEADER_LEN + self.ciphertext.len()
+        if self.version == LEGACY_ENVELOPE_VERSION {
+            LEGACY_ENVELOPE_HEADER_LEN + self.ciphertext.len()
+        } else {
+            ENVELOPE_HEADER_LEN + self.ciphertext.len()
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.encoded_len());
-        out.push(ENVELOPE_VERSION);
+        out.push(self.version);
         out.extend_from_slice(self.note_id.as_bytes());
         out.extend_from_slice(&self.author.0);
         out.extend_from_slice(&self.counter.to_be_bytes());
+        if self.version == ENVELOPE_VERSION {
+            out.extend_from_slice(self.key_id.as_ref().expect("v2 has a key id"));
+            out.push(self.kind as u8);
+        }
         out.extend_from_slice(&self.nonce);
         out.extend_from_slice(&self.signature);
         out.extend_from_slice(&self.ciphertext);
@@ -367,14 +449,19 @@ impl Envelope {
                 limit: MAX_ENVELOPE_BYTES,
             });
         }
-        if bytes.len() < ENVELOPE_HEADER_LEN + 16 {
+        let version = bytes.first().copied().ok_or(CoreError::MalformedEnvelope(
+            "shorter than the header plus a tag",
+        ))?;
+        let header_len = match version {
+            LEGACY_ENVELOPE_VERSION => LEGACY_ENVELOPE_HEADER_LEN,
+            ENVELOPE_VERSION => ENVELOPE_HEADER_LEN,
+            _ => return Err(CoreError::MalformedEnvelope("unknown envelope version")),
+        };
+        if bytes.len() < header_len + 16 {
             // 16 = the Poly1305 tag; an envelope shorter than that cannot be real.
             return Err(CoreError::MalformedEnvelope(
                 "shorter than the header plus a tag",
             ));
-        }
-        if bytes[0] != ENVELOPE_VERSION {
-            return Err(CoreError::MalformedEnvelope("unknown envelope version"));
         }
         let mut at = 1;
         let mut take = |n: usize| {
@@ -385,13 +472,24 @@ impl Envelope {
         let note_id = NoteId::from_bytes(take(16).try_into().unwrap());
         let author = AuthorKey(take(PUBKEY_LEN).try_into().unwrap());
         let counter = u64::from_be_bytes(take(8).try_into().unwrap());
+        let (key_id, kind) = if version == ENVELOPE_VERSION {
+            (
+                Some(take(KEY_ID_LEN).try_into().unwrap()),
+                EnvelopeKind::decode(take(1)[0])?,
+            )
+        } else {
+            (None, EnvelopeKind::Update)
+        };
         let nonce: [u8; NONCE_LEN] = take(NONCE_LEN).try_into().unwrap();
         let signature: [u8; SIG_LEN] = take(SIG_LEN).try_into().unwrap();
         let ciphertext = bytes[at..].to_vec();
         Ok(Self {
+            version,
             note_id,
             author,
             counter,
+            key_id,
+            kind,
             nonce,
             signature,
             ciphertext,

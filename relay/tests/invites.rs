@@ -118,7 +118,7 @@ async fn an_approved_guest_gets_the_note_and_can_sync_it() {
         .await
         .unwrap()
     {
-        Answer::Approved { note, key } => (note, key),
+        Answer::Approved { note, key, .. } => (note, key),
         _ => panic!("approved, but the guest was not told"),
     };
     assert_eq!(note, outgoing.note);

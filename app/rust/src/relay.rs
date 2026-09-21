@@ -179,6 +179,10 @@ impl Connection {
         self.handle.publish_soon(envelope);
     }
 
+    pub fn rekey(&self, envelope: Vec<u8>) {
+        self.handle.rekey(envelope);
+    }
+
     pub fn flush(&self) {
         self.handle.flush();
     }

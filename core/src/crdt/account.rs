@@ -639,9 +639,22 @@ pub fn legacy_tag_write(note: NoteId, tag: &str) -> (String, Option<Value>) {
 /// A malformed or wrong-length value is skipped rather than fatal, for the
 /// reason an unknown key is kept: a build that writes something else here must
 /// not be able to stop this one from opening the notes it *can* read.
-pub fn note_keys_of(
+#[derive(Clone)]
+pub struct NoteAccess {
+    pub key: crate::crypto::NoteKey,
+    /// The device that created the note and is allowed to rotate its key.
+    /// `None` is a legacy share whose owner was never recorded.
+    pub owner: Option<crate::crypto::AuthorKey>,
+    pub owned: bool,
+    pub generation: u64,
+    /// Present only in the creator's account document. Guests receive the
+    /// public `owner` half in their grant, never this signing seed.
+    pub rotation_seed: Option<crate::crypto::DeviceSeed>,
+}
+
+pub fn note_access_of(
     entries: impl IntoIterator<Item = (String, Value)>,
-) -> BTreeMap<NoteId, crate::crypto::NoteKey> {
+) -> BTreeMap<NoteId, NoteAccess> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
@@ -653,12 +666,56 @@ pub fn note_keys_of(
         let (Ok(note), Ok(raw)) = (NoteId::decode(id), URL_SAFE_NO_PAD.decode(&encoded)) else {
             continue;
         };
-        let Ok(bytes) = <[u8; crate::crypto::NOTE_KEY_LEN]>::try_from(raw.as_slice()) else {
+        let access = if raw.len() == crate::crypto::NOTE_KEY_LEN {
+            NoteAccess {
+                key: crate::crypto::NoteKey(raw.as_slice().try_into().unwrap()),
+                owner: None,
+                owned: false,
+                generation: 0,
+                rotation_seed: None,
+            }
+        } else if raw.len() >= 2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN + 8
+            && raw[0] == 2
+        {
+            let base = 2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN + 8;
+            let owned = raw[1 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN] == 1;
+            if raw.len() != base + if owned { 64 } else { 0 } {
+                continue;
+            }
+            NoteAccess {
+                key: crate::crypto::NoteKey(
+                    raw[1..1 + crate::crypto::NOTE_KEY_LEN].try_into().unwrap(),
+                ),
+                owner: Some(crate::crypto::AuthorKey(
+                    raw[1 + crate::crypto::NOTE_KEY_LEN
+                        ..1 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN]
+                        .try_into()
+                        .unwrap(),
+                )),
+                owned,
+                generation: u64::from_be_bytes(
+                    raw[2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN..base]
+                        .try_into()
+                        .unwrap(),
+                ),
+                rotation_seed: owned
+                    .then(|| crate::crypto::DeviceSeed(raw[base..].try_into().unwrap())),
+            }
+        } else {
             continue;
         };
-        keys.insert(note, crate::crypto::NoteKey(bytes));
+        keys.insert(note, access);
     }
     keys
+}
+
+pub fn note_keys_of(
+    entries: impl IntoIterator<Item = (String, Value)>,
+) -> BTreeMap<NoteId, crate::crypto::NoteKey> {
+    note_access_of(entries)
+        .into_iter()
+        .map(|(note, access)| (note, access.key))
+        .collect()
 }
 
 /// Write a note's key into the document, as [`AccountEdit::SetNoteKey`] wants it.
@@ -666,6 +723,32 @@ pub fn encode_note_key(key: &crate::crypto::NoteKey) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     URL_SAFE_NO_PAD.encode(key.0)
+}
+
+pub fn encode_note_access(
+    key: &crate::crypto::NoteKey,
+    owner: crate::crypto::AuthorKey,
+    owned: bool,
+    generation: u64,
+    rotation_seed: Option<&crate::crypto::DeviceSeed>,
+) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let mut raw = Vec::with_capacity(
+        2 + crate::crypto::NOTE_KEY_LEN
+            + crate::crypto::PUBKEY_LEN
+            + 8
+            + rotation_seed.map_or(0, |_| 64),
+    );
+    raw.push(2);
+    raw.extend_from_slice(&key.0);
+    raw.extend_from_slice(&owner.0);
+    raw.push(u8::from(owned));
+    raw.extend_from_slice(&generation.to_be_bytes());
+    if let Some(seed) = rotation_seed {
+        raw.extend_from_slice(&seed.0);
+    }
+    URL_SAFE_NO_PAD.encode(raw)
 }
 
 /// Turn what a backend holds into what the app reads. Shared for the same reason

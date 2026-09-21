@@ -298,6 +298,11 @@ enum Command {
         envelope: Vec<u8>,
         now: bool,
     },
+    /// A key rotation supersedes every old-generation envelope still queued.
+    Rekey {
+        note: NoteId,
+        envelope: Vec<u8>,
+    },
     /// One note's held typing, or every note's.
     Flush {
         note: Option<NoteId>,
@@ -428,6 +433,15 @@ impl SyncHandle {
             note: self.note,
             envelope,
             now: false,
+        });
+    }
+
+    /// Publish a key-rotation snapshot and discard old-key work still held by
+    /// the pacing layer. The snapshot already contains those edits.
+    pub fn rekey(&self, envelope: Vec<u8>) {
+        let _ = self.commands.send(Command::Rekey {
+            note: self.note,
+            envelope,
         });
     }
 
@@ -729,6 +743,15 @@ async fn wait(
                         note.publish();
                     }
                 }
+                Some(Command::Rekey { note, envelope }) => {
+                    if let Some(note) = device.notes.get_mut(&note) {
+                        note.release();
+                        note.outbox.clear();
+                        note.covered = None;
+                        note.held.push(envelope);
+                        note.publish();
+                    }
+                }
                 Some(Command::Flush { .. }) => {}
                 Some(Command::Released) => {
                     device.released = true;
@@ -924,6 +947,16 @@ impl Device {
                 if now {
                     self.flush(peer, note, sync).await?;
                 }
+            }
+            Command::Rekey { note, envelope } => {
+                let Some(live) = self.notes.get_mut(&note) else {
+                    return Ok(Next::Continue);
+                };
+                live.release();
+                live.outbox.clear();
+                live.covered = None;
+                live.hold(envelope);
+                self.flush(peer, note, sync).await?;
             }
             Command::Flush { note: Some(note) } => self.flush(peer, note, sync).await?,
             Command::Flush { note: None } => {
@@ -1193,6 +1226,12 @@ impl Live {
         if let Ok(parsed) = Envelope::decode(envelope) {
             if &parsed.author == me {
                 self.acknowledge(parsed.counter, envelope);
+            } else {
+                // A rotation snapshot is signed by the note's revocation key,
+                // not the device key used for the relay handshake. Byte equality
+                // still proves this is the envelope queued above; only the
+                // per-device `sent_upto` watermark must remain untouched.
+                self.outbox.retain(|queued| queued != envelope);
             }
         }
         self.advance(peer, note, seq);

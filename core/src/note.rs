@@ -16,7 +16,7 @@ use crate::crdt::{
     account, AccountDoc, AccountEdit, AccountView, Colour, Edit, Layout, NewItem, NoteDoc,
     NoteView, Placement,
 };
-use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, NoteKey};
+use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, EnvelopeKind, NoteKey};
 use crate::error::{CoreError, Result};
 use crate::ids::{ItemId, LabelId, NoteId};
 use crate::index::IndexEntry;
@@ -83,6 +83,8 @@ pub const ACCOUNT_DOC: NoteId = NoteId([0u8; 16]);
 /// entry rebuilds itself — and would make the first launch after a migration pay
 /// to open every note, which is precisely what the index exists to stop.
 pub const INDEX: &str = "index";
+const KEY_GENERATION: &str = "key-generation";
+const NEXT_COUNTER: &str = "next-counter";
 
 /// The setting that says whether the note list is a grid or one column.
 pub const LAYOUT: &str = "layout";
@@ -624,16 +626,29 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// keyring answers about one note at a time by design -- it is a place keys
     /// go in, not a list of what this person has.
     fn record_held_note_keys(&mut self) -> Result<()> {
-        let known = account::note_keys_of(self.account.doc.entries());
+        let known = account::note_access_of(self.account.doc.entries());
         let mut writes = Vec::new();
         for id in self.store.notes()? {
-            if self.is_account(id) || known.contains_key(&id) {
+            // A clean rollout lets the device that first turns its local notes
+            // into an account become their owner. Upgrade any old bare-key row
+            // at the same time, so every note carried into an account has a
+            // revocation identity.
+            if self.is_account(id) || known.get(&id).is_some_and(|access| access.owner.is_some()) {
                 continue;
             }
             if let Some(key) = self.keyring.note_key(id)? {
+                let mut rotation_seed = DeviceSeed([0u8; 64]);
+                crate::crypto::random_bytes(&mut rotation_seed.0);
+                let rotation_identity = DeviceIdentity::from_seed(&rotation_seed);
                 writes.push(account::AccountEdit::SetNoteKey {
                     note: id,
-                    key: account::encode_note_key(&key),
+                    key: account::encode_note_access(
+                        &key,
+                        rotation_identity.public_key(),
+                        true,
+                        0,
+                        Some(&rotation_seed),
+                    ),
                 });
             }
         }
@@ -659,30 +674,49 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// key and keep it, because this only ever adds. Adopting once the batch has
     /// settled reads the document as it actually stands.
     ///
-    /// Only ever fills a gap. A note this device already has a key for is left
-    /// exactly as it is, even if the document names a different one, because
-    /// swapping a key that opens this device's envelopes for one that might not
-    /// would lose the note rather than update it.
-    ///
-    /// **Item 4 has to revisit this**, and it is worth being plain that it is
-    /// not solved here. Rotating a note's key is writing a new value into this
-    /// register — that is the whole reason [ADR
-    /// 0013](../../docs/adr/0013-recovery-phrase.md) kept note keys out of the
-    /// derivation — but a device acting on it needs more than this loop: it
-    /// needs to re-encrypt what it holds under the new key, and it needs to know
-    /// which of the two a given envelope used. Neither exists yet, so the honest
-    /// thing today is to fill gaps and leave disagreements alone rather than to
-    /// half-build a rotation that could drop a note.
+    /// Fill a missing key, or replace a held key only when the account document
+    /// has a strictly newer generation. Envelope key IDs keep old history from
+    /// being confused with a new generation; an owner-signed snapshot performs
+    /// the actual cutover. See [ADR 0018](../../docs/adr/0018-revocation.md).
     pub fn adopt_note_keys(&mut self) -> Result<usize> {
         let mut taken = 0;
-        for (note, key) in account::note_keys_of(self.account.doc.entries()) {
-            if self.is_account(note) || self.keyring.note_key(note)?.is_some() {
+        let mut rotated = Vec::new();
+        let access = account::note_access_of(self.account.doc.entries());
+        for (note, access) in access {
+            if self.is_account(note) {
                 continue;
             }
-            self.keyring.put_note_key(note, &key)?;
+            let current = self.keyring.note_key(note)?;
+            if current
+                .as_ref()
+                .is_some_and(|key| key.id() == access.key.id())
+            {
+                continue;
+            }
+            // The generation makes a newer account register authoritative for
+            // both owners and guests, while preventing a stale register from
+            // turning a revoked key back into a live one.
+            let current_generation = self
+                .store
+                .get_meta(note, KEY_GENERATION)?
+                .and_then(|raw| raw.as_slice().try_into().ok().map(u64::from_be_bytes))
+                .unwrap_or(0);
+            if current.is_some() && access.generation <= current_generation {
+                continue;
+            }
+            if current.is_some() {
+                rotated.push(note);
+            }
+            self.open.remove(&note);
+            self.keyring.put_note_key(note, &access.key)?;
+            self.store
+                .put_meta(note, KEY_GENERATION, &access.generation.to_be_bytes())?;
             taken += 1;
         }
         if taken > 0 {
+            for note in rotated {
+                self.open_note(note)?;
+            }
             // A note this device could not read a moment ago now has a key, so
             // the list it was missing from has changed.
             self.adopt_unplaced()?;
@@ -746,7 +780,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let id = NoteId::random();
         let key = NoteKey::random();
         self.keyring.put_note_key(id, &key)?;
-        let recorded = account::encode_note_key(&key);
+        let mut rotation_seed = DeviceSeed([0u8; 64]);
+        crate::crypto::random_bytes(&mut rotation_seed.0);
+        let rotation_identity = DeviceIdentity::from_seed(&rotation_seed);
+        let recorded = account::encode_note_access(
+            &key,
+            rotation_identity.public_key(),
+            true,
+            0,
+            Some(&rotation_seed),
+        );
         let doc = D::create(&self.actor);
         let (tx, _) = watch::channel(doc.view());
         let added = self.next_ordinal()?;
@@ -768,6 +811,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // delete one, which is the trash — a personal placement in the account
         // document, item 6 of the Slice 2 plan.
         self.store.put_meta(id, ADDED, &added.to_be_bytes())?;
+        self.store
+            .put_meta(id, KEY_GENERATION, &0u64.to_be_bytes())?;
+        self.store.put_meta(id, NEXT_COUNTER, &0u64.to_be_bytes())?;
         // An empty entry, so that the note has a card from the moment it exists
         // rather than from its first edit. `place` below refreshes the list, and
         // the list is built from the index.
@@ -812,26 +858,46 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
 
         let me = self.identity.public_key();
-        let mut next_counter = 0u64;
+        let mut next_counter = self
+            .store
+            .get_meta(id, NEXT_COUNTER)?
+            .and_then(|raw| raw.as_slice().try_into().ok().map(u64::from_be_bytes))
+            .unwrap_or(0);
+        let key_id = key.id();
+        let log = self.store.load(id)?;
+        let owner = account::note_access_of(self.account.doc.entries())
+            .remove(&id)
+            .and_then(|access| access.owner);
+        let has_current_snapshot = log.iter().any(|raw| {
+            Envelope::decode(raw).is_ok_and(|env| {
+                env.key_id == Some(key_id)
+                    && env.kind == EnvelopeKind::Snapshot
+                    && owner == Some(env.author)
+            })
+        });
 
         let mut doc = match self.store.get_snapshot(id)? {
             Some(blob) => {
                 let env = Envelope::decode(&blob)?;
-                let plain = env.open(&key)?;
-                // A snapshot is sealed with a counter from this device's own
-                // sequence, which is what lets the counter survive a compaction
-                // that removed every envelope it could otherwise be read from.
-                if env.author == me {
-                    next_counter = env.counter + 1;
+                if env.key_id.is_some_and(|seen| seen != key_id) {
+                    D::create(&self.actor)
+                } else {
+                    let plain = env.open(&key)?;
+                    // A snapshot is sealed with a counter from this device's own
+                    // sequence, which is what lets the counter survive a compaction
+                    // that removed every envelope it could otherwise be read from.
+                    if env.author == me {
+                        next_counter = env.counter + 1;
+                    }
+                    D::load(&self.actor, &plain)?
                 }
-                D::load(&self.actor, &plain)?
             }
             None => D::create(&self.actor),
         };
 
         let mut seen = HashSet::new();
         let mut length = 0usize;
-        for raw in self.store.load(id)? {
+        for raw in log {
             length += 1;
             let env = Envelope::decode(&raw)?;
             if env.note_id != id {
@@ -840,9 +906,19 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                     got: env.note_id.encode(),
                 });
             }
+            if env.key_id.is_some_and(|seen| seen != key_id)
+                || (env.key_id.is_none() && has_current_snapshot)
+                || (env.kind == EnvelopeKind::Snapshot && owner != Some(env.author))
+            {
+                continue;
+            }
             let plain = env.open(&key)?;
             if seen.insert((env.author, env.counter)) {
-                doc.apply_remote(&plain)?;
+                if env.kind == EnvelopeKind::Snapshot {
+                    doc = D::load(&self.actor, &plain)?;
+                } else if env.kind == EnvelopeKind::Update {
+                    doc.apply_remote(&plain)?;
+                }
             }
             if env.author == me {
                 next_counter = next_counter.max(env.counter + 1);
@@ -1792,6 +1868,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let encoded = envelope.encode();
 
         self.store.append(id, &encoded)?;
+        self.store
+            .put_meta(id, NEXT_COUNTER, &note.next_counter.to_be_bytes())?;
         let note = self.open.get_mut(&id).expect("just borrowed");
         let _ = note.watch.send_replace(note.doc.view());
         self.reindex(id)?;
@@ -1804,15 +1882,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Unknown, tampered, replayed and misrouted envelopes are all rejected here,
     /// before the CRDT sees anything.
     pub fn apply_remote(&mut self, id: NoteId, envelope: &[u8]) -> Result<NoteView> {
-        // An arrival is the other thing that can be the first to need a note's
-        // document: the list no longer opens every note, so a peer's edit to a
-        // note nobody has looked at today opens it here.
-        self.ensure_open(id)?;
-        let note = self
-            .open
-            .get_mut(&id)
-            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
-
         let env = Envelope::decode(envelope)?;
         if env.note_id != id {
             return Err(CoreError::WrongNote {
@@ -1820,6 +1889,54 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 got: env.note_id.encode(),
             });
         }
+        // An arrival is the other thing that can be the first to need a note's
+        // document: the list no longer opens every note, so a peer's edit to a
+        // note nobody has looked at today opens it here.
+        self.ensure_open(id)?;
+        let current_key_id = self
+            .open
+            .get(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?
+            .key
+            .id();
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        if env.kind == EnvelopeKind::Snapshot && access.owner != Some(env.author) {
+            return Err(CoreError::Crypto("an unauthorised snapshot was refused"));
+        }
+        if env.key_id.is_some_and(|key_id| key_id != current_key_id) {
+            env.verify()?;
+            let old = self
+                .open
+                .get(&id)
+                .expect("the note was opened above")
+                .doc
+                .view();
+            // Relay history from an older generation is expected after a
+            // rotation (and when somebody is invited again). It cannot decrypt
+            // or mutate the current document, so advancing past it is correct.
+            // Only a creator-signed snapshot is a cutover notice.
+            if env.kind != EnvelopeKind::Snapshot {
+                return Ok(old);
+            }
+            if access.owned {
+                // The creator's other devices learn the key through their
+                // account document. Keep the snapshot until that register
+                // arrives, then `adopt_note_keys` reopens it under the new key.
+                self.store.append(id, envelope)?;
+            } else {
+                // A correctly signed new-key snapshot is the revocation notice.
+                // It contains no new key, so the former member cannot follow it.
+                self.forget_note(id)?;
+            }
+            return Ok(old);
+        }
+        let note = self
+            .open
+            .get_mut(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+
         // `open` verifies the signature before it decrypts.
         let plain = env.open(&note.key)?;
 
@@ -1827,7 +1944,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // Already applied. Persisting it again would grow the log for nothing.
             return Ok(note.doc.view());
         }
-        note.doc.apply_remote(&plain)?;
+        if env.kind == EnvelopeKind::Snapshot {
+            note.doc = D::load(&self.actor, &plain)?;
+        } else if env.kind == EnvelopeKind::Update {
+            note.doc.apply_remote(&plain)?;
+        }
         self.store.append(id, envelope)?;
 
         let note = self.open.get_mut(&id).expect("just borrowed");
@@ -2035,6 +2156,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         if self.is_account(note) || self.keyring.note_key(note)?.is_none() {
             return Err(CoreError::UnknownNote(note.encode()));
         }
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&note)
+            .ok_or_else(|| CoreError::UnknownNote(note.encode()))?;
+        if !access.owned || access.owner.is_none() {
+            return Err(CoreError::Crypto("only the owner can invite collaborators"));
+        }
         Ok(OutgoingInvite {
             note,
             secret: crate::invite::InviteSecret::random(),
@@ -2110,7 +2237,20 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .keyring
             .note_key(invite.note)?
             .ok_or_else(|| CoreError::UnknownNote(invite.note.encode()))?;
-        crate::invite::seal_grant(&invite.secret, request, invite.note, &key)
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&invite.note)
+            .ok_or_else(|| CoreError::UnknownNote(invite.note.encode()))?;
+        if !access.owned || access.owner.is_none() {
+            return Err(CoreError::Crypto("only the owner can invite collaborators"));
+        }
+        crate::invite::seal_owned_grant(
+            &invite.secret,
+            request,
+            invite.note,
+            &key,
+            access.owner.expect("checked above"),
+            access.generation,
+        )
     }
 
     /// Every join request this device is waiting on, oldest first.
@@ -2181,9 +2321,32 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok(id)
     }
 
+    pub fn accept_owned_grant(
+        &mut self,
+        invite: crate::ids::InviteId,
+        note: NoteId,
+        key: NoteKey,
+        owner: Option<AuthorKey>,
+        generation: u64,
+    ) -> Result<NoteId> {
+        let id = self.add_shared_note_with_owner(note, key, owner, generation)?;
+        self.forget_join(invite)?;
+        Ok(id)
+    }
+
     /// Add a note somebody else holds the key to, by its ID and key — however
     /// they arrived.
     fn add_shared_note(&mut self, id: NoteId, key: NoteKey) -> Result<NoteId> {
+        self.add_shared_note_with_owner(id, key, None, 0)
+    }
+
+    fn add_shared_note_with_owner(
+        &mut self,
+        id: NoteId,
+        key: NoteKey,
+        owner: Option<AuthorKey>,
+        generation: u64,
+    ) -> Result<NoteId> {
         if self.is_account(id) {
             // Nobody shares the account document, and a blob that claims to would
             // put a key of someone else's choosing where this device's placements
@@ -2196,11 +2359,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             return Ok(id);
         }
         self.keyring.put_note_key(id, &key)?;
+        self.store
+            .put_meta(id, KEY_GENERATION, &generation.to_be_bytes())?;
         // And into the account document, so that a note somebody shared with
         // this person is a note they can open on their other devices too. A
         // shared note is still one of their notes; the key travels the same way
         // one they made themselves does.
-        let recorded = account::encode_note_key(&key);
+        let recorded = owner.map_or_else(
+            || account::encode_note_key(&key),
+            |owner| account::encode_note_access(&key, owner, false, generation, None),
+        );
         self.apply_account(account::AccountEdit::SetNoteKey {
             note: id,
             key: recorded,
@@ -2240,8 +2408,94 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let blob = note.doc.snapshot();
         let counter = note.next_counter;
         note.next_counter += 1;
-        let env = Envelope::seal(identity_ref, id, &note.key, counter, &blob)?;
+        let env = Envelope::seal_kind(
+            identity_ref,
+            id,
+            &note.key,
+            counter,
+            EnvelopeKind::Snapshot,
+            &blob,
+        )?;
+        self.store
+            .put_meta(id, NEXT_COUNTER, &note.next_counter.to_be_bytes())?;
         self.store.put_snapshot(id, &env.encode())
+    }
+
+    /// Remove every collaborator from a note while keeping this person's own
+    /// account devices on it.
+    ///
+    /// The creator writes one full-document snapshot under a fresh key. The
+    /// fresh key travels only through the creator's encrypted account document;
+    /// a guest sees the creator-signed change of key, removes its local copy,
+    /// and cannot decrypt this snapshot or anything written after it. A copy
+    /// they decrypted before this call is necessarily beyond recall.
+    ///
+    /// Returns the snapshot envelope for the sync layer to publish. It is in
+    /// the local log before this method returns, so an offline revocation is
+    /// retried like any other edit.
+    pub fn revoke_collaborators(&mut self, id: NoteId) -> Result<Vec<u8>> {
+        self.ensure_open(id)?;
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        let Some(rotation_seed) = access.rotation_seed.as_ref() else {
+            return Err(CoreError::Crypto(
+                "only the owner can revoke access to this note",
+            ));
+        };
+        let rotation_identity = DeviceIdentity::from_seed(rotation_seed);
+        if access.owner != Some(rotation_identity.public_key()) {
+            return Err(CoreError::Crypto(
+                "the note's revocation identity is invalid",
+            ));
+        }
+
+        let note = self
+            .open
+            .get_mut(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        let new_key = NoteKey::random();
+        let generation = access.generation.saturating_add(1);
+        let envelope = Envelope::seal_kind(
+            &rotation_identity,
+            id,
+            &new_key,
+            generation,
+            EnvelopeKind::Snapshot,
+            &note.doc.snapshot(),
+        )?;
+        let encoded = envelope.encode();
+        self.store
+            .put_meta(id, NEXT_COUNTER, &note.next_counter.to_be_bytes())?;
+
+        // The snapshot is both the complete new-generation log and the local
+        // fast-open snapshot. Neither old-key row survives on this device.
+        self.store.replace_log(id, std::slice::from_ref(&encoded))?;
+        self.store.put_snapshot(id, &encoded)?;
+        self.keyring.put_note_key(id, &new_key)?;
+        self.store
+            .put_meta(id, KEY_GENERATION, &generation.to_be_bytes())?;
+        note.key = new_key.clone();
+        note.seen.clear();
+        note.seen.insert((envelope.author, envelope.counter));
+
+        // The account update is emitted before the note envelope is returned,
+        // so another device normally learns the key before it sees the snapshot.
+        // Receiving them in the other order is supported too: it keeps the
+        // unread snapshot until `adopt_note_keys` reopens it.
+        self.apply_account(AccountEdit::SetNoteKey {
+            note: id,
+            key: account::encode_note_access(
+                &new_key,
+                envelope.author,
+                true,
+                generation,
+                Some(rotation_seed),
+            ),
+        })?;
+        self.reindex(id)?;
+        self.refresh_library();
+        Ok(encoded)
     }
 
     /// Replace a note's log with a snapshot plus whatever the relay has not
@@ -2552,6 +2806,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .filter(|raw| !absorbed.contains(raw))
             .collect();
         rewritten.extend(added);
+        self.store
+            .put_meta(id, NEXT_COUNTER, &note.next_counter.to_be_bytes())?;
         self.store.replace_log(id, &rewritten)?;
         // The entry records the log's length, as after a compaction.
         self.reindex(id)?;

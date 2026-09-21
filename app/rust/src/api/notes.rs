@@ -839,6 +839,10 @@ impl Shared {
         self.with_connection(note, |c| c.publish_soon(envelope));
     }
 
+    fn rekey(&self, note: NoteId, envelope: Vec<u8>) {
+        self.with_connection(note, |c| c.rekey(envelope));
+    }
+
     fn with_connection(&self, note: NoteId, then: impl FnOnce(&Connection)) {
         if let Ok(connections) = self.connections.lock() {
             if let Some(connection) = connections.get(&note) {
@@ -1674,6 +1678,21 @@ impl Library {
         self.forget(id)
     }
 
+    /// Rotate a note's key and remove every collaborator while retaining the
+    /// creator's own account devices. This cannot erase a copy somebody already
+    /// decrypted; it prevents them from opening the rotated snapshot and every
+    /// later edit.
+    pub fn revoke_collaborators(&self, id: String) -> Result<(), String> {
+        let id = note_id(&id)?;
+        let envelope = self
+            .shared
+            .locked()?
+            .revoke_collaborators(id)
+            .map_err(|e| e.to_string())?;
+        self.shared.rekey(id, envelope);
+        Ok(())
+    }
+
     /// Forget every note in the trash. Returns how many there were.
     pub fn empty_trash(&self) -> Result<u32, String> {
         // Asked for the list, then told to empty it, rather than one call: every
@@ -2045,10 +2064,15 @@ impl Library {
         let id = join.secret.id();
         match answer {
             Ok(Answer::Pending { .. }) => Ok(JoinCheckView::waiting()),
-            Ok(Answer::Approved { note, key }) => {
+            Ok(Answer::Approved {
+                note,
+                key,
+                owner,
+                generation,
+            }) => {
                 let note = {
                     let mut core = self.shared.locked()?;
-                    core.accept_grant(id, note, key)
+                    core.accept_owned_grant(id, note, key, owner, generation)
                         .map_err(|e| e.to_string())?
                 };
                 self.shared.connect_note(note)?;

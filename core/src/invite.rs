@@ -44,7 +44,9 @@
 //! the two requests apart. It is a check a person may make, not one the
 //! protocol needs.
 
-use crate::crypto::{local_aad, open_blob, random_bytes, seal_blob, NoteKey, NOTE_KEY_LEN};
+use crate::crypto::{
+    local_aad, open_blob, random_bytes, seal_blob, AuthorKey, NoteKey, NOTE_KEY_LEN, PUBKEY_LEN,
+};
 use crate::error::{CoreError, Result};
 use crate::ids::{InviteId, NoteId};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -77,6 +79,8 @@ const REQUEST_KEY_LABEL: &[u8] = b"easynotes/invite/request-key/v1";
 const REQUEST_DOMAIN: &[u8] = b"easynotes/invite/request/v1";
 const GRANT_DOMAIN: &[u8] = b"easynotes/invite/grant/v1";
 const CODE_DOMAIN: &[u8] = b"easynotes/invite/code/v1";
+const OWNED_GRANT_VERSION: u8 = 2;
+const ROTATING_GRANT_VERSION: u8 = 3;
 
 fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
@@ -384,12 +388,51 @@ pub fn seal_grant(
     Ok(out)
 }
 
+/// The current grant also pins the note creator. A guest needs that identity to
+/// distinguish a real key rotation from a former collaborator trying to evict
+/// everybody else.
+pub fn seal_owned_grant(
+    secret: &InviteSecret,
+    request: &JoinRequest,
+    note: NoteId,
+    key: &NoteKey,
+    owner: AuthorKey,
+    generation: u64,
+) -> Result<Vec<u8>> {
+    let ephemeral = GuestKey::random().secret();
+    let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
+    let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(request.guest));
+    let cipher = grant_cipher(secret, &shared, &ephemeral_public, &request.guest)?;
+
+    let mut plain = Vec::with_capacity(1 + 16 + NOTE_KEY_LEN + PUBKEY_LEN + 8);
+    plain.push(ROTATING_GRANT_VERSION);
+    plain.extend_from_slice(note.as_bytes());
+    plain.extend_from_slice(&key.0);
+    plain.extend_from_slice(&owner.0);
+    plain.extend_from_slice(&generation.to_be_bytes());
+    let sealed = seal_blob(&cipher, &secret.aad(GRANT_DOMAIN), &plain);
+    plain.zeroize();
+
+    let mut out = Vec::with_capacity(PUBLIC_LEN + 160);
+    out.extend_from_slice(&ephemeral_public);
+    out.extend_from_slice(&sealed?);
+    Ok(out)
+}
+
 /// Open a grant with the key the request was made under.
 pub fn open_grant(
     secret: &InviteSecret,
     guest: &GuestKey,
     sealed: &[u8],
 ) -> Result<(NoteId, NoteKey)> {
+    open_owned_grant(secret, guest, sealed).map(|(note, key, _, _)| (note, key))
+}
+
+pub fn open_owned_grant(
+    secret: &InviteSecret,
+    guest: &GuestKey,
+    sealed: &[u8],
+) -> Result<(NoteId, NoteKey, Option<AuthorKey>, u64)> {
     if sealed.len() < PUBLIC_LEN {
         return Err(CoreError::MalformedInvite("grant is too short"));
     }
@@ -399,15 +442,29 @@ pub fn open_grant(
         .diffie_hellman(&x25519_dalek::PublicKey::from(ephemeral));
     let cipher = grant_cipher(secret, &shared, &ephemeral, &guest.public())?;
     let mut plain = open_blob(&cipher, &secret.aad(GRANT_DOMAIN), &sealed[PUBLIC_LEN..])?;
-    if plain.len() != 1 + 16 + NOTE_KEY_LEN || plain[0] != INVITE_VERSION {
+    let legacy_len = 1 + 16 + NOTE_KEY_LEN;
+    let owned_len = legacy_len + PUBKEY_LEN;
+    let rotating_len = owned_len + 8;
+    if (plain.len() != legacy_len && plain.len() != owned_len && plain.len() != rotating_len)
+        || (plain[0] != INVITE_VERSION
+            && plain[0] != OWNED_GRANT_VERSION
+            && plain[0] != ROTATING_GRANT_VERSION)
+    {
         plain.zeroize();
         return Err(CoreError::MalformedInvite("grant has an unknown shape"));
     }
     let note = NoteId::from_bytes(plain[1..17].try_into().unwrap());
     let mut key = [0u8; NOTE_KEY_LEN];
-    key.copy_from_slice(&plain[17..]);
+    key.copy_from_slice(&plain[17..17 + NOTE_KEY_LEN]);
+    let owner = (plain[0] == OWNED_GRANT_VERSION || plain[0] == ROTATING_GRANT_VERSION)
+        .then(|| AuthorKey(plain[17 + NOTE_KEY_LEN..owned_len].try_into().unwrap()));
+    let generation = if plain[0] == ROTATING_GRANT_VERSION && plain.len() == rotating_len {
+        u64::from_be_bytes(plain[owned_len..].try_into().unwrap())
+    } else {
+        0
+    };
     plain.zeroize();
-    Ok((note, NoteKey(key)))
+    Ok((note, NoteKey(key), owner, generation))
 }
 
 /// Six digits, as `123 456`, from the invite and a guest's public key.

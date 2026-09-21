@@ -158,6 +158,10 @@ abstract class Invites {
   /// Take an invite down. The link stops working.
   Future<void> withdrawInvite(String inviteId);
 
+  /// Rotate the note key and remove everybody outside the owner's account.
+  /// Copies they already decrypted cannot be recalled.
+  Future<void> revokeCollaborators(String noteId);
+
   /// Ask to join through [link], going by [name] to the owner.
   Future<PendingJoin> requestJoin(String link, {String name = ''});
 

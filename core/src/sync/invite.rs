@@ -10,7 +10,7 @@
 
 use super::transport::post;
 use super::wire::{self, invite_status, invite_url, RequestState};
-use crate::crypto::NoteKey;
+use crate::crypto::{AuthorKey, NoteKey};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::invite::{self, GuestKey, InviteSecret, JoinRequest, OwnerSecret};
@@ -93,6 +93,8 @@ pub enum Answer {
     Approved {
         note: NoteId,
         key: NoteKey,
+        owner: Option<AuthorKey>,
+        generation: u64,
     },
 }
 
@@ -116,8 +118,14 @@ pub async fn poll(
         },
         (RequestState::Declined, _) => Answer::Declined,
         (RequestState::Approved, Some(grant)) => {
-            let (note, key) = invite::open_grant(secret, guest, &unb64(&grant)?)?;
-            Answer::Approved { note, key }
+            let (note, key, owner, generation) =
+                invite::open_owned_grant(secret, guest, &unb64(&grant)?)?;
+            Answer::Approved {
+                note,
+                key,
+                owner,
+                generation,
+            }
         }
         (RequestState::Approved, None) => {
             return Err(wire::net("relay approved a request and sent no grant"))

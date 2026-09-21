@@ -210,6 +210,11 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  Future<void> revokeCollaborators(String noteId) async {
+    calls.add('revokeCollaborators($noteId)');
+  }
+
+  @override
   Future<PendingJoin> requestJoin(String link, {String name = ''}) async {
     calls.add('requestJoin($link, $name)');
     if (relayError != null) throw relayError!;

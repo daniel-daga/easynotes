@@ -83,10 +83,12 @@ fn rejects_an_update_from_an_unknown_key() {
     forged.author = attacker.public_key();
     // Re-sign so the signature check itself passes.
     let mut signed = Vec::new();
-    signed.push(1u8);
+    signed.push(ENVELOPE_VERSION);
     signed.extend_from_slice(note.as_bytes());
     signed.extend_from_slice(&forged.author.0);
     signed.extend_from_slice(&0u64.to_be_bytes());
+    signed.extend_from_slice(&key.id());
+    signed.push(0); // EnvelopeKind::Update
     signed.extend_from_slice(&forged.nonce);
     signed.extend_from_slice(&forged.ciphertext);
     forged.signature = attacker.sign(&signed);
@@ -156,7 +158,7 @@ fn rejects_malformed_wire_bytes() {
     );
 
     let mut wrong_version = good.clone();
-    wrong_version[0] = 2;
+    wrong_version[0] = ENVELOPE_VERSION.wrapping_add(1);
     assert!(Envelope::decode(&wrong_version).is_err());
 
     assert!(

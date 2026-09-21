@@ -221,6 +221,26 @@ void main() {
       expect(find.byKey(const Key('invite-link')), findsNothing);
     });
 
+    testWidgets('removing collaborators names the limit and rotates after confirmation', (
+      tester,
+    ) async {
+      final invites = FakeNoteLibrary();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      final id = await makeLink(tester, invites);
+
+      await tester.tap(find.byKey(const Key('revoke-collaborators')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('cannot erase anything'), findsOneWidget);
+      expect(invites.calls, isNot(contains('revokeCollaborators(this-note)')));
+      await tester.tap(find.byKey(const Key('confirm-revoke')));
+      await tester.pumpAndSettle();
+
+      expect(invites.calls, contains('withdrawInvite($id)'));
+      expect(invites.calls, contains('revokeCollaborators(this-note)'));
+      expect(find.byKey(const Key('sharing-revoked')), findsOneWidget);
+    });
+
     testWidgets('coming back finds the link that was sent', (tester) async {
       final invites = FakeNoteLibrary();
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
