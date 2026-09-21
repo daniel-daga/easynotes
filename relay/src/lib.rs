@@ -8,6 +8,7 @@ pub mod invite;
 pub mod limit;
 pub mod protocol;
 pub mod store;
+pub mod sync;
 
 pub use app::{router, router_with, AppState, Origins, RelayConfig};
 pub use store::{MemoryStore, PostgresStore, RelayStore};

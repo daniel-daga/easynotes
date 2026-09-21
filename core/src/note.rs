@@ -306,7 +306,7 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// [`ACCOUNT_DOC`] — sixteen zero bytes — until this device has an account,
     /// and the ID derived from the recovery phrase after that. It has to move,
     /// because the reserved ID is a fine *local* address and an impossible wire
-    /// one: the relay's path is `/v1/notes/{note_id}`, so every user in the
+    /// one: the relay keeps one log per note ID, so every user in the
     /// world syncing under zeros would be one topic. See
     /// [`crate::account`] and [ADR
     /// 0013](../../docs/adr/0013-recovery-phrase.md).

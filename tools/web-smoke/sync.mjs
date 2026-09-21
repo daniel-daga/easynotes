@@ -75,10 +75,15 @@ await page.keyboard.press('Enter');
 // The handshake is two HTTP calls and then a socket, and the relay may be cold.
 await page.waitForTimeout(6000);
 
-const note = sockets.find(u => u.includes('/v1/notes/'));
-check(!!note, `the tab opened a socket to a note: ${sockets.join(' ') || '(none)'}`);
+// One socket for the device, not one per note (ADR 0017).
+const device = sockets.filter(u => u.includes('/v1/sync'));
+check(device.length === 1, `the tab opened one socket for the device: ${sockets.join(' ') || '(none)'}`);
 check(
-  !!note && /[?&]token=/.test(note),
+  !sockets.some(u => u.includes('/v1/notes/')),
+  'and no socket per note',
+);
+check(
+  device.length > 0 && /[?&]token=/.test(device[0]),
   'it carried a token, so the two HTTP calls of the handshake went through CORS',
 );
 check(

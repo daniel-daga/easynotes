@@ -2,10 +2,11 @@
 //!
 //! Three layers, deliberately separated. [`wire`] is the protocol and nothing
 //! else — messages, base64, what counts as nonsense — with no socket in it.
-//! `client` and `client_web` are the two transports that carry it: one socket,
-//! one note, four methods. [`engine`] is the policy on top — when to connect,
-//! what to do when the connection dies, what to re-send, and what the UI is
-//! told about any of it.
+//! `client` and `client_web` are the two transports that carry it: a socket
+//! that sends and receives text, and the handshake. `socket` is the few lines
+//! that put the two together, once. [`engine`] is the policy on top — one
+//! socket per device, when to connect, what to do when the connection dies,
+//! what to re-send, and what the UI is told about any of it.
 //!
 //! That split is what lets a browser have the second and third layers for free.
 //! A tab needs its own transport because it cannot open a TCP socket, and it
@@ -34,25 +35,36 @@
     allow(dead_code)
 )]
 mod wire;
-pub use wire::{Incoming, RequestState};
+pub use wire::{Incoming, RequestState, Routed};
 
 // Exactly one transport is compiled, and which one is not a choice a caller
 // makes: a device has no browser to borrow a socket from and a tab cannot open
-// a TCP one. They present the same `authenticate` and `NoteSync`, so nothing
+// a TCP one. They present the same `authenticate` and `Socket`, so nothing
 // above here has a `cfg` in it.
 #[cfg(feature = "sync-native")]
 mod client;
 #[cfg(feature = "sync-native")]
 use client as transport;
 #[cfg(feature = "sync-native")]
-pub use client::{authenticate, NoteSync};
+pub use client::authenticate;
 
 #[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
 mod client_web;
 #[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
 use client_web as transport;
 #[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
-pub use client_web::{authenticate, NoteSync};
+pub use client_web::authenticate;
+
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+mod socket;
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+pub use socket::{DeviceSync, NoteSync};
 
 /// The invite calls. Plain HTTP over the same transport, with no socket and
 /// no device key — see the module for why not the latter.
@@ -77,6 +89,6 @@ mod timer;
     all(feature = "sync-web", target_arch = "wasm32")
 ))]
 pub use engine::{
-    Pacing, RelayEndpoint, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus, FIRST_RETRY,
-    MAX_RETRY,
+    Pacing, RelayEndpoint, SyncDevice, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus,
+    FIRST_RETRY, MAX_RETRY,
 };

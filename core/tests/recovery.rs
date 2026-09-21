@@ -61,8 +61,8 @@ fn deliver_account<D: NoteDoc, S: OpStore, K: Keyring, S2: OpStore, K2: Keyring>
 // The address and the key
 // ---------------------------------------------------------------------------
 
-/// The constraint that is not in the plan and is fatal without it: the relay's
-/// path is `/v1/notes/{note_id}`, so an account document that synced under the
+/// The constraint that is not in the plan and is fatal without it: the relay
+/// keeps one log per note ID, so an account document that synced under the
 /// reserved ID would put every user of every relay on one topic.
 fn an_account_moves_the_document_off_the_reserved_id<D: NoteDoc>() {
     let mut core = in_memory::<D>();

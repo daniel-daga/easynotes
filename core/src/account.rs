@@ -33,8 +33,8 @@
 //! Locally the account document lives under a reserved ID of sixteen zero bytes
 //! ([`crate::note::ACCOUNT_DOC`], [ADR
 //! 0008](../../docs/adr/0008-account-document.md)). That is a fine local
-//! address and an impossible wire address: the relay's path is
-//! `/v1/notes/{note_id}`, so an account document that synced under zeros would
+//! address and an impossible wire address: the relay keeps one log per
+//! note ID, so an account document that synced under zeros would
 //! put every user of every relay on one topic — reading each other's placements
 //! if they shared a key, and colliding on sequence numbers even if they did
 //! not. So the ID a *relay* sees is derived from the root, which makes it

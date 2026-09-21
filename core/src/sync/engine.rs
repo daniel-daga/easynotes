@@ -18,19 +18,27 @@
 //! * **Nothing here decrypts anything.** The engine moves sealed envelopes
 //!   between the socket and the core. It cannot read them and does not have the
 //!   keys to try.
+//! * **One socket per device, not per note.** Every note the device syncs is a
+//!   subscription on one connection, with one token handshake and one backoff
+//!   between them ([ADR 0017](../../docs/adr/0017-one-socket-per-device.md)).
+//!   Everything above is still per note: its own cursor, outbox and held
+//!   typing, exactly as when each note had a socket of its own.
 
 // From the module rather than from one transport: which of `client` and
 // `client_web` these come from is the target's business, and this file must not
 // be able to tell.
-use super::wire::Incoming;
-use super::{authenticate, NoteSync};
+use super::wire::{Incoming, Routed};
+use super::{authenticate, DeviceSync};
 use crate::crdt::NoteDoc;
 use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::note::{NoteCore, SyncCursor};
 use crate::store::{Keyring, OpStore};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
@@ -272,23 +280,126 @@ impl Default for SyncStatus {
 }
 
 enum Command {
+    /// Start syncing a note, or hand an already synced one a new handle.
+    /// `id` names this subscription, so that the handle it replaced cannot
+    /// unsubscribe it on its way out.
+    Subscribe {
+        note: NoteId,
+        id: u64,
+        status: watch::Sender<SyncStatus>,
+    },
+    Unsubscribe {
+        note: NoteId,
+        id: u64,
+    },
     /// `now` is false for an edit that may wait for the ones after it.
     Publish {
+        note: NoteId,
         envelope: Vec<u8>,
         now: bool,
     },
-    Flush,
+    /// One note's held typing, or every note's.
+    Flush {
+        note: Option<NoteId>,
+    },
+    /// Every [`SyncDevice`] is gone. The engine finishes once its last note has.
+    Released,
     Shutdown,
 }
 
-/// The engine's remote control: hand it envelopes, read its status, stop it.
+/// The device's side of the engine: subscribe notes to it, flush them all, or
+/// stop it.
 ///
-/// Cloneable and cheap. Dropping every clone stops the engine, so a note that
-/// goes away cannot leave a task talking to the relay about it.
+/// Cloneable and cheap. The engine keeps running while any clone of this or any
+/// note's [`SyncHandle`] is alive, and finishes once the last of them is gone —
+/// so an engine nobody can reach does not stay connected to the relay.
+#[derive(Clone)]
+pub struct SyncDevice {
+    commands: mpsc::UnboundedSender<Command>,
+    ids: Arc<AtomicU64>,
+    _released: Arc<Release>,
+}
+
+/// Sends [`Command::Released`] when the last [`SyncDevice`] clone is dropped.
+struct Release(mpsc::UnboundedSender<Command>);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = self.0.send(Command::Released);
+    }
+}
+
+impl SyncDevice {
+    /// Start syncing `note` over the device's connection, and return its handle.
+    ///
+    /// A note can be connected at any point, not only before the engine first
+    /// connects: that is how a note made, joined or adopted from the account
+    /// document gets synced without a socket of its own. Connecting a note that
+    /// already has a handle replaces that handle; what the engine holds for the
+    /// note — its cursor, its outbox, its held typing — carries over.
+    pub fn connect(&self, note: NoteId) -> SyncHandle {
+        let id = self.ids.fetch_add(1, Ordering::Relaxed);
+        let (status_tx, status) = watch::channel(SyncStatus::default());
+        let _ = self.commands.send(Command::Subscribe {
+            note,
+            id,
+            status: status_tx,
+        });
+        SyncHandle {
+            note,
+            commands: self.commands.clone(),
+            status,
+            subscription: Arc::new(Subscription {
+                note,
+                id,
+                commands: self.commands.clone(),
+            }),
+        }
+    }
+
+    /// Send every note's held typing now — see [`SyncHandle::flush`].
+    pub fn flush(&self) {
+        let _ = self.commands.send(Command::Flush { note: None });
+    }
+
+    /// Close the connection and finish, whatever notes are still connected.
+    pub fn shutdown(&self) {
+        let _ = self.commands.send(Command::Shutdown);
+    }
+}
+
+/// Unsubscribes a note when the last clone of its handle is dropped.
+struct Subscription {
+    note: NoteId,
+    id: u64,
+    commands: mpsc::UnboundedSender<Command>,
+}
+
+impl Subscription {
+    fn end(&self) {
+        let _ = self.commands.send(Command::Unsubscribe {
+            note: self.note,
+            id: self.id,
+        });
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+/// One note's remote control: hand it envelopes, read its status, stop it.
+///
+/// Cloneable and cheap. Dropping every clone stops syncing the note, so a note
+/// that goes away cannot leave the engine talking to the relay about it.
 #[derive(Clone)]
 pub struct SyncHandle {
+    note: NoteId,
     commands: mpsc::UnboundedSender<Command>,
     status: watch::Receiver<SyncStatus>,
+    subscription: Arc<Subscription>,
 }
 
 impl SyncHandle {
@@ -300,6 +411,7 @@ impl SyncHandle {
     /// the next connection picks it up from the log.
     pub fn publish(&self, envelope: Vec<u8>) {
         let _ = self.commands.send(Command::Publish {
+            note: self.note,
             envelope,
             now: true,
         });
@@ -313,6 +425,7 @@ impl SyncHandle {
     /// it waits sends it on the next connection.
     pub fn publish_soon(&self, envelope: Vec<u8>) {
         let _ = self.commands.send(Command::Publish {
+            note: self.note,
             envelope,
             now: false,
         });
@@ -322,7 +435,9 @@ impl SyncHandle {
     /// get another chance to: going into the background, a tab being hidden, a
     /// note being closed.
     pub fn flush(&self) {
-        let _ = self.commands.send(Command::Flush);
+        let _ = self.commands.send(Command::Flush {
+            note: Some(self.note),
+        });
     }
 
     pub fn status(&self) -> SyncStatus {
@@ -334,9 +449,11 @@ impl SyncHandle {
         self.status.clone()
     }
 
-    /// Ask the engine to close its connection and finish.
+    /// Stop syncing this note. The device's connection stays up for its other
+    /// notes; an engine started with [`SyncEngine::start`] has no others, and
+    /// closes it and finishes.
     pub fn shutdown(&self) {
-        let _ = self.commands.send(Command::Shutdown);
+        self.subscription.end();
     }
 }
 
@@ -344,58 +461,69 @@ impl SyncHandle {
 // The engine
 // ---------------------------------------------------------------------------
 
+/// One device's sync: one socket to the relay, carrying every note connected
+/// to it ([ADR 0017](../../docs/adr/0017-one-socket-per-device.md)).
+///
+/// The split is along a line that was already in the engine. What is about the
+/// socket — the token handshake, the reconnect loop and its one backoff,
+/// routing frames in and out by note — is the device's. What is about a note —
+/// its cursor, its outbox derived from the log, its held typing and their
+/// timers, whether it has caught up — is the note's, exactly as it was when
+/// each note had a socket of its own.
 pub struct SyncEngine<P: SyncPeer> {
     peer: P,
-    note: NoteId,
     endpoint: RelayEndpoint,
     commands: mpsc::UnboundedReceiver<Command>,
-    live: Live,
+    pacing: Pacing,
 }
 
 impl<P: SyncPeer> SyncEngine<P> {
-    /// Build an engine and its handle. Nothing happens until [`run`](Self::run)
-    /// is spawned — on whatever executor the caller has, which on the app side
-    /// is a runtime the bridge owns and in tests is the test's own.
+    /// Build an engine for a device, and the handle to connect notes to it.
+    /// Nothing happens until [`run`](Self::run) is spawned — on whatever
+    /// executor the caller has, which on the app side is a runtime the bridge
+    /// owns and in tests is the test's own.
+    pub fn device(peer: P, endpoint: RelayEndpoint) -> (Self, SyncDevice) {
+        Self::device_paced(peer, endpoint, Pacing::default())
+    }
+
+    /// [`device`](Self::device), holding typing back for other than the default
+    /// times. For tests, which cannot wait ten seconds to see a cap work.
+    pub fn device_paced(peer: P, endpoint: RelayEndpoint, pacing: Pacing) -> (Self, SyncDevice) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let engine = Self {
+            peer,
+            endpoint,
+            commands: rx,
+            pacing,
+        };
+        let device = SyncDevice {
+            commands: tx.clone(),
+            ids: Arc::new(AtomicU64::new(0)),
+            _released: Arc::new(Release(tx)),
+        };
+        (engine, device)
+    }
+
+    /// An engine syncing one note, which finishes when the note's handle is
+    /// shut down or dropped. A device with one note, and what every test that
+    /// is about a note rather than a device wants.
     pub fn start(peer: P, note: NoteId, endpoint: RelayEndpoint) -> (Self, SyncHandle) {
         Self::start_paced(peer, note, endpoint, Pacing::default())
     }
 
-    /// [`start`](Self::start), holding typing back for other than the default
-    /// times. For tests, which cannot wait ten seconds to see a cap work.
+    /// [`start`](Self::start) with [`Pacing`] of its own.
     pub fn start_paced(
         peer: P,
         note: NoteId,
         endpoint: RelayEndpoint,
         pacing: Pacing,
     ) -> (Self, SyncHandle) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (status_tx, status_rx) = watch::channel(SyncStatus::default());
-        let engine = Self {
-            peer,
-            note,
-            endpoint,
-            commands: rx,
-            live: Live {
-                status: status_tx,
-                current: SyncStatus::default(),
-                outbox: Vec::new(),
-                held: Vec::new(),
-                covered: None,
-                pacing,
-                quiet: None,
-                cap: None,
-                cursor: SyncCursor::default(),
-                saved: SyncCursor::default(),
-            },
-        };
-        let handle = SyncHandle {
-            commands: tx,
-            status: status_rx,
-        };
-        (engine, handle)
+        let (engine, device) = Self::device_paced(peer, endpoint, pacing);
+        (engine, device.connect(note))
     }
 
-    /// Run until the handle is dropped or [`SyncHandle::shutdown`] is called.
+    /// Run until [`SyncDevice::shutdown`], or until every handle to the engine
+    /// is gone.
     ///
     /// Never returns an error: a relay that cannot be reached is a state to show,
     /// not a failure to report, and the app keeps working without one.
@@ -404,24 +532,29 @@ impl<P: SyncPeer> SyncEngine<P> {
         // the engine's state are separate things. `select!` holds both at once.
         let Self {
             peer,
-            note,
             endpoint,
             mut commands,
-            mut live,
+            pacing,
         } = self;
-
-        let me = match peer.device_key() {
-            Ok(key) => key,
-            Err(e) => {
-                live.fail(e.to_string());
-                return;
-            }
+        let mut device = Device {
+            notes: HashMap::new(),
+            released: false,
+            pacing,
+            last_error: None,
         };
 
         let mut backoff = FIRST_RETRY;
         loop {
-            live.set_state(SyncState::Connecting);
-            match session(&peer, note, &endpoint, &me, &mut commands, &mut live).await {
+            // Nothing to sync: wait for a note rather than hold a socket open
+            // to a relay with nothing to say to it.
+            if device.notes.is_empty() {
+                if !wait(None, &mut commands, &mut device).await {
+                    break;
+                }
+                continue;
+            }
+            device.each(|note| note.set_state(SyncState::Connecting));
+            match session(&peer, &endpoint, &mut commands, &mut device).await {
                 Ended::ShutDown => break,
                 // A connection that worked and then went away deserves a quick
                 // retry: this is a dropped socket, not a relay that is not
@@ -432,26 +565,26 @@ impl<P: SyncPeer> SyncEngine<P> {
                     caught: true,
                     reason,
                 } => {
-                    live.fail(reason);
+                    device.fail(reason);
                     backoff = FIRST_RETRY;
                 }
                 Ended::Connected { reason, .. } | Ended::Failed(reason) => {
-                    live.fail(reason);
+                    device.fail(reason);
                     backoff = (backoff * 2).min(MAX_RETRY);
                 }
             }
-            if !wait(backoff, &mut commands, &mut live).await {
+            if !wait(Some(backoff), &mut commands, &mut device).await {
                 break;
             }
         }
-        live.set_state(SyncState::Offline);
+        device.each(|note| note.set_state(SyncState::Offline));
     }
 }
 
 enum Ended {
-    /// The handle asked us to stop, or was dropped.
+    /// The engine was asked to stop, or nothing can reach it any more.
     ShutDown,
-    /// We were connected and lost it. `caught` says whether we ever got as far
+    /// We were connected and lost it. `caught` says whether any note got as far
     /// as being up to date, which is the difference between a connection that
     /// worked and one that was accepted and then fell over.
     Connected { caught: bool, reason: String },
@@ -459,144 +592,89 @@ enum Ended {
     Failed(String),
 }
 
+/// What handling a command while connected leads to.
+enum Next {
+    Continue,
+    Stop,
+}
+
 /// One connection, from handshake to whatever ends it.
 async fn session<P: SyncPeer>(
     peer: &P,
-    note: NoteId,
     endpoint: &RelayEndpoint,
-    me: &AuthorKey,
     commands: &mut mpsc::UnboundedReceiver<Command>,
-    live: &mut Live,
+    device: &mut Device,
 ) -> Ended {
+    let me = match peer.device_key() {
+        Ok(key) => key,
+        Err(e) => return Ended::Failed(e.to_string()),
+    };
+
     // A token every time. They expire, and a reconnect after a long offline spell
-    // is exactly the case where the old one would be stale.
+    // is exactly the case where the old one would be stale. One per connection,
+    // however many notes it carries.
     let token = match authenticate(&endpoint.http_base, peer).await {
         Ok(token) => token,
         Err(e) => return Ended::Failed(e.to_string()),
     };
 
-    // Re-read rather than trust what we remember: the core has been editing and
-    // persisting while we were away.
-    match peer.cursor(note) {
-        Ok(cursor) => {
-            live.cursor = cursor;
-            live.saved = cursor;
-        }
+    let mut sync = match DeviceSync::connect(&endpoint.ws_base, &token).await {
+        Ok(sync) => sync,
         Err(e) => return Ended::Failed(e.to_string()),
-    }
-
-    let mut sync =
-        match NoteSync::connect(&endpoint.ws_base, &token, note, live.cursor.last_seq).await {
-            Ok(sync) => sync,
-            Err(e) => return Ended::Failed(e.to_string()),
-        };
-    live.connected();
-
-    // Everything this device wrote that the relay has not acknowledged, including
-    // edits from earlier runs of the app and whatever was held back while
-    // offline — all of it is in the log, so the log is where it is read from,
-    // and it replaces the outbox rather than joining it. Folded into as few
-    // envelopes as will do: an hour of offline typing is one burst as far as
-    // anyone else is concerned.
-    match peer.unsent(note, live.cursor.sent_upto) {
-        Ok(unsent) => {
-            // A `Publish` still in the channel for anything read here is the
-            // same edit arriving a second time. The counter says so, because
-            // the log gets an edit before the channel does.
-            live.covered = unsent.last().map(|(counter, _)| *counter);
-            live.release();
-            let unsent = unsent.into_iter().map(|(_, envelope)| envelope).collect();
-            live.outbox = live.squash(peer, note, unsent);
-        }
-        Err(e) => {
-            return Ended::Connected {
-                caught: false,
-                reason: e.to_string(),
-            }
-        }
-    }
-    live.publish();
+    };
 
     let mut caught = false;
     let lost = |caught: bool, reason: String| Ended::Connected { caught, reason };
 
-    for envelope in live.outbox.clone() {
-        if let Err(e) = sync.append(&envelope).await {
-            return lost(caught, e.to_string());
+    // Every note from its own cursor, each with its own outbox folded.
+    let ids: Vec<NoteId> = device.notes.keys().copied().collect();
+    for id in ids {
+        if let Err(e) = device.start(peer, id, &mut sync).await {
+            return lost(caught, e);
         }
     }
 
     loop {
         tokio::select! {
-            command = commands.recv() => match command {
-                // Not flushed first. What is held is in the log, and the next
-                // connection sends it; a shutdown is also how a note about to be
-                // deleted is let go of, and rewriting its log on the way out
-                // would race the delete.
-                None | Some(Command::Shutdown) => {
+            command = commands.recv() => {
+                let Some(command) = command else {
                     let _ = sync.close().await;
                     return Ended::ShutDown;
-                }
-                Some(Command::Publish { envelope, now }) => {
-                    // Already covered means already sent in this session: the
-                    // edit landed in the log before the handshake finished, so
-                    // the catch-up above picked it up and the command is the
-                    // same envelope arriving a second time. Sending it again
-                    // would put a duplicate in the relay's log on every launch
-                    // where the user edits while it is still connecting.
-                    if live.covers(&envelope) {
-                        continue;
+                };
+                match device.online(peer, command, &mut sync).await {
+                    Ok(Next::Continue) => {}
+                    // Not flushed first. What is held is in the log, and the
+                    // next connection sends it; a shutdown is also how a note
+                    // about to be deleted is let go of, and rewriting its log on
+                    // the way out would race the delete.
+                    Ok(Next::Stop) => {
+                        let _ = sync.close().await;
+                        return Ended::ShutDown;
                     }
-                    live.hold(envelope);
-                    if now {
-                        if let Err(e) = flush(peer, note, live, &mut sync).await {
-                            return lost(caught, e);
-                        }
-                    }
-                }
-                Some(Command::Flush) => {
-                    if let Err(e) = flush(peer, note, live, &mut sync).await {
-                        return lost(caught, e);
-                    }
+                    Err(e) => return lost(caught, e),
                 }
             },
 
             // Pending for ever while nothing is held, so this only ever wins
-            // when a pause or the cap says the typing has waited long enough.
-            () = due(&mut live.quiet, &mut live.cap) => {
-                if let Err(e) = flush(peer, note, live, &mut sync).await {
+            // when a pause or the cap says some note's typing has waited long
+            // enough.
+            id = device.due() => {
+                if let Err(e) = device.flush(peer, id, &mut sync).await {
                     return lost(caught, e);
                 }
             },
 
             // Cancel-safe: the socket buffers a partial frame internally, so
-            // dropping this future when the other branch wins loses nothing.
+            // dropping this future when another branch wins loses nothing.
             incoming = sync.next() => match incoming {
-                Ok(Some(Incoming::Envelope { seq, envelope })) => {
-                    live.receive(peer, note, me, seq, &envelope);
-                    // Once the backlog is drained, every envelope is its own
-                    // settled batch: it is one edit, made by a device that was
-                    // itself up to date, so the state it leaves the document in
-                    // is a state that device meant. During the backlog it is not,
-                    // which is the whole reason `settled` exists — hence the
-                    // flag rather than calling this unconditionally.
-                    if caught {
-                        settle(peer, note, live);
-                    }
+                Ok(Some(Routed::Note(id, incoming))) => {
+                    caught |= device.receive(peer, &me, id, incoming);
                 }
-                Ok(Some(Incoming::Caught { seq })) => {
-                    caught = true;
-                    live.advance(peer, note, seq);
-                    // After the cursor has moved, so that a peer that does work
-                    // here and then fails does not also lose its place in the
-                    // log it has already applied.
-                    settle(peer, note, live);
-                    live.set_state(SyncState::Synced);
-                }
-                Ok(Some(Incoming::Rejected(message))) => {
-                    // The relay refused one envelope. The connection is fine and
-                    // the rest of the outbox still goes.
-                    live.note_error(message);
+                Ok(Some(Routed::Unrouted(message))) => {
+                    // The relay refused something without saying what it was
+                    // about. Every note hears it, because any of them might
+                    // be the one.
+                    device.each(|note| note.note_error(message.clone()));
                 }
                 Ok(None) => return lost(caught, "the relay closed the connection".into()),
                 Err(e) => return lost(caught, e.to_string()),
@@ -605,44 +683,358 @@ async fn session<P: SyncPeer>(
     }
 }
 
-/// Send everything held back, folded into as few envelopes as will do.
+/// Sleep out the backoff, or with `None` wait for a note to sync, but stay
+/// listening: an edit made while offline belongs in the outbox now, not after
+/// the next connection, or the UI would under-report what is pending.
 ///
-/// The error is the socket's, and ends the connection; nothing is lost with it,
-/// because what was held is in the log and the next connection reads it there.
-async fn flush<P: SyncPeer>(
-    peer: &P,
-    note: NoteId,
-    live: &mut Live,
-    sync: &mut NoteSync,
-) -> std::result::Result<(), String> {
-    let held = live.release();
-    if held.is_empty() {
-        return Ok(());
+/// Returns false if the engine should stop.
+async fn wait(
+    backoff: Option<Duration>,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    device: &mut Device,
+) -> bool {
+    // `super::timer` rather than `tokio::time`, because a browser tab has no
+    // runtime to drive a tokio timer and cannot be given one.
+    let deadline = async {
+        match backoff {
+            Some(backoff) => super::timer::sleep(backoff).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            () = &mut deadline => return true,
+            command = commands.recv() => match command {
+                None | Some(Command::Shutdown) => return false,
+                Some(Command::Subscribe { note, id, status }) => {
+                    device.subscribe(note, id, status);
+                    // Waiting for a note, and here is one.
+                    if backoff.is_none() {
+                        return true;
+                    }
+                }
+                Some(Command::Unsubscribe { note, id }) => {
+                    device.unsubscribe(note, id);
+                    if device.finished() {
+                        return false;
+                    }
+                }
+                // Held with no timer on it: there is nowhere to send it, and the
+                // next connection reads it back out of the log anyway. It is
+                // here only so that `pending` counts it.
+                Some(Command::Publish { note, envelope, .. }) => {
+                    if let Some(note) = device.notes.get_mut(&note) {
+                        note.held.push(envelope);
+                        note.publish();
+                    }
+                }
+                Some(Command::Flush { .. }) => {}
+                Some(Command::Released) => {
+                    device.released = true;
+                    if device.finished() {
+                        return false;
+                    }
+                }
+            },
+        }
     }
-    let batch = live.squash(peer, note, held);
-    live.outbox.extend(batch.iter().cloned());
-    live.publish();
-    for envelope in &batch {
-        sync.append(envelope).await.map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
-/// Whichever of the two batching timers goes off first, or never if neither is
-/// running.
-///
-/// Cancel-safe, which `select!` needs: the timers are borrowed rather than
-/// moved in, so dropping this when another branch wins leaves them running.
-async fn due(quiet: &mut Option<super::timer::Timer>, cap: &mut Option<super::timer::Timer>) {
-    match (quiet.as_mut(), cap.as_mut()) {
-        (Some(quiet), Some(cap)) => {
-            tokio::select! {
-                () = quiet => {},
-                () = cap => {},
+/// Everything the engine holds that outlives one connection.
+struct Device {
+    notes: HashMap<NoteId, Live>,
+    /// Every [`SyncDevice`] has been dropped, so no note can be connected
+    /// again: once the last one goes, so does the engine.
+    released: bool,
+    pacing: Pacing,
+    /// Why the last connection ended, for a note connected while there is
+    /// none.
+    last_error: Option<String>,
+}
+
+impl Device {
+    fn each(&mut self, mut f: impl FnMut(&mut Live)) {
+        for note in self.notes.values_mut() {
+            f(note);
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.released && self.notes.is_empty()
+    }
+
+    /// The connection is gone. Every note is offline with the same reason.
+    fn fail(&mut self, reason: String) {
+        self.last_error = Some(reason.clone());
+        self.each(|note| {
+            note.on_socket = false;
+            note.fail(reason.clone());
+        });
+    }
+
+    /// Take a note on, or give one already here its new handle. Returns true if
+    /// the note is new, and so has to be started on a live connection.
+    fn subscribe(&mut self, note: NoteId, id: u64, status: watch::Sender<SyncStatus>) -> bool {
+        if let Some(live) = self.notes.get_mut(&note) {
+            live.id = id;
+            live.status = status;
+            live.publish();
+            return false;
+        }
+        let mut live = Live::new(id, status, self.pacing);
+        // Not connected, and saying why if a connection has failed. A note
+        // connected in the middle of a backoff is as offline as the rest.
+        live.current.last_error = self.last_error.clone();
+        live.publish();
+        self.notes.insert(note, live);
+        true
+    }
+
+    /// Let a note go, if `id` is still its subscription. Returns whether it was
+    /// on the socket, and so has to be unsubscribed there too.
+    fn unsubscribe(&mut self, note: NoteId, id: u64) -> bool {
+        match self.notes.get(&note) {
+            Some(live) if live.id == id => {}
+            _ => return false,
+        }
+        let mut live = self.notes.remove(&note).expect("checked above");
+        live.set_state(SyncState::Offline);
+        live.on_socket
+    }
+
+    /// Put one note on a live connection: subscribe it from its cursor, and
+    /// send what it has not.
+    ///
+    /// The error is the socket's, and ends the connection. A note whose own
+    /// store fails is told so and left off the socket, rather than taking every
+    /// other note's connection down with it.
+    async fn start<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        id: NoteId,
+        sync: &mut DeviceSync,
+    ) -> std::result::Result<(), String> {
+        let Some(live) = self.notes.get_mut(&id) else {
+            return Ok(());
+        };
+        live.on_socket = false;
+        live.caught = false;
+
+        // Re-read rather than trust what we remember: the core has been editing
+        // and persisting while we were away.
+        match peer.cursor(id) {
+            Ok(cursor) => {
+                live.cursor = cursor;
+                live.saved = cursor;
+            }
+            Err(e) => {
+                live.fail(e.to_string());
+                return Ok(());
             }
         }
-        (Some(timer), None) | (None, Some(timer)) => timer.await,
-        (None, None) => std::future::pending().await,
+
+        sync.subscribe(id, live.cursor.last_seq)
+            .await
+            .map_err(|e| e.to_string())?;
+        live.on_socket = true;
+        live.connected();
+
+        // Everything this device wrote that the relay has not acknowledged,
+        // including edits from earlier runs of the app and whatever was held
+        // back while offline — all of it is in the log, so the log is where it
+        // is read from, and it replaces the outbox rather than joining it.
+        // Folded into as few envelopes as will do: an hour of offline typing is
+        // one burst as far as anyone else is concerned.
+        match peer.unsent(id, live.cursor.sent_upto) {
+            Ok(unsent) => {
+                // A `Publish` still in the channel for anything read here is the
+                // same edit arriving a second time. The counter says so, because
+                // the log gets an edit before the channel does.
+                live.covered = unsent.last().map(|(counter, _)| *counter);
+                live.release();
+                let unsent = unsent.into_iter().map(|(_, envelope)| envelope).collect();
+                live.outbox = live.squash(peer, id, unsent);
+            }
+            Err(e) => {
+                live.release();
+                live.outbox.clear();
+                live.note_error(e.to_string());
+            }
+        }
+        live.publish();
+
+        for envelope in live.outbox.clone() {
+            sync.append(id, &envelope)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// A command, while connected.
+    async fn online<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        command: Command,
+        sync: &mut DeviceSync,
+    ) -> std::result::Result<Next, String> {
+        match command {
+            Command::Shutdown => return Ok(Next::Stop),
+            Command::Released => {
+                self.released = true;
+                if self.finished() {
+                    return Ok(Next::Stop);
+                }
+            }
+            Command::Subscribe { note, id, status } => {
+                // A note already here is started again only if it never made
+                // it onto this socket — its store failed the first time.
+                let new = self.subscribe(note, id, status);
+                if new || self.notes.get(&note).is_some_and(|live| !live.on_socket) {
+                    self.start(peer, note, sync).await?;
+                }
+            }
+            Command::Unsubscribe { note, id } => {
+                if self.unsubscribe(note, id) {
+                    sync.unsubscribe(note).await.map_err(|e| e.to_string())?;
+                }
+                if self.finished() {
+                    return Ok(Next::Stop);
+                }
+            }
+            Command::Publish {
+                note,
+                envelope,
+                now,
+            } => {
+                let Some(live) = self.notes.get_mut(&note) else {
+                    return Ok(Next::Continue);
+                };
+                // Already covered means already sent in this session: the edit
+                // landed in the log before the note was subscribed, so the
+                // catch-up picked it up and the command is the same envelope
+                // arriving a second time. Sending it again would put a
+                // duplicate in the relay's log on every launch where the user
+                // edits while it is still connecting.
+                if live.covers(&envelope) {
+                    return Ok(Next::Continue);
+                }
+                live.hold(envelope);
+                if now {
+                    self.flush(peer, note, sync).await?;
+                }
+            }
+            Command::Flush { note: Some(note) } => self.flush(peer, note, sync).await?,
+            Command::Flush { note: None } => {
+                let ids: Vec<NoteId> = self.notes.keys().copied().collect();
+                for id in ids {
+                    self.flush(peer, id, sync).await?;
+                }
+            }
+        }
+        Ok(Next::Continue)
+    }
+
+    /// Send everything one note holds back, folded into as few envelopes as
+    /// will do.
+    ///
+    /// The error is the socket's, and ends the connection; nothing is lost with
+    /// it, because what was held is in the log and the next connection reads it
+    /// there.
+    async fn flush<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        id: NoteId,
+        sync: &mut DeviceSync,
+    ) -> std::result::Result<(), String> {
+        let Some(live) = self.notes.get_mut(&id) else {
+            return Ok(());
+        };
+        // Left held, with its timers stopped, when the note could not be put on
+        // the socket: the relay would refuse it, and the log has it anyway.
+        if !live.on_socket {
+            live.quiet = None;
+            live.cap = None;
+            return Ok(());
+        }
+        let held = live.release();
+        if held.is_empty() {
+            return Ok(());
+        }
+        let batch = live.squash(peer, id, held);
+        live.outbox.extend(batch.iter().cloned());
+        live.publish();
+        for envelope in &batch {
+            sync.append(id, envelope).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Whichever note's batching timer goes off first, or never if none is
+    /// running.
+    ///
+    /// Cancel-safe, which `select!` needs: the timers are polled where they
+    /// are kept rather than moved in, so dropping this when another branch
+    /// wins leaves them running. A timer that has fired is not polled again,
+    /// because the flush that follows takes it away.
+    fn due(&mut self) -> impl std::future::Future<Output = NoteId> + '_ {
+        std::future::poll_fn(move |cx| {
+            for (id, live) in self.notes.iter_mut() {
+                for timer in [&mut live.quiet, &mut live.cap].into_iter().flatten() {
+                    if timer.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(*id);
+                    }
+                }
+            }
+            Poll::Pending
+        })
+    }
+
+    /// Something arrived for a note. Returns true if it was the note catching
+    /// up.
+    fn receive<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        me: &AuthorKey,
+        id: NoteId,
+        incoming: Incoming,
+    ) -> bool {
+        // A note unsubscribed a moment ago can still have messages in flight.
+        let Some(live) = self.notes.get_mut(&id) else {
+            return false;
+        };
+        match incoming {
+            Incoming::Envelope { seq, envelope } => {
+                live.receive(peer, id, me, seq, &envelope);
+                // Once the backlog is drained, every envelope is its own
+                // settled batch: it is one edit, made by a device that was
+                // itself up to date, so the state it leaves the document in is
+                // a state that device meant. During the backlog it is not,
+                // which is the whole reason `settled` exists — hence the flag
+                // rather than calling this unconditionally.
+                if live.caught {
+                    settle(peer, id, live);
+                }
+                false
+            }
+            Incoming::Caught { seq } => {
+                live.caught = true;
+                live.advance(peer, id, seq);
+                // After the cursor has moved, so that a peer that does work
+                // here and then fails does not also lose its place in the log
+                // it has already applied.
+                settle(peer, id, live);
+                live.set_state(SyncState::Synced);
+                true
+            }
+            Incoming::Rejected(message) => {
+                // The relay refused one envelope. The connection is fine and the
+                // rest of the outbox still goes.
+                live.note_error(message);
+                false
+            }
+        }
     }
 }
 
@@ -657,43 +1049,16 @@ fn settle<P: SyncPeer>(peer: &P, note: NoteId, live: &mut Live) {
     }
 }
 
-/// Sleep out the backoff, but stay listening: an edit made while offline belongs
-/// in the outbox now, not after the next connection, or the UI would under-report
-/// what is pending.
-///
-/// Returns false if the engine should stop.
-async fn wait(
-    backoff: Duration,
-    commands: &mut mpsc::UnboundedReceiver<Command>,
-    live: &mut Live,
-) -> bool {
-    // `super::timer` rather than `tokio::time`, because a browser tab has no
-    // runtime to drive a tokio timer and cannot be given one. It is the only
-    // line in this file that differs between a device and a tab.
-    let deadline = super::timer::sleep(backoff);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => return true,
-            command = commands.recv() => match command {
-                None | Some(Command::Shutdown) => return false,
-                // Held with no timer on it: there is nowhere to send it, and the
-                // next connection reads it back out of the log anyway. It is
-                // here only so that `pending` counts it.
-                Some(Command::Publish { envelope, .. }) => {
-                    live.held.push(envelope);
-                    live.publish();
-                }
-                Some(Command::Flush) => {}
-            },
-        }
-    }
-}
-
-/// The engine's mutable state, and the only thing that touches the status channel.
+/// One note's state, and the only thing that touches its status channel.
 struct Live {
+    /// Which subscription this is; see [`Command::Subscribe`].
+    id: u64,
     status: watch::Sender<SyncStatus>,
     current: SyncStatus,
+    /// Whether the note is subscribed on the current connection.
+    on_socket: bool,
+    /// Whether the relay has said `caught` for it on the current connection.
+    caught: bool,
     /// Sealed envelopes sent on this connection that the relay has not echoed
     /// back, in the order they were sent.
     outbox: Vec<Vec<u8>>,
@@ -715,6 +1080,24 @@ struct Live {
 }
 
 impl Live {
+    fn new(id: u64, status: watch::Sender<SyncStatus>, pacing: Pacing) -> Self {
+        Self {
+            id,
+            status,
+            current: SyncStatus::default(),
+            on_socket: false,
+            caught: false,
+            outbox: Vec::new(),
+            held: Vec::new(),
+            covered: None,
+            pacing,
+            quiet: None,
+            cap: None,
+            cursor: SyncCursor::default(),
+            saved: SyncCursor::default(),
+        }
+    }
+
     fn publish(&mut self) {
         self.current.pending = self.outbox.len() + self.held.len();
         self.current.last_seq = self.cursor.last_seq;
@@ -733,6 +1116,7 @@ impl Live {
     }
 
     fn fail(&mut self, reason: String) {
+        self.caught = false;
         self.current.last_error = Some(reason);
         self.set_state(SyncState::Offline);
     }

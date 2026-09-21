@@ -30,6 +30,11 @@ pub trait RelayStore: Send + Sync + 'static {
     /// Everything with `seq > since`, oldest first.
     async fn since(&self, note: &str, since: i64) -> Result<Vec<Stored>>;
 
+    /// At most `limit` of what [`since`](Self::since) would return, oldest
+    /// first. How a backlog is sent a piece at a time, so that one note's long
+    /// history does not hold up every other note on the same socket.
+    async fn page(&self, note: &str, since: i64, limit: usize) -> Result<Vec<Stored>>;
+
     /// The highest sequence number for a note, or 0 if it has none.
     async fn head(&self, note: &str) -> Result<i64>;
 
@@ -195,6 +200,20 @@ impl RelayStore for MemoryStore {
         Ok(notes
             .get(note)
             .map(|log| log.iter().filter(|s| s.seq > since).cloned().collect())
+            .unwrap_or_default())
+    }
+
+    async fn page(&self, note: &str, since: i64, limit: usize) -> Result<Vec<Stored>> {
+        let notes = self.notes.lock().unwrap();
+        Ok(notes
+            .get(note)
+            .map(|log| {
+                log.iter()
+                    .filter(|s| s.seq > since)
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
@@ -468,6 +487,22 @@ impl RelayStore for PostgresStore {
         )
         .bind(note)
         .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RelayError::Storage(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|(seq, envelope)| Stored { seq, envelope })
+            .collect())
+    }
+
+    async fn page(&self, note: &str, since: i64, limit: usize) -> Result<Vec<Stored>> {
+        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT seq, envelope FROM note_log WHERE note_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
+        )
+        .bind(note)
+        .bind(since)
+        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| RelayError::Storage(e.to_string()))?;

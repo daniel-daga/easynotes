@@ -1,15 +1,15 @@
-//! The wire in a browser: the same four methods as `client`, over the tab's own
+//! The wire in a browser: the same methods as `client`, over the tab's own
 //! WebSocket and `fetch`.
 //!
 //! A tab cannot open a TCP socket, so `tokio-tungstenite` and `reqwest` are not
 //! available to it and this exists. Everything the two transports would
 //! otherwise have to agree about — the messages, the base64, what counts as
-//! nonsense, the `last_seq` bookkeeping — is in [`super::wire`], so what is here
-//! is the browser and nothing else.
+//! nonsense, the `last_seq` bookkeeping — is in [`super::wire`] and
+//! [`super::socket`], so what is here is the browser and nothing else.
 //!
 //! **Events, turned back into a future.** A `WebSocket` does not hand you the
 //! next message; it calls you. So the handlers push into a channel and
-//! [`NoteSync::next`] awaits it, which is what lets [`super::engine`] keep
+//! [`Socket::recv`] awaits it, which is what lets [`super::engine`] keep
 //! `select!`ing over the socket and its command queue exactly as it does on a
 //! device. The channel is unbounded because dropping a relay message on the
 //! floor would silently lose an edit, and a browser will run out of memory long
@@ -21,10 +21,9 @@
 //! threads is the engine's command channel, which is bytes and an atomic —
 //! see `app/rust/src/relay.rs`.
 
-use super::wire::{self, ChallengeResponse, Incoming, TokenResponse};
+use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
-use crate::ids::NoteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -149,7 +148,7 @@ enum Event {
 ///
 /// A `Closure` that is dropped while still registered leaves JavaScript holding
 /// a function pointer into freed Rust, so these live in the struct and are
-/// unregistered in [`NoteSync::shut`] before they go.
+/// unregistered in [`Socket::shut`] before they go.
 struct Handlers {
     _open: Closure<dyn FnMut(web_sys::Event)>,
     _message: Closure<dyn FnMut(MessageEvent)>,
@@ -157,21 +156,16 @@ struct Handlers {
     _error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
-/// A live connection to one note.
-pub struct NoteSync {
+/// A WebSocket that carries text, and nothing that knows what the text means.
+pub(crate) struct Socket {
     socket: WebSocket,
     events: mpsc::UnboundedReceiver<Event>,
     handlers: Option<Handlers>,
-    /// The highest sequence number applied. Survives a reconnect: it is what the
-    /// next `subscribe` replays from.
-    pub last_seq: i64,
 }
 
-impl NoteSync {
-    /// Connect and subscribe from `since`. Pass the `last_seq` from a previous
-    /// connection to resume; pass 0 for the whole log.
-    pub async fn connect(ws_base: &str, token: &str, note: NoteId, since: i64) -> Result<Self> {
-        let socket = WebSocket::new(&wire::note_url(ws_base, note, token)).map_err(js)?;
+impl Socket {
+    pub(crate) async fn open(url: &str) -> Result<Self> {
+        let socket = WebSocket::new(url).map_err(js)?;
         let (tx, events) = mpsc::unbounded_channel();
 
         let send = |tx: mpsc::UnboundedSender<Event>, what: fn() -> Event| {
@@ -207,7 +201,6 @@ impl NoteSync {
                 _close: close,
                 _error: error,
             }),
-            last_seq: since,
         };
 
         // Nothing may be sent before the socket is open, so the first thing this
@@ -222,25 +215,19 @@ impl NoteSync {
             Some(Event::Text(_)) => return Err(net("the relay spoke before the socket opened")),
         }
 
-        sync.socket
-            .send_with_str(&wire::subscribe(since))
-            .map_err(js)?;
         Ok(sync)
     }
 
-    /// Hand an envelope to the relay. It comes back through `next` like any other,
-    /// which is what keeps the local and remote paths identical.
-    pub async fn append(&mut self, envelope: &[u8]) -> Result<()> {
-        self.socket
-            .send_with_str(&wire::append(envelope))
-            .map_err(js)
+    pub(crate) async fn send(&mut self, text: String) -> Result<()> {
+        self.socket.send_with_str(&text).map_err(js)
     }
 
-    /// The next thing from the relay, or `None` when it closes.
-    pub async fn next(&mut self) -> Result<Option<Incoming>> {
+    /// The next text frame, or `None` when the relay closes. Cancel-safe: it
+    /// is a channel receive.
+    pub(crate) async fn recv(&mut self) -> Result<Option<String>> {
         loop {
             return match self.events.recv().await {
-                Some(Event::Text(text)) => wire::parse(&text, &mut self.last_seq).map(Some),
+                Some(Event::Text(text)) => Ok(Some(text)),
                 Some(Event::Closed) | None => Ok(None),
                 Some(Event::Failed) => Err(net("the connection failed")),
                 // A second `onopen` cannot happen, and if it somehow did it says
@@ -250,7 +237,7 @@ impl NoteSync {
         }
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub(crate) async fn close(mut self) -> Result<()> {
         self.shut();
         Ok(())
     }
@@ -271,10 +258,10 @@ impl NoteSync {
 }
 
 /// Closing on drop is not tidiness, it is correctness: the engine drops a
-/// `NoteSync` and reconnects on every kind of failure except a clean shutdown,
+/// socket and reconnects on every kind of failure except a clean shutdown,
 /// and a socket left open would mean a tab holding one connection per
 /// reconnection attempt for as long as the relay tolerated it.
-impl Drop for NoteSync {
+impl Drop for Socket {
     fn drop(&mut self) {
         if self.handlers.is_some() {
             self.shut();

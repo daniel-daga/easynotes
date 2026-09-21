@@ -110,6 +110,108 @@ pub(crate) fn note_url(ws_base: &str, note: crate::ids::NoteId, token: &str) -> 
     format!("{ws_base}/v1/notes/{}?token={token}", note.encode())
 }
 
+// -- one socket per device ---------------------------------------------------
+//
+// `/v1/sync`: the messages above with the note named in each, because the path
+// no longer says which note a message is about (ADR 0017).
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DeviceMessage<'a> {
+    Subscribe { note: &'a str, since: i64 },
+    Unsubscribe { note: &'a str },
+    Append { note: &'a str, envelope: String },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DeviceReply {
+    Update {
+        note: String,
+        seq: i64,
+        envelope: String,
+    },
+    Caught {
+        note: String,
+        seq: i64,
+    },
+    Error {
+        #[serde(default)]
+        note: Option<String>,
+        message: String,
+    },
+}
+
+/// What arrived on a device's socket, and which note it is about.
+pub enum Routed {
+    Note(crate::ids::NoteId, Incoming),
+    /// A refusal the relay could not pin on a note, because the message it
+    /// answers could not be read far enough to say which.
+    Unrouted(String),
+}
+
+/// The URL a device's one socket is opened at.
+pub(crate) fn sync_url(ws_base: &str, token: &str) -> String {
+    format!("{ws_base}/v1/sync?token={token}")
+}
+
+fn device(message: &DeviceMessage<'_>) -> String {
+    serde_json::to_string(message).expect("a device message always serializes")
+}
+
+pub(crate) fn subscribe_note(note: crate::ids::NoteId, since: i64) -> String {
+    device(&DeviceMessage::Subscribe {
+        note: &note.encode(),
+        since,
+    })
+}
+
+pub(crate) fn unsubscribe_note(note: crate::ids::NoteId) -> String {
+    device(&DeviceMessage::Unsubscribe {
+        note: &note.encode(),
+    })
+}
+
+pub(crate) fn append_note(note: crate::ids::NoteId, envelope: &[u8]) -> String {
+    device(&DeviceMessage::Append {
+        note: &note.encode(),
+        envelope: URL_SAFE_NO_PAD.encode(envelope),
+    })
+}
+
+/// Read one message from a device's socket.
+///
+/// No cursor here, unlike [`parse`]: there is one per note, and the engine
+/// keeps them. An update or a `caught` for a note ID that does not parse is
+/// nonsense, because this device never subscribed to one; a refusal naming one
+/// is still a refusal, and is passed on unrouted rather than lost.
+pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
+    let nonsense = |what: &str| CoreError::Storage(format!("relay sent nonsense: {what}"));
+    let parsed: DeviceReply = serde_json::from_str(text).map_err(|e| nonsense(&e.to_string()))?;
+    let note = |raw: &str| crate::ids::NoteId::decode(raw).map_err(|_| nonsense("a bad note id"));
+    Ok(match parsed {
+        DeviceReply::Update {
+            note: raw,
+            seq,
+            envelope,
+        } => {
+            let envelope = URL_SAFE_NO_PAD
+                .decode(&envelope)
+                .map_err(|_| CoreError::Storage("relay sent a malformed envelope".into()))?;
+            Routed::Note(note(&raw)?, Incoming::Envelope { seq, envelope })
+        }
+        DeviceReply::Caught { note: raw, seq } => {
+            Routed::Note(note(&raw)?, Incoming::Caught { seq })
+        }
+        DeviceReply::Error { note: raw, message } => {
+            match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
+                Some(note) => Routed::Note(note, Incoming::Rejected(message)),
+                None => Routed::Unrouted(message),
+            }
+        }
+    })
+}
+
 // -- invites -----------------------------------------------------------------
 //
 // The mirror of `relay::protocol`'s invite messages. Kept here rather than
@@ -291,6 +393,54 @@ mod tests {
     fn what_we_send_is_what_the_relay_reads() {
         assert_eq!(subscribe(4), r#"{"type":"subscribe","since":4}"#);
         assert_eq!(append(b"hi"), r#"{"type":"append","envelope":"aGk"}"#);
+    }
+
+    #[test]
+    fn a_device_says_which_note_every_time() {
+        let note = crate::ids::NoteId::from_bytes([0u8; 16]);
+        assert_eq!(
+            subscribe_note(note, 4),
+            r#"{"type":"subscribe","note":"AAAAAAAAAAAAAAAAAAAAAA","since":4}"#
+        );
+        assert_eq!(
+            unsubscribe_note(note),
+            r#"{"type":"unsubscribe","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#
+        );
+        assert_eq!(
+            append_note(note, b"hi"),
+            r#"{"type":"append","note":"AAAAAAAAAAAAAAAAAAAAAA","envelope":"aGk"}"#
+        );
+        assert_eq!(sync_url("ws://r", "t0k"), "ws://r/v1/sync?token=t0k");
+    }
+
+    #[test]
+    fn what_a_device_hears_comes_back_with_its_note() {
+        let note = crate::ids::NoteId::from_bytes([0u8; 16]);
+        let update =
+            r#"{"type":"update","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":7,"envelope":"aGk"}"#;
+        match parse_routed(update).unwrap() {
+            Routed::Note(n, Incoming::Envelope { seq, envelope }) => {
+                assert_eq!(n, note);
+                assert_eq!(seq, 7);
+                assert_eq!(envelope, b"hi");
+            }
+            _ => panic!("expected an envelope for the note"),
+        }
+        match parse_routed(r#"{"type":"caught","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":3}"#).unwrap()
+        {
+            Routed::Note(n, Incoming::Caught { seq: 3 }) => assert_eq!(n, note),
+            _ => panic!("expected caught for the note"),
+        }
+        // A refusal that names no note, or one that does not parse, still
+        // reaches somebody.
+        for text in [
+            r#"{"type":"error","message":"malformed message"}"#,
+            r#"{"type":"error","note":"??","message":"malformed note id"}"#,
+        ] {
+            assert!(matches!(parse_routed(text).unwrap(), Routed::Unrouted(_)));
+        }
+        // An update for a note that cannot exist is the relay talking nonsense.
+        assert!(parse_routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
     }
 
     #[test]

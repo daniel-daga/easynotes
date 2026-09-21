@@ -22,7 +22,8 @@ whoever else is on it. Keep holding and the card comes up with your finger:
 drop it on another and it takes that one's place, which is the same document
 and the same privacy — where a list sits in your grid is yours, not the
 household's. Edits go to a relay as they are made — typing once it pauses, as one
-envelope rather than one per keystroke ([ADR 0016](docs/adr/0016-batching-edits.md)) —
+envelope rather than one per keystroke ([ADR 0016](docs/adr/0016-batching-edits.md)),
+and every note over one socket per device rather than one each ([ADR 0017](docs/adr/0017-one-socket-per-device.md)) —
 an edit made with no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
@@ -198,6 +199,7 @@ reading the whole database at open.
 | [ADR 0014](docs/adr/0014-what-the-relay-learns.md) | What the relay learns about a person: nothing new |
 | [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers |
 | [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
+| [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
 
 ## Security, in one paragraph
 
@@ -212,8 +214,8 @@ somewhere to live. Every update is encrypted with XChaCha20-Poly1305 and
 signed with the author's Ed25519 device key; a receiver **verifies the signature
 before it decrypts**, and the AAD binds the note, the author and a counter, so an
 envelope cannot be moved between notes or re-attributed. The relay holds no keys.
-It may check a token, a size, and that an envelope's note ID matches the path it
-arrived on — it may not check anything else, and it never sees plaintext. Its
+It may check a token, a size, and that an envelope's note ID matches the note it
+was sent for — it may not check anything else, and it never sees plaintext. Its
 handshake answers any origin by default, so that a page can do it at all; that
 costs nothing, because a token needs a signature over the relay's nonce and a
 hostile page has no device key to make one with — and a deployment that knows

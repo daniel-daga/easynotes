@@ -15,7 +15,7 @@
 //! disagree.
 
 use crate::frb_generated::StreamSink;
-use crate::relay::{on_network, Connection};
+use crate::relay::{on_network, Connection, Device};
 use crate::storage::{Pending, Queue};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
 use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId};
@@ -702,6 +702,8 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
+    /// The engine for that relay: one socket, every note on it.
+    device: Mutex<Option<Device>>,
     connections: Mutex<HashMap<NoteId, Connection>>,
     statuses: Arc<Statuses>,
 }
@@ -713,30 +715,21 @@ impl Shared {
 
     /// Start syncing one note, replacing whatever connection it had.
     ///
-    /// **One socket per note**, which is what the relay's `/v1/notes/{id}` path
-    /// means, and the thing the Slice 2 plan said to reconsider when the note
-    /// list landed. It is kept, for now, with its cost written down: a device
-    /// with twenty notes opens twenty sockets and does twenty token handshakes
-    /// to reach one relay. That is fine for a household and wrong for a power
-    /// user, and fixing it is a relay protocol change — a subscription message
-    /// carrying the note ID, on one connection — not a client refactor. Slice 3
-    /// touches the protocol for invite tokens anyway.
+    /// A subscription on the device's one socket, not a socket of its own
+    /// ([ADR 0017](../../../../docs/adr/0017-one-socket-per-device.md)): a
+    /// device with twenty notes does one token handshake and holds one
+    /// connection. Replacing a note's connection hands the engine a new handle
+    /// for it and nothing more — its cursor and anything it is holding carry
+    /// over, and the relay is not asked for its backlog again.
     fn connect_note(&self, note: NoteId) -> Result<(), String> {
-        let relay = {
-            let relay = self.relay.lock().map_err(|_| "relay lock poisoned")?;
-            match relay.as_ref() {
-                Some(url) => url.clone(),
-                None => return Ok(()),
-            }
+        let connection = {
+            let device = self.device.lock().map_err(|_| "sync lock poisoned")?;
+            let Some(device) = device.as_ref() else {
+                return Ok(());
+            };
+            let epoch = self.statuses.begin(note);
+            device.connect(note, self.statuses.clone(), epoch)?
         };
-        let epoch = self.statuses.begin(note);
-        let connection = Connection::open(
-            self.core.clone(),
-            note,
-            &relay,
-            self.statuses.clone(),
-            epoch,
-        )?;
         let previous = self
             .connections
             .lock()
@@ -1305,6 +1298,7 @@ impl Library {
             Shared {
                 core: Peer::new(core, device.clone()),
                 relay: Mutex::new(None),
+                device: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
                 statuses: Arc::new(Statuses::new()),
             }
@@ -2016,6 +2010,15 @@ impl Library {
     /// [`Library::watch_sync`] to find out how it goes. Calling this again moves
     /// the device to a different relay.
     pub fn connect(&self, relay: String) -> Result<(), String> {
+        // A new engine every time, as each note used to get a new connection:
+        // this is also how a device is moved to a different relay.
+        self.disconnect()?;
+        let device = Device::open(self.shared.core.clone(), &relay)?;
+        *self
+            .shared
+            .device
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())? = Some(device);
         *self
             .shared
             .relay
@@ -2074,6 +2077,15 @@ impl Library {
         };
         for connection in connections {
             connection.shutdown();
+        }
+        let device = self
+            .shared
+            .device
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .take();
+        if let Some(device) = device {
+            device.shutdown();
         }
         self.shared.statuses.all_offline();
         Ok(())

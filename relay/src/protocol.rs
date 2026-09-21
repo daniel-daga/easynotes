@@ -73,6 +73,58 @@ pub enum ServerMessage {
 }
 
 // ---------------------------------------------------------------------------
+// One socket per device
+// ---------------------------------------------------------------------------
+//
+// `/v1/sync` carries every note a device syncs over one socket, authenticated
+// once. The messages are the per-note ones above with the note named in each,
+// because the path no longer says which note a message is about. A note can be
+// subscribed at any point in the socket's life, not only first.
+
+/// How many notes one socket may be subscribed to at once. A device's notes,
+/// not an enumeration of the relay.
+pub const MAX_SUBSCRIPTIONS: usize = 4096;
+
+/// How many stored envelopes of one note's backlog go out before the relay
+/// looks at anything else on the socket. Small enough that a guest joining a
+/// list with months of history does not hold up live edits to every other note
+/// behind it; large enough that catching up is not a round trip per envelope.
+pub const BACKLOG_CHUNK: usize = 64;
+
+/// Client to server, over `/v1/sync`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SyncClientMessage {
+    /// Start sending this note: everything after `since`, then live.
+    Subscribe { note: String, since: i64 },
+    /// Stop sending this note.
+    Unsubscribe { note: String },
+    /// An envelope to append to a note this socket is subscribed to.
+    Append { note: String, envelope: String },
+}
+
+/// Server to client, over `/v1/sync`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SyncServerMessage {
+    Update {
+        note: String,
+        seq: i64,
+        envelope: String,
+    },
+    /// This note's backlog is drained. Per note, so a client can tell which
+    /// notes are live while another is still catching up.
+    Caught { note: String, seq: i64 },
+    /// Something was refused. `note` is absent when the message it answers
+    /// could not be read far enough to say which note it was about.
+    Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        message: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Invites
 // ---------------------------------------------------------------------------
 //

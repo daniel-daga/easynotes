@@ -1,9 +1,10 @@
-//! The wire on a device: one socket to one note, and the handshake that opens it.
+//! The wire on a device: a socket that carries text, and the handshake that
+//! opens it.
 //!
-//! Native only — `tokio-tungstenite` for the socket and `reqwest` for the two
-//! JSON calls. `client_web` is the same four methods over the browser's own
-//! WebSocket and `fetch`, and everything the two would otherwise have to agree
-//! about is in [`super::wire`] rather than written twice.
+//! Native only — `tokio-tungstenite` for the socket and `reqwest` for the JSON
+//! calls. `client_web` is the same methods over the browser's own WebSocket and
+//! `fetch`, and everything the two would otherwise have to agree about is in
+//! [`super::wire`] and [`super::socket`] rather than written twice.
 //! [`super::engine`] drives this, and holds everything that is policy rather
 //! than protocol.
 //!
@@ -13,10 +14,9 @@
 //! the document, so a hostile relay can withhold updates or reorder them, but it
 //! cannot forge one.
 
-use super::wire::{self, ChallengeResponse, Incoming, TokenResponse};
+use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
-use crate::ids::NoteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -90,55 +90,45 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
     Ok((status, text))
 }
 
-/// A live connection to one note.
-pub struct NoteSync {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    /// The highest sequence number applied. Survives a reconnect: it is what the
-    /// next `subscribe` replays from.
-    pub last_seq: i64,
+/// A WebSocket that carries text, and nothing that knows what the text means.
+///
+/// What is said over it — to one note at `/v1/notes/{id}` or to all of a
+/// device's at `/v1/sync` — is [`super::socket`], written once for both
+/// transports.
+pub(crate) struct Socket {
+    inner: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
-impl NoteSync {
-    /// Connect and subscribe from `since`. Pass the `last_seq` from a previous
-    /// connection to resume; pass 0 for the whole log.
-    pub async fn connect(ws_base: &str, token: &str, note: NoteId, since: i64) -> Result<Self> {
-        let url = wire::note_url(ws_base, note, token);
-        let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.map_err(net)?;
-        socket
-            .send(Message::Text(wire::subscribe(since).into()))
-            .await
-            .map_err(net)?;
-        Ok(Self {
-            socket,
-            last_seq: since,
-        })
+impl Socket {
+    pub(crate) async fn open(url: &str) -> Result<Self> {
+        let (inner, _) = tokio_tungstenite::connect_async(url).await.map_err(net)?;
+        Ok(Self { inner })
     }
 
-    /// Hand an envelope to the relay. It comes back through `next` like any other,
-    /// which is what keeps the local and remote paths identical.
-    pub async fn append(&mut self, envelope: &[u8]) -> Result<()> {
-        self.socket
-            .send(Message::Text(wire::append(envelope).into()))
+    pub(crate) async fn send(&mut self, text: String) -> Result<()> {
+        self.inner
+            .send(Message::Text(text.into()))
             .await
             .map_err(net)
     }
 
-    /// The next thing from the relay, or `None` when it closes.
-    pub async fn next(&mut self) -> Result<Option<Incoming>> {
-        while let Some(msg) = self.socket.next().await {
-            let msg = msg.map_err(net)?;
-            let text = match msg {
-                Message::Text(t) => t,
+    /// The next text frame, or `None` when the relay closes.
+    ///
+    /// Cancel-safe, which the engine's `select!` needs: the stream buffers a
+    /// partial frame internally, so dropping this future loses nothing.
+    pub(crate) async fn recv(&mut self) -> Result<Option<String>> {
+        while let Some(msg) = self.inner.next().await {
+            match msg.map_err(net)? {
+                Message::Text(t) => return Ok(Some(t.to_string())),
                 Message::Close(_) => return Ok(None),
                 // Ping/pong and binary frames are not part of the protocol.
                 _ => continue,
-            };
-            return wire::parse(&text, &mut self.last_seq).map(Some);
+            }
         }
         Ok(None)
     }
 
-    pub async fn close(mut self) -> Result<()> {
-        self.socket.close(None).await.map_err(net)
+    pub(crate) async fn close(mut self) -> Result<()> {
+        self.inner.close(None).await.map_err(net)
     }
 }

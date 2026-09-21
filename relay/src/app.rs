@@ -1,5 +1,7 @@
 //! The relay itself: the handshake, a socket per note and a fan-out table, and
-//! the invite mailboxes in [`crate::invite`].
+//! the invite mailboxes in [`crate::invite`]. The socket a current app opens —
+//! one per device, carrying every note — is [`crate::sync`], over the same
+//! fan-out table and the same [`append`].
 //!
 //! What the relay is allowed to check, in full:
 //!   * the token is valid and unexpired;
@@ -38,7 +40,7 @@ use tokio::sync::broadcast;
 /// How many pending fan-out messages a slow subscriber may fall behind by before
 /// the relay stops buffering for it. It is not dropped: it is told to resubscribe
 /// from its last `seq`, which is exactly the reconnect path.
-const FANOUT_BUFFER: usize = 256;
+pub(crate) const FANOUT_BUFFER: usize = 256;
 
 /// `(seq, envelope)` — what one note's subscribers receive.
 type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
@@ -62,7 +64,7 @@ impl AppState {
         })
     }
 
-    fn channel(&self, note: &str) -> Fanout {
+    pub(crate) fn channel(&self, note: &str) -> Fanout {
         let mut channels = self.channels.lock().unwrap();
         channels
             .entry(note.to_string())
@@ -148,7 +150,8 @@ pub struct RelayConfig {
     pub origins: Origins,
     /// `/v1/challenge` and `/v1/token`, per address.
     pub handshake: RateLimit,
-    /// Opening a note socket, per address.
+    /// Opening a socket, per address: a device's one socket at `/v1/sync`, or
+    /// a note's own at `/v1/notes/{id}` from an app that predates it.
     pub sockets: RateLimit,
     /// Every invite call, per address. Its own bucket, because a guest waiting
     /// on an answer polls, and that must not spend the budget its device needs
@@ -171,10 +174,12 @@ impl RelayConfig {
     /// The defaults a public relay should start from, and what `main` uses
     /// unless the environment says otherwise.
     ///
-    /// The numbers are deliberately loose. A real device does one handshake per
-    /// note per connection and reconnects with backoff, so twenty notes coming
-    /// back after a network drop is twenty handshakes in a few seconds — which
-    /// is why the burst is larger than the sustained rate. They are meant to
+    /// The numbers are deliberately loose. A current device does one handshake
+    /// and opens one socket per connection, whatever it syncs; an app from
+    /// before `/v1/sync` does one of each per note, so twenty notes coming back
+    /// after a network drop is twenty handshakes in a few seconds — which is
+    /// why the burst is larger than the sustained rate, and why it stays so
+    /// while the per-note route does. They can come down once it goes. They are meant to
     /// stop a flood, not to shape traffic, and anything that starts refusing
     /// real clients is set too low rather than defended.
     pub fn public() -> Self {
@@ -199,6 +204,9 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
+        // One socket per device, every note on it. The per-note route below
+        // stays for a release, so that an app from before it keeps working.
+        .route("/v1/sync", get(crate::sync::sync_ws))
         .route("/v1/notes/{note_id}", get(notes_ws))
         .route("/v1/invites", post(invite::create))
         .route("/v1/invites/{invite}/requests", post(invite::join))
@@ -237,6 +245,7 @@ async fn enforce_limits(
 ) -> Response {
     let limit = match req.uri().path() {
         "/v1/challenge" | "/v1/token" => &config.handshake,
+        "/v1/sync" => &config.sockets,
         path if path.starts_with("/v1/notes/") => &config.sockets,
         path if path.starts_with("/v1/invites") => &config.invites,
         _ => return next.run(req).await,
@@ -291,7 +300,7 @@ async fn token(
 
 #[derive(Deserialize)]
 pub struct WsQuery {
-    token: String,
+    pub(crate) token: String,
 }
 
 async fn notes_ws(
@@ -411,7 +420,7 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> any
 }
 
 /// Validate, store, fan out. The only place the relay writes anything.
-async fn append(state: &Arc<AppState>, note: &str, envelope_b64: &str) -> Result<i64> {
+pub(crate) async fn append(state: &Arc<AppState>, note: &str, envelope_b64: &str) -> Result<i64> {
     let raw = URL_SAFE_NO_PAD
         .decode(envelope_b64)
         .map_err(|_| RelayError::BadRequest("envelope is not base64url".into()))?;
