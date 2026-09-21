@@ -19,6 +19,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
+import 'account_screen.dart';
 import 'checklist_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
@@ -257,6 +258,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
     await _openNote(id);
   }
 
+  /// Where this device becomes one of a person's devices. Rebuilt on the way
+  /// back, because the drawer's line about it has changed if an account was
+  /// made or adopted and nothing streams that.
+  Future<void> _openAccount() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => AccountScreen(library: widget.library),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
     setState(() => _layout = next);
@@ -460,6 +473,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
             onChosen: _show,
             onRename: _renameLabel,
             onForget: _forgetLabel,
+            hasAccount: widget.library.hasAccount,
+            onAccount: _openAccount,
           ),
           // Only where a new note would land. One made while looking at the
           // trash would appear in a grid that is not on screen, and one made
@@ -789,6 +804,8 @@ class _Shelves extends StatelessWidget {
     required this.onChosen,
     required this.onRename,
     required this.onForget,
+    required this.hasAccount,
+    required this.onAccount,
   });
 
   final _Where current;
@@ -802,6 +819,12 @@ class _Shelves extends StatelessWidget {
   final void Function(_Where) onChosen;
   final void Function(Tag) onRename;
   final void Function(Tag) onForget;
+
+  /// Whether this device belongs to an account, which is what the last entry
+  /// says — a device on its own says so, because that is the state a person
+  /// needs to find out about before they lose the phone.
+  final bool hasAccount;
+  final VoidCallback onAccount;
 
   static const _icons = {
     _Shelf.notes: Icons.lightbulb_outline,
@@ -884,6 +907,19 @@ class _Shelves extends StatelessWidget {
                 onTap: () => go(_Where.tag(tag.id, tag.name)),
               ),
           ],
+          const Divider(),
+          ListTile(
+            key: const Key('account-entry'),
+            leading: Icon(hasAccount ? Icons.devices : Icons.phone_android),
+            title: const Text('Your devices'),
+            subtitle: Text(
+              hasAccount ? 'Synced to your account' : 'Only on this device',
+            ),
+            onTap: () {
+              Navigator.of(context).pop();
+              onAccount();
+            },
+          ),
         ],
       ),
     );
