@@ -21,8 +21,9 @@ this device's own, so colouring a shared shopping list does not recolour it for
 whoever else is on it. Keep holding and the card comes up with your finger:
 drop it on another and it takes that one's place, which is the same document
 and the same privacy — where a list sits in your grid is yours, not the
-household's. Edits go to a relay as they are made, an edit made with
-no network waits in the local log and goes when there is one, and the app says
+household's. Edits go to a relay as they are made — typing once it pauses, as one
+envelope rather than one per keystroke ([ADR 0016](docs/adr/0016-batching-edits.md)) —
+an edit made with no network waits in the local log and goes when there is one, and the app says
 which of the two it is. It keeps them in SQLite, with the note keys and the
 device identity wrapped by a master key rather than sitting in files beside the
 log, and a device that has a Slice 1 directory is carried into the database the
@@ -195,6 +196,8 @@ reading the whole database at open.
 | [ADR 0012](docs/adr/0012-compacting-the-account-document.md) | Compacting the account document: the snapshot goes in the log |
 | [ADR 0013](docs/adr/0013-recovery-phrase.md) | The recovery phrase: twelve words deriving one document, and not the note keys |
 | [ADR 0014](docs/adr/0014-what-the-relay-learns.md) | What the relay learns about a person: nothing new |
+| [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers |
+| [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
 
 ## Security, in one paragraph
 

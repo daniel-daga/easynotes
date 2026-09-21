@@ -214,6 +214,38 @@ pub const PREVIEW_ITEMS: usize = 4;
 /// [ADR 0006](../../docs/adr/0006-compaction.md) reads it.
 pub const COMPACT_AFTER: usize = 256;
 
+/// The most plaintext one merged envelope is built from.
+///
+/// A quarter of what the relay accepts in one envelope
+/// ([`crate::crypto::MAX_ENVELOPE_BYTES`]), so that a day of offline typing
+/// becomes a handful of envelopes rather than one the relay refuses. Merging
+/// only ever shrinks what goes in, so the budget is on the inputs.
+pub const SQUASH_BUDGET: usize = crate::crypto::MAX_ENVELOPE_BYTES / 4;
+
+/// One piece of what [`NoteCore::squash`] hands back.
+enum Squashed {
+    /// Passed through as it came.
+    Kept(Vec<u8>),
+    /// Sealed again as one envelope: each member's bytes and its update.
+    Run(Vec<(Vec<u8>, Vec<u8>)>),
+}
+
+/// The run [`NoteCore::squash`] is building.
+#[derive(Default)]
+struct Run {
+    members: Vec<(Vec<u8>, Vec<u8>)>,
+    bytes: usize,
+}
+
+impl Run {
+    fn close_into(&mut self, parts: &mut Vec<Squashed>) {
+        if !self.members.is_empty() {
+            parts.push(Squashed::Run(std::mem::take(&mut self.members)));
+        }
+        self.bytes = 0;
+    }
+}
+
 /// Re-exported here because this is where callers have always found it: it was
 /// a parameter of [`NoteCore::create_note`] long before a document recorded it.
 pub use crate::crdt::NoteKind;
@@ -2396,6 +2428,133 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             out.push((env.counter, raw));
         }
         out.sort_by_key(|(counter, _)| *counter);
+        Ok(out)
+    }
+
+    /// Fold our own unsent `envelopes` into as few as will do, and put those in
+    /// the log in their place. Returns what to send instead, oldest first.
+    ///
+    /// The other half of the engine holding typing back
+    /// ([ADR 0016](../../docs/adr/0016-batching-edits.md)): a keystroke is still
+    /// sealed and logged the moment it is made, so nothing waits in memory
+    /// where a crash could take it, and what reaches the relay is one envelope
+    /// per burst. Rewriting those rows is allowed for the reason compaction may
+    /// not drop them — no other device has ever been handed them.
+    ///
+    /// Three rules keep it safe, and each is a way it could otherwise lose an
+    /// edit:
+    ///
+    /// * **Only envelopes that are still in the log, and ours.** Anything else
+    ///   is passed back untouched; its content is either not this device's to
+    ///   rewrite or already inside something that is.
+    /// * **A fresh counter for every envelope that comes out, never a reused
+    ///   one.** One of the inputs may have reached the relay on a connection that
+    ///   died before its echo did. Under its old counter the merge would be
+    ///   deduplicated away wherever the original landed first, and the rest of
+    ///   the burst with it. Under a new one, a peer applies both and the CRDT
+    ///   makes the overlap a no-op — at-least-once, as ever.
+    /// * **Counters rise in the order the result is sent.** The acknowledgement
+    ///   is a high-water mark, so an echo of a higher counter arriving before a
+    ///   lower one is on the relay would mark the lower one sent. Hence, once
+    ///   anything is merged, every input this may touch is resealed, even one
+    ///   standing alone in a run of its own — and nothing is merged at all while
+    ///   the log holds an edit of ours newer than the batch, because the fold's
+    ///   counter would be above that edit and the fold would be sent first.
+    ///
+    /// The account document is left alone: its edits are sent as they are made,
+    /// and it has a compaction of its own.
+    pub fn squash(&mut self, id: NoteId, envelopes: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+        if envelopes.len() < 2 || self.is_account(id) {
+            return Ok(envelopes.to_vec());
+        }
+        self.ensure_open(id)?;
+        let me = self.identity.public_key();
+        let log = self.store.load(id)?;
+        let note = self
+            .open
+            .get_mut(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+
+        // Split into runs that each fit in one envelope, and the envelopes this
+        // may not touch.
+        let mut parts: Vec<Squashed> = Vec::new();
+        let mut newest = None;
+        {
+            let in_log: HashSet<&[u8]> = log.iter().map(Vec::as_slice).collect();
+            let mut run = Run::default();
+            for raw in envelopes {
+                let ours = in_log.contains(raw.as_slice())
+                    && Envelope::decode(raw).is_ok_and(|e| e.author == me && e.note_id == id);
+                if !ours {
+                    run.close_into(&mut parts);
+                    parts.push(Squashed::Kept(raw.clone()));
+                    continue;
+                }
+                let envelope = Envelope::decode(raw)?;
+                newest = newest.max(Some(envelope.counter));
+                let plain = envelope.open(&note.key)?;
+                if run.bytes + plain.len() > SQUASH_BUDGET {
+                    run.close_into(&mut parts);
+                }
+                run.bytes += plain.len();
+                run.members.push((raw.clone(), plain));
+            }
+            run.close_into(&mut parts);
+        }
+        if !parts
+            .iter()
+            .any(|p| matches!(p, Squashed::Run(members) if members.len() > 1))
+        {
+            // Nothing merged means nothing to reseal either, and a log rewritten
+            // into itself.
+            return Ok(envelopes.to_vec());
+        }
+        let overtaken = log.iter().any(|raw| {
+            Envelope::decode(raw).is_ok_and(|e| e.author == me && Some(e.counter) > newest)
+        });
+        if overtaken {
+            // An edit newer than the batch is in the log and not in the batch:
+            // made while this was being called, and still on its way to the
+            // engine. A fold would take a counter above it and be sent first,
+            // and its echo would mark that edit sent before it was. Send the
+            // batch as it is and fold the next one.
+            return Ok(envelopes.to_vec());
+        }
+
+        let mut out = Vec::with_capacity(parts.len());
+        let mut absorbed: HashSet<Vec<u8>> = HashSet::new();
+        let mut added = Vec::new();
+        for part in parts {
+            match part {
+                Squashed::Kept(raw) => out.push(raw),
+                Squashed::Run(members) => {
+                    let updates: Vec<Vec<u8>> =
+                        members.iter().map(|(_, plain)| plain.clone()).collect();
+                    let update = D::merge_updates(&updates)?;
+                    let counter = note.next_counter;
+                    note.next_counter += 1;
+                    let envelope = Envelope::seal(&self.identity, id, &note.key, counter, &update)?;
+                    note.seen.insert((envelope.author, counter));
+                    let encoded = envelope.encode();
+                    absorbed.extend(members.into_iter().map(|(raw, _)| raw));
+                    added.push(encoded.clone());
+                    out.push(encoded);
+                }
+            }
+        }
+
+        // At the end rather than where the originals were: everything a merged
+        // update depends on is earlier in the log than its last input was, so
+        // later is still after all of it. One call, because it is atomic — a
+        // crash leaves the originals or the merge, never neither.
+        let mut rewritten: Vec<Vec<u8>> = log
+            .into_iter()
+            .filter(|raw| !absorbed.contains(raw))
+            .collect();
+        rewritten.extend(added);
+        self.store.replace_log(id, &rewritten)?;
+        // The entry records the log's length, as after a compaction.
+        self.reindex(id)?;
         Ok(out)
     }
 

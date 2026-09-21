@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish`, `refresh`, `report`, `waiting`, `watch_status`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `report`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NoteStatus`, `Open`, `Peer`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
@@ -284,6 +284,14 @@ abstract class Library implements RustOpaqueInterface {
   /// the list.
   Future<List<SearchHitView>> search({required String query});
 
+  /// Send every edit that is waiting for the typing to pause, now.
+  ///
+  /// For when the app may not get another chance: going into the background,
+  /// or a tab being hidden. Nothing waiting is at risk either way — it is in
+  /// the log, and the next connection sends it — but a person who types a
+  /// line and pockets the phone expects the other phone to have it.
+  void sendHeldEdits();
+
   Future<void> setArchived({required String id, required bool archived});
 
   Future<void> setColour({required String id, NoteColour? colour});
@@ -362,6 +370,10 @@ abstract class Note implements RustOpaqueInterface {
   Future<void> moveItem({required String item, required int toIndex});
 
   Future<void> removeItem({required String item});
+
+  /// Send whatever typing on this note is waiting to go. What a screen does
+  /// as it closes, so that leaving a note is not a second's wait to share it.
+  void sendHeldEdits();
 
   Future<void> setChecked({required String item, required bool checked});
 

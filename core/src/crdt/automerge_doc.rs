@@ -186,6 +186,14 @@ impl NoteDoc for AutomergeNote {
         Ok(())
     }
 
+    fn merge_updates(updates: &[Vec<u8>]) -> Result<Vec<u8>> {
+        // An update here is a run of change chunks, and `load_incremental` reads
+        // any number of them back to back — so the chunks laid end to end *are*
+        // the merge. No compression, which is Automerge's loss and not a reason
+        // to decode and re-encode what it already accepts.
+        Ok(updates.concat())
+    }
+
     fn view(&self) -> NoteView {
         let title = match self.doc.get(ROOT, TITLE) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {

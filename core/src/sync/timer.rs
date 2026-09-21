@@ -1,6 +1,6 @@
 //! Waiting, on a platform that has a reactor and on one that has an event loop.
 //!
-//! The engine's backoff is the only place it needs a clock, and `tokio::time`
+//! The engine's backoff and its batching are the only places it needs a clock, and `tokio::time`
 //! needs a tokio runtime driving it — which a browser tab does not have and
 //! cannot be given. This is the one line of the engine that differs between the
 //! two, so it is the only thing behind a `cfg` rather than the loop that uses it.
@@ -42,4 +42,19 @@ pub(crate) async fn sleep(how_long: Duration) {
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// A [`sleep`] that can be kept in a struct and polled from a `select!` loop
+/// many times over — what the engine's batching needs, where a timer is started
+/// by one edit and outlives the loop iteration that started it.
+///
+/// `Send` on a device, because the engine is spawned on a multi-threaded
+/// runtime there, and not in a tab, where the promise underneath cannot be.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type Timer = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type Timer = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+
+pub(crate) fn timer(how_long: Duration) -> Timer {
+    Box::pin(sleep(how_long))
 }

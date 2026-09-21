@@ -321,6 +321,115 @@ fn snapshots_round_trip<D: NoteDoc>() {
 }
 
 // ---------------------------------------------------------------------------
+// Folding a burst of edits into one envelope (ADR 0016)
+// ---------------------------------------------------------------------------
+
+/// Type `text` into a text note's body one character at a time, as a screen
+/// sends it, and return an envelope per keystroke.
+fn type_body<D: NoteDoc>(core: &mut Core<D>, id: NoteId, text: &str) -> Vec<Vec<u8>> {
+    let mut envelopes = Vec::new();
+    for end in 1..=text.len() {
+        let before = core.view(id).unwrap().body;
+        let after = format!("{before}{}", &text[end - 1..end]);
+        envelopes.extend(core.edit_body(id, &before, &after).unwrap());
+    }
+    envelopes
+}
+
+fn text_pair<D: NoteDoc>() -> (Core<D>, Core<D>, NoteId) {
+    let mut a = core::<D>();
+    let id = a.create_note(NoteKind::Text).unwrap();
+    let blob = a.export_share_blob(id).unwrap();
+    let mut b = core::<D>();
+    b.import_share_blob(&blob).unwrap();
+    // Whatever creating the note wrote, so that the fold is all the guest is
+    // missing.
+    let created: Vec<Vec<u8>> = a
+        .unsent(id, None)
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect();
+    deliver(&mut b, id, &created);
+    (a, b, id)
+}
+
+fn a_fold_does_what_its_edits_did<D: NoteDoc>() {
+    let (mut a, mut b, id) = text_pair::<D>();
+    let typed = type_body(&mut a, id, "hello there");
+    assert_eq!(typed.len(), 11, "the test is not typing");
+
+    let folded = a.squash(id, &typed).unwrap();
+    assert_eq!(folded.len(), 1, "eleven keystrokes should fold into one");
+
+    deliver(&mut b, id, &folded);
+    assert_eq!(b.view(id).unwrap().body, "hello there");
+    assert_eq!(b.view(id).unwrap(), a.view(id).unwrap());
+}
+
+fn a_peer_that_saw_part_of_a_fold_ends_up_the_same<D: NoteDoc>() {
+    // The case the fresh counter exists for: some of the burst reached the relay
+    // on a connection that died before its echo came back, so a peer has those
+    // and then receives the fold that contains them again.
+    let (mut a, mut b, id) = text_pair::<D>();
+    let typed = type_body(&mut a, id, "milk");
+    deliver(&mut b, id, &typed[..2]);
+
+    // And the peer is not idle meanwhile: an edit of its own lands in the middle
+    // of the burst, and the rest of the burst is typed after it.
+    let theirs = type_body(&mut b, id, "!");
+    deliver(&mut a, id, &theirs);
+    let mut burst = typed.clone();
+    burst.extend(type_body(&mut a, id, " and eggs"));
+
+    let folded = a.squash(id, &burst).unwrap();
+    assert_eq!(folded.len(), 1);
+    deliver(&mut b, id, &folded);
+
+    assert_eq!(b.view(id).unwrap(), a.view(id).unwrap());
+    let body = a.view(id).unwrap().body;
+    for part in ["mi", "!", " and eggs"] {
+        assert!(body.contains(part), "{part:?} went missing: {body:?}");
+    }
+}
+
+fn a_fold_seals_under_a_new_counter<D: NoteDoc>() {
+    // Reusing one of its inputs' counters would get the whole fold dropped as a
+    // replay by any peer that already had that input.
+    let (mut a, _b, id) = pair::<D>();
+    let (_, first) = a.add_item(id, "milk").unwrap();
+    let (_, second) = a.add_item(id, "bread").unwrap();
+    let folded = a.squash(id, &[first.clone(), second.clone()]).unwrap();
+
+    let counter = |e: &[u8]| easynotes_core::crypto::Envelope::decode(e).unwrap().counter;
+    assert_eq!(folded.len(), 1);
+    assert!(counter(&folded[0]) > counter(&second));
+
+    // And the next edit carries on above it.
+    let (_, next) = a.add_item(id, "eggs").unwrap();
+    assert!(counter(&next) > counter(&folded[0]));
+}
+
+fn a_batch_a_newer_edit_has_overtaken_is_not_folded<D: NoteDoc>() {
+    // The engine is folding two edits while a third, made a moment later, is
+    // still on its way to it. Folded, the pair would take a counter above the
+    // third and be sent first, and its echo would mark the third as sent.
+    let (mut a, _b, id) = pair::<D>();
+    let (_, first) = a.add_item(id, "milk").unwrap();
+    let (_, second) = a.add_item(id, "bread").unwrap();
+    a.add_item(id, "eggs").unwrap();
+
+    let batch = [first, second];
+    assert_eq!(a.squash(id, &batch).unwrap(), batch);
+}
+
+fn one_envelope_is_left_as_it_is<D: NoteDoc>() {
+    let (mut a, _b, id) = pair::<D>();
+    let (_, only) = a.add_item(id, "milk").unwrap();
+    assert_eq!(a.squash(id, std::slice::from_ref(&only)).unwrap(), [only]);
+}
+
+// ---------------------------------------------------------------------------
 // Instantiation
 // ---------------------------------------------------------------------------
 
@@ -333,6 +442,26 @@ macro_rules! backend_suite {
             #[test]
             fn edits_flow_one_way() {
                 super::edits_flow_one_way::<$backend>()
+            }
+            #[test]
+            fn a_fold_does_what_its_edits_did() {
+                super::a_fold_does_what_its_edits_did::<$backend>()
+            }
+            #[test]
+            fn a_peer_that_saw_part_of_a_fold_ends_up_the_same() {
+                super::a_peer_that_saw_part_of_a_fold_ends_up_the_same::<$backend>()
+            }
+            #[test]
+            fn a_fold_seals_under_a_new_counter() {
+                super::a_fold_seals_under_a_new_counter::<$backend>()
+            }
+            #[test]
+            fn a_batch_a_newer_edit_has_overtaken_is_not_folded() {
+                super::a_batch_a_newer_edit_has_overtaken_is_not_folded::<$backend>()
+            }
+            #[test]
+            fn one_envelope_is_left_as_it_is() {
+                super::one_envelope_is_left_as_it_is::<$backend>()
             }
             #[test]
             fn a_check_flows_back() {

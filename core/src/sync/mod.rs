@@ -77,5 +77,6 @@ mod timer;
     all(feature = "sync-web", target_arch = "wasm32")
 ))]
 pub use engine::{
-    RelayEndpoint, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus, FIRST_RETRY, MAX_RETRY,
+    Pacing, RelayEndpoint, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus, FIRST_RETRY,
+    MAX_RETRY,
 };

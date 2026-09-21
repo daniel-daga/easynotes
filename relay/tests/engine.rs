@@ -12,7 +12,7 @@ use easynotes_core::crdt::DefaultNoteDoc;
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
-use easynotes_core::sync::{RelayEndpoint, SyncEngine, SyncHandle, SyncState};
+use easynotes_core::sync::{Pacing, RelayEndpoint, SyncEngine, SyncHandle, SyncState};
 use easynotes_relay::{MemoryStore as RelayLog, Relay, RelayStore};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,14 @@ impl App {
     }
 
     fn connect(&mut self, endpoint: &RelayEndpoint) {
-        let (engine, handle) = SyncEngine::start(self.core.clone(), self.note, endpoint.clone());
+        self.connect_paced(endpoint, Pacing::default());
+    }
+
+    /// Connect with typing held back for `pacing` rather than the app's times,
+    /// so that a test can see a pause or a cap without waiting ten seconds.
+    fn connect_paced(&mut self, endpoint: &RelayEndpoint, pacing: Pacing) {
+        let (engine, handle) =
+            SyncEngine::start_paced(self.core.clone(), self.note, endpoint.clone(), pacing);
         tokio::spawn(engine.run());
         self.handle = Some(handle);
     }
@@ -153,6 +160,43 @@ impl App {
         self.publish(envelope);
     }
 
+    /// Type into an item, as a keystroke does: the envelope may wait for the
+    /// ones after it.
+    fn type_into(&self, item: ItemId, text: &str) {
+        let envelope = self
+            .core
+            .lock()
+            .unwrap()
+            .set_item_text(self.note, item, text)
+            .unwrap();
+        if let Some(handle) = &self.handle {
+            handle.publish_soon(envelope);
+        }
+    }
+
+    /// Type `word` into `item` a letter at a time, after whatever it says.
+    fn type_word(&self, item: ItemId, word: &str) {
+        let start = self.text_of(item);
+        for end in 1..=word.len() {
+            self.type_into(item, &format!("{start}{}", &word[..end]));
+        }
+    }
+
+    fn text_of(&self, item: ItemId) -> String {
+        self.core
+            .lock()
+            .unwrap()
+            .view(self.note)
+            .unwrap()
+            .item(item)
+            .map(|i| i.text.clone())
+            .unwrap_or_default()
+    }
+
+    fn flush(&self) {
+        self.handle.as_ref().expect("not connected").flush();
+    }
+
     /// Hand the envelope to the engine if there is one. With no engine the edit
     /// is still made and still logged — that is the whole point of local-first —
     /// and the next connection finds it.
@@ -193,6 +237,20 @@ impl App {
             self.handle.as_ref().map(|h| h.status()),
         );
     }
+}
+
+/// Wait until the relay holds exactly `n` envelopes for `note`.
+async fn wait_for_head(log: &RelayLog, note: NoteId, n: i64) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let mut head = 0;
+    while tokio::time::Instant::now() < deadline {
+        head = log.head(&note.encode()).await.unwrap();
+        if head == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the relay never held {n} envelopes; it has {head}");
 }
 
 async fn relay() -> (Relay, RelayLog, RelayEndpoint) {
@@ -322,9 +380,9 @@ async fn edits_made_while_the_network_is_down_arrive_when_it_returns() {
     b.connect(&through_the_wire);
     b.wait_for_items(&["milk", "bread", "eggs"]).await;
 
-    // Three edits, three envelopes: the reconnection re-sent only what was
-    // outstanding.
-    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 3);
+    // Three edits, two envelopes: the reconnection sent only what was
+    // outstanding, and folded the two offline edits into one on the way.
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 2);
 }
 
 fn through_the_wire_addr(endpoint: &RelayEndpoint) -> SocketAddr {
@@ -366,9 +424,15 @@ async fn a_relaunch_does_not_resend_what_the_relay_already_has() {
         }
         a.wait_until_synced().await;
 
+        // Made before the handshake finished, so they were in the log when the
+        // connection read its outbox, and went as one envelope.
         let stored = log.head(&a.note.encode()).await.unwrap();
-        assert_eq!(stored, 3, "the relay should have exactly the three edits");
-        assert_eq!(a.log_len(), 3);
+        assert_eq!(stored, 1, "the relay should have the three edits, folded");
+        assert_eq!(
+            a.log_len(),
+            1,
+            "the log should hold the fold, not the edits"
+        );
 
         a.relaunch();
         a.connect(&endpoint);
@@ -378,19 +442,20 @@ async fn a_relaunch_does_not_resend_what_the_relay_already_has() {
         assert_eq!(a.texts(), ["milk", "bread", "eggs"]);
         assert_eq!(
             log.head(&a.note.encode()).await.unwrap(),
-            3,
+            1,
             "a relaunch re-sent envelopes the relay already had"
         );
         assert_eq!(
             a.log_len(),
-            3,
+            1,
             "the replayed backlog was appended to the local log again"
         );
 
-        // The cursor is what remembered both facts, and it is in the store.
+        // The cursor is what remembered both facts, and it is in the store. The
+        // fold took the next counter after the three edits it replaced.
         let cursor = a.core.lock().unwrap().sync_cursor(a.note).unwrap();
-        assert_eq!(cursor.last_seq, 3);
-        assert_eq!(cursor.sent_upto, Some(2));
+        assert_eq!(cursor.last_seq, 1);
+        assert_eq!(cursor.sent_upto, Some(3));
         a.note
     };
     // The note ID is opaque to the relay; this just shows the test used one.
@@ -433,7 +498,7 @@ async fn a_compacted_note_still_sends_what_the_relay_never_got() {
 
     assert_eq!(
         log.head(&a.note.encode()).await.unwrap(),
-        3,
+        2,
         "the relay did not get the edits that only existed in the compacted log"
     );
 
@@ -456,9 +521,9 @@ async fn a_relaunch_after_a_compaction_resends_nothing() {
         a.add_item(item);
     }
     a.wait_until_synced().await;
-    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 3);
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 1);
 
-    assert_eq!(a.compact(), 3, "an acknowledged log should compact away");
+    assert_eq!(a.compact(), 1, "an acknowledged log should compact away");
     assert_eq!(a.log_len(), 0);
 
     a.relaunch();
@@ -475,7 +540,7 @@ async fn a_relaunch_after_a_compaction_resends_nothing() {
 
     assert_eq!(
         log.head(&a.note.encode()).await.unwrap(),
-        4,
+        2,
         "a relaunched, compacted note re-sent what the relay already had"
     );
 }
@@ -504,4 +569,164 @@ async fn disconnecting_leaves_the_app_working() {
         1,
         "the offline edit should be waiting in the log"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Holding typing back (ADR 0016)
+// ---------------------------------------------------------------------------
+
+/// Pacing for a test: a short pause, and a cap long enough never to be reached
+/// unless the test is about the cap.
+fn quick() -> Pacing {
+    Pacing {
+        quiet: Duration::from_millis(300),
+        max_hold: Duration::from_secs(60),
+    }
+}
+
+/// Pacing that never sends typing by itself, so that whatever does send it is
+/// the thing under test.
+fn never() -> Pacing {
+    Pacing {
+        quiet: Duration::from_secs(3600),
+        max_hold: Duration::from_secs(3600),
+    }
+}
+
+/// The point of the change: a word typed a letter at a time reaches the relay as
+/// one envelope once the typing pauses, and a guest sees the word.
+#[tokio::test]
+async fn a_typed_word_reaches_the_relay_as_one_envelope() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, quick());
+    a.add_item("m");
+    a.wait_until_synced().await;
+    wait_for_head(&log, a.note, 1).await;
+    let milk = a.item_called("m");
+
+    a.type_word(milk, "ilk and honey");
+    a.wait_until("the typing held back", || a.pending() > 0)
+        .await;
+    a.wait_until_synced().await;
+
+    wait_for_head(&log, a.note, 2).await;
+    assert_eq!(
+        a.log_len(),
+        2,
+        "the log should hold the fold, not the letters"
+    );
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk and honey"]).await;
+}
+
+/// A tick is not typing. It goes the moment it is made, and takes whatever
+/// typing was being held with it rather than overtaking it.
+#[tokio::test]
+async fn a_tick_goes_at_once_and_takes_the_typing_with_it() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, never());
+    a.add_item("m");
+    a.wait_until_synced().await;
+    let milk = a.item_called("m");
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["m"]).await;
+
+    a.type_word(milk, "ilk");
+    // Held: the relay has only the item.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 1);
+
+    a.set_checked(milk, true);
+    wait_for_head(&log, a.note, 2).await;
+    b.wait_for_items(&["milk"]).await;
+    let milk_there = b.item_called("milk");
+    b.wait_until("A's tick", || b.is_checked(milk_there)).await;
+}
+
+/// Typing that never pauses still goes, once the batch has waited as long as
+/// any may.
+#[tokio::test]
+async fn typing_that_never_pauses_still_goes_at_the_cap() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(
+        &endpoint,
+        Pacing {
+            quiet: Duration::from_secs(3600),
+            max_hold: Duration::from_millis(500),
+        },
+    );
+    a.add_item("");
+    a.wait_until_synced().await;
+    let item = a.item_called("");
+
+    // A letter every 50 ms for well past the cap: never a pause.
+    let mut text = String::new();
+    let mut sent_while_typing = false;
+    for letter in "abcdefghijklmnopqrstuvwxyz".chars() {
+        text.push(letter);
+        a.type_into(item, &text);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        sent_while_typing |= log.head(&a.note.encode()).await.unwrap() > 1;
+    }
+    assert!(
+        sent_while_typing,
+        "nothing reached the relay while the typing went on"
+    );
+}
+
+/// What the app does going into the background: send what is held now, not
+/// after a pause it may not live to see.
+#[tokio::test]
+async fn a_flush_sends_what_is_held() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, never());
+    a.add_item("m");
+    a.wait_until_synced().await;
+    let milk = a.item_called("m");
+
+    a.type_word(milk, "ilk");
+    a.wait_until("the typing held back", || a.pending() == 3)
+        .await;
+    a.flush();
+    a.wait_until_synced().await;
+    wait_for_head(&log, a.note, 2).await;
+}
+
+/// Held is not lost. The app is killed with typing waiting, and it goes on the
+/// next launch — from the log, where it was all along.
+#[tokio::test]
+async fn typing_held_when_the_app_is_killed_goes_on_the_next_launch() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, never());
+    a.add_item("m");
+    a.wait_until_synced().await;
+    let milk = a.item_called("m");
+
+    a.type_word(milk, "ilk");
+    a.wait_until("the typing held back", || a.pending() == 3)
+        .await;
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 1);
+
+    a.relaunch();
+    a.connect_paced(&endpoint, never());
+    a.wait_until_synced().await;
+    wait_for_head(&log, a.note, 2).await;
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk"]).await;
 }

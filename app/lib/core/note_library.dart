@@ -407,6 +407,16 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Stop syncing. Edits still work and still queue.
   Future<void> disconnect();
 
+  /// Send every edit that is waiting for the typing to pause, now.
+  ///
+  /// Typing reaches the relay a burst at a time rather than a keystroke at a
+  /// time ([ADR 0016](../../../docs/adr/0016-batching-edits.md)), so there is
+  /// always up to a second of it waiting. Nothing waiting is at risk — it is
+  /// stored, and the next connection sends it — but the app calls this when it
+  /// is about to be hidden, so that a line typed before the phone went into a
+  /// pocket is on the other phone too.
+  void sendHeldEdits();
+
   /// Where this device stands with the relay, over all its notes.
   SyncStatus get syncStatus;
 

@@ -41,6 +41,30 @@ pub const FIRST_RETRY: Duration = Duration::from_millis(250);
 /// should come back within seconds of leaving it, so this stays small.
 pub const MAX_RETRY: Duration = Duration::from_secs(8);
 
+/// When an edit made with [`SyncHandle::publish_soon`] goes to the relay.
+///
+/// Typing is held back and sent as one envelope per burst rather than one per
+/// keystroke; [ADR 0016](../../docs/adr/0016-batching-edits.md) has the numbers
+/// and the argument. Everything else — a tick, an item added or moved — goes the
+/// moment it is made, because somebody on the other end of a shared list is
+/// waiting to see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pacing {
+    /// A pause in the typing this long sends what it wrote.
+    pub quiet: Duration,
+    /// However long the typing goes on, nothing waits longer than this.
+    pub max_hold: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self {
+            quiet: Duration::from_secs(1),
+            max_hold: Duration::from_secs(10),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What the engine needs from the core
 // ---------------------------------------------------------------------------
@@ -61,6 +85,17 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
 
     /// Our own envelopes the relay has not acknowledged, oldest first.
     fn unsent(&self, note: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>>;
+
+    /// Fold our own unsent `envelopes` into as few as will do, rewrite the log
+    /// to match, and return what to send in their place, oldest first — see
+    /// [`NoteCore::squash`] for what makes that safe.
+    ///
+    /// Sending exactly what came in is always a correct answer, hence the
+    /// default: it is what the engine did before it batched anything.
+    fn squash(&self, note: NoteId, envelopes: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>> {
+        let _ = note;
+        Ok(envelopes)
+    }
 
     /// The relay has said `Caught`: everything it had for this note, we have.
     ///
@@ -139,6 +174,12 @@ where
 
     fn unsent(&self, note: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
         self.lock().map_err(|_| poisoned())?.unsent(note, after)
+    }
+
+    fn squash(&self, note: NoteId, envelopes: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>> {
+        self.lock()
+            .map_err(|_| poisoned())?
+            .squash(note, &envelopes)
     }
 
     fn settled(&self, note: NoteId) -> Result<()> {
@@ -231,7 +272,12 @@ impl Default for SyncStatus {
 }
 
 enum Command {
-    Publish(Vec<u8>),
+    /// `now` is false for an edit that may wait for the ones after it.
+    Publish {
+        envelope: Vec<u8>,
+        now: bool,
+    },
+    Flush,
     Shutdown,
 }
 
@@ -246,14 +292,37 @@ pub struct SyncHandle {
 }
 
 impl SyncHandle {
-    /// Queue a sealed envelope for the relay.
+    /// Send a sealed envelope to the relay now, and anything held back with it.
     ///
     /// Returns nothing and cannot fail: an edit is already in the log by the time
     /// it gets here, so the only question is when the relay hears about it, and
     /// the answer is "when there is a connection". A stopped engine drops it, and
     /// the next connection picks it up from the log.
     pub fn publish(&self, envelope: Vec<u8>) {
-        let _ = self.commands.send(Command::Publish(envelope));
+        let _ = self.commands.send(Command::Publish {
+            envelope,
+            now: true,
+        });
+    }
+
+    /// Send a sealed envelope once the typing that made it pauses — see
+    /// [`Pacing`]. What a keystroke calls, and nothing else should: an edit
+    /// someone else is waiting to see goes through [`publish`](Self::publish).
+    ///
+    /// Held rather than lost: it is in the log already, so an app killed while
+    /// it waits sends it on the next connection.
+    pub fn publish_soon(&self, envelope: Vec<u8>) {
+        let _ = self.commands.send(Command::Publish {
+            envelope,
+            now: false,
+        });
+    }
+
+    /// Send whatever is being held back, now. For the moments the app may not
+    /// get another chance to: going into the background, a tab being hidden, a
+    /// note being closed.
+    pub fn flush(&self) {
+        let _ = self.commands.send(Command::Flush);
     }
 
     pub fn status(&self) -> SyncStatus {
@@ -288,6 +357,17 @@ impl<P: SyncPeer> SyncEngine<P> {
     /// is spawned — on whatever executor the caller has, which on the app side
     /// is a runtime the bridge owns and in tests is the test's own.
     pub fn start(peer: P, note: NoteId, endpoint: RelayEndpoint) -> (Self, SyncHandle) {
+        Self::start_paced(peer, note, endpoint, Pacing::default())
+    }
+
+    /// [`start`](Self::start), holding typing back for other than the default
+    /// times. For tests, which cannot wait ten seconds to see a cap work.
+    pub fn start_paced(
+        peer: P,
+        note: NoteId,
+        endpoint: RelayEndpoint,
+        pacing: Pacing,
+    ) -> (Self, SyncHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = watch::channel(SyncStatus::default());
         let engine = Self {
@@ -299,6 +379,11 @@ impl<P: SyncPeer> SyncEngine<P> {
                 status: status_tx,
                 current: SyncStatus::default(),
                 outbox: Vec::new(),
+                held: Vec::new(),
+                covered: None,
+                pacing,
+                quiet: None,
+                cap: None,
                 cursor: SyncCursor::default(),
                 saved: SyncCursor::default(),
             },
@@ -408,15 +493,20 @@ async fn session<P: SyncPeer>(
     live.connected();
 
     // Everything this device wrote that the relay has not acknowledged, including
-    // edits from earlier runs of the app. Queued items that are already here are
-    // not added twice.
+    // edits from earlier runs of the app and whatever was held back while
+    // offline — all of it is in the log, so the log is where it is read from,
+    // and it replaces the outbox rather than joining it. Folded into as few
+    // envelopes as will do: an hour of offline typing is one burst as far as
+    // anyone else is concerned.
     match peer.unsent(note, live.cursor.sent_upto) {
         Ok(unsent) => {
-            for (_, envelope) in unsent {
-                if !live.outbox.contains(&envelope) {
-                    live.outbox.push(envelope);
-                }
-            }
+            // A `Publish` still in the channel for anything read here is the
+            // same edit arriving a second time. The counter says so, because
+            // the log gets an edit before the channel does.
+            live.covered = unsent.last().map(|(counter, _)| *counter);
+            live.release();
+            let unsent = unsent.into_iter().map(|(_, envelope)| envelope).collect();
+            live.outbox = live.squash(peer, note, unsent);
         }
         Err(e) => {
             return Ended::Connected {
@@ -439,24 +529,43 @@ async fn session<P: SyncPeer>(
     loop {
         tokio::select! {
             command = commands.recv() => match command {
+                // Not flushed first. What is held is in the log, and the next
+                // connection sends it; a shutdown is also how a note about to be
+                // deleted is let go of, and rewriting its log on the way out
+                // would race the delete.
                 None | Some(Command::Shutdown) => {
                     let _ = sync.close().await;
                     return Ended::ShutDown;
                 }
-                Some(Command::Publish(envelope)) => {
-                    // Already in the outbox means already sent in this session:
-                    // the edit landed in the log before the handshake finished,
-                    // so the catch-up above picked it up and the command is the
+                Some(Command::Publish { envelope, now }) => {
+                    // Already covered means already sent in this session: the
+                    // edit landed in the log before the handshake finished, so
+                    // the catch-up above picked it up and the command is the
                     // same envelope arriving a second time. Sending it again
                     // would put a duplicate in the relay's log on every launch
                     // where the user edits while it is still connecting.
-                    if live.outbox.contains(&envelope) {
+                    if live.covers(&envelope) {
                         continue;
                     }
-                    live.queue(envelope.clone());
-                    if let Err(e) = sync.append(&envelope).await {
-                        return lost(caught, e.to_string());
+                    live.hold(envelope);
+                    if now {
+                        if let Err(e) = flush(peer, note, live, &mut sync).await {
+                            return lost(caught, e);
+                        }
                     }
+                }
+                Some(Command::Flush) => {
+                    if let Err(e) = flush(peer, note, live, &mut sync).await {
+                        return lost(caught, e);
+                    }
+                }
+            },
+
+            // Pending for ever while nothing is held, so this only ever wins
+            // when a pause or the cap says the typing has waited long enough.
+            () = due(&mut live.quiet, &mut live.cap) => {
+                if let Err(e) = flush(peer, note, live, &mut sync).await {
+                    return lost(caught, e);
                 }
             },
 
@@ -496,6 +605,47 @@ async fn session<P: SyncPeer>(
     }
 }
 
+/// Send everything held back, folded into as few envelopes as will do.
+///
+/// The error is the socket's, and ends the connection; nothing is lost with it,
+/// because what was held is in the log and the next connection reads it there.
+async fn flush<P: SyncPeer>(
+    peer: &P,
+    note: NoteId,
+    live: &mut Live,
+    sync: &mut NoteSync,
+) -> std::result::Result<(), String> {
+    let held = live.release();
+    if held.is_empty() {
+        return Ok(());
+    }
+    let batch = live.squash(peer, note, held);
+    live.outbox.extend(batch.iter().cloned());
+    live.publish();
+    for envelope in &batch {
+        sync.append(envelope).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whichever of the two batching timers goes off first, or never if neither is
+/// running.
+///
+/// Cancel-safe, which `select!` needs: the timers are borrowed rather than
+/// moved in, so dropping this when another branch wins leaves them running.
+async fn due(quiet: &mut Option<super::timer::Timer>, cap: &mut Option<super::timer::Timer>) {
+    match (quiet.as_mut(), cap.as_mut()) {
+        (Some(quiet), Some(cap)) => {
+            tokio::select! {
+                () = quiet => {},
+                () = cap => {},
+            }
+        }
+        (Some(timer), None) | (None, Some(timer)) => timer.await,
+        (None, None) => std::future::pending().await,
+    }
+}
+
 /// Tell the peer the batch has settled, and keep going if it complains.
 ///
 /// A peer that cannot finish its end-of-batch work has not invalidated anything
@@ -527,7 +677,14 @@ async fn wait(
             _ = &mut deadline => return true,
             command = commands.recv() => match command {
                 None | Some(Command::Shutdown) => return false,
-                Some(Command::Publish(envelope)) => live.queue(envelope),
+                // Held with no timer on it: there is nowhere to send it, and the
+                // next connection reads it back out of the log anyway. It is
+                // here only so that `pending` counts it.
+                Some(Command::Publish { envelope, .. }) => {
+                    live.held.push(envelope);
+                    live.publish();
+                }
+                Some(Command::Flush) => {}
             },
         }
     }
@@ -537,8 +694,21 @@ async fn wait(
 struct Live {
     status: watch::Sender<SyncStatus>,
     current: SyncStatus,
-    /// Sealed envelopes the relay has not echoed back, in the order they were made.
+    /// Sealed envelopes sent on this connection that the relay has not echoed
+    /// back, in the order they were sent.
     outbox: Vec<Vec<u8>>,
+    /// Edits made and logged but not sent yet, because the typing that made
+    /// them has not paused. See [`Pacing`].
+    held: Vec<Vec<u8>>,
+    /// The highest counter of ours the connection's catch-up read from the log.
+    /// Anything at or below it is already in the outbox, whatever it was folded
+    /// into on the way.
+    covered: Option<u64>,
+    pacing: Pacing,
+    /// Restarted by every held edit.
+    quiet: Option<super::timer::Timer>,
+    /// Started by the first held edit of a batch, and left alone by the rest.
+    cap: Option<super::timer::Timer>,
     cursor: SyncCursor,
     /// What the store holds, so a cursor that has not moved is not written again.
     saved: SyncCursor,
@@ -546,7 +716,7 @@ struct Live {
 
 impl Live {
     fn publish(&mut self) {
-        self.current.pending = self.outbox.len();
+        self.current.pending = self.outbox.len() + self.held.len();
         self.current.last_seq = self.cursor.last_seq;
         // Fails only when nothing is watching, which is not a problem.
         let _ = self.status.send(self.current.clone());
@@ -573,9 +743,51 @@ impl Live {
         self.publish();
     }
 
-    fn queue(&mut self, envelope: Vec<u8>) {
-        self.outbox.push(envelope);
+    /// Hold an edit back until the typing pauses, or until the batch it starts
+    /// has waited as long as any may.
+    fn hold(&mut self, envelope: Vec<u8>) {
+        if self.held.is_empty() {
+            self.cap = Some(super::timer::timer(self.pacing.max_hold));
+        }
+        self.quiet = Some(super::timer::timer(self.pacing.quiet));
+        self.held.push(envelope);
         self.publish();
+    }
+
+    /// Everything held, with the timers that were waiting to send it stopped.
+    fn release(&mut self) -> Vec<Vec<u8>> {
+        self.quiet = None;
+        self.cap = None;
+        std::mem::take(&mut self.held)
+    }
+
+    fn covers(&self, envelope: &[u8]) -> bool {
+        let Some(covered) = self.covered else {
+            return false;
+        };
+        Envelope::decode(envelope).is_ok_and(|e| e.counter <= covered)
+    }
+
+    /// [`SyncPeer::squash`], falling back to sending what came in unchanged.
+    ///
+    /// A merge that fails has cost nothing but the saving: the originals are
+    /// still in the log and still correct to send.
+    fn squash<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        note: NoteId,
+        envelopes: Vec<Vec<u8>>,
+    ) -> Vec<Vec<u8>> {
+        if envelopes.len() < 2 {
+            return envelopes;
+        }
+        match peer.squash(note, envelopes.clone()) {
+            Ok(batch) => batch,
+            Err(e) => {
+                self.current.last_error = Some(e.to_string());
+                envelopes
+            }
+        }
     }
 
     /// An envelope arrived. Apply it, acknowledge it if it is ours, and move the

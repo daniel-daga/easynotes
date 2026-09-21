@@ -545,6 +545,9 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  void sendHeldEdits() => calls.add('sendHeldEdits()');
+
+  @override
   SyncStatus get syncStatus => _status;
 
   @override

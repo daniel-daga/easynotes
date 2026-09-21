@@ -566,6 +566,46 @@ fn opening_a_long_log_compacts_it<D: NoteDoc, B: Backing>() {
     );
 }
 
+fn a_fold_replaces_its_edits_in_the_log_and_survives_a_restart<D: NoteDoc, B: Backing>() {
+    // The log is the outbox (ADR 0004), so what a fold leaves in it is what the
+    // next connection sends: the fold, once, and none of the edits it replaced.
+    let dir = tempfile::tempdir().unwrap();
+    let (id, folded, view) = {
+        let mut core = B::open::<D>(dir.path());
+        let id = core.create_note(NoteKind::Checklist).unwrap();
+        let (item, _) = core.add_item(id, "m").unwrap();
+        for text in ["mi", "mil", "milk"] {
+            core.set_item_text(id, item, text).unwrap();
+        }
+        let unsent: Vec<Vec<u8>> = core
+            .unsent(id, None)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        assert!(unsent.len() >= 4, "the test is not testing anything");
+
+        let mut folded = core.squash(id, &unsent).unwrap();
+        assert_eq!(folded.len(), 1);
+        assert_eq!(core.store().log_len(id).unwrap(), 1);
+        (id, folded.remove(0), core.view(id).unwrap())
+    };
+
+    let mut core = B::open::<D>(dir.path());
+    assert_eq!(core.open_note(id).unwrap(), view, "the fold lost an edit");
+    let unsent = core.unsent(id, None).unwrap();
+    assert_eq!(unsent.len(), 1);
+    assert_eq!(unsent[0].1, folded, "the log should hold exactly the fold");
+
+    let fold_counter = unsent[0].0;
+    let (_, next) = core.add_item(id, "bread").unwrap();
+    let next = easynotes_core::crypto::Envelope::decode(&next).unwrap();
+    assert!(
+        next.counter > fold_counter,
+        "a restart reused the fold's counter"
+    );
+}
+
 fn moving_to_the_new_store_keeps_the_notes<D: NoteDoc>() {
     // The app changed store between Slice 1 and Slice 2. A device that had notes
     // in the old one has to find them in the new one, under the same identity —
@@ -725,6 +765,10 @@ macro_rules! store_suite {
             #[test]
             fn opening_a_long_log_compacts_it() {
                 super::super::opening_a_long_log_compacts_it::<$backend, $backing>()
+            }
+            #[test]
+            fn a_fold_replaces_its_edits_in_the_log_and_survives_a_restart() {
+                super::super::a_fold_replaces_its_edits_in_the_log_and_survives_a_restart::<$backend, $backing>()
             }
         }
     };

@@ -223,6 +223,13 @@ impl NoteDoc for YrsNote {
         Ok(())
     }
 
+    fn merge_updates(updates: &[Vec<u8>]) -> Result<Vec<u8>> {
+        // Yrs merges on the encoded form, without a document: the result is the
+        // union of the inputs' structs and delete sets, compressed, which is
+        // what a replica would have assembled applying them one at a time.
+        yrs::merge_updates_v1(updates).map_err(|e| CoreError::Crdt(format!("merging updates: {e}")))
+    }
+
     fn view(&self) -> NoteView {
         let txn = self.doc.transact();
         let title = any_str(self.root.get(&txn, TITLE));

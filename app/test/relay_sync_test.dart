@@ -129,6 +129,30 @@ void main() {
     );
 
     test(
+      'a title typed a letter at a time arrives whole, and a flush sends it',
+      () async {
+        final (aLibrary, a) = await open();
+        final (_, b) = await join(await a.exportShareBlob());
+
+        // Typing is held back until it pauses (ADR 0016), so each of these
+        // is logged at once and sent later, as one.
+        const title = 'Groceries';
+        for (var end = 1; end <= title.length; end++) {
+          await a.setTitle(title.substring(0, end));
+        }
+        // What the app does going into the background: rather than wait for
+        // the pause, send what is held now.
+        aLibrary.sendHeldEdits();
+
+        await _until(
+          b.watch(),
+          (view) => view.title == title,
+          'B never received the title A typed',
+        );
+      },
+    );
+
+    test(
       'the app reports itself synced once the relay has everything',
       () async {
         final (_, a) = await open();

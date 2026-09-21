@@ -243,6 +243,15 @@ pub trait NoteDoc: Sized {
     /// applied twice leaves the document unchanged the second time.
     fn apply_remote(&mut self, update: &[u8]) -> Result<()>;
 
+    /// One delta that does what `updates` do between them, in the same form
+    /// [`NoteDoc::apply_local`] returns.
+    ///
+    /// What lets a burst of typing reach the relay as one envelope rather than
+    /// one per keystroke ([ADR 0016](../../../docs/adr/0016-batching-edits.md)).
+    /// Applying the result must leave any replica exactly where applying every
+    /// input in order would, including one that has already seen some of them.
+    fn merge_updates(updates: &[Vec<u8>]) -> Result<Vec<u8>>;
+
     fn view(&self) -> NoteView;
 
     /// The full state, for the encrypted snapshot that lets a client skip the log.

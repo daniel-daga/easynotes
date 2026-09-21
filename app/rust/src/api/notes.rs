@@ -836,9 +836,20 @@ impl Shared {
     /// to. There being none is not an error: the edit is already in the log, and
     /// the next connection finds it there.
     fn publish(&self, note: NoteId, envelope: Vec<u8>) {
+        self.with_connection(note, |c| c.publish(envelope));
+    }
+
+    /// [`Shared::publish`] for a keystroke: the envelope waits until the typing
+    /// pauses and goes with the rest of the word, as one
+    /// ([ADR 0016](../../../../docs/adr/0016-batching-edits.md)).
+    fn publish_soon(&self, note: NoteId, envelope: Vec<u8>) {
+        self.with_connection(note, |c| c.publish_soon(envelope));
+    }
+
+    fn with_connection(&self, note: NoteId, then: impl FnOnce(&Connection)) {
         if let Ok(connections) = self.connections.lock() {
             if let Some(connection) = connections.get(&note) {
-                connection.publish(envelope);
+                then(connection);
             }
         }
     }
@@ -2026,6 +2037,25 @@ impl Library {
         Ok(())
     }
 
+    /// Send every edit that is waiting for the typing to pause, now.
+    ///
+    /// For when the app may not get another chance: going into the background,
+    /// or a tab being hidden. Nothing waiting is at risk either way — it is in
+    /// the log, and the next connection sends it — but a person who types a
+    /// line and pockets the phone expects the other phone to have it.
+    #[frb(sync)]
+    pub fn send_held_edits(&self) -> Result<(), String> {
+        let connections = self
+            .shared
+            .connections
+            .lock()
+            .map_err(|_| "sync lock poisoned".to_string())?;
+        for connection in connections.values() {
+            connection.flush();
+        }
+        Ok(())
+    }
+
     /// Stop syncing everything. Edits still work and still queue; nothing is
     /// lost.
     pub fn disconnect(&self) -> Result<(), String> {
@@ -2210,13 +2240,24 @@ impl Note {
     // relay. The local half is what the UI sees, and it never waits for the
     // remote half: the edit is in the log before `publish` is called, and stays
     // there whether or not there is a network.
+    //
+    // Typing — a title, a body, an item's text — goes by `publish_soon`, and is
+    // sent once it pauses; everything else goes at once, because it is one
+    // gesture and someone on a shared list is waiting to see it.
+
+    /// Send whatever typing on this note is waiting to go. What a screen does
+    /// as it closes, so that leaving a note is not a second's wait to share it.
+    #[frb(sync)]
+    pub fn send_held_edits(&self) {
+        self.shared.with_connection(self.id, Connection::flush);
+    }
 
     pub fn set_title(&self, title: String) -> Result<(), String> {
         let envelope = {
             let mut core = self.shared.locked()?;
             core.set_title(self.id, title).map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.shared.publish_soon(self.id, envelope);
         Ok(())
     }
 
@@ -2230,7 +2271,7 @@ impl Note {
                 .map_err(|e| e.to_string())?
         };
         if let Some(envelope) = envelope {
-            self.shared.publish(self.id, envelope);
+            self.shared.publish_soon(self.id, envelope);
         }
         Ok(())
     }
@@ -2264,7 +2305,7 @@ impl Note {
             core.set_item_text(self.id, item_id(&item)?, text)
                 .map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.shared.publish_soon(self.id, envelope);
         Ok(())
     }
 

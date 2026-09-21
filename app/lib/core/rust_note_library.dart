@@ -346,6 +346,9 @@ class RustNoteLibrary implements NoteLibrary {
   Future<void> disconnect() => _library.disconnect();
 
   @override
+  void sendHeldEdits() => _library.sendHeldEdits();
+
+  @override
   SyncStatus get syncStatus => RustNoteCore.toStatus(_library.syncStatus());
 
   @override

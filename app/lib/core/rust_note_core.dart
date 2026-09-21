@@ -124,6 +124,9 @@ class RustNoteCore implements NoteCore {
 
   @override
   Future<void> dispose() async {
+    // A screen closing is the end of whatever was being typed on it, so there
+    // is no pause left to wait for.
+    _note.sendHeldEdits();
     // Stop the Rust watchers: cancelling an upstream subscription waits for that
     // stream to close, and neither closes on its own. The note itself stays open
     // in the library — another screen may be showing it, and the relay keeps

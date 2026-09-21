@@ -103,6 +103,14 @@ mod native {
             self.handle.publish(envelope);
         }
 
+        pub fn publish_soon(&self, envelope: Vec<u8>) {
+            self.handle.publish_soon(envelope);
+        }
+
+        pub fn flush(&self) {
+            self.handle.flush();
+        }
+
         pub fn shutdown(&self) {
             self.handle.shutdown();
         }
@@ -181,6 +189,14 @@ mod web {
 
         pub fn publish(&self, envelope: Vec<u8>) {
             self.handle.publish(envelope);
+        }
+
+        pub fn publish_soon(&self, envelope: Vec<u8>) {
+            self.handle.publish_soon(envelope);
+        }
+
+        pub fn flush(&self) {
+            self.handle.flush();
         }
 
         pub fn shutdown(&self) {

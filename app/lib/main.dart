@@ -86,13 +86,37 @@ Future<NoteLibrary> openInBrowser() async {
 /// rather than which notes are in it.
 const browserDatabase = 'easynotes';
 
-class EasyNotesApp extends StatelessWidget {
+class EasyNotesApp extends StatefulWidget {
   const EasyNotesApp({super.key, required this.library});
 
   final NoteLibrary library;
 
   @override
+  State<EasyNotesApp> createState() => _EasyNotesAppState();
+}
+
+class _EasyNotesAppState extends State<EasyNotesApp> {
+  /// Sends held typing the moment the app stops being seen — backgrounded on a
+  /// phone, minimised on a desktop, a tab switched away from in a browser. All
+  /// three are `hidden` to Flutter, and it is the last state the app is sure
+  /// to reach with its sockets still up.
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycle = AppLifecycleListener(onHide: widget.library.sendHeldEdits);
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final library = widget.library;
     return MaterialApp(
       title: 'EasyNotes',
       debugShowCheckedModeBanner: false,
