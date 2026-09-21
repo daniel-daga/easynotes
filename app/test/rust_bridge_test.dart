@@ -410,6 +410,30 @@ void main() {
         );
       });
 
+      test('a warm restart retires the library it never disposed', () async {
+        // Android backs out of the app by destroying its isolate and keeping
+        // the process, and nothing disposes the library on the way out. The
+        // next launch opens the same directory in the same process; before
+        // this, that made a second library on one SQLite file, with the first
+        // one's sync engine still running beside it. Here the first library is
+        // simply never disposed, which is all a dead isolate amounts to.
+        final dir = await Directory.systemTemp.createTemp('easynotes-warm');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+
+        final orphan = await RustNoteLibrary.open(dir.path, key);
+        final id = await orphan.createNote();
+
+        final relaunched = await openLibraryInTempDir(dir, key);
+        expect(relaunched.notes.map((n) => n.id), [id]);
+        await relaunched.createNote();
+
+        // The orphan is closed, not still writing to the file behind the new
+        // library's back.
+        expect(() => orphan.createNote(), throwsA(anything));
+        await orphan.dispose();
+      });
+
       test('a colour, a pin and the trash survive a relaunch', () async {
         // Across the bridge and onto the disk: the account document is a real
         // document, so what it holds has to come back the way a note's items do.

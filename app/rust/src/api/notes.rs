@@ -1150,6 +1150,94 @@ impl JoinCheckView {
     }
 }
 
+/// The libraries this process has open on a disk, by directory, so that there
+/// is only ever one per database.
+///
+/// The Rust side of the app lives as long as the process, and the Dart side
+/// does not. On Android, backing out of the app destroys the Flutter engine
+/// and its isolate while the process is kept, and nothing runs `dispose()` on
+/// the way out — so the library that isolate opened is never closed, and its
+/// sync engine keeps its note subscriptions and reconnects to the relay the
+/// next time the process is thawed. Opening the app again then made a second
+/// library on the same SQLite file, with an engine of its own: two writers to
+/// one database, and one more socket to the relay for every back-and-reopen.
+/// Seen on the emulators; see item 5 of the Slice 3 plan.
+///
+/// Dart cannot fix this from its side, because the moment it would need to act
+/// is the moment its isolate is being torn down. So the next open does it: a
+/// directory opened again retires whatever library had it, as `dispose()`
+/// would have — sockets shut, watchers stopped, store closed — before the new
+/// one touches the file. A library the app still holds and opens a second
+/// library over is retired too, which is the right answer for the same reason:
+/// two cores on one file disagree about everything they cache.
+///
+/// Weak, so that this is never what keeps a library alive.
+struct OpenLibraries;
+
+struct HeldLibrary {
+    shared: Weak<Shared>,
+    stop: Weak<AtomicBool>,
+}
+
+/// A directory claimed for a library about to open. The registry stays locked
+/// until [`Claim::hold`] or the claim is dropped, so two opens of one
+/// directory cannot race each other past the retirement.
+struct Claim {
+    dir: std::path::PathBuf,
+    open: std::sync::MutexGuard<'static, HashMap<std::path::PathBuf, HeldLibrary>>,
+}
+
+impl OpenLibraries {
+    fn registry() -> &'static Mutex<HashMap<std::path::PathBuf, HeldLibrary>> {
+        static OPEN: std::sync::OnceLock<Mutex<HashMap<std::path::PathBuf, HeldLibrary>>> =
+            std::sync::OnceLock::new();
+        OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Retire whatever library has `dir` open, and claim it for the next.
+    fn claim(dir: &std::path::Path) -> Claim {
+        // Canonical, so that two spellings of one directory are one entry. A
+        // directory that does not exist yet has nothing open in it.
+        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        // A poisoned registry still holds the truth about what is open; the
+        // panic that poisoned it was somebody else's.
+        let mut open = Self::registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Libraries Dart has already let go of: nothing to retire, and no
+        // reason to keep an entry for every temp directory a test suite opens.
+        open.retain(|_, held| held.shared.strong_count() > 0);
+        if let Some(held) = open.remove(&dir) {
+            if let (Some(shared), Some(stop)) = (held.shared.upgrade(), held.stop.upgrade()) {
+                let orphan = Library {
+                    shared,
+                    stop,
+                    pending: Arc::new(Pending::default()),
+                };
+                // Best effort, and each step regardless of the last: an orphan
+                // that was half disposed already answers "closed" to some of
+                // these, and that is the state this is trying to reach.
+                let _ = orphan.disconnect();
+                let _ = orphan.stop_watching();
+                let _ = orphan.close();
+            }
+        }
+        Claim { dir, open }
+    }
+}
+
+impl Claim {
+    fn hold(mut self, library: &Library) {
+        self.open.insert(
+            self.dir.clone(),
+            HeldLibrary {
+                shared: Arc::downgrade(&library.shared),
+                stop: Arc::downgrade(&library.stop),
+            },
+        );
+    }
+}
+
 /// Every note this device holds.
 ///
 /// One per app. Opening it reads each note's sealed index entry rather than each
@@ -1181,11 +1269,17 @@ impl Library {
     /// The wrong key is not a soft failure: nothing in the database opens, and
     /// this says so rather than presenting an empty device to someone whose
     /// notes are right there.
+    ///
+    /// Opening a directory this process already has open retires the library
+    /// that had it first — see [`OpenLibraries`].
     #[frb(sync)]
     pub fn open(dir: String, master_key: Vec<u8>) -> Result<Library, String> {
         let root = std::path::PathBuf::from(dir);
+        let claim = OpenLibraries::claim(&root);
         let (store, keyring) = on_disk(&root, master_key)?;
-        Self::wrap(NoteCore::open(store, keyring).map_err(|e| e.to_string())?)
+        let library = Self::wrap(NoteCore::open(store, keyring).map_err(|e| e.to_string())?)?;
+        claim.hold(&library);
+        Ok(library)
     }
 
     /// Notes that live only in memory and are gone when the tab closes.
@@ -2118,7 +2212,15 @@ impl Library {
         self.shared.statuses.overall.send_replace(overall);
         // The note list watcher is parked on its own channel and needs the same
         // wake. Re-sending the list it already has changes nothing and moves it.
-        self.shared.locked()?.touch_notes();
+        //
+        // A closed library needs no wake: closing dropped the core, and with it
+        // the channel's sender, which ends the watcher by itself. That is not
+        // only the second `dispose()`'s case — a library retired by the next
+        // open of its directory ([`OpenLibraries`]) is closed before its own
+        // Dart side gets round to disposing it, if it ever does.
+        if let Ok(core) = self.shared.locked() {
+            core.touch_notes();
+        }
         Ok(())
     }
 
@@ -2234,8 +2336,12 @@ impl Note {
         // wait for a lock the same expression is holding.
         let unchanged = self.status.borrow().clone();
         self.status.send_replace(unchanged);
-        let core = self.shared.locked()?;
-        core.touch(self.id).map_err(|e| e.to_string())
+        // Closed: the note's channel went with the core, and its watcher with
+        // that — as for [`Library::stop_watching`].
+        match self.shared.locked() {
+            Ok(core) => core.touch(self.id).map_err(|e| e.to_string()),
+            Err(_) => Ok(()),
+        }
     }
 
     /// The blob another device pastes to join. Slice 3 turns it into an invite
