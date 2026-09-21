@@ -4,6 +4,7 @@
 pub mod app;
 pub mod auth;
 pub mod error;
+pub mod invite;
 pub mod limit;
 pub mod protocol;
 pub mod store;

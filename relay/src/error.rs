@@ -9,6 +9,14 @@ pub enum RelayError {
     Unauthorized,
     #[error("payload too large")]
     TooLarge,
+    /// Unknown, or known and not yours to see — the relay does not say which.
+    #[error("not found")]
+    NotFound,
+    /// An invite that existed and has expired or already admitted someone.
+    #[error("{0}")]
+    Gone(&'static str),
+    #[error("{0}")]
+    Conflict(&'static str),
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -19,6 +27,9 @@ impl IntoResponse for RelayError {
             RelayError::BadRequest(_) => StatusCode::BAD_REQUEST,
             RelayError::Unauthorized => StatusCode::UNAUTHORIZED,
             RelayError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            RelayError::NotFound => StatusCode::NOT_FOUND,
+            RelayError::Gone(_) => StatusCode::GONE,
+            RelayError::Conflict(_) => StatusCode::CONFLICT,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // The body carries the category and never the detail: a storage error's

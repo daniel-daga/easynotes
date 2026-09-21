@@ -1,4 +1,5 @@
-//! The relay itself: three endpoints and a fan-out table.
+//! The relay itself: the handshake, a socket per note and a fan-out table, and
+//! the invite mailboxes in [`crate::invite`].
 //!
 //! What the relay is allowed to check, in full:
 //!   * the token is valid and unexpired;
@@ -13,6 +14,7 @@
 
 use crate::auth::Auth;
 use crate::error::{RelayError, Result};
+use crate::invite;
 use crate::limit::RateLimit;
 use crate::protocol::*;
 use crate::store::RelayStore;
@@ -148,6 +150,10 @@ pub struct RelayConfig {
     pub handshake: RateLimit,
     /// Opening a note socket, per address.
     pub sockets: RateLimit,
+    /// Every invite call, per address. Its own bucket, because a guest waiting
+    /// on an answer polls, and that must not spend the budget its device needs
+    /// to reconnect its notes.
+    pub invites: RateLimit,
 }
 
 impl Default for RelayConfig {
@@ -156,6 +162,7 @@ impl Default for RelayConfig {
             origins: Origins::Any,
             handshake: RateLimit::unlimited(),
             sockets: RateLimit::unlimited(),
+            invites: RateLimit::unlimited(),
         }
     }
 }
@@ -175,6 +182,9 @@ impl RelayConfig {
             origins: Origins::Any,
             handshake: RateLimit::new(120, 60),
             sockets: RateLimit::new(240, 120),
+            // A guest and an owner each poll every few seconds while a screen
+            // is waiting; this is several of those at once from one address.
+            invites: RateLimit::new(120, 60),
         }
     }
 }
@@ -190,6 +200,18 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
         .route("/v1/notes/{note_id}", get(notes_ws))
+        .route("/v1/invites", post(invite::create))
+        .route("/v1/invites/{invite}/requests", post(invite::join))
+        .route(
+            "/v1/invites/{invite}/requests/{request}",
+            post(invite::poll),
+        )
+        .route(
+            "/v1/invites/{invite}/requests/{request}/answer",
+            post(invite::answer),
+        )
+        .route("/v1/invites/{invite}/list", post(invite::list))
+        .route("/v1/invites/{invite}/withdraw", post(invite::withdraw))
         // Health is outside the limiter on purpose: it is what a load balancer
         // polls, it costs nothing to answer, and a relay that fails its health
         // check because it is busy gets taken out of rotation for being busy.
@@ -216,6 +238,7 @@ async fn enforce_limits(
     let limit = match req.uri().path() {
         "/v1/challenge" | "/v1/token" => &config.handshake,
         path if path.starts_with("/v1/notes/") => &config.sockets,
+        path if path.starts_with("/v1/invites") => &config.invites,
         _ => return next.run(req).await,
     };
     let peer = req

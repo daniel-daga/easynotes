@@ -50,6 +50,18 @@ impl Device {
         Self::wrap(name, core, note, http_base, ws_base).await
     }
 
+    /// A device around a core that already has the note — joined by an invite,
+    /// say, which is not something this scaffolding knows how to do itself.
+    pub async fn with_core(
+        name: &'static str,
+        core: Core,
+        note: NoteId,
+        http_base: &str,
+        ws_base: &str,
+    ) -> Self {
+        Self::wrap(name, core, note, http_base, ws_base).await
+    }
+
     async fn wrap(
         name: &'static str,
         core: Core,

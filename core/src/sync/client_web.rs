@@ -68,6 +68,18 @@ fn fetch(request: &Request) -> Result<js_sys::Promise> {
 async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
+    let (status, text) = post(url, body).await?;
+    if !(200..300).contains(&status) {
+        return Err(net(format!("{status} {text}")));
+    }
+    serde_json::from_str(&text).map_err(|e| net(format!("relay sent nonsense: {e}")))
+}
+
+/// A JSON `POST`, and whatever came back, whatever its status.
+///
+/// The invite calls need the status — "expired" and "withdrawn" are answers,
+/// not failures — so it is handed back rather than turned into an error here.
+pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
     let init = RequestInit::new();
     init.set_method("POST");
     init.set_body(&JsValue::from_str(&body));
@@ -84,19 +96,13 @@ async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Re
         .map_err(js)?
         .dyn_into()
         .map_err(|_| net("fetch did not return a response"))?;
-    if !response.ok() {
-        return Err(net(format!(
-            "{} {}",
-            response.status(),
-            response.status_text()
-        )));
-    }
+    let status = response.status();
     let text = JsFuture::from(response.text().map_err(js)?)
         .await
         .map_err(js)?
         .as_string()
         .ok_or_else(|| net("the relay's answer was not text"))?;
-    serde_json::from_str(&text).map_err(|e| net(format!("relay sent nonsense: {e}")))
+    Ok((status, text))
 }
 
 /// Prove possession of the device key and get a short-lived token.

@@ -110,9 +110,138 @@ pub(crate) fn note_url(ws_base: &str, note: crate::ids::NoteId, token: &str) -> 
     format!("{ws_base}/v1/notes/{}?token={token}", note.encode())
 }
 
+// -- invites -----------------------------------------------------------------
+//
+// The mirror of `relay::protocol`'s invite messages. Kept here rather than
+// shared with the relay for the reason everything else in this file is: the
+// relay builds the core without its sync client, and the two ends agreeing is
+// what `relay/tests/invites.rs` checks by driving one against the other.
+
+#[derive(Serialize)]
+pub(crate) struct CreateInvite<'a> {
+    pub invite: &'a str,
+    pub token_hash: &'a str,
+    pub owner_hash: &'a str,
+    pub expires_in: u64,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CreatedInvite {
+    pub expires_in: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct JoinInvite<'a> {
+    pub token: &'a str,
+    pub payload: &'a str,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct JoinedInvite {
+    pub request: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PollInvite<'a> {
+    pub token: &'a str,
+}
+
+/// Where a join request stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestState {
+    Pending,
+    Approved,
+    Declined,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PolledRequest {
+    pub state: RequestState,
+    pub grant: Option<String>,
+    pub expires_in: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct OwnInvite<'a> {
+    pub owner: &'a str,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct InviteListing {
+    pub open: bool,
+    pub expires_in: u64,
+    pub requests: Vec<ListedRequest>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ListedRequest {
+    pub request: String,
+    pub payload: String,
+    pub state: RequestState,
+}
+
+#[derive(Serialize)]
+pub(crate) struct AnswerInvite<'a> {
+    pub owner: &'a str,
+    pub grant: Option<&'a str>,
+}
+
+/// Turn an invite call's status into an answer a person can be shown.
+///
+/// The relay gives a wrong secret and a missing invite the same 404 on
+/// purpose, so "does not exist" here covers a mistyped link as well as a
+/// withdrawn one — which is also the most a guest should be told.
+pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
+    let said = |fallback: &str| {
+        let body = body.trim();
+        if body.is_empty() {
+            fallback.to_string()
+        } else {
+            body.to_string()
+        }
+    };
+    match status {
+        200..=299 => Ok(()),
+        404 => Err(CoreError::Invite(
+            "This invite does not exist or was withdrawn.".into(),
+        )),
+        410 => Err(CoreError::Invite(
+            "This invite has expired or has already been used.".into(),
+        )),
+        409 => Err(CoreError::Invite(said("That was already answered."))),
+        413 => Err(CoreError::Invite("That is too large to send.".into())),
+        429 => Err(CoreError::Invite(
+            "The relay is busy. Try again in a moment.".into(),
+        )),
+        other => Err(net(format!("{other} {}", said("")))),
+    }
+}
+
+pub(crate) fn invite_url(http_base: &str, invite: crate::ids::InviteId, rest: &str) -> String {
+    format!("{http_base}/v1/invites/{}{rest}", invite.encode())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_invites_answers_are_words_and_not_codes() {
+        assert!(invite_status(201, "").is_ok());
+        assert!(invite_status(204, "").is_ok());
+        for status in [404, 410, 409, 429] {
+            match invite_status(status, "") {
+                Err(CoreError::Invite(words)) => assert!(!words.is_empty()),
+                other => panic!("{status} gave {other:?}"),
+            }
+        }
+        // Anything else is the network's problem, not the invite's.
+        assert!(matches!(
+            invite_status(500, "internal error"),
+            Err(CoreError::Storage(_))
+        ));
+    }
 
     #[test]
     fn an_update_comes_back_decoded_and_moves_the_cursor() {

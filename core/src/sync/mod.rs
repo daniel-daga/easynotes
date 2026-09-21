@@ -34,7 +34,7 @@
     allow(dead_code)
 )]
 mod wire;
-pub use wire::Incoming;
+pub use wire::{Incoming, RequestState};
 
 // Exactly one transport is compiled, and which one is not a choice a caller
 // makes: a device has no browser to borrow a socket from and a tab cannot open
@@ -43,12 +43,24 @@ pub use wire::Incoming;
 #[cfg(feature = "sync-native")]
 mod client;
 #[cfg(feature = "sync-native")]
+use client as transport;
+#[cfg(feature = "sync-native")]
 pub use client::{authenticate, NoteSync};
 
 #[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
 mod client_web;
 #[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
+use client_web as transport;
+#[cfg(all(feature = "sync-web", target_arch = "wasm32"))]
 pub use client_web::{authenticate, NoteSync};
+
+/// The invite calls. Plain HTTP over the same transport, with no socket and
+/// no device key — see the module for why not the latter.
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+pub mod invite;
 
 #[cfg(any(
     feature = "sync-native",

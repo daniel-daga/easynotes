@@ -3,7 +3,7 @@
 //! Standard constructions only, no hand-rolled primitives:
 //!   * XChaCha20-Poly1305 for every update and snapshot (`chacha20poly1305`)
 //!   * Ed25519 for authorship (`ed25519-dalek`)
-//!   * X25519 for the key agreement that Slice 3's invite links will need (`x25519-dalek`)
+//!   * X25519 for the key agreement an invite's grant is sealed with (`x25519-dalek`, see [`crate::invite`])
 //!
 //! The one rule this module exists to enforce: **a receiver verifies the author's
 //! signature before it decrypts anything.** `Envelope::open` is the only way to get
@@ -513,7 +513,7 @@ impl std::fmt::Debug for MasterKey {
 /// The domain tag, then each context part with its length in front. The lengths
 /// are what stop `["note", "key"]` and `["notek", "ey"]` from producing the same
 /// AAD.
-fn local_aad(domain: &[u8], context: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn local_aad(domain: &[u8], context: &[&[u8]]) -> Vec<u8> {
     let mut aad = Vec::with_capacity(domain.len() + 8 * context.len());
     aad.extend_from_slice(domain);
     for part in context {
@@ -528,7 +528,11 @@ fn local_aad(domain: &[u8], context: &[&[u8]]) -> Vec<u8> {
 /// One body for both keys that do it, so the format cannot drift between them
 /// and a reader of either only has one thing to check. What differs is the AAD,
 /// and that is the whole of what keeps the uses apart.
-fn seal_blob(cipher: &XChaCha20Poly1305, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn seal_blob(
+    cipher: &XChaCha20Poly1305,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     let mut nonce = [0u8; NONCE_LEN];
     random_bytes(&mut nonce);
     let ciphertext = cipher
@@ -548,7 +552,7 @@ fn seal_blob(cipher: &XChaCha20Poly1305, aad: &[u8], plaintext: &[u8]) -> Result
     Ok(out)
 }
 
-fn open_blob(cipher: &XChaCha20Poly1305, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn open_blob(cipher: &XChaCha20Poly1305, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
     if sealed.len() < LOCAL_BLOB_HEADER_LEN + 16 {
         return Err(CoreError::MalformedEnvelope(
             "local blob shorter than the header plus a tag",

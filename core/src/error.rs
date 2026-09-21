@@ -16,6 +16,12 @@ pub enum CoreError {
     /// before it has an account and that is the ordinary case, not a fault.
     #[error("this device has no account yet")]
     NoAccount,
+    #[error("that is not an invite link: {0}")]
+    MalformedInvite(&'static str),
+    /// The relay's answer about an invite, in words a person can be shown:
+    /// expired, already used, full, withdrawn.
+    #[error("{0}")]
+    Invite(String),
     #[error("malformed share blob: {0}")]
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]

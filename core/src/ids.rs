@@ -57,6 +57,11 @@ macro_rules! id_type {
 id_type!(NoteId, "NoteId");
 id_type!(ItemId, "ItemId");
 
+// An invite's address on the relay. Derived from the link's secret rather than
+// random, so the link need carry only the secret; the same shape as a note ID,
+// so the relay cannot tell the two kinds of address apart by looking.
+id_type!(InviteId, "InviteId");
+
 // A label's identity, which is **not** its name. (A plain comment and not
 // rustdoc, because the item comes out of a macro and rustdoc cannot attach to
 // one.)

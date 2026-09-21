@@ -87,6 +87,64 @@ pub const INDEX: &str = "index";
 /// The setting that says whether the note list is a grid or one column.
 pub const LAYOUT: &str = "layout";
 
+/// Where the invites this device has opened are kept, and the join requests
+/// it is waiting on: two metadata rows filed under [`ACCOUNT_DOC`].
+///
+/// Local and sealed, like every metadata row. Local because they are secrets
+/// one device holds on its own — an owner secret, a guest's request key — and
+/// because what they wait on is an answer only this device asked for. Filed
+/// under the reserved ID because neither belongs to a note: a join has no note
+/// yet, and an invite is this device's business about a note rather than part
+/// of it. That row is the one address no note list, sync or relay ever shows.
+pub const INVITES: &str = "invites";
+pub const JOINS: &str = "joins";
+
+/// An invite this device opened and has not seen answered, withdrawn or expired.
+#[derive(Clone, Debug)]
+pub struct OutgoingInvite {
+    pub note: NoteId,
+    pub secret: crate::invite::InviteSecret,
+    pub owner: crate::invite::OwnerSecret,
+    /// Unix seconds, from this device's clock and the lifetime the relay
+    /// granted. Advisory: the relay's own expiry is the one that holds.
+    pub expires_at: i64,
+}
+
+/// A join request this device made and is waiting on.
+#[derive(Clone, Debug)]
+pub struct PendingJoin {
+    pub secret: crate::invite::InviteSecret,
+    /// The relay's name for the request.
+    pub request: String,
+    pub guest: crate::invite::GuestKey,
+    /// What this person called themselves, to show on the waiting screen.
+    pub name: String,
+}
+
+impl PendingJoin {
+    /// The six digits the owner will be shown for this request.
+    pub fn code(&self) -> String {
+        crate::invite::safety_code(&self.secret, &self.guest.public())
+    }
+}
+
+/// The stored shape of both, which is strings so a row stays readable JSON.
+#[derive(Serialize, Deserialize)]
+struct StoredInvite {
+    note: String,
+    secret: String,
+    owner: String,
+    expires_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredJoin {
+    secret: String,
+    request: String,
+    guest: String,
+    name: String,
+}
+
 /// One note, as a list of notes needs it: enough to draw a card, and no more.
 ///
 /// The title and the counts come from the CRDT, so producing one means the note
@@ -510,8 +568,20 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.account_id = new_id;
 
         if old_id != new_id {
+            // The invite rows are filed under the reserved ID, which is what
+            // the old document may be. They are this device's and not the
+            // document's, so they outlive it.
+            let kept = [
+                (INVITES, self.store.get_meta(ACCOUNT_DOC, INVITES)?),
+                (JOINS, self.store.get_meta(ACCOUNT_DOC, JOINS)?),
+            ];
             self.store.forget(old_id)?;
             self.keyring.forget_note_key(old_id)?;
+            for (key, value) in kept {
+                if let Some(value) = value {
+                    self.store.put_meta(ACCOUNT_DOC, key, &value)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1359,6 +1429,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.index.remove(&id);
         self.store.forget(id)?;
         self.keyring.forget_note_key(id)?;
+        // An invite to a note this device no longer has could never be
+        // approved: there is no key left to seal into the grant. The relay's
+        // copy expires on its own.
+        let invites = self.invites()?;
+        if invites.iter().any(|i| i.note == id) {
+            let kept: Vec<_> = invites.into_iter().filter(|i| i.note != id).collect();
+            self.put_invites(&kept)?;
+        }
         // The labels have to be read before anything else is removed, because
         // they are the one part of a placement that cannot be named without
         // looking ([`AccountEdit::ForgetNote`]). Both shapes, because a device
@@ -1909,6 +1987,171 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// as updates from the relay.
     pub fn import_share_blob(&mut self, blob: &str) -> Result<NoteId> {
         let (id, key) = crate::crypto::import_share_blob(blob)?;
+        self.add_shared_note(id, key)
+    }
+
+    // -- invites ------------------------------------------------------------
+    //
+    // The bookkeeping half. Talking to the relay is `crate::sync::invite`'s and
+    // deciding when is the app's; what is here is what has to survive the app
+    // being closed while somebody decides whether to let someone in.
+
+    /// Everything the relay needs to open an invite for `note`, freshly minted.
+    /// Nothing is written until [`NoteCore::remember_invite`], so an invite the
+    /// relay refused leaves no row behind.
+    pub fn new_invite(&self, note: NoteId) -> Result<OutgoingInvite> {
+        if self.is_account(note) || self.keyring.note_key(note)?.is_none() {
+            return Err(CoreError::UnknownNote(note.encode()));
+        }
+        Ok(OutgoingInvite {
+            note,
+            secret: crate::invite::InviteSecret::random(),
+            owner: crate::invite::OwnerSecret::random(),
+            expires_at: 0,
+        })
+    }
+
+    /// Every invite this device has open, oldest first.
+    pub fn invites(&self) -> Result<Vec<OutgoingInvite>> {
+        let Some(raw) = self.store.get_meta(ACCOUNT_DOC, INVITES)? else {
+            return Ok(Vec::new());
+        };
+        let stored: Vec<StoredInvite> = serde_json::from_slice(&raw)
+            .map_err(|e| CoreError::Storage(format!("unreadable invites row: {e}")))?;
+        stored
+            .into_iter()
+            .map(|s| {
+                Ok(OutgoingInvite {
+                    note: NoteId::decode(&s.note)?,
+                    secret: crate::invite::InviteSecret::from_link(&s.secret)?,
+                    owner: crate::invite::OwnerSecret::decode(&s.owner)?,
+                    expires_at: s.expires_at,
+                })
+            })
+            .collect()
+    }
+
+    fn put_invites(&mut self, invites: &[OutgoingInvite]) -> Result<()> {
+        let stored: Vec<StoredInvite> = invites
+            .iter()
+            .map(|i| StoredInvite {
+                note: i.note.encode(),
+                secret: i.secret.code(),
+                owner: i.owner.encode(),
+                expires_at: i.expires_at,
+            })
+            .collect();
+        let raw = serde_json::to_vec(&stored)
+            .map_err(|e| CoreError::Storage(format!("unwritable invites row: {e}")))?;
+        self.store.put_meta(ACCOUNT_DOC, INVITES, &raw)
+    }
+
+    /// Keep an invite the relay has accepted, replacing one with the same ID.
+    pub fn remember_invite(&mut self, invite: &OutgoingInvite) -> Result<()> {
+        let id = invite.secret.id();
+        let mut all = self.invites()?;
+        all.retain(|i| i.secret.id() != id);
+        all.push(invite.clone());
+        self.put_invites(&all)
+    }
+
+    /// Stop keeping an invite: answered, withdrawn or expired. Not an error if
+    /// it is not kept.
+    pub fn forget_invite(&mut self, id: crate::ids::InviteId) -> Result<()> {
+        let mut all = self.invites()?;
+        let before = all.len();
+        all.retain(|i| i.secret.id() != id);
+        if all.len() == before {
+            return Ok(());
+        }
+        self.put_invites(&all)
+    }
+
+    /// Seal `note` for the guest who made `request`. The note key goes into
+    /// the grant and nowhere else: it never leaves the core in the clear.
+    pub fn seal_grant(
+        &self,
+        invite: &OutgoingInvite,
+        request: &crate::invite::JoinRequest,
+    ) -> Result<Vec<u8>> {
+        let key = self
+            .keyring
+            .note_key(invite.note)?
+            .ok_or_else(|| CoreError::UnknownNote(invite.note.encode()))?;
+        crate::invite::seal_grant(&invite.secret, request, invite.note, &key)
+    }
+
+    /// Every join request this device is waiting on, oldest first.
+    pub fn joins(&self) -> Result<Vec<PendingJoin>> {
+        let Some(raw) = self.store.get_meta(ACCOUNT_DOC, JOINS)? else {
+            return Ok(Vec::new());
+        };
+        let stored: Vec<StoredJoin> = serde_json::from_slice(&raw)
+            .map_err(|e| CoreError::Storage(format!("unreadable joins row: {e}")))?;
+        stored
+            .into_iter()
+            .map(|s| {
+                Ok(PendingJoin {
+                    secret: crate::invite::InviteSecret::from_link(&s.secret)?,
+                    request: s.request,
+                    guest: crate::invite::GuestKey::decode(&s.guest)?,
+                    name: s.name,
+                })
+            })
+            .collect()
+    }
+
+    fn put_joins(&mut self, joins: &[PendingJoin]) -> Result<()> {
+        let stored: Vec<StoredJoin> = joins
+            .iter()
+            .map(|j| StoredJoin {
+                secret: j.secret.code(),
+                request: j.request.clone(),
+                guest: j.guest.encode(),
+                name: j.name.clone(),
+            })
+            .collect();
+        let raw = serde_json::to_vec(&stored)
+            .map_err(|e| CoreError::Storage(format!("unwritable joins row: {e}")))?;
+        self.store.put_meta(ACCOUNT_DOC, JOINS, &raw)
+    }
+
+    /// Keep a request the relay has accepted, replacing any earlier one on the
+    /// same invite: a person who asks twice is waiting on the second answer.
+    pub fn remember_join(&mut self, join: &PendingJoin) -> Result<()> {
+        let id = join.secret.id();
+        let mut all = self.joins()?;
+        all.retain(|j| j.secret.id() != id);
+        all.push(join.clone());
+        self.put_joins(&all)
+    }
+
+    /// Stop waiting on the request made on invite `id`.
+    pub fn forget_join(&mut self, id: crate::ids::InviteId) -> Result<()> {
+        let mut all = self.joins()?;
+        let before = all.len();
+        all.retain(|j| j.secret.id() != id);
+        if all.len() == before {
+            return Ok(());
+        }
+        self.put_joins(&all)
+    }
+
+    /// A grant opened: add the note it named and stop waiting for it.
+    pub fn accept_grant(
+        &mut self,
+        invite: crate::ids::InviteId,
+        note: NoteId,
+        key: NoteKey,
+    ) -> Result<NoteId> {
+        let id = self.add_shared_note(note, key)?;
+        self.forget_join(invite)?;
+        Ok(id)
+    }
+
+    /// Add a note somebody else holds the key to, by its ID and key — however
+    /// they arrived.
+    fn add_shared_note(&mut self, id: NoteId, key: NoteKey) -> Result<NoteId> {
         if self.is_account(id) {
             // Nobody shares the account document, and a blob that claims to would
             // put a key of someone else's choosing where this device's placements

@@ -71,3 +71,126 @@ pub enum ServerMessage {
     /// The append was rejected. The connection stays open.
     Error { message: String },
 }
+
+// ---------------------------------------------------------------------------
+// Invites
+// ---------------------------------------------------------------------------
+//
+// An invite is a mailbox with a lifetime. The owner opens one, guests leave
+// sealed join requests in it, and the owner answers one of them with a sealed
+// grant. The relay stores all of it and can read none of it: the requests are
+// sealed under a key derived from the link's secret, the grant under a key only
+// the guest who asked can derive, and neither side authenticates with a device
+// key — so the relay learns no new edge between two devices either
+// (ADR 0015).
+//
+// Every call is a JSON `POST`, the reads included, so that no secret is ever in
+// a URL, where proxies and access logs would keep it.
+
+/// How long an invite lasts when the owner does not say.
+pub const INVITE_DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// The longest an invite may last. A link is only as safe as the chat it was
+/// pasted into, and a month is already generous for "come and join our list".
+pub const INVITE_MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How long an expired invite is kept so that a guest who opens a stale link
+/// is told it expired, rather than that it never existed. Past this it is swept.
+pub const INVITE_GRACE_SECS: i64 = 24 * 60 * 60;
+
+/// How many join requests one invite will hold, answered or not. A household
+/// needs one; the cap is what stops a leaked link turning into a storage bill.
+pub const MAX_INVITE_REQUESTS: usize = 16;
+
+/// A sealed join request: an X25519 key, a short name, and AEAD overhead.
+pub const MAX_INVITE_PAYLOAD_BYTES: usize = 1024;
+
+/// A sealed grant: an ephemeral key, a note ID and a note key, and overhead.
+pub const MAX_INVITE_GRANT_BYTES: usize = 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateInvite {
+    /// Sixteen bytes derived from the link's secret, base64url — the same shape
+    /// as a note ID and, like one, meaningless to the relay.
+    pub invite: String,
+    /// SHA-256 of the join token, base64url. The relay keeps the hash, so a copy
+    /// of its database cannot be used to join.
+    pub token_hash: String,
+    /// SHA-256 of the owner's secret, base64url. The owner's secret is random
+    /// and never in the link, so a guest cannot answer their own request.
+    pub owner_hash: String,
+    /// Seconds from now. Clamped to [`INVITE_MAX_TTL_SECS`].
+    pub expires_in: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreatedInvite {
+    /// What the relay actually granted, after clamping.
+    pub expires_in: u64,
+}
+
+/// A guest asking to join. Proves it holds the link by presenting the token.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JoinInvite {
+    pub token: String,
+    /// The sealed request, base64url.
+    pub payload: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JoinedInvite {
+    /// The relay's name for this request, for polling it and for answering it.
+    pub request: String,
+}
+
+/// A guest asking how its request went.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PollInvite {
+    pub token: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestState {
+    Pending,
+    Approved,
+    Declined,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PolledRequest {
+    pub state: RequestState,
+    /// The sealed grant, base64url, once the owner has approved.
+    pub grant: Option<String>,
+    /// Seconds until the invite expires; 0 once it has.
+    pub expires_in: u64,
+}
+
+/// The owner proving it is the owner.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OwnInvite {
+    pub owner: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteListing {
+    /// False once a request has been approved or the invite has expired.
+    pub open: bool,
+    pub expires_in: u64,
+    pub requests: Vec<ListedRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListedRequest {
+    pub request: String,
+    /// The sealed request, base64url.
+    pub payload: String,
+    pub state: RequestState,
+}
+
+/// The owner's answer. A grant approves; no grant declines.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AnswerInvite {
+    pub owner: String,
+    pub grant: Option<String>,
+}

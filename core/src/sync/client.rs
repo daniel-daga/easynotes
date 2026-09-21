@@ -73,6 +73,23 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
     Ok(token.token)
 }
 
+/// A JSON `POST`, and whatever came back, whatever its status.
+///
+/// The invite calls need the status — "expired" and "withdrawn" are answers,
+/// not failures — so it is handed back rather than turned into an error here.
+pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
+    let response = reqwest::Client::new()
+        .post(url)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(net)?;
+    let status = response.status().as_u16();
+    let text = response.text().await.map_err(net)?;
+    Ok((status, text))
+}
+
 /// A live connection to one note.
 pub struct NoteSync {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
