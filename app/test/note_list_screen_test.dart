@@ -15,6 +15,7 @@ import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Future<void> pumpList(WidgetTester tester, FakeNoteLibrary library) async {
@@ -830,6 +831,48 @@ void main() {
     // The field never reaches the library, so there is nothing to undo.
     expect(library.calls.where((call) => call.startsWith('addTag')), isEmpty);
     expect(library.tags, isEmpty);
+  });
+
+  testWidgets('a note can have, edit and remove a reminder', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('flutter_timezone'),
+          (call) async => 'Etc/UTC',
+        );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('flutter_timezone'),
+            null,
+          ),
+    );
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.longPress(find.byKey(const Key('note:groceries')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('action-reminders')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('reminders-dialog')), findsOneWidget);
+    expect(find.text('No reminders for this note.'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('add-reminder')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-reminder')));
+    await tester.pumpAndSettle();
+
+    expect(library.reminders, hasLength(1));
+    final reminder = library.reminders.single;
+    expect(reminder.noteId, 'groceries');
+    expect(
+      library.calls,
+      contains('createReminder(groceries, ${reminder.id})'),
+    );
+
+    await tester.tap(find.byKey(Key('forget-reminder-${reminder.id}')));
+    await tester.pumpAndSettle();
+    expect(library.reminders, isEmpty);
+    expect(library.calls, contains('forgetReminder(${reminder.id})'));
   });
 
   testWidgets('a label is a shelf of its own, with what is on it', (

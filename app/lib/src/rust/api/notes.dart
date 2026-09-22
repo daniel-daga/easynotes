@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `report`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `rekey`, `reminder_id`, `reminder_time`, `report`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -118,6 +118,14 @@ abstract class Library implements RustOpaqueInterface {
   /// Make a new, empty note of `kind` and return its ID.
   Future<String> createNote({required NoteKindView kind});
 
+  /// Make a new reminder and return its stable ID.
+  Future<String> createReminder({
+    required String note,
+    required String fireAt,
+    required ReminderRepeat repeat,
+    required String timezone,
+  });
+
   /// Turn a request away. The invite stays open for someone else.
   Future<void> declineRequest({
     required String invite,
@@ -140,6 +148,9 @@ abstract class Library implements RustOpaqueInterface {
   /// they hold, and nothing here reaches either. See
   /// `docs/adr/0010-forgetting-a-note.md`.
   Future<void> forgetNote({required String id});
+
+  /// Remove one reminder without touching any other reminder on its note.
+  Future<void> forgetReminder({required String reminder});
 
   /// Throw a label away: off every note that has it, and gone from the menu.
   /// The notes themselves are untouched.
@@ -253,6 +264,11 @@ abstract class Library implements RustOpaqueInterface {
   /// The join requests this device is waiting on.
   List<PendingJoinView> pendingJoins();
 
+  /// Every reminder this device has decrypted from its account document.
+  /// `watch_notes` is also its invalidation stream for local and remote
+  /// account edits, so a scheduler does not need a second Rust watcher.
+  List<ReminderView> reminders();
+
   /// Take a label off a note. Not an error if it was never on it.
   ///
   /// The label itself stays, with one fewer note on it. Throwing the label
@@ -308,6 +324,15 @@ abstract class Library implements RustOpaqueInterface {
   Future<void> setLayout({required NoteLayout layout});
 
   Future<void> setPinned({required String id, required bool pinned});
+
+  /// Update an existing reminder.
+  Future<void> setReminder({
+    required String reminder,
+    required String note,
+    required String fireAt,
+    required ReminderRepeat repeat,
+    required String timezone,
+  });
 
   /// Throw a note away, or take it back out of the trash.
   ///
@@ -766,6 +791,47 @@ class PendingJoinView {
           invite == other.invite &&
           name == other.name &&
           code == other.code;
+}
+
+/// How a reminder repeats, mirrored for Flutter rather than exposing a core
+/// type to the bridge.
+enum ReminderRepeat { never, daily, weekly, monthly, yearly }
+
+/// One personal reminder as Flutter sees it. The timestamp remains a decimal
+/// string so web builds never narrow a 64-bit Unix-millisecond value.
+class ReminderView {
+  final String id;
+  final String note;
+  final String fireAt;
+  final ReminderRepeat repeat;
+  final String timezone;
+
+  const ReminderView({
+    required this.id,
+    required this.note,
+    required this.fireAt,
+    required this.repeat,
+    required this.timezone,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      note.hashCode ^
+      fireAt.hashCode ^
+      repeat.hashCode ^
+      timezone.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReminderView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          note == other.note &&
+          fireAt == other.fireAt &&
+          repeat == other.repeat &&
+          timezone == other.timezone;
 }
 
 enum RequestStateView { pending, approved, declined }

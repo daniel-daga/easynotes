@@ -102,7 +102,7 @@
 //! colour a newer one set.
 
 use crate::error::Result;
-use crate::ids::{LabelId, NoteId};
+use crate::ids::{LabelId, NoteId, ReminderId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Keys that hold a placement field, a label's name, a membership, and a
@@ -114,6 +114,10 @@ const SETTING: &str = "s:";
 /// A note's key, so that this person's other devices can open the note and not
 /// merely store it. See the module docs.
 const NOTE_KEY: &str = "k:";
+/// A reminder's scalar fields. Reminders deliberately have no container: two
+/// devices may create or amend them at once, so they follow the account
+/// document's flat-register rule.
+const REMINDER: &str = "r:";
 /// A membership as it was stored before a label had an ID. Read, migrated and
 /// never written. See the module docs.
 const LEGACY_TAG: &str = "t:";
@@ -123,6 +127,10 @@ const PINNED: &str = "pinned";
 const ARCHIVED: &str = "archived";
 const TRASHED: &str = "trashed";
 const ORDER: &str = "order";
+const REMINDER_NOTE: &str = "note";
+const REMINDER_FIRE_AT: &str = "fire-at";
+const REMINDER_REPEAT: &str = "repeat";
+const REMINDER_TIMEZONE: &str = "timezone";
 
 /// Everything a backend has to be able to store. Deliberately two cases: the
 /// account document is registers, not structure, and keeping it that way is what
@@ -246,6 +254,56 @@ pub struct Placement {
     pub legacy_tags: BTreeSet<String>,
 }
 
+/// How a reminder repeats. The platform scheduler interprets its date and time
+/// in the reminder's IANA timezone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RepeatRule {
+    #[default]
+    Never,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+impl RepeatRule {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+            Self::Yearly => "yearly",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "never" => Some(Self::Never),
+            "daily" => Some(Self::Daily),
+            "weekly" => Some(Self::Weekly),
+            "monthly" => Some(Self::Monthly),
+            "yearly" => Some(Self::Yearly),
+            _ => None,
+        }
+    }
+}
+
+/// One complete reminder. An incomplete record is intentionally absent from
+/// [`AccountView::reminders`]: fields can arrive out of order from the relay,
+/// and scheduling a made-up time or note would be worse than waiting.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Reminder {
+    pub id: ReminderId,
+    pub note: NoteId,
+    /// Milliseconds since the Unix epoch, stored as a string scalar so it is
+    /// exact on the Dart/JavaScript boundary.
+    pub fire_at: i64,
+    pub repeat: RepeatRule,
+    /// IANA name, for example `Europe/Vienna`.
+    pub timezone: String,
+}
+
 impl Placement {
     /// Whether this note belongs in the main grid rather than in the archive or
     /// the trash. The trash wins over the archive: a note that was archived and
@@ -301,6 +359,9 @@ pub struct AccountView {
     /// Keep does the same, and the alternative — a label vanishing because
     /// somebody tidied up the one note that had it — is a thing to explain.
     pub labels: BTreeMap<LabelId, String>,
+    /// Complete reminders, by ID. They are private account data, never fields
+    /// on a shared note.
+    pub reminders: BTreeMap<ReminderId, Reminder>,
     /// View settings, by name. Typed accessors live on
     /// [`crate::note::NoteCore`]; the document itself keeps strings so that a
     /// setting added later needs no change here.
@@ -403,6 +464,18 @@ impl AccountView {
         });
         tags
     }
+
+    /// Every reminder on one note, in due-time then ID order.
+    pub fn reminders_on(&self, note: NoteId) -> Vec<Reminder> {
+        let mut reminders: Vec<_> = self
+            .reminders
+            .values()
+            .filter(|reminder| reminder.note == note)
+            .cloned()
+            .collect();
+        reminders.sort_by_key(|reminder| (reminder.fire_at, reminder.id));
+        reminders
+    }
 }
 
 /// One change to the account document.
@@ -480,6 +553,15 @@ pub enum AccountEdit {
         /// base64url, no padding: 43 characters for a 32-byte key.
         key: String,
     },
+    /// Create or amend all fields in one CRDT transaction. The individual
+    /// fields are registers so independent concurrent amendments survive.
+    SetReminder {
+        reminder: Reminder,
+    },
+    /// Delete every field belonging to one reminder.
+    ForgetReminder {
+        reminder: ReminderId,
+    },
     /// Drop everything this person ever said about one note, because the note
     /// itself is gone.
     ///
@@ -511,6 +593,8 @@ pub enum AccountEdit {
         /// Memberships the migration has not reached yet, named rather than
         /// pointed at. Empty on any device past its first launch on this build.
         legacy_tags: Vec<String>,
+        /// The variable-size reminder set associated with this note.
+        reminders: Vec<ReminderId>,
     },
 }
 
@@ -524,6 +608,10 @@ fn member_key(note: NoteId, label: LabelId) -> String {
 
 fn note_key_key(note: NoteId) -> String {
     format!("{NOTE_KEY}{}", note.encode())
+}
+
+fn reminder_key(reminder: ReminderId, field: &str) -> String {
+    format!("{REMINDER}{}:{field}", reminder.encode())
 }
 
 fn label_key(label: LabelId) -> String {
@@ -588,6 +676,33 @@ impl AccountEdit {
             AccountEdit::SetNoteKey { note, key } => {
                 vec![(note_key_key(*note), Some(Value::Str(key.clone())))]
             }
+            AccountEdit::SetReminder { reminder } => vec![
+                (
+                    reminder_key(reminder.id, REMINDER_NOTE),
+                    Some(Value::Str(reminder.note.encode())),
+                ),
+                (
+                    reminder_key(reminder.id, REMINDER_FIRE_AT),
+                    Some(Value::Str(reminder.fire_at.to_string())),
+                ),
+                (
+                    reminder_key(reminder.id, REMINDER_REPEAT),
+                    Some(Value::Str(reminder.repeat.name().to_string())),
+                ),
+                (
+                    reminder_key(reminder.id, REMINDER_TIMEZONE),
+                    Some(Value::Str(reminder.timezone.clone())),
+                ),
+            ],
+            AccountEdit::ForgetReminder { reminder } => [
+                REMINDER_NOTE,
+                REMINDER_FIRE_AT,
+                REMINDER_REPEAT,
+                REMINDER_TIMEZONE,
+            ]
+            .into_iter()
+            .map(|field| (reminder_key(*reminder, field), None))
+            .collect(),
             // The five fields are named rather than collected from whatever the
             // document happens to hold, so that forgetting a note is the same
             // five keys on a device that coloured it and on one that never did.
@@ -597,6 +712,7 @@ impl AccountEdit {
                 note,
                 tags,
                 legacy_tags,
+                reminders,
             } => [COLOUR, PINNED, ARCHIVED, TRASHED, ORDER]
                 .into_iter()
                 .map(|field| (placement_key(*note, field), None))
@@ -612,6 +728,16 @@ impl AccountEdit {
                         .iter()
                         .map(|tag| (legacy_tag_key(*note, tag), None)),
                 )
+                .chain(reminders.iter().flat_map(|reminder| {
+                    [
+                        REMINDER_NOTE,
+                        REMINDER_FIRE_AT,
+                        REMINDER_REPEAT,
+                        REMINDER_TIMEZONE,
+                    ]
+                    .into_iter()
+                    .map(move |field| (reminder_key(*reminder, field), None))
+                }))
                 .collect(),
         }
     }
@@ -759,7 +885,21 @@ pub fn encode_note_access(
 /// See [`note_keys_of`].
 pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountView {
     let mut view = AccountView::default();
+    let mut reminder_fields: BTreeMap<ReminderId, BTreeMap<String, String>> = BTreeMap::new();
     for (key, value) in entries {
+        if let Some(rest) = key.strip_prefix(REMINDER) {
+            let Some((id, field)) = rest.split_once(':') else {
+                continue;
+            };
+            let (Ok(id), Value::Str(value)) = (ReminderId::decode(id), value) else {
+                continue;
+            };
+            reminder_fields
+                .entry(id)
+                .or_default()
+                .insert(field.to_string(), value);
+            continue;
+        }
         if let Some(name) = key.strip_prefix(SETTING) {
             if let Value::Str(s) = value {
                 view.settings.insert(name.to_string(), s);
@@ -830,6 +970,43 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
             (ORDER, Value::Str(s)) => placement.order = s,
             _ => {}
         }
+    }
+    for (id, fields) in reminder_fields {
+        let Some(note) = fields
+            .get(REMINDER_NOTE)
+            .and_then(|value| NoteId::decode(value).ok())
+        else {
+            continue;
+        };
+        let Some(fire_at) = fields
+            .get(REMINDER_FIRE_AT)
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|value| *value >= 0)
+        else {
+            continue;
+        };
+        let Some(repeat) = fields
+            .get(REMINDER_REPEAT)
+            .and_then(|value| RepeatRule::from_name(value))
+        else {
+            continue;
+        };
+        let Some(timezone) = fields
+            .get(REMINDER_TIMEZONE)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        view.reminders.insert(
+            id,
+            Reminder {
+                id,
+                note,
+                fire_at,
+                repeat,
+                timezone: timezone.clone(),
+            },
+        );
     }
     view
 }
@@ -916,6 +1093,7 @@ mod tests {
             note,
             tags: Vec::new(),
             legacy_tags: Vec::new(),
+            reminders: Vec::new(),
         }
         .writes();
         // Whatever this person had set, and not only the fields they did set:
@@ -955,6 +1133,7 @@ mod tests {
             note,
             tags: vec![errands, shop],
             legacy_tags: Vec::new(),
+            reminders: Vec::new(),
         }
         .writes();
         assert_eq!(writes.len(), 8);

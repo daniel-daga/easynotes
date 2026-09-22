@@ -62,6 +62,7 @@ class FakeNoteLibrary implements NoteLibrary {
   final Map<String, FakeNoteCore> _cores = {};
   final Map<String, StreamSubscription<void>> _watchers = {};
   final Map<String, _Placement> _placements = {};
+  final Map<String, Reminder> _reminders = {};
 
   /// Every label this fake device has, by ID — the `l:<id>` half of the account
   /// document. A label lives here whether or not a note carries it, which is
@@ -70,6 +71,7 @@ class FakeNoteLibrary implements NoteLibrary {
   int _nextLabel = 1;
   NoteLayout _layout = NoteLayout.grid;
   int _counter = 0;
+  int _nextReminder = 1;
 
   /// Every call the screen made, in order. Tests assert on this to show that a
   /// gesture reached the library rather than only changing pixels.
@@ -92,6 +94,58 @@ class FakeNoteLibrary implements NoteLibrary {
   Stream<List<NoteSummary>> watchNotes() async* {
     yield _summaries;
     yield* _notes.stream;
+  }
+
+  @override
+  List<Reminder> get reminders {
+    final all = _reminders.values.toList()
+      ..sort((a, b) {
+        final due = a.fireAt.compareTo(b.fireAt);
+        return due != 0 ? due : a.id.compareTo(b.id);
+      });
+    return all;
+  }
+
+  @override
+  Stream<List<Reminder>> watchReminders() async* {
+    yield reminders;
+    await for (final _ in watchNotes()) {
+      yield reminders;
+    }
+  }
+
+  @override
+  Future<String> createReminder({
+    required String noteId,
+    required DateTime fireAt,
+    required ReminderRepeat repeat,
+    required String timezone,
+  }) async {
+    final id = 'reminder-${_nextReminder++}';
+    calls.add('createReminder($noteId, $id)');
+    _reminders[id] = Reminder(
+      id: id,
+      noteId: noteId,
+      fireAt: fireAt,
+      repeat: repeat,
+      timezone: timezone,
+    );
+    _emit();
+    return id;
+  }
+
+  @override
+  Future<void> setReminder(Reminder reminder) async {
+    calls.add('setReminder(${reminder.id})');
+    _reminders[reminder.id] = reminder;
+    _emit();
+  }
+
+  @override
+  Future<void> forgetReminder(String reminderId) async {
+    calls.add('forgetReminder($reminderId)');
+    _reminders.remove(reminderId);
+    _emit();
   }
 
   @override
@@ -462,6 +516,7 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   Future<void> forgetNote(String noteId) async {
     calls.add('forgetNote($noteId)');
+    _reminders.removeWhere((_, reminder) => reminder.noteId == noteId);
     _forget(noteId);
     _emit();
   }

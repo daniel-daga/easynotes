@@ -14,11 +14,14 @@
 /// therefore outlive the screen.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
+import '../core/reminder_scheduler.dart';
 import 'account_screen.dart';
 import 'invites.dart';
 import 'note_screen.dart';
@@ -245,6 +248,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
   }
 
+  /// The reminders attached to one note. They live in the library rather than
+  /// in the card because they are account-document data and may arrive from a
+  /// second device while this note is closed.
+  Future<void> _remindersFor(NoteSummary note) => showDialog<void>(
+    context: context,
+    builder: (context) => _RemindersDialog(library: widget.library, note: note),
+  );
+
   /// Show one label's notes, or go back to a shelf. Either way the drawer is the
   /// only way in, so it closes itself.
   void _show(_Where where) => setState(() => _where = where);
@@ -397,6 +408,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
         note: note,
         library: widget.library,
         onLabels: () => _labelsFor(note),
+        onReminders: () => _remindersFor(note),
         // Handed down rather than called from the sheet: the confirmation
         // outlives the sheet that asked for it, so it has to be shown with the
         // screen's context and not with one that is about to be popped.
@@ -992,6 +1004,7 @@ class _NoteActions extends StatelessWidget {
     required this.note,
     required this.library,
     required this.onLabels,
+    required this.onReminders,
     required this.onForget,
   });
 
@@ -1001,6 +1014,8 @@ class _NoteActions extends StatelessWidget {
   /// Ask the screen for the label dialog. Handed down for the reason [onForget]
   /// is: it outlives this sheet, which is popped before it opens.
   final Future<void> Function() onLabels;
+
+  final Future<void> Function() onReminders;
 
   /// Ask the screen to delete this note for good. Not `library.forgetNote`
   /// directly: it has to be confirmed first, and the confirmation is shown after
@@ -1016,99 +1031,343 @@ class _NoteActions extends StatelessWidget {
 
     return SafeArea(
       key: const Key('note-actions'),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            height: 64,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                _Swatch(
-                  colour: null,
-                  chosen: note.colour == null,
-                  onTap: () => run(() => library.setColour(note.id, null)),
-                ),
-                for (final colour in NoteColour.values)
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 64,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
                   _Swatch(
-                    colour: colour,
-                    chosen: note.colour == colour,
-                    onTap: () => run(() => library.setColour(note.id, colour)),
+                    colour: null,
+                    chosen: note.colour == null,
+                    onTap: () => run(() => library.setColour(note.id, null)),
                   ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          if (!note.trashed)
-            ListTile(
-              key: const Key('action-pin'),
-              leading: Icon(
-                note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-              ),
-              title: Text(note.pinned ? 'Unpin' : 'Pin'),
-              onTap: () => run(() => library.setPinned(note.id, !note.pinned)),
-            ),
-          if (!note.trashed)
-            ListTile(
-              key: const Key('action-labels'),
-              leading: const Icon(Icons.label_outline),
-              title: const Text('Labels'),
-              subtitle: note.tags.isEmpty
-                  ? null
-                  : Text(
-                      [for (final tag in note.tags) tag.name].join(', '),
-                      maxLines: 1,
+                  for (final colour in NoteColour.values)
+                    _Swatch(
+                      colour: colour,
+                      chosen: note.colour == colour,
+                      onTap: () =>
+                          run(() => library.setColour(note.id, colour)),
                     ),
-              onTap: () => run(onLabels),
-            ),
-          if (!note.trashed)
-            ListTile(
-              key: const Key('action-archive'),
-              leading: Icon(
-                note.archived
-                    ? Icons.unarchive_outlined
-                    : Icons.archive_outlined,
+                ],
               ),
-              title: Text(note.archived ? 'Unarchive' : 'Archive'),
+            ),
+            const Divider(height: 1),
+            if (!note.trashed)
+              ListTile(
+                key: const Key('action-pin'),
+                leading: Icon(
+                  note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                ),
+                title: Text(note.pinned ? 'Unpin' : 'Pin'),
+                onTap: () =>
+                    run(() => library.setPinned(note.id, !note.pinned)),
+              ),
+            if (!note.trashed)
+              ListTile(
+                key: const Key('action-labels'),
+                leading: const Icon(Icons.label_outline),
+                title: const Text('Labels'),
+                subtitle: note.tags.isEmpty
+                    ? null
+                    : Text(
+                        [for (final tag in note.tags) tag.name].join(', '),
+                        maxLines: 1,
+                      ),
+                onTap: () => run(onLabels),
+              ),
+            if (!note.trashed)
+              ListTile(
+                key: const Key('action-reminders'),
+                leading: const Icon(Icons.notifications_outlined),
+                title: const Text('Reminders'),
+                onTap: () => run(onReminders),
+              ),
+            if (!note.trashed)
+              ListTile(
+                key: const Key('action-archive'),
+                leading: Icon(
+                  note.archived
+                      ? Icons.unarchive_outlined
+                      : Icons.archive_outlined,
+                ),
+                title: Text(note.archived ? 'Unarchive' : 'Archive'),
+                onTap: () =>
+                    run(() => library.setArchived(note.id, !note.archived)),
+              ),
+            ListTile(
+              key: const Key('action-trash'),
+              leading: Icon(
+                note.trashed ? Icons.restore_from_trash : Icons.delete_outline,
+              ),
+              title: Text(note.trashed ? 'Restore' : 'Move to trash'),
+              // Nothing is deleted: the note stays on the device and keeps
+              // syncing, and what changes is that this person stops seeing it.
+              subtitle: note.trashed
+                  ? null
+                  : const Text('Kept, and out of the grid'),
               onTap: () =>
-                  run(() => library.setArchived(note.id, !note.archived)),
+                  run(() => library.setTrashed(note.id, !note.trashed)),
             ),
-          ListTile(
-            key: const Key('action-trash'),
-            leading: Icon(
-              note.trashed ? Icons.restore_from_trash : Icons.delete_outline,
-            ),
-            title: Text(note.trashed ? 'Restore' : 'Move to trash'),
-            // Nothing is deleted: the note stays on the device and keeps
-            // syncing, and what changes is that this person stops seeing it.
-            subtitle: note.trashed
-                ? null
-                : const Text('Kept, and out of the grid'),
-            onTap: () => run(() => library.setTrashed(note.id, !note.trashed)),
-          ),
-          // Only from the trash. Throwing a note away and deleting it for good
-          // are one gesture apart everywhere else, and one of them cannot be
-          // taken back — so the reversible one has to happen first.
-          if (note.trashed)
-            ListTile(
-              key: const Key('action-delete-forever'),
-              leading: Icon(
-                Icons.delete_forever_outlined,
-                color: Theme.of(context).colorScheme.error,
+            // Only from the trash. Throwing a note away and deleting it for good
+            // are one gesture apart everywhere else, and one of them cannot be
+            // taken back — so the reversible one has to happen first.
+            if (note.trashed)
+              ListTile(
+                key: const Key('action-delete-forever'),
+                leading: Icon(
+                  Icons.delete_forever_outlined,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                title: Text(
+                  'Delete for good',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                subtitle: const Text('Gone from this device, with no undo'),
+                onTap: () => run(onForget),
               ),
-              title: Text(
-                'Delete for good',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-              subtitle: const Text('Gone from this device, with no undo'),
-              onTap: () => run(onForget),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
+
+/// The small editor behind the note action. It deliberately uses the platform
+/// date and time pickers: reminder entry is a calendar operation, and text
+/// fields make an invalid date easier to enter than a valid one.
+class _RemindersDialog extends StatefulWidget {
+  const _RemindersDialog({required this.library, required this.note});
+
+  final NoteLibrary library;
+  final NoteSummary note;
+
+  @override
+  State<_RemindersDialog> createState() => _RemindersDialogState();
+}
+
+class _RemindersDialogState extends State<_RemindersDialog> {
+  List<Reminder> get _reminders => [
+    for (final reminder in widget.library.reminders)
+      if (reminder.noteId == widget.note.id) reminder,
+  ];
+
+  Future<void> _edit([Reminder? reminder]) async {
+    final draft = await showDialog<_ReminderDraft>(
+      context: context,
+      builder: (context) => _ReminderEditor(reminder: reminder),
+    );
+    if (draft == null || !mounted) return;
+    // Permission is asked by the initiating gesture, never as a surprise when
+    // an account update arrives from somebody's other device. A refusal does
+    // not abort the write: it is still valuable on the next device or after
+    // the person enables notifications in Settings.
+    unawaited(ReminderScheduler.instance?.requestPermission().then((_) {}));
+    final timezone = reminder?.timezone ?? await deviceTimezone();
+    final saved = Reminder(
+      id: reminder?.id ?? '',
+      noteId: widget.note.id,
+      fireAt: draft.when.toUtc(),
+      repeat: draft.repeat,
+      timezone: timezone,
+    );
+    if (reminder == null) {
+      await widget.library.createReminder(
+        noteId: saved.noteId,
+        fireAt: saved.fireAt,
+        repeat: saved.repeat,
+        timezone: saved.timezone,
+      );
+    } else {
+      await widget.library.setReminder(saved);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _delete(Reminder reminder) async {
+    await widget.library.forgetReminder(reminder.id);
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final localizations = MaterialLocalizations.of(context);
+    final reminders = _reminders;
+    return AlertDialog(
+      key: const Key('reminders-dialog'),
+      title: const Text('Reminders'),
+      content: SizedBox(
+        width: 360,
+        child: reminders.isEmpty
+            ? const Text('No reminders for this note.')
+            : ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final reminder in reminders)
+                    ListTile(
+                      key: Key('reminder-${reminder.id}'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        '${localizations.formatFullDate(reminder.fireAt.toLocal())} '
+                        '${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(reminder.fireAt.toLocal()))}',
+                      ),
+                      subtitle: Text(_repeatLabel(reminder.repeat)),
+                      onTap: () => _edit(reminder),
+                      trailing: IconButton(
+                        key: Key('forget-reminder-${reminder.id}'),
+                        icon: const Icon(Icons.delete_outline),
+                        tooltip: 'Delete reminder',
+                        onPressed: () => _delete(reminder),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+      actions: [
+        TextButton(
+          key: const Key('close-reminders'),
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          key: const Key('add-reminder'),
+          onPressed: _edit,
+          icon: const Icon(Icons.add_alert_outlined),
+          label: const Text('Add reminder'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReminderDraft {
+  const _ReminderDraft({required this.when, required this.repeat});
+
+  final DateTime when;
+  final ReminderRepeat repeat;
+}
+
+class _ReminderEditor extends StatefulWidget {
+  const _ReminderEditor({this.reminder});
+
+  final Reminder? reminder;
+
+  @override
+  State<_ReminderEditor> createState() => _ReminderEditorState();
+}
+
+class _ReminderEditorState extends State<_ReminderEditor> {
+  late DateTime _when = (widget.reminder?.fireAt.toLocal() ?? DateTime.now())
+      .add(widget.reminder == null ? const Duration(hours: 1) : Duration.zero);
+  late ReminderRepeat _repeat = widget.reminder?.repeat ?? ReminderRepeat.never;
+
+  Future<void> _date() async {
+    final chosen = await showDatePicker(
+      context: context,
+      initialDate: _when,
+      firstDate: DateTime.now().subtract(const Duration(days: 1)),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
+    );
+    if (chosen != null && mounted) {
+      setState(
+        () => _when = DateTime(
+          chosen.year,
+          chosen.month,
+          chosen.day,
+          _when.hour,
+          _when.minute,
+        ),
+      );
+    }
+  }
+
+  Future<void> _time() async {
+    final chosen = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_when),
+    );
+    if (chosen != null && mounted) {
+      setState(
+        () => _when = DateTime(
+          _when.year,
+          _when.month,
+          _when.day,
+          chosen.hour,
+          chosen.minute,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final localizations = MaterialLocalizations.of(context);
+    return AlertDialog(
+      key: const Key('reminder-editor'),
+      title: Text(widget.reminder == null ? 'Add reminder' : 'Edit reminder'),
+      scrollable: true,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            key: const Key('reminder-date'),
+            leading: const Icon(Icons.calendar_today_outlined),
+            title: Text(localizations.formatFullDate(_when)),
+            onTap: _date,
+          ),
+          ListTile(
+            key: const Key('reminder-time'),
+            leading: const Icon(Icons.schedule_outlined),
+            title: Text(
+              localizations.formatTimeOfDay(TimeOfDay.fromDateTime(_when)),
+            ),
+            onTap: _time,
+          ),
+          DropdownButtonFormField<ReminderRepeat>(
+            key: const Key('reminder-repeat'),
+            initialValue: _repeat,
+            decoration: const InputDecoration(labelText: 'Repeat'),
+            items: [
+              for (final repeat in ReminderRepeat.values)
+                DropdownMenuItem(
+                  value: repeat,
+                  child: Text(_repeatLabel(repeat)),
+                ),
+            ],
+            onChanged: (repeat) {
+              if (repeat != null) setState(() => _repeat = repeat);
+            },
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('save-reminder'),
+          onPressed: () => Navigator.of(
+            context,
+          ).pop(_ReminderDraft(when: _when, repeat: _repeat)),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+String _repeatLabel(ReminderRepeat repeat) => switch (repeat) {
+  ReminderRepeat.never => 'Does not repeat',
+  ReminderRepeat.daily => 'Daily',
+  ReminderRepeat.weekly => 'Weekly',
+  ReminderRepeat.monthly => 'Monthly',
+  ReminderRepeat.yearly => 'Yearly',
+};
 
 class _Swatch extends StatelessWidget {
   const _Swatch({

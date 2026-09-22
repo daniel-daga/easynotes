@@ -140,6 +140,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<ReminderView> dco_decode_list_reminder_view(dynamic raw);
+
+  @protected
   List<SearchHitView> dco_decode_list_search_hit_view(dynamic raw);
 
   @protected
@@ -180,6 +183,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PendingJoinView dco_decode_pending_join_view(dynamic raw);
+
+  @protected
+  ReminderRepeat dco_decode_reminder_repeat(dynamic raw);
+
+  @protected
+  ReminderView dco_decode_reminder_view(dynamic raw);
 
   @protected
   RequestStateView dco_decode_request_state_view(dynamic raw);
@@ -350,6 +359,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<ReminderView> sse_decode_list_reminder_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SearchHitView> sse_decode_list_search_hit_view(
     SseDeserializer deserializer,
   );
@@ -398,6 +412,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PendingJoinView sse_decode_pending_join_view(SseDeserializer deserializer);
+
+  @protected
+  ReminderRepeat sse_decode_reminder_repeat(SseDeserializer deserializer);
+
+  @protected
+  ReminderView sse_decode_reminder_view(SseDeserializer deserializer);
 
   @protected
   RequestStateView sse_decode_request_state_view(SseDeserializer deserializer);
@@ -598,6 +618,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_reminder_view(
+    List<ReminderView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_search_hit_view(
     List<SearchHitView> self,
     SseSerializer serializer,
@@ -662,6 +688,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     PendingJoinView self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_reminder_repeat(
+    ReminderRepeat self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_reminder_view(ReminderView self, SseSerializer serializer);
 
   @protected
   void sse_encode_request_state_view(

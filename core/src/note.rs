@@ -18,7 +18,7 @@ use crate::crdt::{
 };
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, EnvelopeKind, NoteKey};
 use crate::error::{CoreError, Result};
-use crate::ids::{ItemId, LabelId, NoteId};
+use crate::ids::{ItemId, LabelId, NoteId, ReminderId};
 use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
@@ -1246,6 +1246,67 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.placements.label_name(label)
     }
 
+    /// Every complete reminder this person has, ordered by its next stored due
+    /// time. The platform owns scheduling; the core owns the encrypted source
+    /// of truth that every one of this person's devices converges on.
+    pub fn reminders(&self) -> Vec<account::Reminder> {
+        let mut reminders: Vec<_> = self.placements.reminders.values().cloned().collect();
+        reminders.sort_by_key(|reminder| (reminder.fire_at, reminder.id));
+        reminders
+    }
+
+    /// Every reminder attached to one note.
+    pub fn reminders_on(&self, note: NoteId) -> Vec<account::Reminder> {
+        self.placements.reminders_on(note)
+    }
+
+    /// Make one reminder. Its random identity makes a second reminder on the
+    /// same note independent rather than a last-writer-wins replacement.
+    pub fn create_reminder(
+        &mut self,
+        note: NoteId,
+        fire_at: i64,
+        repeat: account::RepeatRule,
+        timezone: String,
+    ) -> Result<ReminderId> {
+        let reminder = ReminderId::random();
+        self.set_reminder(reminder, note, fire_at, repeat, timezone)?;
+        Ok(reminder)
+    }
+
+    /// Change a reminder's complete local value. It is sealed as one account
+    /// update, while the CRDT still keeps the individual fields independent
+    /// when another device changes a different field concurrently.
+    pub fn set_reminder(
+        &mut self,
+        id: ReminderId,
+        note: NoteId,
+        fire_at: i64,
+        repeat: account::RepeatRule,
+        timezone: String,
+    ) -> Result<()> {
+        if fire_at < 0 || timezone.trim().is_empty() {
+            return Err(CoreError::UnknownNote(
+                "a reminder needs a time and timezone".into(),
+            ));
+        }
+        self.apply_account(AccountEdit::SetReminder {
+            reminder: account::Reminder {
+                id,
+                note,
+                fire_at,
+                repeat,
+                timezone,
+            },
+        })
+    }
+
+    /// Remove one reminder. It is not an error if a remote delete got there
+    /// first; the CRDT write simply has nothing left to change.
+    pub fn forget_reminder(&mut self, id: ReminderId) -> Result<()> {
+        self.apply_account(AccountEdit::ForgetReminder { reminder: id })
+    }
+
     /// Put a label on a note, and return the label it went on under.
     ///
     /// `None` for something that is not a name at all — whitespace, or nothing.
@@ -1552,10 +1613,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let placement = self.placement(id);
         let tags = placement.tags.into_iter().collect();
         let legacy_tags = placement.legacy_tags.into_iter().collect();
+        let reminders = self
+            .placements
+            .reminders_on(id)
+            .into_iter()
+            .map(|reminder| reminder.id)
+            .collect();
         self.apply_account(AccountEdit::ForgetNote {
             note: id,
             tags,
             legacy_tags,
+            reminders,
         })?;
         // `apply_account` refreshes the list, but only when it had something to
         // write: a note nobody ever coloured, pinned or ordered produces an empty

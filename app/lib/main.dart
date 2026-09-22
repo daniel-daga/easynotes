@@ -1,6 +1,8 @@
 /// A device's notes, backed by the Rust core, synced through a relay.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -8,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'core/browser_store.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
+import 'core/reminder_scheduler.dart';
 import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
 import 'ui/note_list_screen.dart';
@@ -101,16 +104,23 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   /// three are `hidden` to Flutter, and it is the last state the app is sure
   /// to reach with its sockets still up.
   late final AppLifecycleListener _lifecycle;
+  late final ReminderScheduler _reminders;
 
   @override
   void initState() {
     super.initState();
-    _lifecycle = AppLifecycleListener(onHide: widget.library.sendHeldEdits);
+    _reminders = ReminderScheduler(widget.library);
+    unawaited(_reminders.start());
+    _lifecycle = AppLifecycleListener(
+      onHide: widget.library.sendHeldEdits,
+      onResume: () => unawaited(_reminders.reconcile()),
+    );
   }
 
   @override
   void dispose() {
     _lifecycle.dispose();
+    unawaited(_reminders.dispose());
     super.dispose();
   }
 

@@ -7,7 +7,7 @@
 //! existed keeps them where they were.
 
 use easynotes_core::crdt::account::{AccountDoc, AccountEdit, Value};
-use easynotes_core::crdt::{Colour, Layout, NoteDoc};
+use easynotes_core::crdt::{Colour, Layout, NoteDoc, RepeatRule};
 use easynotes_core::crypto::{Envelope, MasterKey};
 use easynotes_core::ids::{LabelId, NoteId};
 use easynotes_core::note::{
@@ -121,6 +121,27 @@ fn a_colour_and_a_pin_come_back_on_the_summary<D: NoteDoc>() {
     assert_eq!(notes[0].placement.colour, Some(Colour::Yellow));
     assert!(notes[0].placement.pinned);
     assert!(notes[0].placement.in_grid());
+}
+
+/// Reminders are private account state too: setting one must not append a
+/// plaintext-or-ciphertext operation to the shared note's document.
+fn a_reminder_lives_only_in_the_account_document<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let note = core.create_note(NoteKind::Checklist).unwrap();
+    let before = core.store().load(note).unwrap().len();
+    let reminder = core
+        .create_reminder(
+            note,
+            1_800_000_000_000,
+            RepeatRule::Weekly,
+            "Europe/Vienna".into(),
+        )
+        .unwrap();
+
+    assert_eq!(core.store().load(note).unwrap().len(), before);
+    assert_eq!(core.reminders_on(note).len(), 1);
+    assert_eq!(core.reminders_on(note)[0].id, reminder);
+    assert!(!core.store().load(ACCOUNT_DOC).unwrap().is_empty());
 }
 
 fn clearing_a_colour_leaves_no_colour<D: NoteDoc>() {
@@ -1067,6 +1088,54 @@ fn two_devices_keep_both_placements<D: NoteDoc>() {
     assert_eq!(phone.view(), laptop.view());
 }
 
+/// The reminder equivalent of a label membership: two independent reminder IDs
+/// are four independent flat-map keys each, so neither device overwrites the
+/// other while offline.
+fn two_devices_keep_both_reminders<D: NoteDoc>() {
+    let note = NoteId::random();
+    let first = easynotes_core::ids::ReminderId::random();
+    let second = easynotes_core::ids::ReminderId::random();
+    let mut phone = <D::Account as AccountDoc>::create(&[1u8; 16]);
+    let mut laptop = <D::Account as AccountDoc>::create(&[2u8; 16]);
+
+    let one = phone
+        .apply_local(&AccountEdit::SetReminder {
+            reminder: easynotes_core::crdt::Reminder {
+                id: first,
+                note,
+                fire_at: 1_800_000_000_000,
+                repeat: RepeatRule::Never,
+                timezone: "Europe/Vienna".into(),
+            },
+        })
+        .unwrap();
+    let two = laptop
+        .apply_local(&AccountEdit::SetReminder {
+            reminder: easynotes_core::crdt::Reminder {
+                id: second,
+                note,
+                fire_at: 1_800_000_100_000,
+                repeat: RepeatRule::Daily,
+                timezone: "Europe/Vienna".into(),
+            },
+        })
+        .unwrap();
+
+    phone.apply_remote(&two).unwrap();
+    laptop.apply_remote(&one).unwrap();
+    assert_eq!(phone.view().reminders_on(note).len(), 2);
+    assert_eq!(phone.view(), laptop.view());
+}
+
+fn forgetting_a_note_takes_its_reminders_with_it<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let note = core.create_note(NoteKind::Checklist).unwrap();
+    core.create_reminder(note, 1_800_000_000_000, RepeatRule::Never, "UTC".into())
+        .unwrap();
+    core.forget_note(note).unwrap();
+    assert!(core.reminders_on(note).is_empty());
+}
+
 /// A snapshot is the whole document, and reloading one is how a compacted
 /// account document would come back.
 fn a_snapshot_reloads_to_the_same_document<D: NoteDoc>() {
@@ -1365,6 +1434,10 @@ macro_rules! backend_suite {
                 super::a_colour_and_a_pin_come_back_on_the_summary::<$backend>()
             }
             #[test]
+            fn a_reminder_lives_only_in_the_account_document() {
+                super::a_reminder_lives_only_in_the_account_document::<$backend>()
+            }
+            #[test]
             fn clearing_a_colour_leaves_no_colour() {
                 super::clearing_a_colour_leaves_no_colour::<$backend>()
             }
@@ -1491,6 +1564,14 @@ macro_rules! backend_suite {
             #[test]
             fn two_devices_keep_both_placements() {
                 super::two_devices_keep_both_placements::<$backend>()
+            }
+            #[test]
+            fn two_devices_keep_both_reminders() {
+                super::two_devices_keep_both_reminders::<$backend>()
+            }
+            #[test]
+            fn forgetting_a_note_takes_its_reminders_with_it() {
+                super::forgetting_a_note_takes_its_reminders_with_it::<$backend>()
             }
             #[test]
             fn a_snapshot_reloads_to_the_same_document() {

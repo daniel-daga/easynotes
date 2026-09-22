@@ -44,6 +44,44 @@ enum NoteColour {
 /// a personal one: it lives in the account document beside the colours.
 enum NoteLayout { grid, list }
 
+/// How a personal reminder repeats. The selected date and time stay in the
+/// reminder's timezone, so a daily 09:00 reminder remains 09:00 across a DST
+/// change rather than drifting by an hour.
+enum ReminderRepeat { never, daily, weekly, monthly, yearly }
+
+/// One encrypted account-document reminder, as the Flutter app consumes it.
+///
+/// Reminders are intentionally separate from [NoteSummary]: a card stays cheap
+/// to draw, while a device-level scheduler receives every reminder at once.
+@immutable
+class Reminder {
+  const Reminder({
+    required this.id,
+    required this.noteId,
+    required this.fireAt,
+    required this.repeat,
+    required this.timezone,
+  });
+
+  final String id;
+  final String noteId;
+  final DateTime fireAt;
+  final ReminderRepeat repeat;
+  final String timezone;
+
+  @override
+  bool operator ==(Object other) =>
+      other is Reminder &&
+      other.id == id &&
+      other.noteId == noteId &&
+      other.fireAt == fireAt &&
+      other.repeat == repeat &&
+      other.timezone == timezone;
+
+  @override
+  int get hashCode => Object.hash(id, noteId, fireAt, repeat, timezone);
+}
+
 /// The longest a label may be.
 ///
 /// The same number the core cuts a name at (`MAX_TAG_LEN` in
@@ -250,6 +288,33 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   /// The list now, and every version of it after that. Emits immediately.
   Stream<List<NoteSummary>> watchNotes();
+
+  /// Every personal reminder now, and whenever the account document changes.
+  /// The account document's existing note-list stream is the invalidation path
+  /// for a remote reminder too, so there is no local scheduler state that can
+  /// drift from encrypted reminder truth.
+  List<Reminder> get reminders;
+
+  Stream<List<Reminder>> watchReminders() async* {
+    yield reminders;
+    await for (final _ in watchNotes()) {
+      yield reminders;
+    }
+  }
+
+  /// Make one reminder for [noteId] and return its stable account-document ID.
+  Future<String> createReminder({
+    required String noteId,
+    required DateTime fireAt,
+    required ReminderRepeat repeat,
+    required String timezone,
+  });
+
+  /// Amend a reminder without affecting other reminders on the same note.
+  Future<void> setReminder(Reminder reminder);
+
+  /// Delete one reminder.
+  Future<void> forgetReminder(String reminderId);
 
   /// Make a new, empty note of [kind] and return its ID.
   Future<String> createNote({NoteKind kind = NoteKind.checklist});

@@ -78,3 +78,7 @@ id_type!(InviteId, "InviteId");
 // land on the renamed label instead of making a new one. Identity has to
 // survive the name changing, which means it cannot be made of the name.
 id_type!(LabelId, "LabelId");
+
+// A reminder is not identified by its note: one note may have several of
+// them, and an ID lets one be edited or removed without rewriting the others.
+id_type!(ReminderId, "ReminderId");

@@ -41,6 +41,9 @@ dependencies:
   # Where the master key lives: Keystore on Android, the Keychain on iOS and
   # macOS, libsecret on Linux, DPAPI on Windows. See lib/core/master_key.dart.
   flutter_secure_storage: ^11.2.0
+  flutter_local_notifications: ^22.3.1
+  flutter_timezone: ^5.0.2
+  timezone: ^0.11.1
   web: ^1.1.1
 
 dev_dependencies:

@@ -157,6 +157,45 @@ class RustNoteLibrary implements NoteLibrary {
   }
 
   @override
+  List<Reminder> get reminders => [
+    for (final reminder in _library.reminders()) _toReminder(reminder),
+  ];
+
+  @override
+  Stream<List<Reminder>> watchReminders() async* {
+    yield reminders;
+    await for (final _ in watchNotes()) {
+      yield reminders;
+    }
+  }
+
+  @override
+  Future<String> createReminder({
+    required String noteId,
+    required DateTime fireAt,
+    required ReminderRepeat repeat,
+    required String timezone,
+  }) => _library.createReminder(
+    note: noteId,
+    fireAt: fireAt.millisecondsSinceEpoch.toString(),
+    repeat: _toRustRepeat(repeat),
+    timezone: timezone,
+  );
+
+  @override
+  Future<void> setReminder(Reminder reminder) => _library.setReminder(
+    reminder: reminder.id,
+    note: reminder.noteId,
+    fireAt: reminder.fireAt.millisecondsSinceEpoch.toString(),
+    repeat: _toRustRepeat(reminder.repeat),
+    timezone: reminder.timezone,
+  );
+
+  @override
+  Future<void> forgetReminder(String reminderId) =>
+      _library.forgetReminder(reminder: reminderId);
+
+  @override
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) =>
       _library.createNote(kind: RustNoteCore.toRustKind(kind));
 
@@ -459,6 +498,32 @@ class RustNoteLibrary implements NoteLibrary {
     trashed: s.trashed,
     tags: [for (final tag in s.tags) Label(id: tag.id, name: tag.name)],
   );
+
+  static Reminder _toReminder(rust.ReminderView reminder) => Reminder(
+    id: reminder.id,
+    noteId: reminder.note,
+    fireAt: DateTime.fromMillisecondsSinceEpoch(
+      int.parse(reminder.fireAt),
+      isUtc: true,
+    ),
+    repeat: switch (reminder.repeat) {
+      rust.ReminderRepeat.never => ReminderRepeat.never,
+      rust.ReminderRepeat.daily => ReminderRepeat.daily,
+      rust.ReminderRepeat.weekly => ReminderRepeat.weekly,
+      rust.ReminderRepeat.monthly => ReminderRepeat.monthly,
+      rust.ReminderRepeat.yearly => ReminderRepeat.yearly,
+    },
+    timezone: reminder.timezone,
+  );
+
+  static rust.ReminderRepeat _toRustRepeat(ReminderRepeat repeat) =>
+      switch (repeat) {
+        ReminderRepeat.never => rust.ReminderRepeat.never,
+        ReminderRepeat.daily => rust.ReminderRepeat.daily,
+        ReminderRepeat.weekly => rust.ReminderRepeat.weekly,
+        ReminderRepeat.monthly => rust.ReminderRepeat.monthly,
+        ReminderRepeat.yearly => rust.ReminderRepeat.yearly,
+      };
 
   /// The two palettes are the same list in two places, which is what keeps the
   /// UI from importing anything generated. A colour the Rust side adds and this

@@ -17,8 +17,8 @@
 use crate::frb_generated::StreamSink;
 use crate::relay::{on_network, Connection, Device};
 use crate::storage::{Pending, Queue};
-use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout};
-use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId};
+use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout, RepeatRule};
+use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId, ReminderId};
 use easynotes_core::invite::{GuestKey, InviteSecret};
 use easynotes_core::note::{NoteCore, NoteKind, OutgoingInvite, PendingJoin};
 use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
@@ -185,6 +185,63 @@ pub struct TagView {
     pub id: String,
     pub name: String,
     pub notes: u32,
+}
+
+/// How a reminder repeats, mirrored for Flutter rather than exposing a core
+/// type to the bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReminderRepeat {
+    Never,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+impl From<RepeatRule> for ReminderRepeat {
+    fn from(repeat: RepeatRule) -> Self {
+        match repeat {
+            RepeatRule::Never => Self::Never,
+            RepeatRule::Daily => Self::Daily,
+            RepeatRule::Weekly => Self::Weekly,
+            RepeatRule::Monthly => Self::Monthly,
+            RepeatRule::Yearly => Self::Yearly,
+        }
+    }
+}
+
+impl From<ReminderRepeat> for RepeatRule {
+    fn from(repeat: ReminderRepeat) -> Self {
+        match repeat {
+            ReminderRepeat::Never => Self::Never,
+            ReminderRepeat::Daily => Self::Daily,
+            ReminderRepeat::Weekly => Self::Weekly,
+            ReminderRepeat::Monthly => Self::Monthly,
+            ReminderRepeat::Yearly => Self::Yearly,
+        }
+    }
+}
+
+/// One personal reminder as Flutter sees it. The timestamp remains a decimal
+/// string so web builds never narrow a 64-bit Unix-millisecond value.
+pub struct ReminderView {
+    pub id: String,
+    pub note: String,
+    pub fire_at: String,
+    pub repeat: ReminderRepeat,
+    pub timezone: String,
+}
+
+impl From<easynotes_core::crdt::Reminder> for ReminderView {
+    fn from(reminder: easynotes_core::crdt::Reminder) -> Self {
+        Self {
+            id: reminder.id.encode(),
+            note: reminder.note.encode(),
+            fire_at: reminder.fire_at.to_string(),
+            repeat: reminder.repeat.into(),
+            timezone: reminder.timezone,
+        }
+    }
 }
 
 /// One note a search found, and the line it was found on.
@@ -1020,6 +1077,17 @@ fn label_id(s: &str) -> Result<LabelId, String> {
     LabelId::decode(s).map_err(|e| e.to_string())
 }
 
+fn reminder_id(s: &str) -> Result<ReminderId, String> {
+    ReminderId::decode(s).map_err(|e| e.to_string())
+}
+
+fn reminder_time(s: &str) -> Result<i64, String> {
+    s.parse::<i64>()
+        .ok()
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| "a reminder needs a valid time".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Invites
 // ---------------------------------------------------------------------------
@@ -1573,6 +1641,65 @@ impl Library {
                 notes: notes as u32,
             })
             .collect())
+    }
+
+    /// Every reminder this device has decrypted from its account document.
+    /// `watch_notes` is also its invalidation stream for local and remote
+    /// account edits, so a scheduler does not need a second Rust watcher.
+    #[frb(sync)]
+    pub fn reminders(&self) -> Result<Vec<ReminderView>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .reminders()
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Make a new reminder and return its stable ID.
+    pub fn create_reminder(
+        &self,
+        note: String,
+        fire_at: String,
+        repeat: ReminderRepeat,
+        timezone: String,
+    ) -> Result<String, String> {
+        let note = note_id(&note)?;
+        let fire_at = reminder_time(&fire_at)?;
+        Ok(self
+            .shared
+            .locked()?
+            .create_reminder(note, fire_at, repeat.into(), timezone)
+            .map_err(|e| e.to_string())?
+            .encode())
+    }
+
+    /// Update an existing reminder.
+    pub fn set_reminder(
+        &self,
+        reminder: String,
+        note: String,
+        fire_at: String,
+        repeat: ReminderRepeat,
+        timezone: String,
+    ) -> Result<(), String> {
+        let reminder = reminder_id(&reminder)?;
+        let note = note_id(&note)?;
+        let fire_at = reminder_time(&fire_at)?;
+        self.shared
+            .locked()?
+            .set_reminder(reminder, note, fire_at, repeat.into(), timezone)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Remove one reminder without touching any other reminder on its note.
+    pub fn forget_reminder(&self, reminder: String) -> Result<(), String> {
+        let reminder = reminder_id(&reminder)?;
+        self.shared
+            .locked()?
+            .forget_reminder(reminder)
+            .map_err(|e| e.to_string())
     }
 
     /// Put a label on a note, and return the label it went on under.

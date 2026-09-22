@@ -32,7 +32,9 @@ pub mod yrs_account;
 #[cfg(feature = "yrs-backend")]
 pub mod yrs_doc;
 
-pub use account::{AccountDoc, AccountEdit, AccountView, Colour, Layout, Placement};
+pub use account::{
+    AccountDoc, AccountEdit, AccountView, Colour, Layout, Placement, Reminder, RepeatRule,
+};
 
 #[cfg(feature = "automerge-backend")]
 pub use automerge_account::AutomergeAccount;
