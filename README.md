@@ -111,8 +111,9 @@ against both CRDT backends: two devices adopted from one phrase agree about a
 note's contents *and* about its placement. What is not built yet is the wiring —
 nothing subscribes to the account document over a relay, and the app has no
 screen for any of it, which includes the forced backup check that makes somebody
-write the phrase down while it still exists. Reminders are the rest of that
-document's remit and are not built.
+write the phrase down while it still exists. Reminders now complete the first
+local account-document feature beyond placement: they sync as private account
+state and schedule locally, with push wake-ups deliberately deferred.
 
 Android and iOS have still never been built — that is the largest open gap, two
 slices old now, and the next thing to do on a machine that has an Android SDK
