@@ -52,6 +52,23 @@ enum _Shelf {
   };
 }
 
+enum _ReminderFilter { hasReminder, noReminder }
+
+extension _ToggleSet<T> on Set<T> {
+  void toggle(T value) {
+    if (!remove(value)) add(value);
+  }
+}
+
+String _kindName(NoteKind kind) => switch (kind) {
+  NoteKind.text => 'Text',
+  NoteKind.checklist => 'Checklist',
+};
+
+String _colourName(String value) => value == 'none'
+    ? 'No color'
+    : '${value[0].toUpperCase()}${value.substring(1)}';
+
 /// What the screen is showing: one of the three shelves, or one label.
 ///
 /// A label is a fourth shelf rather than a filter inside the other three. That
@@ -135,7 +152,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// body is rebuilt from it and a controller is not a source of truth.
   final _search = TextEditingController();
   bool _searching = false;
+  bool _showFilters = true;
   String _query = '';
+  final Set<NoteKind> _kindFilters = {};
+  final Set<String> _tagFilters = {};
+  final Set<String> _colourFilters = {};
+  final Set<_ReminderFilter> _reminderFilters = {};
+
+  bool get _hasFilters =>
+      _kindFilters.isNotEmpty ||
+      _tagFilters.isNotEmpty ||
+      _colourFilters.isNotEmpty ||
+      _reminderFilters.isNotEmpty;
 
   @override
   void dispose() {
@@ -143,15 +171,84 @@ class _NoteListScreenState extends State<NoteListScreen> {
     super.dispose();
   }
 
-  void _openSearch() => setState(() => _searching = true);
+  void _openSearch() => setState(() {
+    _searching = true;
+    _showFilters = true;
+  });
 
   void _closeSearch() {
     _search.clear();
     setState(() {
       _searching = false;
+      _showFilters = true;
       _query = '';
+      _kindFilters.clear();
+      _tagFilters.clear();
+      _colourFilters.clear();
+      _reminderFilters.clear();
     });
   }
+
+  void _toggleKind(NoteKind kind) => setState(() {
+    _kindFilters.toggle(kind);
+    _showFilters = false;
+  });
+
+  void _toggleTag(String id) => setState(() {
+    _tagFilters.toggle(id);
+    _showFilters = false;
+  });
+
+  void _toggleColour(String value) => setState(() {
+    _colourFilters.toggle(value);
+    _showFilters = false;
+  });
+
+  void _toggleReminder(_ReminderFilter value) => setState(() {
+    _reminderFilters.toggle(value);
+    _showFilters = false;
+  });
+
+  bool _matchesFilters(NoteSummary note, Set<String> reminderNoteIds) {
+    if (_kindFilters.isNotEmpty && !_kindFilters.contains(note.kind)) {
+      return false;
+    }
+    if (_tagFilters.isNotEmpty &&
+        !_tagFilters.any((id) => note.tagIds.contains(id))) {
+      return false;
+    }
+    if (_colourFilters.isNotEmpty &&
+        !_colourFilters.contains(note.colour?.name ?? 'none')) {
+      return false;
+    }
+    if (_reminderFilters.isNotEmpty) {
+      final hasReminder = reminderNoteIds.contains(note.id);
+      if (!_reminderFilters.any(
+        (filter) => switch (filter) {
+          _ReminderFilter.hasReminder => hasReminder,
+          _ReminderFilter.noReminder => !hasReminder,
+        },
+      )) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _clearSearchText() {
+    _search.clear();
+    setState(() {
+      _query = '';
+      _showFilters = true;
+    });
+  }
+
+  void _clearFilters() => setState(() {
+    _kindFilters.clear();
+    _tagFilters.clear();
+    _colourFilters.clear();
+    _reminderFilters.clear();
+  });
 
   /// Open a note, and hold the handle open only while its screen is on top.
   ///
@@ -475,25 +572,28 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   )
                 : null,
             title: _searching
-                ? TextField(
-                    key: const Key('search-field'),
-                    controller: _search,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      hintText: 'Search your lists',
-                      border: InputBorder.none,
-                    ),
-                    onChanged: (value) => setState(() => _query = value),
-                  )
-                : Text(_where.title),
+                ? _searchInput(autofocus: true)
+                : _searchLauncher(),
             actions: [
-              if (!_searching) ...[
+              if (_searching) ...[
                 IconButton(
-                  key: const Key('search-button'),
-                  icon: const Icon(Icons.search),
-                  tooltip: 'Search',
-                  onPressed: _openSearch,
+                  key: const Key('search-filters'),
+                  icon: Icon(
+                    _showFilters
+                        ? Icons.filter_list_off_outlined
+                        : Icons.filter_list_outlined,
+                  ),
+                  tooltip: _showFilters ? 'Hide filters' : 'Show filters',
+                  onPressed: () => setState(() => _showFilters = !_showFilters),
                 ),
+                if (_query.trim().isNotEmpty)
+                  IconButton(
+                    key: const Key('search-clear'),
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Clear search text',
+                    onPressed: _clearSearchText,
+                  ),
+              ] else ...[
                 IconButton(
                   key: const Key('layout-toggle'),
                   icon: Icon(
@@ -585,33 +685,197 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
   }
 
+  /// A persistent, pill-shaped entry point to the same local search used by
+  /// the expanded field. Keeping it in the app bar makes search easy to reach
+  /// without giving up the drawer or the current shelf's scope.
+  Widget _searchLauncher() {
+    final theme = Theme.of(context);
+    return Semantics(
+      button: true,
+      label: 'Search ${_where.title}',
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(28),
+        child: InkWell(
+          key: const Key('search-button'),
+          borderRadius: BorderRadius.circular(28),
+          onTap: _openSearch,
+          child: SizedBox(
+            height: 48,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(Icons.search, color: theme.colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Search ${_where.title}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The focused search field shares the launcher pill's shape and color.
+  Widget _searchInput({required bool autofocus}) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(28),
+      child: SizedBox(
+        height: 48,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Icon(Icons.search, color: theme.colorScheme.onSurfaceVariant),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  key: const Key('search-field'),
+                  controller: _search,
+                  autofocus: autofocus,
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    hintText: 'Search ${_where.title}',
+                    border: InputBorder.none,
+                    isDense: true,
+                    hintStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                  onChanged: (value) => setState(() {
+                    _query = value;
+                    _showFilters = value.trim().isEmpty;
+                  }),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// The grid, the results or the empty line, whichever this screen is showing.
   Widget _body(List<NoteSummary> all, List<NoteSummary> notes) {
-    // The shelf still decides what is on screen: searching the trash searches
-    // the trash. The library answers for the whole device and this is where
-    // that is narrowed, exactly as the list is.
-    return _query.trim().isNotEmpty
-        ? _SearchResults(
-            library: widget.library,
-            query: _query.trim(),
-            where: _where,
-            // Changes when anything about the notes changes, which is what
-            // makes a result follow an edit someone else just made.
-            notes: all,
-            layout: _layout,
-            onTap: _openNote,
-            onHold: _actionsFor,
-          )
-        : notes.isEmpty
-        ? Center(key: const Key('no-notes'), child: Text(_where.empty))
-        : _NoteCollection(
-            notes: notes,
-            layout: _layout,
-            onTap: _openNote,
-            onHold: _actionsFor,
-            onMove: _moveNote,
-          );
+    if (!_searching) {
+      return notes.isEmpty
+          ? Center(key: const Key('no-notes'), child: Text(_where.empty))
+          : _NoteCollection(
+              notes: notes,
+              layout: _layout,
+              onTap: _openNote,
+              onHold: _actionsFor,
+              onMove: _moveNote,
+            );
+    }
+
+    final reminders = {
+      for (final reminder in widget.library.reminders) reminder.noteId,
+    };
+    final query = _query.trim();
+    final scopedNotes = all.where(_where.holds).toList();
+    return Column(
+      children: [
+        if (_hasFilters) _selectedFilterChips(),
+        Expanded(
+          child: _showFilters
+              ? _SearchFilterBrowser(
+                  notes: scopedNotes,
+                  tags: widget.library.tags,
+                  reminderNoteIds: reminders,
+                  kinds: _kindFilters,
+                  labels: _tagFilters,
+                  colours: _colourFilters,
+                  reminderFilters: _reminderFilters,
+                  onKind: _toggleKind,
+                  onLabel: _toggleTag,
+                  onColour: _toggleColour,
+                  onReminder: _toggleReminder,
+                  onClear: _clearFilters,
+                  onDone: () => setState(() => _showFilters = false),
+                )
+              : query.isNotEmpty
+              ? _SearchResults(
+                  library: widget.library,
+                  query: query,
+                  where: _where,
+                  notes: all,
+                  layout: _layout,
+                  matches: (note) => _matchesFilters(note, reminders),
+                  onTap: _openNote,
+                  onHold: _actionsFor,
+                )
+              : _FilteredNotes(
+                  notes: [
+                    for (final note in scopedNotes)
+                      if (_matchesFilters(note, reminders)) note,
+                  ],
+                  layout: _layout,
+                  onTap: _openNote,
+                  onHold: _actionsFor,
+                ),
+        ),
+      ],
+    );
   }
+
+  Widget _selectedFilterChips() {
+    final chips = <Widget>[];
+    for (final kind in _kindFilters) {
+      chips.add(_filterChip('Type: ${_kindName(kind)}', () => _toggleKind(kind)));
+    }
+    for (final id in _tagFilters) {
+      final tag = widget.library.tags.where((tag) => tag.id == id).firstOrNull;
+      chips.add(_filterChip('Label: ${tag?.name ?? 'Label'}', () => _toggleTag(id)));
+    }
+    for (final value in _colourFilters) {
+      chips.add(
+        _filterChip('Color: ${_colourName(value)}', () => _toggleColour(value)),
+      );
+    }
+    for (final value in _reminderFilters) {
+      chips.add(
+        _filterChip(
+          value == _ReminderFilter.hasReminder ? 'Has reminder' : 'No reminder',
+          () => _toggleReminder(value),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: chips),
+            ),
+          ),
+          TextButton(onPressed: _clearFilters, child: const Text('Clear')),
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip(String label, VoidCallback onDeleted) => Padding(
+    padding: const EdgeInsets.only(right: 6),
+    child: InputChip(
+      label: Text(label),
+      onDeleted: onDeleted,
+      deleteIcon: const Icon(Icons.close, size: 18),
+    ),
+  );
 
   /// A card was dropped on another. The library is told which two notes they
   /// were and works out the order key; nothing here counts positions, because
@@ -619,6 +883,359 @@ class _NoteListScreenState extends State<NoteListScreen> {
   void _moveNote(String id, String targetId) {
     widget.library.moveNoteTo(id, targetId);
   }
+}
+
+/// Keep's search browse view: pick facets before typing, or mix facets with a
+/// text query. People are shown as a future facet but disabled because the
+/// current sharing model does not retain an accepted collaborator roster.
+class _SearchFilterBrowser extends StatefulWidget {
+  const _SearchFilterBrowser({
+    required this.notes,
+    required this.tags,
+    required this.reminderNoteIds,
+    required this.kinds,
+    required this.labels,
+    required this.colours,
+    required this.reminderFilters,
+    required this.onKind,
+    required this.onLabel,
+    required this.onColour,
+    required this.onReminder,
+    required this.onClear,
+    required this.onDone,
+  });
+
+  final List<NoteSummary> notes;
+  final List<Tag> tags;
+  final Set<String> reminderNoteIds;
+  final Set<NoteKind> kinds;
+  final Set<String> labels;
+  final Set<String> colours;
+  final Set<_ReminderFilter> reminderFilters;
+  final ValueChanged<NoteKind> onKind;
+  final ValueChanged<String> onLabel;
+  final ValueChanged<String> onColour;
+  final ValueChanged<_ReminderFilter> onReminder;
+  final VoidCallback onClear;
+  final VoidCallback onDone;
+
+  @override
+  State<_SearchFilterBrowser> createState() => _SearchFilterBrowserState();
+}
+
+class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
+  bool _showAllLabels = false;
+  bool _showAllColours = false;
+
+  int _kindCount(NoteKind kind) =>
+      widget.notes.where((note) => note.kind == kind).length;
+
+  int _labelCount(Tag tag) => widget.notes
+      .where((note) => note.tagIds.contains(tag.id))
+      .length;
+
+  int _colourCount(String value) => widget.notes
+      .where((note) => (note.colour?.name ?? 'none') == value)
+      .length;
+
+  int _reminderCount(_ReminderFilter filter) => widget.notes.where((note) {
+    final has = widget.reminderNoteIds.contains(note.id);
+    return filter == _ReminderFilter.hasReminder ? has : !has;
+  }).length;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final labels = widget.tags
+        .where((tag) => _labelCount(tag) > 0)
+        .toList(growable: false);
+    final visibleLabels = _showAllLabels ? labels : labels.take(8).toList();
+    final colourValues = [
+      'none',
+      for (final colour in NoteColour.values) colour.name,
+    ];
+    final visibleColours = _showAllColours
+        ? colourValues
+        : colourValues.take(5).toList();
+
+    return ListView(
+      key: const Key('search-filter-browser'),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('Filter by', style: theme.textTheme.titleMedium),
+            ),
+            if (widget.kinds.isNotEmpty ||
+                widget.labels.isNotEmpty ||
+                widget.colours.isNotEmpty ||
+                widget.reminderFilters.isNotEmpty)
+              TextButton(onPressed: widget.onClear, child: const Text('Clear all')),
+            TextButton(
+              key: const Key('search-filters-done'),
+              onPressed: widget.onDone,
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+        _FilterSection(
+          title: 'Types',
+          children: [
+            _FacetChip(
+              key: const Key('filter-type-text'),
+              icon: Icons.notes_outlined,
+              label: 'Text',
+              count: _kindCount(NoteKind.text),
+              selected: widget.kinds.contains(NoteKind.text),
+              onSelected: () => widget.onKind(NoteKind.text),
+            ),
+            _FacetChip(
+              key: const Key('filter-type-checklist'),
+              icon: Icons.check_box_outlined,
+              label: 'Lists',
+              count: _kindCount(NoteKind.checklist),
+              selected: widget.kinds.contains(NoteKind.checklist),
+              onSelected: () => widget.onKind(NoteKind.checklist),
+            ),
+          ],
+        ),
+        _FilterSection(
+          title: 'Labels',
+          trailing: labels.length > 8
+              ? TextButton(
+                  onPressed: () => setState(() => _showAllLabels = !_showAllLabels),
+                  child: Text(_showAllLabels ? 'Less' : 'More'),
+                )
+              : null,
+          children: [
+            if (visibleLabels.isEmpty)
+              Text('Labels appear here when notes have them.',
+                  style: theme.textTheme.bodySmall)
+            else
+              for (final tag in visibleLabels)
+                _FacetChip(
+                  key: Key('filter-label-${tag.id}'),
+                  icon: Icons.label_outline,
+                  label: tag.name,
+                  count: _labelCount(tag),
+                  selected: widget.labels.contains(tag.id),
+                  onSelected: () => widget.onLabel(tag.id),
+                ),
+          ],
+        ),
+        _FilterSection(
+          title: 'Reminders',
+          children: [
+            _FacetChip(
+              key: const Key('filter-reminders-has'),
+              icon: Icons.notifications_none,
+              label: 'Has reminder',
+              count: _reminderCount(_ReminderFilter.hasReminder),
+              selected: widget.reminderFilters.contains(
+                _ReminderFilter.hasReminder,
+              ),
+              onSelected: () =>
+                  widget.onReminder(_ReminderFilter.hasReminder),
+            ),
+            _FacetChip(
+              key: const Key('filter-reminders-none'),
+              icon: Icons.notifications_off_outlined,
+              label: 'No reminder',
+              count: _reminderCount(_ReminderFilter.noReminder),
+              selected: widget.reminderFilters.contains(
+                _ReminderFilter.noReminder,
+              ),
+              onSelected: () =>
+                  widget.onReminder(_ReminderFilter.noReminder),
+            ),
+          ],
+        ),
+        _FilterSection(
+          title: 'People',
+          children: [
+            Container(
+              key: const Key('filter-people-unavailable'),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.people_outline, color: theme.colorScheme.outline),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'People filters will be available when EasyNotes can show '
+                      'who has access to each list.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        _FilterSection(
+          title: 'Colors',
+          trailing: colourValues.length > 5
+              ? TextButton(
+                  onPressed: () => setState(() => _showAllColours = !_showAllColours),
+                  child: Text(_showAllColours ? 'Less' : 'More'),
+                )
+              : null,
+          children: [
+            for (final value in visibleColours)
+              _ColourFacet(
+                key: Key('filter-color-$value'),
+                value: value,
+                count: _colourCount(value),
+                selected: widget.colours.contains(value),
+                onSelected: () => widget.onColour(value),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _FilterSection extends StatelessWidget {
+  const _FilterSection({
+    required this.title,
+    required this.children,
+    this.trailing,
+  });
+
+  final String title;
+  final List<Widget> children;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+            ),
+            if (trailing != null) trailing!,
+          ],
+        ),
+        const SizedBox(height: 6),
+        Wrap(spacing: 8, runSpacing: 0, children: children),
+      ],
+    ),
+  );
+}
+
+class _FacetChip extends StatelessWidget {
+  const _FacetChip({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final IconData icon;
+  final String label;
+  final int count;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) => FilterChip(
+    avatar: Icon(icon, size: 18),
+    label: Text('$label  $count'),
+    selected: selected,
+    onSelected: (_) => onSelected(),
+  );
+}
+
+class _ColourFacet extends StatelessWidget {
+  const _ColourFacet({
+    super.key,
+    required this.value,
+    required this.count,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final String value;
+  final int count;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colour = value == 'none'
+        ? theme.colorScheme.surface
+        : noteColourTint(
+            context,
+            NoteColour.values.byName(value),
+          )!;
+    return Tooltip(
+      message: '${_colourName(value)}, $count ${count == 1 ? 'note' : 'notes'}',
+      child: InkWell(
+        onTap: onSelected,
+        customBorder: const StadiumBorder(),
+        child: Container(
+          width: 68,
+          height: 42,
+          margin: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: colour,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: selected ? theme.colorScheme.primary : theme.dividerColor,
+              width: selected ? 3 : 1,
+            ),
+          ),
+          child: Center(
+            child: value == 'none'
+                ? Icon(Icons.format_color_reset_outlined, size: 18)
+                : Text('$count', style: theme.textTheme.labelMedium),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FilteredNotes extends StatelessWidget {
+  const _FilteredNotes({
+    required this.notes,
+    required this.layout,
+    required this.onTap,
+    required this.onHold,
+  });
+
+  final List<NoteSummary> notes;
+  final NoteLayout layout;
+  final void Function(String id) onTap;
+  final void Function(NoteSummary note) onHold;
+
+  @override
+  Widget build(BuildContext context) => notes.isEmpty
+      ? const Center(
+          key: Key('no-filter-matches'),
+          child: Text('No notes match these filters.'),
+        )
+      : _NoteCollection(
+          notes: notes,
+          layout: layout,
+          onTap: onTap,
+          onHold: onHold,
+        );
 }
 
 /// What the library found, drawn as the same cards with the matching line on
@@ -636,6 +1253,7 @@ class _SearchResults extends StatefulWidget {
     required this.where,
     required this.notes,
     required this.layout,
+    required this.matches,
     required this.onTap,
     required this.onHold,
   });
@@ -645,6 +1263,7 @@ class _SearchResults extends StatefulWidget {
   final _Where where;
   final List<NoteSummary> notes;
   final NoteLayout layout;
+  final bool Function(NoteSummary) matches;
   final void Function(String id) onTap;
   final void Function(NoteSummary note) onHold;
 
@@ -689,11 +1308,19 @@ class _SearchResultsState extends State<_SearchResults> {
     // spinner that flashes says something untrue about what is happening.
     if (hits == null) return const SizedBox.shrink();
 
-    final found = hits.where((hit) => widget.where.holds(hit.note)).toList();
+    final found = hits
+        .where(
+          (hit) => widget.where.holds(hit.note) && widget.matches(hit.note),
+        )
+        .toList();
     if (found.isEmpty) {
       return Center(
         key: const Key('no-matches'),
-        child: Text('Nothing here matches "${widget.query}".'),
+        child: Text(
+          widget.query.isEmpty
+              ? 'No notes match these filters.'
+              : 'Nothing here matches "${widget.query}".',
+        ),
       );
     }
     return _NoteCollection(
