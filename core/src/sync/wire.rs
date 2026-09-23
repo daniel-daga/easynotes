@@ -38,6 +38,37 @@ pub(crate) struct TokenResponse {
     pub token: String,
 }
 
+/// Decode and validate the relay's fixed-size challenge before a signer sees it.
+pub(crate) fn decode_challenge_nonce(
+    encoded: &str,
+) -> Result<[u8; crate::crypto::RELAY_AUTH_NONCE_LEN]> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| CoreError::Storage("relay sent a malformed nonce".into()))?;
+    decoded
+        .try_into()
+        .map_err(|_| CoreError::Storage("relay sent a nonce of the wrong length".into()))
+}
+
+#[cfg(test)]
+mod challenge_tests {
+    use super::*;
+
+    #[test]
+    fn challenge_decoding_requires_exactly_thirty_two_bytes() {
+        for length in [0, 31, 33, crate::crypto::ENVELOPE_HEADER_LEN] {
+            let encoded = URL_SAFE_NO_PAD.encode(vec![0u8; length]);
+            assert!(decode_challenge_nonce(&encoded).is_err());
+        }
+        let encoded = URL_SAFE_NO_PAD.encode([0u8; crate::crypto::RELAY_AUTH_NONCE_LEN]);
+        assert_eq!(
+            decode_challenge_nonce(&encoded).unwrap(),
+            [0u8; crate::crypto::RELAY_AUTH_NONCE_LEN]
+        );
+        assert!(decode_challenge_nonce("not_base64!").is_err());
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {

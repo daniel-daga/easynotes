@@ -34,7 +34,7 @@ pub struct ChallengeResponse {
 pub struct TokenRequest {
     pub device: String,
     pub nonce: String,
-    /// Ed25519 signature over the raw nonce bytes, base64url.
+    /// Ed25519 signature over the fixed-size relay-auth transcript, base64url.
     pub signature: String,
 }
 

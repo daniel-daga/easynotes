@@ -145,6 +145,28 @@ fn every_seal_uses_a_fresh_nonce() {
 }
 
 #[test]
+fn relay_auth_signatures_are_domain_separated_from_envelope_signatures() {
+    let identity = DeviceIdentity::generate();
+    let public = identity.public_key();
+    let nonce = [7u8; RELAY_AUTH_NONCE_LEN];
+    let signature = identity.sign_challenge(&nonce).unwrap();
+    let transcript = relay_auth_transcript(&nonce);
+
+    assert!(public.verify(&transcript, &signature));
+    assert!(!public.verify(&nonce, &signature));
+
+    let (_, note, key) = fixture();
+    let envelope = Envelope::seal(&identity, note, &key, 0, b"content").unwrap();
+    let mut encoded = envelope.encode();
+    let signature_at = encoded.len() - SIG_LEN;
+    encoded[signature_at..].copy_from_slice(&signature);
+    assert!(matches!(
+        Envelope::decode(&encoded).unwrap().verify(),
+        Err(CoreError::BadSignature)
+    ));
+}
+
+#[test]
 fn rejects_malformed_wire_bytes() {
     let (id, note, key) = fixture();
     let good = Envelope::seal(&id, note, &key, 0, b"milk")

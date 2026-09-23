@@ -29,6 +29,19 @@ pub const SIG_LEN: usize = 64;
 pub const PUBKEY_LEN: usize = 32;
 pub const NOTE_KEY_LEN: usize = 32;
 
+/// Relay challenge size and signature protocol. The transcript is built here so
+/// the client and relay use the same domain separator and framing.
+pub const RELAY_AUTH_NONCE_LEN: usize = 32;
+pub const RELAY_AUTH_DOMAIN: &[u8] = b"easynotes/relay-auth/v1";
+
+pub fn relay_auth_transcript(nonce: &[u8; RELAY_AUTH_NONCE_LEN]) -> Vec<u8> {
+    let mut transcript = Vec::with_capacity(RELAY_AUTH_DOMAIN.len() + 4 + nonce.len());
+    transcript.extend_from_slice(RELAY_AUTH_DOMAIN);
+    transcript.extend_from_slice(&(nonce.len() as u32).to_be_bytes());
+    transcript.extend_from_slice(nonce);
+    transcript
+}
+
 /// version | note_id | author | counter | nonce | signature
 pub const KEY_ID_LEN: usize = 8;
 pub const ENVELOPE_HEADER_LEN: usize =
@@ -113,8 +126,9 @@ pub trait DeviceSigner: Send + Sync {
     fn device_key(&self) -> Result<AuthorKey>;
 
     /// Sign a relay challenge. Deliberately not a general-purpose signing method:
-    /// the only thing a caller outside this module gets to sign is a nonce.
-    fn sign_challenge(&self, nonce: &[u8]) -> Result<[u8; SIG_LEN]>;
+    /// the only thing a caller outside this module gets to sign is a fixed-size
+    /// relay nonce, framed as a relay-authentication transcript.
+    fn sign_challenge(&self, nonce: &[u8; RELAY_AUTH_NONCE_LEN]) -> Result<[u8; SIG_LEN]>;
 }
 
 impl DeviceSigner for DeviceIdentity {
@@ -122,8 +136,8 @@ impl DeviceSigner for DeviceIdentity {
         Ok(self.public_key())
     }
 
-    fn sign_challenge(&self, nonce: &[u8]) -> Result<[u8; SIG_LEN]> {
-        Ok(self.sign(nonce))
+    fn sign_challenge(&self, nonce: &[u8; RELAY_AUTH_NONCE_LEN]) -> Result<[u8; SIG_LEN]> {
+        Ok(self.sign(&relay_auth_transcript(nonce)))
     }
 }
 
@@ -143,8 +157,10 @@ impl AuthorKey {
 
     /// Verify a detached statement signed by this author key.
     pub fn verify(&self, message: &[u8], signature: &[u8; SIG_LEN]) -> bool {
-        self.verifying_key()
-            .is_ok_and(|key| key.verify(message, &Signature::from_bytes(signature)).is_ok())
+        self.verifying_key().is_ok_and(|key| {
+            key.verify(message, &Signature::from_bytes(signature))
+                .is_ok()
+        })
     }
 }
 
@@ -421,7 +437,7 @@ impl Envelope {
         let vk = self.author.verifying_key()?;
         let sig = Signature::from_bytes(&self.signature);
         vk.verify(&self.signed_bytes(), &sig)
-        .map_err(|_| CoreError::BadSignature)
+            .map_err(|_| CoreError::BadSignature)
     }
 
     pub fn encoded_len(&self) -> usize {

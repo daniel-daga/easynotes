@@ -143,7 +143,10 @@ where
         Ok(self.lock().map_err(|_| poisoned())?.device_key())
     }
 
-    fn sign_challenge(&self, nonce: &[u8]) -> Result<[u8; crate::crypto::SIG_LEN]> {
+    fn sign_challenge(
+        &self,
+        nonce: &[u8; crate::crypto::RELAY_AUTH_NONCE_LEN],
+    ) -> Result<[u8; crate::crypto::SIG_LEN]> {
         self.lock()
             .map_err(|_| poisoned())?
             .identity()
@@ -1244,10 +1247,16 @@ impl Live {
                 // the last saved cursor.
                 return Err(e.to_string());
             }
-            // A rejected envelope is a fact about that envelope, not a reason to
-            // stop or to ask for it again — hence the cursor moving on below. The
-            // core has already refused to let it near the document.
-            self.current.last_error = Some(e.to_string());
+            if matches!(e, CoreError::RotationPending) {
+                // The verified envelope was skipped or durably retained while
+                // this owner waits for the account register's matching full
+                // snapshot. The cursor may advance to that recovery point.
+            } else {
+                // A rejected envelope is a fact about that envelope, not a reason to
+                // stop or to ask for it again — hence the cursor moving on below. The
+                // core has already refused to let it near the document.
+                self.current.last_error = Some(e.to_string());
+            }
         }
         if let Ok(parsed) = Envelope::decode(envelope) {
             if &parsed.author == me {

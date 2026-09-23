@@ -26,6 +26,11 @@ pub enum CoreError {
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]
     UnknownNote(String),
+    /// A rotated owner note is waiting for the snapshot matching its account
+    /// register. The envelope was safely skipped or retained, so sync can move
+    /// its cursor forward and continue waiting for the matching snapshot.
+    #[error("owner note rotation is waiting for its matching snapshot")]
+    RotationPending,
     #[error("unknown item {0}")]
     UnknownItem(String),
     #[error("crdt: {0}")]

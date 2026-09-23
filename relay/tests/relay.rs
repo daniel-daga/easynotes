@@ -237,7 +237,9 @@ async fn refuses_a_challenge_signed_by_the_wrong_key() {
         .await
         .unwrap();
     let nonce_b64 = challenge["nonce"].as_str().unwrap();
-    let nonce = b64_decode(nonce_b64);
+    let nonce: [u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN] =
+        b64_decode(nonce_b64).try_into().unwrap();
+    let transcript = easynotes_core::crypto::relay_auth_transcript(&nonce);
 
     let response = http
         .post(format!("{}/v1/token", relay.http_base()))
@@ -245,7 +247,7 @@ async fn refuses_a_challenge_signed_by_the_wrong_key() {
             "device": real.public_key().encode(),
             "nonce": nonce_b64,
             // Signed by someone else entirely.
-            "signature": b64_encode(&attacker.sign(&nonce)),
+            "signature": b64_encode(&attacker.sign(&transcript)),
         }))
         .send()
         .await
@@ -269,10 +271,13 @@ async fn a_challenge_cannot_be_redeemed_twice() {
         .await
         .unwrap();
     let nonce_b64 = challenge["nonce"].as_str().unwrap().to_string();
+    let nonce: [u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN] =
+        b64_decode(&nonce_b64).try_into().unwrap();
+    let transcript = easynotes_core::crypto::relay_auth_transcript(&nonce);
     let body = serde_json::json!({
         "device": device.public_key().encode(),
         "nonce": nonce_b64,
-        "signature": b64_encode(&device.sign(&b64_decode(&nonce_b64))),
+        "signature": b64_encode(&device.sign(&transcript)),
     });
 
     let first = http
@@ -289,6 +294,69 @@ async fn a_challenge_cannot_be_redeemed_twice() {
         .await
         .unwrap();
     assert_eq!(second.status(), 401, "a replayed challenge was accepted");
+}
+
+#[tokio::test]
+async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_signatures() {
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let http = reqwest::Client::new();
+    let challenge: serde_json::Value = http
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .json(&serde_json::json!({ "device": device.public_key().encode() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let nonce_b64 = challenge["nonce"].as_str().unwrap().to_string();
+    let nonce: [u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN] =
+        b64_decode(&nonce_b64).try_into().unwrap();
+    let transcript = easynotes_core::crypto::relay_auth_transcript(&nonce);
+    let body = serde_json::json!({
+        "device": device.public_key().encode(),
+        "nonce": nonce_b64,
+        "signature": b64_encode(&device.sign(&transcript)),
+    });
+
+    let first = http
+        .post(format!("{}/v1/token", relay.http_base()))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let replay = http
+        .post(format!("{}/v1/token", relay.http_base()))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 401);
+
+    let raw_challenge: serde_json::Value = http
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .json(&serde_json::json!({ "device": device.public_key().encode() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let nonce_b64 = raw_challenge["nonce"].as_str().unwrap();
+    let raw_signature = b64_encode(&device.sign(&b64_decode(nonce_b64)));
+    let raw = http
+        .post(format!("{}/v1/token", relay.http_base()))
+        .json(&serde_json::json!({
+            "device": device.public_key().encode(),
+            "nonce": nonce_b64,
+            "signature": raw_signature,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(raw.status(), 401);
 }
 
 #[tokio::test]

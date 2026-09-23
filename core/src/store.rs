@@ -99,7 +99,7 @@ pub trait OpStore {
 }
 
 /// In-memory store, for tests and for the headless cores in the integration test.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MemoryStore {
     logs: HashMap<NoteId, Vec<Vec<u8>>>,
     snapshots: HashMap<NoteId, Vec<u8>>,
@@ -457,7 +457,7 @@ pub trait Keyring {
     fn forget_note_key(&mut self, note: NoteId) -> Result<()>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MemoryKeyring {
     seed: Option<crate::crypto::DeviceSeed>,
     root: Option<crate::account::AccountRoot>,

@@ -16,7 +16,7 @@
 
 use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
-use crate::error::{CoreError, Result};
+use crate::error::Result;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -49,9 +49,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
         .await
         .map_err(net)?;
 
-    let nonce = URL_SAFE_NO_PAD
-        .decode(&challenge.nonce)
-        .map_err(|_| CoreError::Storage("relay sent a malformed nonce".into()))?;
+    let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
     let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
     let token: TokenResponse = http

@@ -8,6 +8,7 @@
 
 mod support;
 
+use easynotes_core::crypto::DeviceIdentity;
 use easynotes_core::invite::{GuestKey, InviteSecret, OwnerSecret};
 use easynotes_core::note::{NoteCore, NoteKind, OutgoingInvite, PendingJoin};
 use easynotes_core::store::{MemoryKeyring, MemoryStore as CoreStore};
@@ -47,7 +48,9 @@ async fn owner_with_invite(http: &str, expires_in: u64) -> (Core, OutgoingInvite
 async fn ask(http: &str, link: &str, name: &str) -> Result<PendingJoin, CoreError> {
     let secret = InviteSecret::from_link(link)?;
     let guest = GuestKey::random();
-    let request = invite::request(http, &secret, &guest, name).await?;
+    let sealed =
+        easynotes_core::invite::seal_request(&secret, &guest, &DeviceIdentity::generate(), name)?;
+    let request = invite::request(http, &secret, &sealed).await?;
     Ok(PendingJoin {
         secret,
         request,
@@ -295,8 +298,12 @@ async fn a_wrong_link_learns_nothing() {
     // A link nobody made, and a real one asked about with the wrong token: the
     // same answer, so a wrong token cannot tell anyone the invite exists.
     let nobody = InviteSecret::random();
+    let guest = GuestKey::random();
+    let sealed =
+        easynotes_core::invite::seal_request(&nobody, &guest, &DeviceIdentity::generate(), "x")
+            .unwrap();
     is_invite_error(
-        invite::request(&http, &nobody, &GuestKey::random(), "x").await,
+        invite::request(&http, &nobody, &sealed).await,
         "does not exist",
     );
     is_invite_error(

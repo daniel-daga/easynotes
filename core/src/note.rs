@@ -85,6 +85,7 @@ pub const ACCOUNT_DOC: NoteId = NoteId([0u8; 16]);
 pub const INDEX: &str = "index";
 const KEY_GENERATION: &str = "key-generation";
 const NEXT_COUNTER: &str = "next-counter";
+const ROTATION_CANDIDATES: &str = "rotation-candidates";
 
 /// The setting that says whether the note list is a grid or one column.
 pub const LAYOUT: &str = "layout";
@@ -121,6 +122,110 @@ pub struct PendingJoin {
     pub guest: crate::invite::GuestKey,
     /// What this person called themselves, to show on the waiting screen.
     pub name: String,
+}
+
+/// Decode locally retained, verified rotation snapshots. The metadata value is
+/// versioned length-prefixed bytes so snapshots remain opaque and bounded by the
+/// envelope parser rather than by a text encoding.
+fn load_rotation_candidates<S: OpStore>(store: &S, note: NoteId) -> Result<Vec<Vec<u8>>> {
+    let Some(raw) = store.get_meta(note, ROTATION_CANDIDATES)? else {
+        return Ok(Vec::new());
+    };
+    if raw.first() != Some(&1) {
+        return Err(CoreError::Storage(
+            "malformed retained rotation snapshots".into(),
+        ));
+    }
+    let mut candidates = Vec::new();
+    let mut at = 1usize;
+    while at < raw.len() {
+        let length_end = at
+            .checked_add(4)
+            .filter(|end| *end <= raw.len())
+            .ok_or_else(|| CoreError::Storage("truncated retained rotation snapshot".into()))?;
+        let length = u32::from_be_bytes(
+            raw[at..length_end]
+                .try_into()
+                .map_err(|_| CoreError::Storage("bad retained snapshot length".into()))?,
+        ) as usize;
+        let end = length_end
+            .checked_add(length)
+            .filter(|end| *end <= raw.len())
+            .ok_or_else(|| CoreError::Storage("truncated retained rotation snapshot".into()))?;
+        let bytes = raw[length_end..end].to_vec();
+        let env = Envelope::decode(&bytes)?;
+        if env.note_id != note || env.kind != EnvelopeKind::Snapshot || env.key_id.is_none() {
+            return Err(CoreError::Storage(
+                "invalid retained rotation snapshot".into(),
+            ));
+        }
+        env.verify()?;
+        candidates.push(bytes);
+        at = end;
+    }
+    Ok(candidates)
+}
+
+fn retain_rotation_candidate<S: OpStore>(
+    store: &mut S,
+    note: NoteId,
+    bytes: &[u8],
+) -> Result<bool> {
+    let mut candidates = load_rotation_candidates(store, note)?;
+    if candidates.iter().any(|candidate| candidate == bytes) {
+        return Ok(false);
+    }
+    let mut encoded = Vec::with_capacity(
+        1 + candidates
+            .iter()
+            .map(|candidate| 4 + candidate.len())
+            .sum::<usize>()
+            + 4
+            + bytes.len(),
+    );
+    encoded.push(1);
+    for candidate in candidates.drain(..) {
+        let length = u32::try_from(candidate.len()).map_err(|_| CoreError::TooLarge {
+            limit: u32::MAX as usize,
+        })?;
+        encoded.extend_from_slice(&length.to_be_bytes());
+        encoded.extend_from_slice(&candidate);
+    }
+    let length = u32::try_from(bytes.len()).map_err(|_| CoreError::TooLarge {
+        limit: u32::MAX as usize,
+    })?;
+    encoded.extend_from_slice(&length.to_be_bytes());
+    encoded.extend_from_slice(bytes);
+    store.put_meta(note, ROTATION_CANDIDATES, &encoded)?;
+    Ok(true)
+}
+
+fn matching_rotation_snapshot<S: OpStore>(
+    store: &S,
+    note: NoteId,
+    access: &account::NoteAccess,
+) -> Result<Option<Vec<u8>>> {
+    let Some(owner) = access.owner else {
+        return Ok(None);
+    };
+    let mut candidates = load_rotation_candidates(store, note)?;
+    candidates.extend(store.load(note)?);
+    if let Some(snapshot) = store.get_snapshot(note)? {
+        candidates.push(snapshot);
+    }
+    for bytes in candidates {
+        let env = Envelope::decode(&bytes)?;
+        if env.note_id == note
+            && env.kind == EnvelopeKind::Snapshot
+            && env.author == owner
+            && env.key_id == Some(access.key.id())
+            && env.counter == access.generation
+        {
+            env.verify()?;
+            return Ok(Some(bytes));
+        }
+    }
+    Ok(None)
 }
 
 impl PendingJoin {
@@ -679,10 +784,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// key and keep it, because this only ever adds. Adopting once the batch has
     /// settled reads the document as it actually stands.
     ///
-    /// Fill a missing key, or replace a held key only when the account document
-    /// has a strictly newer generation. Envelope key IDs keep old history from
-    /// being confused with a new generation; an owner-signed snapshot performs
-    /// the actual cutover. See [ADR 0018](../../docs/adr/0018-revocation.md).
+    /// Fill a missing key or adopt the account register's winning key after its
+    /// verified rotation snapshot is available. Equal-generation replacement is
+    /// owner-only and follows the merged account register, never envelope order.
     pub fn adopt_note_keys(&mut self) -> Result<usize> {
         let mut taken = 0;
         let mut rotated = Vec::new();
@@ -692,21 +796,36 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 continue;
             }
             let current = self.keyring.note_key(note)?;
-            if current
-                .as_ref()
-                .is_some_and(|key| key.id() == access.key.id())
-            {
-                continue;
-            }
-            // The generation makes a newer account register authoritative for
-            // both owners and guests, while preventing a stale register from
-            // turning a revoked key back into a live one.
             let current_generation = self
                 .store
                 .get_meta(note, KEY_GENERATION)?
                 .and_then(|raw| raw.as_slice().try_into().ok().map(u64::from_be_bytes))
                 .unwrap_or(0);
-            if current.is_some() && access.generation <= current_generation {
+            if current
+                .as_ref()
+                .is_some_and(|key| key.id() == access.key.id())
+            {
+                if access.generation > current_generation {
+                    self.store
+                        .put_meta(note, KEY_GENERATION, &access.generation.to_be_bytes())?;
+                }
+                continue;
+            }
+            if access.generation < current_generation
+                || (current.is_some()
+                    && access.generation == current_generation
+                    && (!access.owned || access.generation == 0))
+            {
+                continue;
+            }
+            // A changed owner key is not usable until its complete snapshot has
+            // arrived. The account register itself persists the pending target,
+            // so replay after restart will finish adoption when the snapshot
+            // comes in instead of opening an empty document under that key.
+            if access.owned
+                && access.generation > 0
+                && matching_rotation_snapshot(&self.store, note, &access)?.is_none()
+            {
                 continue;
             }
             if current.is_some() {
@@ -912,24 +1031,40 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .unwrap_or(0);
         let key_id = key.id();
         let log = self.store.load(id)?;
-        let owner = account::note_access_of(self.account.doc.entries())
-            .remove(&id)
-            .and_then(|access| access.owner);
-        let has_current_snapshot = log.iter().any(|raw| {
-            Envelope::decode(raw).is_ok_and(|env| {
-                env.key_id == Some(key_id)
-                    && env.kind == EnvelopeKind::Snapshot
-                    && owner == Some(env.author)
-            })
-        });
-
-        let mut doc = match self.store.get_snapshot(id)? {
+        let access = account::note_access_of(self.account.doc.entries()).remove(&id);
+        let owner = access.as_ref().and_then(|access| access.owner);
+        let rotation_snapshot = match access.as_ref() {
+            Some(access) => matching_rotation_snapshot(&self.store, id, access)?,
+            None => None,
+        };
+        let has_current_snapshot = rotation_snapshot.is_some()
+            || log.iter().any(|raw| {
+                Envelope::decode(raw).is_ok_and(|env| {
+                    env.key_id == Some(key_id)
+                        && env.kind == EnvelopeKind::Snapshot
+                        && owner == Some(env.author)
+                })
+            });
+        let snapshot = if let Some(rotation_snapshot) = rotation_snapshot {
+            self.store.put_snapshot(id, &rotation_snapshot)?;
+            // Once the matching signed snapshot is the note's durable fast
+            // open snapshot, the competing candidates have served their
+            // purpose and need not accumulate across later rotations.
+            self.store.put_meta(id, ROTATION_CANDIDATES, &[1])?;
+            Some(rotation_snapshot)
+        } else {
+            self.store.get_snapshot(id)?
+        };
+        let mut snapshot_identity = None;
+        let mut doc = match snapshot {
             Some(blob) => {
                 let env = Envelope::decode(&blob)?;
                 if env.key_id.is_some_and(|seen| seen != key_id) {
+                    env.verify()?;
                     D::create(&self.actor)
                 } else {
                     let plain = env.open(&key)?;
+                    snapshot_identity = Some((env.author, env.counter));
                     // A snapshot is sealed with a counter from this device's own
                     // sequence, which is what lets the counter survive a compaction
                     // that removed every envelope it could otherwise be read from.
@@ -943,6 +1078,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         };
 
         let mut seen = HashSet::new();
+        if let Some(identity) = snapshot_identity {
+            seen.insert(identity);
+        }
         let mut length = 0usize;
         for raw in log {
             length += 1;
@@ -955,9 +1093,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             }
             if env.key_id.is_some_and(|seen| seen != key_id)
                 || (env.key_id.is_none() && has_current_snapshot)
-                || (env.kind == EnvelopeKind::Snapshot && owner != Some(env.author))
             {
+                // Old and competing generations are expected during replay, but
+                // they still have to be authentic before we advance past them.
+                env.verify()?;
+                if env.kind == EnvelopeKind::Snapshot && owner != Some(env.author) {
+                    return Err(CoreError::Crypto("an unauthorised snapshot was refused"));
+                }
                 continue;
+            }
+            if env.kind == EnvelopeKind::Snapshot && owner != Some(env.author) {
+                return Err(CoreError::Crypto("an unauthorised snapshot was refused"));
             }
             let plain = env.open(&key)?;
             if seen.insert((env.author, env.counter)) {
@@ -2005,6 +2151,38 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 got: env.note_id.encode(),
             });
         }
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        if self.keyring.note_key(id)?.is_none() && access.owned && access.generation > 0 {
+            // A fresh owner device has the winning account key but no local
+            // note key yet. Subscribe anyway, retain verified owner snapshots,
+            // and adopt only when a snapshot agrees with the account register.
+            // Advancing over updates and losing snapshots is safe: the
+            // matching full snapshot is the recovery point.
+            if env.kind == EnvelopeKind::Snapshot {
+                if access.owner != Some(env.author) {
+                    return Err(CoreError::Crypto("an unauthorised snapshot was refused"));
+                }
+                env.verify()?;
+                if env.counter >= access.generation {
+                    let is_new = retain_rotation_candidate(&mut self.store, id, envelope)?;
+                    if is_new && !self.store.load(id)?.iter().any(|stored| stored == envelope) {
+                        self.store.append(id, envelope)?;
+                    }
+                    if env.key_id == Some(access.key.id()) && env.counter == access.generation {
+                        self.adopt_note_keys()?;
+                        self.open_note(id)?;
+                        return self.view(id);
+                    }
+                }
+            } else {
+                // Verify envelopes that cannot be opened under the pending key
+                // before moving the relay cursor past them.
+                env.verify()?;
+            }
+            return Err(CoreError::RotationPending);
+        }
         // An arrival is the other thing that can be the first to need a note's
         // document: the list no longer opens every note, so a peer's edit to a
         // note nobody has looked at today opens it here.
@@ -2015,9 +2193,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))?
             .key
             .id();
-        let access = account::note_access_of(self.account.doc.entries())
-            .remove(&id)
-            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        let current_generation = self
+            .store
+            .get_meta(id, KEY_GENERATION)?
+            .and_then(|raw| raw.as_slice().try_into().ok().map(u64::from_be_bytes))
+            .unwrap_or(0);
         if env.kind == EnvelopeKind::Snapshot && access.owner != Some(env.author) {
             return Err(CoreError::Crypto("an unauthorised snapshot was refused"));
         }
@@ -2037,13 +2217,22 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 return Ok(old);
             }
             if access.owned {
-                // The creator's other devices learn the key through their
-                // account document. Keep the snapshot until that register
-                // arrives, then `adopt_note_keys` reopens it under the new key.
-                self.store.append(id, envelope)?;
-            } else {
-                // A correctly signed new-key snapshot is the revocation notice.
-                // It contains no new key, so the former member cannot follow it.
+                // The snapshot counter is its authenticated key generation. A
+                // stale owner snapshot cannot affect state; equal-generation
+                // candidates are retained for account-register reconciliation.
+                if env.counter < current_generation {
+                    return Ok(old);
+                }
+                let is_new = retain_rotation_candidate(&mut self.store, id, envelope)?;
+                if is_new && !self.store.load(id)?.iter().any(|stored| stored == envelope) {
+                    self.store.append(id, envelope)?;
+                }
+                if env.key_id == Some(access.key.id()) && env.counter == access.generation {
+                    self.adopt_note_keys()?;
+                    return self.view(id);
+                }
+            } else if env.counter > current_generation {
+                // A guest accepts only a strictly newer creator-signed rotation.
                 self.forget_note(id)?;
             }
             return Ok(old);
@@ -2783,10 +2972,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// index entry, and a device that has just adopted an account holds a note
     /// key and nothing else — no log, no entry, no row in the store. That note
     /// has no card and must still be connected, because connecting is how the
-    /// log it is missing arrives. Going the other way, a note whose key this
-    /// device does not have is left out however much of its log it holds: an
-    /// envelope it cannot open is an envelope it cannot use, and a connection
-    /// for one would be a socket held open to no purpose.
+    /// log it is missing arrives. A note whose key this device does not have
+    /// is otherwise left out. The exception is an owned note whose account
+    /// register names a rotated key: connecting is how the matching full
+    /// snapshot arrives, and that snapshot lets this device safely adopt the
+    /// key without opening an empty document.
     ///
     /// The account document is not in here. It is not a note, its ID comes from
     /// [`NoteCore::account_id`], and a caller that syncs it does so knowingly.
@@ -2795,11 +2985,23 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let mut seen = HashSet::new();
         let from_store = self.store.notes()?;
         let placed = self.placements.placements.keys().copied();
-        for id in from_store.into_iter().chain(placed) {
+        let accesses = account::note_access_of(self.account.doc.entries());
+        let pending_owner_rotations = accesses
+            .iter()
+            .filter_map(|(id, access)| (access.owned && access.generation > 0).then_some(*id));
+        for id in from_store
+            .into_iter()
+            .chain(placed)
+            .chain(pending_owner_rotations)
+        {
             if self.is_account(id) || !seen.insert(id) {
                 continue;
             }
-            if self.keyring.note_key(id)?.is_none() {
+            let key_missing = self.keyring.note_key(id)?.is_none();
+            let awaiting_owner_snapshot = accesses
+                .get(&id)
+                .is_some_and(|access| access.owned && access.generation > 0);
+            if key_missing && !awaiting_owner_snapshot {
                 continue;
             }
             out.push(id);

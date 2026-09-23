@@ -355,8 +355,7 @@ pub fn open_request(secret: &InviteSecret, sealed: &[u8]) -> Result<JoinRequest>
                     .try_into()
                     .unwrap(),
             );
-            let signature: [u8; SIG_LEN] = plain
-                [1 + 2 * PUBKEY_LEN..1 + 2 * PUBKEY_LEN + SIG_LEN]
+            let signature: [u8; SIG_LEN] = plain[1 + 2 * PUBKEY_LEN..1 + 2 * PUBKEY_LEN + SIG_LEN]
                 .try_into()
                 .unwrap();
             let name_at = 1 + 2 * PUBKEY_LEN + SIG_LEN;
@@ -390,9 +389,8 @@ fn request_identity_message(
     author: &AuthorKey,
     name: &str,
 ) -> Vec<u8> {
-    let mut message = Vec::with_capacity(
-        REQUEST_IDENTITY_DOMAIN.len() + 16 + 2 * PUBKEY_LEN + name.len(),
-    );
+    let mut message =
+        Vec::with_capacity(REQUEST_IDENTITY_DOMAIN.len() + 16 + 2 * PUBKEY_LEN + name.len());
     message.extend_from_slice(REQUEST_IDENTITY_DOMAIN);
     message.extend_from_slice(secret.id().as_bytes());
     message.extend_from_slice(guest);
@@ -505,7 +503,10 @@ pub fn open_owned_grant(
     if sealed.len() < PUBLIC_LEN {
         return Err(CoreError::MalformedInvite("grant is too short"));
     }
-    let ephemeral: [u8; PUBLIC_LEN] = sealed[..PUBLIC_LEN].try_into().unwrap();
+    let ephemeral: [u8; PUBLIC_LEN] = sealed
+        .get(..PUBLIC_LEN)
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or(CoreError::MalformedInvite("grant has no ephemeral key"))?;
     let shared = guest
         .secret()
         .diffie_hellman(&x25519_dalek::PublicKey::from(ephemeral));
@@ -514,26 +515,52 @@ pub fn open_owned_grant(
     let legacy_len = 1 + 16 + NOTE_KEY_LEN;
     let owned_len = legacy_len + PUBKEY_LEN;
     let rotating_len = owned_len + 8;
-    if (plain.len() != legacy_len && plain.len() != owned_len && plain.len() != rotating_len)
-        || (plain[0] != INVITE_VERSION
-            && plain[0] != OWNED_GRANT_VERSION
-            && plain[0] != ROTATING_GRANT_VERSION)
-    {
-        plain.zeroize();
-        return Err(CoreError::MalformedInvite("grant has an unknown shape"));
-    }
-    let note = NoteId::from_bytes(plain[1..17].try_into().unwrap());
-    let mut key = [0u8; NOTE_KEY_LEN];
-    key.copy_from_slice(&plain[17..17 + NOTE_KEY_LEN]);
-    let owner = (plain[0] == OWNED_GRANT_VERSION || plain[0] == ROTATING_GRANT_VERSION)
-        .then(|| AuthorKey(plain[17 + NOTE_KEY_LEN..owned_len].try_into().unwrap()));
-    let generation = if plain[0] == ROTATING_GRANT_VERSION && plain.len() == rotating_len {
-        u64::from_be_bytes(plain[owned_len..].try_into().unwrap())
-    } else {
-        0
-    };
+    let parsed = (|| {
+        let version = plain
+            .first()
+            .copied()
+            .ok_or(CoreError::MalformedInvite("grant is empty"))?;
+        let (expected_len, has_owner, has_generation) = match (version, plain.len()) {
+            (INVITE_VERSION, len) if len == legacy_len => (legacy_len, false, false),
+            (OWNED_GRANT_VERSION, len) if len == owned_len => (owned_len, true, false),
+            (ROTATING_GRANT_VERSION, len) if len == rotating_len => (rotating_len, true, true),
+            _ => return Err(CoreError::MalformedInvite("grant has an unknown shape")),
+        };
+        let note_bytes: [u8; 16] = plain
+            .get(1..17)
+            .and_then(|raw| raw.try_into().ok())
+            .ok_or(CoreError::MalformedInvite("grant has no note ID"))?;
+        let key_bytes: [u8; NOTE_KEY_LEN] = plain
+            .get(17..17 + NOTE_KEY_LEN)
+            .and_then(|raw| raw.try_into().ok())
+            .ok_or(CoreError::MalformedInvite("grant has no note key"))?;
+        let owner = if has_owner {
+            let owner_bytes: [u8; PUBKEY_LEN] = plain
+                .get(17 + NOTE_KEY_LEN..owned_len)
+                .and_then(|raw| raw.try_into().ok())
+                .ok_or(CoreError::MalformedInvite("grant has no owner key"))?;
+            Some(AuthorKey(owner_bytes))
+        } else {
+            None
+        };
+        let generation = if has_generation {
+            let bytes: [u8; 8] = plain
+                .get(owned_len..expected_len)
+                .and_then(|raw| raw.try_into().ok())
+                .ok_or(CoreError::MalformedInvite("grant has no generation"))?;
+            u64::from_be_bytes(bytes)
+        } else {
+            0
+        };
+        Ok((
+            NoteId::from_bytes(note_bytes),
+            NoteKey(key_bytes),
+            owner,
+            generation,
+        ))
+    })();
     plain.zeroize();
-    Ok((note, NoteKey(key), owner, generation))
+    parsed
 }
 
 /// Six digits, as `123 456`, from the invite and a guest's public key.
@@ -550,6 +577,17 @@ pub fn safety_code(secret: &InviteSecret, guest: &[u8; PUBLIC_LEN]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn authenticated_test_grant(secret: &InviteSecret, guest: &GuestKey, plain: &[u8]) -> Vec<u8> {
+        let ephemeral = GuestKey::random().secret();
+        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
+        let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(guest.public()));
+        let cipher = grant_cipher(secret, &shared, &ephemeral_public, &guest.public()).unwrap();
+        let sealed = seal_blob(&cipher, &secret.aad(GRANT_DOMAIN), plain).unwrap();
+        let mut out = ephemeral_public.to_vec();
+        out.extend_from_slice(&sealed);
+        out
+    }
 
     #[test]
     fn a_link_reads_back_as_the_same_secret() {
@@ -650,6 +688,62 @@ mod tests {
         let last = grant.len() - 1;
         grant[last] ^= 1;
         assert!(open_grant(&secret, &guest, &grant).is_err());
+    }
+
+    #[test]
+    fn grant_versions_accept_only_their_exact_plaintext_shapes() {
+        let secret = InviteSecret::random();
+        let guest = GuestKey::random();
+        let legacy_len = 1 + 16 + NOTE_KEY_LEN;
+        let owned_len = legacy_len + PUBKEY_LEN;
+        let rotating_len = owned_len + 8;
+
+        for (version, length) in [
+            (INVITE_VERSION, legacy_len),
+            (OWNED_GRANT_VERSION, owned_len),
+            (ROTATING_GRANT_VERSION, rotating_len),
+        ] {
+            let mut plain = vec![0u8; length];
+            plain[0] = version;
+            assert!(open_owned_grant(
+                &secret,
+                &guest,
+                &authenticated_test_grant(&secret, &guest, &plain),
+            )
+            .is_ok());
+        }
+
+        for (version, expected) in [
+            (INVITE_VERSION, legacy_len),
+            (OWNED_GRANT_VERSION, owned_len),
+            (ROTATING_GRANT_VERSION, rotating_len),
+        ] {
+            for length in [legacy_len, owned_len, rotating_len] {
+                if length == expected {
+                    continue;
+                }
+                let mut plain = vec![0u8; length];
+                plain[0] = version;
+                let grant = authenticated_test_grant(&secret, &guest, &plain);
+                assert!(matches!(
+                    open_owned_grant(&secret, &guest, &grant),
+                    Err(CoreError::MalformedInvite(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_version_three_legacy_length_returns_an_error() {
+        let secret = InviteSecret::random();
+        let guest = GuestKey::random();
+        let mut plain = vec![0u8; 1 + 16 + NOTE_KEY_LEN];
+        plain[0] = ROTATING_GRANT_VERSION;
+        let grant = authenticated_test_grant(&secret, &guest, &plain);
+        assert!(matches!(
+            open_owned_grant(&secret, &guest, &grant),
+            Err(CoreError::MalformedInvite(_))
+        ));
     }
 
     #[test]

@@ -676,7 +676,7 @@ impl easynotes_core::crypto::DeviceSigner for Peer {
 
     fn sign_challenge(
         &self,
-        nonce: &[u8],
+        nonce: &[u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN],
     ) -> easynotes_core::error::Result<[u8; easynotes_core::crypto::SIG_LEN]> {
         self.open()?.identity().sign_challenge(nonce)
     }

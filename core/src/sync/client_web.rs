@@ -118,9 +118,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
     )
     .await?;
 
-    let nonce = URL_SAFE_NO_PAD
-        .decode(&challenge.nonce)
-        .map_err(|_| CoreError::Storage("relay sent a malformed nonce".into()))?;
+    let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
     let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
     let token: TokenResponse = post_json(

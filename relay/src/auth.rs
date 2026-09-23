@@ -1,8 +1,8 @@
 //! Authentication without accounts.
 //!
-//! A client proves it holds a device key by signing a nonce the relay hands it.
-//! There is no registration, no username, no password and no email — the relay
-//! learns a public key and nothing else, which is the point.
+//! A client proves it holds a device key by signing a fixed-size, domain-separated
+//! relay-authentication transcript. There is no registration, no username, no
+//! password and no email — the relay learns a public key and nothing else.
 //!
 //! Tokens are opaque random strings held in memory. That is fine for one relay
 //! process and is what Slice 1 needs; running more than one instance means moving
@@ -50,7 +50,7 @@ impl Auth {
         Self::default()
     }
 
-    /// Hand out a fresh nonce bound to the claimed device key.
+    /// Hand out a fresh fixed-size nonce bound to the claimed device key.
     pub fn challenge(&self, device: &str, ttl: Duration) -> Result<String> {
         let device = device_key(device)?;
         // Reject a key that is not a valid Ed25519 point now, rather than
@@ -59,7 +59,7 @@ impl Auth {
             RelayError::BadRequest("device key is not a valid Ed25519 point".into())
         })?;
 
-        let mut nonce = [0u8; 32];
+        let mut nonce = [0u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN];
         easynotes_core::crypto::random_bytes(&mut nonce);
 
         let mut challenges = self.challenges.lock().unwrap();
@@ -74,7 +74,7 @@ impl Auth {
         Ok(URL_SAFE_NO_PAD.encode(nonce))
     }
 
-    /// Redeem a signed nonce for a token.
+    /// Redeem a domain-separated authentication signature for a token.
     pub fn redeem(
         &self,
         device: &str,
@@ -83,7 +83,9 @@ impl Auth {
         ttl: Duration,
     ) -> Result<String> {
         let device = device_key(device)?;
-        let nonce = b64(nonce, "nonce")?;
+        let nonce: [u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN] = b64(nonce, "nonce")?
+            .try_into()
+            .map_err(|_| RelayError::BadRequest("nonce is not 32 bytes".into()))?;
         let signature: [u8; 64] = b64(signature, "signature")?
             .try_into()
             .map_err(|_| RelayError::BadRequest("signature is not 64 bytes".into()))?;
@@ -93,14 +95,17 @@ impl Auth {
         let challenge = {
             let mut challenges = self.challenges.lock().unwrap();
             Self::expire_challenges(&mut challenges);
-            challenges.remove(&nonce).ok_or(RelayError::Unauthorized)?
+            challenges
+                .remove(nonce.as_slice())
+                .ok_or(RelayError::Unauthorized)?
         };
         if challenge.expires_at < Instant::now() || challenge.device != device {
             return Err(RelayError::Unauthorized);
         }
 
         let key = VerifyingKey::from_bytes(&device).map_err(|_| RelayError::Unauthorized)?;
-        key.verify(&nonce, &Signature::from_bytes(&signature))
+        let transcript = easynotes_core::crypto::relay_auth_transcript(&nonce);
+        key.verify(&transcript, &Signature::from_bytes(&signature))
             .map_err(|_| RelayError::Unauthorized)?;
 
         let mut raw = [0u8; 32];
