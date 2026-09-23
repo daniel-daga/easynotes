@@ -15,6 +15,50 @@ import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
 import 'ui/note_list_screen.dart';
 
+ThemeData _easyNotesTheme(Brightness brightness) {
+  final scheme = ColorScheme.fromSeed(
+    seedColor: const Color(0xFFFFB300),
+    brightness: brightness,
+    dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
+  );
+  return ThemeData(
+    colorScheme: scheme,
+    useMaterial3: true,
+    brightness: brightness,
+    fontFamily: 'Roboto',
+    scaffoldBackgroundColor: scheme.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 1,
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      showDragHandle: true,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      elevation: 3,
+      focusElevation: 3,
+      hoverElevation: 4,
+      highlightElevation: 5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+    ),
+  );
+}
+
 /// Where the relay is.
 ///
 /// A compile-time setting rather than a screen, because Slice 2 has no settings
@@ -135,18 +179,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       // here is what makes the bundled copy the font that is actually drawn on
       // every platform, instead of 130 KB of assets that only the web build
       // has a use for.
-      theme: ThemeData(
-        colorSchemeSeed: Colors.amber,
-        useMaterial3: true,
-        brightness: Brightness.light,
-        fontFamily: 'Roboto',
-      ),
-      darkTheme: ThemeData(
-        colorSchemeSeed: Colors.amber,
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        fontFamily: 'Roboto',
-      ),
+      theme: _easyNotesTheme(Brightness.light),
+      darkTheme: _easyNotesTheme(Brightness.dark),
       home: NoteListScreen(library: library),
     );
   }

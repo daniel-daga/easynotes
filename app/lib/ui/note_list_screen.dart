@@ -25,6 +25,7 @@ import '../core/reminder_scheduler.dart';
 import '../core/sync_status.dart';
 import 'account_screen.dart';
 import 'invites.dart';
+import 'motion.dart';
 import 'note_appearance.dart';
 import 'note_screen.dart';
 import 'storage_banner.dart';
@@ -571,9 +572,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     onPressed: _closeSearch,
                   )
                 : null,
-            title: _searching
-                ? _searchInput(autofocus: true)
-                : _searchLauncher(),
+            title: EasyEntrance(
+              key: _searching
+                  ? const ValueKey('search-input')
+                  : ValueKey('search-launcher:${_where.title}'),
+              child: _searching
+                  ? _searchInput(autofocus: true)
+                  : _searchLauncher(),
+            ),
             actions: [
               if (_searching) ...[
                 IconButton(
@@ -751,7 +757,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     hintText: 'Search ${_where.title}',
                     border: InputBorder.none,
                     isDense: true,
-                    hintStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                    hintStyle: TextStyle(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   onChanged: (value) => setState(() {
                     _query = value;
@@ -833,11 +841,15 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Widget _selectedFilterChips() {
     final chips = <Widget>[];
     for (final kind in _kindFilters) {
-      chips.add(_filterChip('Type: ${_kindName(kind)}', () => _toggleKind(kind)));
+      chips.add(
+        _filterChip('Type: ${_kindName(kind)}', () => _toggleKind(kind)),
+      );
     }
     for (final id in _tagFilters) {
       final tag = widget.library.tags.where((tag) => tag.id == id).firstOrNull;
-      chips.add(_filterChip('Label: ${tag?.name ?? 'Label'}', () => _toggleTag(id)));
+      chips.add(
+        _filterChip('Label: ${tag?.name ?? 'Label'}', () => _toggleTag(id)),
+      );
     }
     for (final value in _colourFilters) {
       chips.add(
@@ -930,9 +942,8 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
   int _kindCount(NoteKind kind) =>
       widget.notes.where((note) => note.kind == kind).length;
 
-  int _labelCount(Tag tag) => widget.notes
-      .where((note) => note.tagIds.contains(tag.id))
-      .length;
+  int _labelCount(Tag tag) =>
+      widget.notes.where((note) => note.tagIds.contains(tag.id)).length;
 
   int _colourCount(String value) => widget.notes
       .where((note) => (note.colour?.name ?? 'none') == value)
@@ -971,7 +982,10 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
                 widget.labels.isNotEmpty ||
                 widget.colours.isNotEmpty ||
                 widget.reminderFilters.isNotEmpty)
-              TextButton(onPressed: widget.onClear, child: const Text('Clear all')),
+              TextButton(
+                onPressed: widget.onClear,
+                child: const Text('Clear all'),
+              ),
             TextButton(
               key: const Key('search-filters-done'),
               onPressed: widget.onDone,
@@ -1004,14 +1018,17 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
           title: 'Labels',
           trailing: labels.length > 8
               ? TextButton(
-                  onPressed: () => setState(() => _showAllLabels = !_showAllLabels),
+                  onPressed: () =>
+                      setState(() => _showAllLabels = !_showAllLabels),
                   child: Text(_showAllLabels ? 'Less' : 'More'),
                 )
               : null,
           children: [
             if (visibleLabels.isEmpty)
-              Text('Labels appear here when notes have them.',
-                  style: theme.textTheme.bodySmall)
+              Text(
+                'Labels appear here when notes have them.',
+                style: theme.textTheme.bodySmall,
+              )
             else
               for (final tag in visibleLabels)
                 _FacetChip(
@@ -1035,8 +1052,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               selected: widget.reminderFilters.contains(
                 _ReminderFilter.hasReminder,
               ),
-              onSelected: () =>
-                  widget.onReminder(_ReminderFilter.hasReminder),
+              onSelected: () => widget.onReminder(_ReminderFilter.hasReminder),
             ),
             _FacetChip(
               key: const Key('filter-reminders-none'),
@@ -1046,8 +1062,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               selected: widget.reminderFilters.contains(
                 _ReminderFilter.noReminder,
               ),
-              onSelected: () =>
-                  widget.onReminder(_ReminderFilter.noReminder),
+              onSelected: () => widget.onReminder(_ReminderFilter.noReminder),
             ),
           ],
         ),
@@ -1083,7 +1098,8 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
           title: 'Colors',
           trailing: colourValues.length > 5
               ? TextButton(
-                  onPressed: () => setState(() => _showAllColours = !_showAllColours),
+                  onPressed: () =>
+                      setState(() => _showAllColours = !_showAllColours),
                   child: Text(_showAllColours ? 'Less' : 'More'),
                 )
               : null,
@@ -1179,10 +1195,7 @@ class _ColourFacet extends StatelessWidget {
     final theme = Theme.of(context);
     final colour = value == 'none'
         ? theme.colorScheme.surface
-        : noteColourTint(
-            context,
-            NoteColour.values.byName(value),
-          )!;
+        : noteColourTint(context, NoteColour.values.byName(value))!;
     return Tooltip(
       message: '${_colourName(value)}, $count ${count == 1 ? 'note' : 'notes'}',
       child: InkWell(
@@ -1623,10 +1636,7 @@ class _Shelves extends StatelessWidget {
               ),
           ],
           const Divider(),
-          SyncStatusTile(
-            stream: syncStream,
-            initial: initialSyncStatus,
-          ),
+          SyncStatusTile(stream: syncStream, initial: initialSyncStatus),
           const Divider(),
           ListTile(
             key: const Key('account-entry'),
@@ -2137,7 +2147,7 @@ class _MasonryGrid extends StatelessWidget {
 
 /// One note, as a card: what it is called, what is on it, how much is done, and
 /// what this person has made of it.
-class _NoteCard extends StatelessWidget {
+class _NoteCard extends StatefulWidget {
   const _NoteCard({
     super.key,
     required this.note,
@@ -2159,135 +2169,152 @@ class _NoteCard extends StatelessWidget {
   final String? matched;
 
   @override
+  State<_NoteCard> createState() => _NoteCardState();
+}
+
+class _NoteCardState extends State<_NoteCard> {
+  bool _pressed = false;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final note = widget.note;
     final isList = note.kind == NoteKind.checklist;
     // Only a list counts what it is not showing: a text note's preview is lines
     // of prose, and "+3 more" under a paragraph would be counting items it
     // does not have.
     final hidden = isList ? note.items - note.preview.length : 0;
-    return Card(
-      margin: EdgeInsets.zero,
-      color: noteColourTint(context, note.colour),
-      child: InkWell(
-        key: Key('note:${note.id}'),
-        onTap: onTap,
-        onLongPress: onHold,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (note.title.isNotEmpty || note.pinned)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (note.title.isNotEmpty)
-                      Expanded(
-                        child: Text(
-                          note.title,
-                          style: theme.textTheme.titleMedium,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+    return AnimatedScale(
+      scale: _pressed ? .975 : 1,
+      duration: EasyMotion.duration(context, EasyMotion.fast),
+      curve: EasyMotion.enter,
+      child: Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        color: noteColourTint(context, note.colour),
+        child: InkWell(
+          key: Key('note:${note.id}'),
+          onTap: widget.onTap,
+          onLongPress: widget.onHold,
+          onHighlightChanged: (pressed) {
+            if (_pressed != pressed) setState(() => _pressed = pressed);
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (note.title.isNotEmpty || note.pinned)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (note.title.isNotEmpty)
+                        Expanded(
+                          child: Text(
+                            note.title,
+                            style: theme.textTheme.titleMedium,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        )
+                      else
+                        const Spacer(),
+                      if (note.pinned)
+                        Icon(
+                          Icons.push_pin,
+                          key: const Key('pinned'),
+                          size: 16,
+                          color: theme.textTheme.bodySmall?.color,
                         ),
-                      )
-                    else
-                      const Spacer(),
-                    if (note.pinned)
-                      Icon(
-                        Icons.push_pin,
-                        key: const Key('pinned'),
-                        size: 16,
-                        color: theme.textTheme.bodySmall?.color,
-                      ),
-                  ],
-                ),
-              if (note.title.isNotEmpty && note.preview.isNotEmpty)
-                const SizedBox(height: 6),
-              for (final text in note.preview)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 1),
-                  child: Text(
-                    isList ? '• $text' : text,
-                    style: theme.textTheme.bodyMedium,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    ],
                   ),
-                ),
-              if (hidden > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    '+$hidden more',
+                if (note.title.isNotEmpty && note.preview.isNotEmpty)
+                  const SizedBox(height: 6),
+                for (final text in note.preview)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 1),
+                    child: Text(
+                      isList ? '• $text' : text,
+                      style: theme.textTheme.bodyMedium,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                if (hidden > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '+$hidden more',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                if (note.title.isEmpty && note.preview.isEmpty)
+                  Text(
+                    isList ? 'Untitled list' : 'Empty note',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: theme.disabledColor,
+                    ),
+                  ),
+                if (isList && note.items > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '${note.checked} of ${note.items} done',
                     style: theme.textTheme.bodySmall,
                   ),
-                ),
-              if (note.title.isEmpty && note.preview.isEmpty)
-                Text(
-                  isList ? 'Untitled list' : 'Empty note',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    color: theme.disabledColor,
+                ],
+                // The labels, as small chips. On the card and not only in the
+                // drawer, because a note's filing is part of what it is — and
+                // because a shared list that one person has labelled looks the
+                // same to everyone else, which is the whole point of the account
+                // document.
+                if (note.tags.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      for (final tag in note.tags)
+                        _Chip(
+                          // Keyed on the name, because that is what a test and a
+                          // person both look for; the label's identity is on the
+                          // summary and is what every gesture uses.
+                          key: Key('chip:${note.id}:${tag.name}'),
+                          label: tag.name,
+                        ),
+                    ],
                   ),
-                ),
-              if (isList && note.items > 0) ...[
-                const SizedBox(height: 8),
-                Text(
-                  '${note.checked} of ${note.items} done',
-                  style: theme.textTheme.bodySmall,
-                ),
-              ],
-              // The labels, as small chips. On the card and not only in the
-              // drawer, because a note's filing is part of what it is — and
-              // because a shared list that one person has labelled looks the
-              // same to everyone else, which is the whole point of the account
-              // document.
-              if (note.tags.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
-                  children: [
-                    for (final tag in note.tags)
-                      _Chip(
-                        // Keyed on the name, because that is what a test and a
-                        // person both look for; the label's identity is on the
-                        // summary and is what every gesture uses.
-                        key: Key('chip:${note.id}:${tag.name}'),
-                        label: tag.name,
+                ],
+                // Only when the match is not already on the card: a hit on the
+                // title, or on one of the four items the preview shows, needs no
+                // second copy of itself underneath.
+                if (widget.matched != null &&
+                    widget.matched != note.title &&
+                    !note.preview.contains(widget.matched)) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.search,
+                        size: 14,
+                        color: theme.textTheme.bodySmall?.color,
                       ),
-                  ],
-                ),
-              ],
-              // Only when the match is not already on the card: a hit on the
-              // title, or on one of the four items the preview shows, needs no
-              // second copy of itself underneath.
-              if (matched != null &&
-                  matched != note.title &&
-                  !note.preview.contains(matched)) ...[
-                const SizedBox(height: 6),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.search,
-                      size: 14,
-                      color: theme.textTheme.bodySmall?.color,
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        matched!,
-                        key: Key('matched:${note.id}'),
-                        style: theme.textTheme.bodySmall,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          widget.matched!,
+                          key: Key('matched:${note.id}'),
+                          style: theme.textTheme.bodySmall,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
