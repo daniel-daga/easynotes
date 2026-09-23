@@ -237,7 +237,7 @@ class _NoteScreenState extends State<NoteScreen> {
                     key: Key('empty-state'),
                     child: Padding(
                       padding: EdgeInsets.all(24),
-                      child: Text('Nothing on this list yet.'),
+                      child: Text('Nothing on this checklist yet.'),
                     ),
                   )
                 : null
@@ -286,7 +286,7 @@ class _NoteScreenState extends State<NoteScreen> {
               contentPadding: const EdgeInsets.symmetric(horizontal: 8),
               minLeadingWidth: 0,
               leading: const SizedBox(width: 88),
-              title: const Text('+ List entry'),
+              title: const Text('+ Checklist item'),
               onTap: _addListEntry,
             ),
           );
@@ -347,38 +347,12 @@ class _NoteScreenState extends State<NoteScreen> {
           backgroundColor: tint,
           title: null,
           actions: [
-            if (library != null && summary != null)
-              IconButton(
-                key: const Key('pin-button'),
-                icon: Icon(
-                  summary.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                ),
-                tooltip: summary.pinned ? 'Unpin' : 'Pin',
-                onPressed: () => library.setPinned(
-                  summary.id,
-                  !summary.pinned,
-                ),
-              ),
             IconButton(
               key: const Key('share-button'),
               icon: const Icon(Icons.ios_share),
-              tooltip: 'Share this list',
+              tooltip: 'Share this note',
               onPressed: _share,
             ),
-            if (library != null && summary != null)
-              IconButton(
-                key: const Key('archive-button'),
-                icon: Icon(
-                  summary.archived
-                      ? Icons.unarchive_outlined
-                      : Icons.archive_outlined,
-                ),
-                tooltip: summary.archived ? 'Unarchive' : 'Archive',
-                onPressed: () async {
-                  await library.setArchived(summary.id, !summary.archived);
-                  if (mounted) Navigator.of(context).pop();
-                },
-              ),
           ],
         ),
         body: Column(
@@ -389,7 +363,7 @@ class _NoteScreenState extends State<NoteScreen> {
               child: _TitleField(
                 key: ValueKey('title:${note.title}'),
                 title: note.title,
-                hint: isText ? 'Title' : 'Untitled list',
+                hint: isText ? 'Title' : 'Untitled checklist',
                 onChanged: widget.core.setTitle,
               ),
             ),
@@ -445,33 +419,95 @@ class _NoteToolbar extends StatelessWidget {
     context: context,
     builder: (context) => SafeArea(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _ColourChoice(
-              colour: null,
-              selected: note.colour == null,
-              onTap: () async {
-                Navigator.of(context).pop();
-                await library.setColour(note.id, null);
-              },
-            ),
-            for (final colour in NoteColour.values)
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: SizedBox(
+          height: 64,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.zero,
+            children: [
               _ColourChoice(
-                colour: colour,
-                selected: note.colour == colour,
+                colour: null,
+                selected: note.colour == null,
                 onTap: () async {
                   Navigator.of(context).pop();
-                  await library.setColour(note.id, colour);
+                  await library.setColour(note.id, null);
                 },
               ),
-          ],
+              for (final colour in NoteColour.values)
+                _ColourChoice(
+                  colour: colour,
+                  selected: note.colour == colour,
+                  onTap: () async {
+                    Navigator.of(context).pop();
+                    await library.setColour(note.id, colour);
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     ),
+  );
+
+  Future<void> _showActions(BuildContext context) => showModalBottomSheet<void>(
+    context: context,
+    builder: (sheetContext) {
+      void run(Future<void> Function() action) {
+        Navigator.of(sheetContext).pop();
+        unawaited(action());
+      }
+
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!note.trashed)
+              ListTile(
+                leading: Icon(
+                  note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                ),
+                title: Text(note.pinned ? 'Unpin' : 'Pin'),
+                onTap: () => run(
+                  () => library.setPinned(note.id, !note.pinned),
+                ),
+              ),
+            if (!note.trashed && onLabels != null)
+              ListTile(
+                leading: const Icon(Icons.label_outline),
+                title: const Text('Labels'),
+                onTap: () => run(onLabels!),
+              ),
+            if (!note.trashed && onReminders != null)
+              ListTile(
+                leading: const Icon(Icons.notifications_outlined),
+                title: const Text('Reminders'),
+                onTap: () => run(onReminders!),
+              ),
+            if (!note.trashed)
+              ListTile(
+                leading: Icon(
+                  note.archived
+                      ? Icons.unarchive_outlined
+                      : Icons.archive_outlined,
+                ),
+                title: Text(note.archived ? 'Unarchive' : 'Archive'),
+                onTap: () => run(() async {
+                  await library.setArchived(note.id, !note.archived);
+                  if (context.mounted) Navigator.of(context).pop();
+                }),
+              ),
+            ListTile(
+              leading: Icon(
+                note.trashed ? Icons.restore_from_trash : Icons.delete_outline,
+              ),
+              title: Text(note.trashed ? 'Restore' : 'Move to trash'),
+              onTap: () => run(onTrash),
+            ),
+          ],
+        ),
+      );
+    },
   );
 
   @override
@@ -489,56 +525,18 @@ class _NoteToolbar extends StatelessWidget {
           ),
           IconButton(
             key: const Key('kind-toggle'),
-            icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
+            icon: Icon(
+              isText ? Icons.check_box_outlined : Icons.notes_outlined,
+            ),
             tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
             onPressed: onKindToggle,
           ),
           const Spacer(),
-          PopupMenuButton<String>(
+          IconButton(
             key: const Key('note-more-menu'),
             tooltip: 'More note actions',
-            onSelected: (action) {
-              switch (action) {
-                case 'labels':
-                  if (onLabels != null) unawaited(onLabels!());
-                  break;
-                case 'reminders':
-                  if (onReminders != null) unawaited(onReminders!());
-                  break;
-                case 'trash':
-                  unawaited(onTrash());
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              if (onLabels != null)
-                const PopupMenuItem(
-                  value: 'labels',
-                  child: ListTile(
-                    leading: Icon(Icons.label_outline),
-                    title: Text('Labels'),
-                  ),
-                ),
-              if (onReminders != null)
-                const PopupMenuItem(
-                  value: 'reminders',
-                  child: ListTile(
-                    leading: Icon(Icons.notifications_outlined),
-                    title: Text('Reminders'),
-                  ),
-                ),
-              PopupMenuItem(
-                value: 'trash',
-                child: ListTile(
-                  leading: Icon(
-                    note.trashed
-                        ? Icons.restore_from_trash
-                        : Icons.delete_outline,
-                  ),
-                  title: Text(note.trashed ? 'Restore' : 'Move to trash'),
-                ),
-              ),
-            ],
+            icon: const Icon(Icons.more_vert),
+            onPressed: () => _showActions(context),
           ),
         ],
       ),
@@ -558,7 +556,9 @@ class _KindToggleBar extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: IconButton(
         key: const Key('kind-toggle'),
-        icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
+        icon: Icon(
+          isText ? Icons.check_box_outlined : Icons.notes_outlined,
+        ),
         tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
         onPressed: onKindToggle,
       ),
@@ -584,26 +584,29 @@ class _ColourChoice extends StatelessWidget {
     label: colour == null ? 'No colour' : '${colour!.name} colour',
     child: Tooltip(
       message: colour == null ? 'No colour' : colour!.name,
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: noteColourTint(context, colour) ??
-                Theme.of(context).colorScheme.surface,
-            border: Border.all(
-              color: selected
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).dividerColor,
-              width: selected ? 3 : 1,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: noteColourTint(context, colour) ??
+                  Theme.of(context).colorScheme.surface,
+              border: Border.all(
+                color: selected
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).dividerColor,
+                width: selected ? 3 : 1,
+              ),
             ),
+            child: colour == null
+                ? const Icon(Icons.format_color_reset_outlined, size: 20)
+                : null,
           ),
-          child: colour == null
-              ? const Icon(Icons.format_color_reset_outlined, size: 20)
-              : null,
         ),
       ),
     ),

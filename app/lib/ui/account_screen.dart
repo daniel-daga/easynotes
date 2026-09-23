@@ -82,7 +82,7 @@ class _AccountScreenState extends State<AccountScreen> {
       // Nothing is on screen yet, and that has to be said, or the first thing
       // a person sees after typing twelve words carefully is an empty grid.
       _say(
-        'This device is now yours. Your lists arrive when it reaches the relay.',
+        'This device is now yours. Your notes arrive when it reaches the relay.',
       );
     }
   }
@@ -101,19 +101,19 @@ class _AccountScreenState extends State<AccountScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: has
-            ? const [
+            ? [
                 Icon(Icons.devices, size: 48),
                 SizedBox(height: 16),
                 Text(
                   'This device belongs to your account.',
                   key: Key('account-yes'),
-                  style: TextStyle(fontSize: 18),
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
                 SizedBox(height: 12),
                 // It cannot offer to show the words again, and says why, so
                 // that nobody goes looking for the button.
                 Text(
-                  'Your lists, colours, labels and pins follow you to any '
+                  'Your notes, colours, labels and pins follow you to any '
                   'device you set up with your recovery phrase. The phrase is '
                   'not kept anywhere, so it cannot be shown again — the copy '
                   'you wrote down is the only one.',
@@ -122,17 +122,17 @@ class _AccountScreenState extends State<AccountScreen> {
             : [
                 const Icon(Icons.phone_android, size: 48),
                 const SizedBox(height: 16),
-                const Text(
+                Text(
                   'This device is on its own.',
                   key: Key('account-no'),
-                  style: TextStyle(fontSize: 18),
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Set up an account to have your lists on your other devices '
+                  'Set up an account to have your notes on your other devices '
                   'too. There is no password and no email: your account is '
                   'twelve words, which you write down once. Anyone with the '
-                  'words has your lists, and without them nobody can get them '
+                  'words has your notes, and without them nobody can get them '
                   'back — not even us.',
                 ),
                 const SizedBox(height: 24),
@@ -238,7 +238,7 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
         key: const Key('phrase-leave-dialog'),
         title: const Text('Leave without writing it down?'),
         content: const Text(
-          'These words will not be shown again. Without them, your lists '
+          'These words will not be shown again. Without them, your notes '
           'cannot be moved to another device or brought back if this one is '
           'lost.',
         ),
@@ -287,7 +287,7 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
       children: [
         const Text(
           'Write these twelve words down, in order, on paper. They are the '
-          'only way to put your lists on another device, and they will not be '
+          'only way to put your notes on another device, and they will not be '
           'shown again.',
         ),
         const SizedBox(height: 20),
@@ -333,7 +333,7 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
         ),
         const SizedBox(height: 16),
         const Text(
-          'Anyone who has these words has your lists. Do not photograph them '
+          'Anyone who has these words has your notes. Do not photograph them '
           'or keep them in another app.',
         ),
         const SizedBox(height: 24),
@@ -462,7 +462,7 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
         children: [
           const Text(
             'Type the twelve words you wrote down when you set up your '
-            'account, in order. The lists already on this device are kept.',
+            'account, in order. The notes already on this device are kept.',
           ),
           const SizedBox(height: 20),
           TextField(

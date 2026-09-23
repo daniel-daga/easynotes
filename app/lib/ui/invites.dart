@@ -1,4 +1,4 @@
-/// Sharing a list with another person, from both ends.
+/// Sharing a note with another person, from both ends.
 ///
 /// The owner's side is [ShareDialog]: make a link, send it however they like,
 /// and let in whoever asks — after checking the six digits, if they are
@@ -169,7 +169,7 @@ class _ShareDialogState extends State<ShareDialog> {
       builder: (context) => AlertDialog(
         title: const Text('Remove everyone else?'),
         content: const Text(
-          'They will lose this list and cannot read new changes. This cannot '
+          'They will lose this note and cannot read new changes. This cannot '
           'erase anything they already copied or decrypted.',
         ),
         actions: [
@@ -214,7 +214,7 @@ class _ShareDialogState extends State<ShareDialog> {
           children: [
             Text(
               '$name wants to join',
-              style: const TextStyle(fontWeight: FontWeight.w600),
+              style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 4),
             if (request.readable)
@@ -232,7 +232,7 @@ class _ShareDialogState extends State<ShareDialog> {
                 TextButton(
                   key: Key('decline-${request.id}'),
                   onPressed: _busy ? null : () => _decline(request),
-                  child: const Text('Turn away'),
+                  child: const Text('Decline'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
@@ -240,7 +240,7 @@ class _ShareDialogState extends State<ShareDialog> {
                   onPressed: _busy || !request.readable
                       ? null
                       : () => _approve(request),
-                  child: const Text('Let in'),
+                  child: const Text('Approve'),
                 ),
               ],
             ),
@@ -261,7 +261,7 @@ class _ShareDialogState extends State<ShareDialog> {
           )
         else if (_admitted != null)
           Text(
-            '${_admitted!.isEmpty ? 'They' : _admitted} can open this list now.',
+            '${_admitted!.isEmpty ? 'They' : _admitted} can open this note now.',
             key: const Key('invite-admitted'),
           )
         else
@@ -302,7 +302,7 @@ class _ShareDialogState extends State<ShareDialog> {
       const SizedBox(height: 4),
       Text(
         'It works once and stops in ${_days(_requests?.expiresIn ?? invite.expiresIn)}. '
-        'It does not contain the list, only a way to ask for it.',
+        'It does not contain the note, only a way to ask for it.',
         style: Theme.of(context).textTheme.bodySmall,
       ),
       const SizedBox(height: 12),
@@ -316,7 +316,7 @@ class _ShareDialogState extends State<ShareDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Share this list'),
+      title: const Text('Share this note'),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -412,7 +412,7 @@ class _JoinDialogState extends State<JoinDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Join a list'),
+      title: const Text('Join a note'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -523,7 +523,7 @@ class _WaitingDialogState extends State<WaitingDialog> {
     final ended = _ended;
     if (ended != null) {
       return AlertDialog(
-        title: const Text('Not let in'),
+        title: const Text('Request declined'),
         content: Text(
           ended.state == JoinState.declined
               ? 'The owner turned this request away.'
@@ -539,7 +539,7 @@ class _WaitingDialogState extends State<WaitingDialog> {
       );
     }
     return AlertDialog(
-      title: const Text('Waiting to be let in'),
+      title: const Text('Waiting for approval'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -588,8 +588,8 @@ class _Asking {
 
 /// What sits above the grid while an invite is waiting on either side.
 ///
-/// One line per person asking to join one of this device's lists, with a way
-/// to go and answer; one line per list this device has asked to join, with the
+/// One line per person asking to join one of this device's notes, with a way
+/// to go and answer; one line per note this device has asked to join, with the
 /// code and a way to stop. It polls on its own timer, so a person who shared
 /// a link and closed the dialog still finds out that someone opened it.
 class InviteBanners extends StatefulWidget {
@@ -660,7 +660,7 @@ class _InviteBannersState extends State<InviteBanners> {
               if (check.noteId != null) widget.onJoined(check.noteId!);
             case JoinState.declined:
               _ended[join.inviteId] =
-                  'Your request to join a list was turned away.';
+                  'Your request to join a note was declined.';
             case JoinState.gone:
               _ended[join.inviteId] =
                   check.message ??
@@ -700,7 +700,7 @@ class _InviteBannersState extends State<InviteBanners> {
         _Line(
           key: Key('join-banner-${join.inviteId}'),
           colour: scheme.secondaryContainer,
-          text: 'Waiting to be let in to a list. Your code is ${join.code}.',
+          text: 'Waiting to join a note. Your code is ${join.code}.',
           action: 'Stop waiting',
           onAction: () async {
             await widget.invites.cancelJoin(join.inviteId);

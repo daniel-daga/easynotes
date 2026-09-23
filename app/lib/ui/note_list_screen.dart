@@ -36,7 +36,7 @@ import 'sync_button.dart';
 /// The list the library hands over holds all three, because filtering is a
 /// question about a screen and not about a device. This is the filter.
 enum _Shelf {
-  notes('EasyNotes', 'No lists yet. Make one.'),
+  notes('EasyNotes', 'No notes yet. Make one.'),
   archive('Archive', 'Nothing is archived.'),
   trash('Trash', 'The trash is empty.');
 
@@ -62,12 +62,12 @@ extension _ToggleSet<T> on Set<T> {
 }
 
 String _kindName(NoteKind kind) => switch (kind) {
-  NoteKind.text => 'Text',
+  NoteKind.text => 'Notes',
   NoteKind.checklist => 'Checklist',
 };
 
 String _colourName(String value) => value == 'none'
-    ? 'No color'
+    ? 'No colour'
     : '${value[0].toUpperCase()}${value.substring(1)}';
 
 /// What the screen is showing: one of the three shelves, or one label.
@@ -405,7 +405,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         key: const Key('joined-in-background'),
-        content: const Text('You were let in to a list.'),
+        content: const Text('You can open the note now.'),
         action: SnackBarAction(
           label: 'Open',
           onPressed: () => _openNote(noteId),
@@ -419,7 +419,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
         .where((n) => n.id == noteId)
         .firstOrNull
         ?.title;
-    return title == null || title.isEmpty ? 'a list' : '"$title"';
+    return title == null || title.isEmpty ? 'a note' : '"$title"';
   }
 
   /// Where this device becomes one of a person's devices. Rebuilt on the way
@@ -451,7 +451,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final title = note.title.trim();
     final confirmed = await _confirmDelete(
       question: title.isEmpty
-          ? 'Delete this list for good?'
+          ? 'Delete this note permanently?'
           : 'Delete "$title" for good?',
       action: 'Delete',
     );
@@ -463,8 +463,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _emptyTrash(int count) async {
     final confirmed = await _confirmDelete(
       question: count == 1
-          ? 'Delete 1 list for good?'
-          : 'Delete all $count lists for good?',
+          ? 'Delete 1 note permanently?'
+          : 'Delete all $count notes permanently?',
       action: 'Delete all',
     );
     if (!confirmed || !mounted) return;
@@ -616,7 +616,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   IconButton(
                     key: const Key('join-button'),
                     icon: const Icon(Icons.group_add_outlined),
-                    tooltip: 'Join a list',
+                    tooltip: 'Join a note',
                     onPressed: _join,
                   ),
                 // Only where there is a trash and something in it. An empty
@@ -657,7 +657,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     FloatingActionButton.small(
                       key: const Key('new-list-button'),
                       heroTag: 'new-list',
-                      tooltip: 'New list',
+                      tooltip: 'New checklist',
                       onPressed: () => _createNote(kind: NoteKind.checklist),
                       child: const Icon(Icons.check_box_outlined),
                     ),
@@ -999,7 +999,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
             _FacetChip(
               key: const Key('filter-type-text'),
               icon: Icons.notes_outlined,
-              label: 'Text',
+              label: 'Notes',
               count: _kindCount(NoteKind.text),
               selected: widget.kinds.contains(NoteKind.text),
               onSelected: () => widget.onKind(NoteKind.text),
@@ -1007,7 +1007,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
             _FacetChip(
               key: const Key('filter-type-checklist'),
               icon: Icons.check_box_outlined,
-              label: 'Lists',
+              label: 'Checklists',
               count: _kindCount(NoteKind.checklist),
               selected: widget.kinds.contains(NoteKind.checklist),
               onSelected: () => widget.onKind(NoteKind.checklist),
@@ -1046,7 +1046,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
           children: [
             _FacetChip(
               key: const Key('filter-reminders-has'),
-              icon: Icons.notifications_none,
+              icon: Icons.notifications_outlined,
               label: 'Has reminder',
               count: _reminderCount(_ReminderFilter.hasReminder),
               selected: widget.reminderFilters.contains(
@@ -1083,7 +1083,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
                   Expanded(
                     child: Text(
                       'People filters will be available when EasyNotes can show '
-                      'who has access to each list.',
+                      'who has access to each note.',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -1095,7 +1095,7 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
           ],
         ),
         _FilterSection(
-          title: 'Colors',
+          title: 'Colours',
           trailing: colourValues.length > 5
               ? TextButton(
                   onPressed: () =>
@@ -1767,7 +1767,7 @@ class _NoteActions extends StatelessWidget {
               // syncing, and what changes is that this person stops seeing it.
               subtitle: note.trashed
                   ? null
-                  : const Text('Kept, and out of the grid'),
+                  : const Text('Removed from the notes view'),
               onTap: () =>
                   run(() => library.setTrashed(note.id, !note.trashed)),
             ),
@@ -1782,7 +1782,7 @@ class _NoteActions extends StatelessWidget {
                   color: Theme.of(context).colorScheme.error,
                 ),
                 title: Text(
-                  'Delete for good',
+                  'Delete permanently',
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
                 subtitle: const Text('Gone from this device, with no undo'),
@@ -2041,26 +2041,35 @@ class _Swatch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-      child: InkWell(
-        key: Key('swatch-${colour?.name ?? 'none'}'),
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: noteColourTint(context, colour) ?? theme.colorScheme.surface,
-            border: Border.all(
-              color: chosen ? theme.colorScheme.primary : theme.dividerColor,
-              width: chosen ? 3 : 1,
+    return Semantics(
+      button: true,
+      selected: chosen,
+      label: colour == null ? 'No colour' : '${colour!.name} colour',
+      child: Tooltip(
+        message: colour == null ? 'No colour' : colour!.name,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+          child: InkWell(
+            key: Key('swatch-${colour?.name ?? 'none'}'),
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color:
+                    noteColourTint(context, colour) ?? theme.colorScheme.surface,
+                border: Border.all(
+                  color: chosen ? theme.colorScheme.primary : theme.dividerColor,
+                  width: chosen ? 3 : 1,
+                ),
+              ),
+              child: colour == null
+                  ? const Icon(Icons.format_color_reset_outlined, size: 20)
+                  : null,
             ),
           ),
-          child: colour == null
-              ? Icon(Icons.format_color_reset_outlined, size: 20)
-              : null,
         ),
       ),
     );
@@ -2251,7 +2260,7 @@ class _NoteCardState extends State<_NoteCard> {
                   ),
                 if (note.title.isEmpty && note.preview.isEmpty)
                   Text(
-                    isList ? 'Untitled list' : 'Empty note',
+                    isList ? 'Untitled checklist' : 'Empty note',
                     style: theme.textTheme.titleMedium?.copyWith(
                       color: theme.disabledColor,
                     ),
