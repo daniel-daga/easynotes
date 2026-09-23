@@ -12,6 +12,8 @@
 /// the two-device case cannot drift from the one-device case.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../core/note_core.dart';
@@ -53,23 +55,72 @@ class NoteScreen extends StatefulWidget {
 }
 
 class _NoteScreenState extends State<NoteScreen> {
-  final _newItemController = TextEditingController();
-  final _newItemFocus = FocusNode();
+  final Map<String, GlobalKey<_ItemRowState>> _itemRowKeys = {};
+  final Map<String, FocusNode> _itemFocusNodes = {};
+  final Set<String> _newBlankItems = {};
+  int _pendingItemWrites = 0;
+  Completer<void>? _itemWritesDone;
+  bool _allowPop = false;
+  bool _waitingToPop = false;
+  bool _crossedOffExpanded = false;
 
   @override
   void dispose() {
-    _newItemController.dispose();
-    _newItemFocus.dispose();
+    for (final focus in _itemFocusNodes.values) {
+      focus.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> _addItem() async {
-    final text = _newItemController.text.trim();
-    if (text.isEmpty) return;
-    // Clear first so a slow core cannot swallow the next thing typed.
-    _newItemController.clear();
-    await widget.core.addItem(text);
-    _newItemFocus.requestFocus();
+  FocusNode _focusForItem(String id) =>
+      _itemFocusNodes.putIfAbsent(id, FocusNode.new);
+
+  void _itemWriteStateChanged(bool writing) {
+    if (writing) {
+      if (_pendingItemWrites == 0) _itemWritesDone = Completer<void>();
+      _pendingItemWrites++;
+    } else {
+      _pendingItemWrites--;
+      if (_pendingItemWrites == 0) _itemWritesDone?.complete();
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _popAfterItemWrites() async {
+    if (_waitingToPop) return;
+    _waitingToPop = true;
+    while (_pendingItemWrites > 0) {
+      await _itemWritesDone?.future;
+    }
+    if (!mounted) return;
+    for (final id in _newBlankItems.toList()) {
+      final item = widget.core.current.items
+          .where((item) => item.id == id)
+          .firstOrNull;
+      if (item != null && item.text.trim().isEmpty) {
+        await widget.core.removeItem(id);
+        _itemRowKeys.remove(id);
+      }
+    }
+    _newBlankItems.clear();
+    setState(() => _allowPop = true);
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _addListEntry() async {
+    final id = await widget.core.addItem('');
+    _newBlankItems.add(id);
+    final items = widget.core.current.items;
+    final itemIndex = items.indexWhere((item) => item.id == id);
+    if (itemIndex < 0) return;
+
+    // Keep a new unchecked entry at the end of the unchecked group, above the
+    // crossed-off section, even when checked rows were originally interleaved.
+    final firstChecked = items.indexWhere((item) => item.checked);
+    final target = firstChecked < 0 ? items.length - 1 : firstChecked;
+    if (itemIndex != target) await widget.core.moveItem(id, target);
+    _focusForItem(id).requestFocus();
   }
 
   Future<void> _share() => showDialog<void>(
@@ -78,15 +129,48 @@ class _NoteScreenState extends State<NoteScreen> {
         ShareDialog(invites: widget.invites, noteId: widget.noteId),
   );
 
-  _ItemRow _row(ItemView item) => _ItemRow(
-    key: ValueKey(item.id),
+  _ItemRow _row(
+    ItemView item, {
+    int? reorderIndex,
+    Future<void> Function()? onSubmitted,
+  }) => _ItemRow(
+    key: _itemRowKeys.putIfAbsent(
+      item.id,
+      () => GlobalKey<_ItemRowState>(debugLabel: 'item:${item.id}'),
+    ),
     item: item,
+    focusNode: _focusForItem(item.id),
+    reorderIndex: reorderIndex,
     onChecked: (v) => widget.core.setChecked(item.id, v ?? false),
     onTextChanged: (t) => widget.core.setItemText(item.id, t),
-    onDelete: () => widget.core.removeItem(item.id),
+    onWriteStateChanged: _itemWriteStateChanged,
+    onDelete: () => _removeItem(item.id),
+    onSubmitted: onSubmitted,
   );
 
-  _BodyField _bodyField(NoteView note) => _BodyField(
+  Future<void> _removeItem(String id) async {
+    await widget.core.removeItem(id);
+    _newBlankItems.remove(id);
+    // Keep the detached node until this note closes; disposing it here can
+    // race the stream rebuild that unmounts its row.
+    _itemRowKeys.remove(id);
+  }
+
+  Future<void> _insertItemAfter(String itemId) async {
+    final before = widget.core.current.items;
+    if (!before.any((item) => item.id == itemId)) return;
+
+    final insertedId = await widget.core.addItem('');
+    _newBlankItems.add(insertedId);
+    final current = widget.core.current.items;
+    final index = current.indexWhere((item) => item.id == itemId);
+    if (index >= 0) await widget.core.moveItem(insertedId, index + 1);
+
+    final focus = _focusForItem(insertedId);
+    focus.requestFocus();
+  }
+
+  _BodyField _bodyField(NoteView note, {bool expands = false}) => _BodyField(
     // Not keyed on the text, unlike the title: the field keeps its own
     // controller across remote edits so the caret stays where the person left
     // it. See [_BodyFieldState.didUpdateWidget].
@@ -95,76 +179,123 @@ class _NoteScreenState extends State<NoteScreen> {
     // A checklist only has a body when a merge left one there, so it is
     // prompted for as what it is rather than as the place to start typing.
     hint: note.kind == NoteKind.text ? 'Note' : 'Text',
+    expands: expands,
     onEdit: widget.core.editBody,
   );
 
   /// A text note: the body, and under it any items a merge left on it — drawn,
   /// because the rule is that a merge never hides anything, but not reorderable,
   /// because switching to a checklist is the way to work on them as a list.
-  Widget _text(NoteView note) => ListView(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    children: [_bodyField(note), for (final item in note.items) _row(item)],
+  Widget _text(NoteView note) => LayoutBuilder(
+    builder: (context, constraints) {
+      // Give the body the unused viewport height so tapping its blank area
+      // focuses the editor, while keeping room for any items a merge left here.
+      final bodyHeight = (constraints.maxHeight - note.items.length * 56 - 16)
+          .clamp(160.0, double.infinity)
+          .toDouble();
+      return ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        children: [
+          SizedBox(height: bodyHeight, child: _bodyField(note, expands: true)),
+          for (final item in note.items) _row(item),
+        ],
+      );
+    },
   );
 
   /// A checklist, with any body a merge left on it above the items.
-  Widget _checklist(NoteView note) => Column(
-    children: [
-      Expanded(
-        child: note.items.isEmpty && note.body.isEmpty
-            ? const Center(
-                key: Key('empty-state'),
-                child: Text('Nothing on this list yet.'),
+  Widget _checklist(NoteView note) {
+    final active = note.items.where((item) => !item.checked).toList();
+    final crossedOff = note.items.where((item) => item.checked).toList();
+    final addIndex = active.length;
+    final crossedHeaderIndex = addIndex + 1;
+    final checkedStartIndex = crossedHeaderIndex + 1;
+    final itemCount =
+        addIndex +
+        1 +
+        (crossedOff.isEmpty
+            ? 0
+            : 1 + (_crossedOffExpanded ? crossedOff.length : 0));
+
+    return ReorderableListView.builder(
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.only(top: 8, bottom: 16),
+      header: note.body.isEmpty
+          ? note.items.isEmpty
+                ? const Center(
+                    key: Key('empty-state'),
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('Nothing on this list yet.'),
+                    ),
+                  )
+                : null
+          : Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _bodyField(note),
+            ),
+      itemCount: itemCount,
+      // Only unchecked rows have drag handles. Convert the target position in
+      // that visible group back to the core's complete item order.
+      onReorderItem: (oldIndex, newIndex) {
+        if (oldIndex >= active.length) return;
+        final moving = active[oldIndex];
+        final remaining = note.items
+            .where((item) => item.id != moving.id)
+            .toList();
+        final remainingActive = remaining
+            .where((item) => !item.checked)
+            .toList();
+        if (remainingActive.isEmpty) return;
+        final target = newIndex.clamp(0, remainingActive.length).toInt();
+        final coreIndex = target < remainingActive.length
+            ? remaining.indexWhere(
+                (item) => item.id == remainingActive[target].id,
               )
-            : ReorderableListView.builder(
-                header: note.body.isEmpty
-                    ? null
-                    : Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: _bodyField(note),
-                      ),
-                itemCount: note.items.length,
-                // `onReorderItem`, not the deprecated `onReorder`: it reports
-                // the target index with the dragged item already taken out of
-                // the list, which is exactly what the core means by "move to
-                // index N". The old callback counted the dragged item too and
-                // needed adjusting here, which is a subtle off-by-one to keep
-                // owning.
-                onReorderItem: (oldIndex, newIndex) {
-                  widget.core.moveItem(note.items[oldIndex].id, newIndex);
-                },
-                itemBuilder: (context, index) => _row(note.items[index]),
-              ),
-      ),
-      const Divider(height: 1),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                key: const Key('new-item-field'),
-                controller: _newItemController,
-                focusNode: _newItemFocus,
-                decoration: const InputDecoration(
-                  hintText: 'Add an item',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                onSubmitted: (_) => _addItem(),
-              ),
+            : remaining.indexWhere(
+                    (item) => item.id == remainingActive.last.id,
+                  ) +
+                  1;
+        widget.core.moveItem(moving.id, coreIndex);
+      },
+      itemBuilder: (context, index) {
+        if (index < active.length) {
+          final item = active[index];
+          return _row(
+            item,
+            reorderIndex: index,
+            onSubmitted: () => _insertItemAfter(item.id),
+          );
+        }
+        if (index == addIndex) {
+          return KeyedSubtree(
+            key: const ValueKey('add-list-entry-row'),
+            child: ListTile(
+              key: const Key('add-list-entry'),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              minLeadingWidth: 0,
+              leading: const SizedBox(width: 88),
+              title: const Text('+ List entry'),
+              onTap: _addListEntry,
             ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              key: const Key('add-item-button'),
-              icon: const Icon(Icons.add),
-              tooltip: 'Add',
-              onPressed: _addItem,
+          );
+        }
+        if (crossedOff.isNotEmpty && index == crossedHeaderIndex) {
+          return ListTile(
+            key: const ValueKey('crossed-off-items'),
+            title: Text('Crossed off items (${crossedOff.length})'),
+            trailing: Icon(
+              _crossedOffExpanded ? Icons.expand_less : Icons.expand_more,
             ),
-          ],
-        ),
-      ),
-    ],
-  );
+            onTap: () =>
+                setState(() => _crossedOffExpanded = !_crossedOffExpanded),
+          );
+        }
+        final item = crossedOff[index - checkedStartIndex];
+        return _row(item, onSubmitted: () => _insertItemAfter(item.id));
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -174,44 +305,51 @@ class _NoteScreenState extends State<NoteScreen> {
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
         final isText = note.kind == NoteKind.text;
-        return Scaffold(
-          appBar: AppBar(
-            title: _TitleField(
-              // Keyed on the title so that a title arriving from another device
-              // rebuilds the field instead of leaving stale text in it.
-              key: ValueKey('title:${note.title}'),
-              title: note.title,
-              hint: isText ? 'Title' : 'Untitled list',
-              onChanged: widget.core.setTitle,
-            ),
-            actions: [
-              // Keep's "show checkboxes": the same note, its content carried
-              // across. Shared, so it switches the note for everyone on it.
-              IconButton(
-                key: const Key('kind-toggle'),
-                icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
-                tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
-                onPressed: () => widget.core.setKind(
-                  isText ? NoteKind.checklist : NoteKind.text,
+        return PopScope<Object?>(
+          canPop:
+              _allowPop || (_pendingItemWrites == 0 && _newBlankItems.isEmpty),
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) unawaited(_popAfterItemWrites());
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              title: _TitleField(
+                // Keyed on the title so that a title arriving from another device
+                // rebuilds the field instead of leaving stale text in it.
+                key: ValueKey('title:${note.title}'),
+                title: note.title,
+                hint: isText ? 'Title' : 'Untitled list',
+                onChanged: widget.core.setTitle,
+              ),
+              actions: [
+                // Keep's "show checkboxes": the same note, its content carried
+                // across. Shared, so it switches the note for everyone on it.
+                IconButton(
+                  key: const Key('kind-toggle'),
+                  icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
+                  tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+                  onPressed: () => widget.core.setKind(
+                    isText ? NoteKind.checklist : NoteKind.text,
+                  ),
                 ),
-              ),
-              SyncStatusButton(
-                stream: widget.core.watchSync(),
-                initial: widget.core.syncStatus,
-              ),
-              IconButton(
-                key: const Key('share-button'),
-                icon: const Icon(Icons.ios_share),
-                tooltip: 'Share this list',
-                onPressed: _share,
-              ),
-            ],
-          ),
-          body: Column(
-            children: [
-              StorageBanner(storage: widget.storage),
-              Expanded(child: isText ? _text(note) : _checklist(note)),
-            ],
+                SyncStatusButton(
+                  stream: widget.core.watchSync(),
+                  initial: widget.core.syncStatus,
+                ),
+                IconButton(
+                  key: const Key('share-button'),
+                  icon: const Icon(Icons.ios_share),
+                  tooltip: 'Share this list',
+                  onPressed: _share,
+                ),
+              ],
+            ),
+            body: Column(
+              children: [
+                StorageBanner(storage: widget.storage),
+                Expanded(child: isText ? _text(note) : _checklist(note)),
+              ],
+            ),
           ),
         );
       },
@@ -310,11 +448,13 @@ class _BodyField extends StatefulWidget {
     super.key,
     required this.body,
     required this.hint,
+    this.expands = false,
     required this.onEdit,
   });
 
   final String body;
   final String hint;
+  final bool expands;
   final Future<void> Function(String from, String to) onEdit;
 
   @override
@@ -330,6 +470,11 @@ class _BodyFieldState extends State<_BodyField> {
 
   /// Texts sent whose view has not come back yet, oldest first.
   final List<String> _sent = [];
+
+  /// Bodies those sends started from. The core call can finish before its
+  /// updated view reaches this widget, so a completion-time read may still be
+  /// one of these older bodies. Never adopt one over newer text in the field.
+  final List<String> _sentFrom = [];
   bool _sending = false;
   String? _queued;
 
@@ -345,6 +490,7 @@ class _BodyFieldState extends State<_BodyField> {
         _queued = null;
         _sent.add(next);
         final from = _base;
+        _sentFrom.add(from);
         _base = next;
         await widget.onEdit(from, next);
         next = _queued;
@@ -370,12 +516,19 @@ class _BodyFieldState extends State<_BodyField> {
     if (own >= 0) {
       // Everything sent up to it has come back too, by now or never.
       _sent.removeRange(0, own + 1);
+      _sentFrom.removeRange(0, own + 1);
+      return;
+    }
+    if (_sentFrom.contains(body)) {
+      // This is a view from before one of our in-flight edits, not a remote
+      // change. Adopting it would move the caret back as the person types.
       return;
     }
     if (body == _controller.text) return;
     // Someone else's change, or theirs merged with this field's: either way
     // it is what the core now holds, and what the next send changes from.
     _sent.clear();
+    _sentFrom.clear();
     _base = body;
     _adopt(body);
   }
@@ -437,6 +590,8 @@ class _BodyFieldState extends State<_BodyField> {
       key: const Key('body-text'),
       controller: _controller,
       keyboardType: TextInputType.multiline,
+      expands: widget.expands,
+      minLines: widget.expands ? null : 1,
       maxLines: null,
       decoration: InputDecoration(
         hintText: widget.hint,
@@ -447,20 +602,28 @@ class _BodyFieldState extends State<_BodyField> {
   }
 }
 
-/// One checklist row: checkbox, editable text, drag handle, delete.
+/// One item row: drag handle when reorderable, checkbox, editable text, delete.
 class _ItemRow extends StatefulWidget {
   const _ItemRow({
     super.key,
     required this.item,
+    required this.focusNode,
+    this.reorderIndex,
     required this.onChecked,
     required this.onTextChanged,
+    required this.onWriteStateChanged,
     required this.onDelete,
+    this.onSubmitted,
   });
 
   final ItemView item;
+  final FocusNode focusNode;
+  final int? reorderIndex;
   final ValueChanged<bool?> onChecked;
-  final ValueChanged<String> onTextChanged;
+  final Future<void> Function(String) onTextChanged;
+  final ValueChanged<bool> onWriteStateChanged;
   final VoidCallback onDelete;
+  final Future<void> Function()? onSubmitted;
 
   @override
   State<_ItemRow> createState() => _ItemRowState();
@@ -468,15 +631,69 @@ class _ItemRow extends StatefulWidget {
 
 class _ItemRowState extends State<_ItemRow> {
   late final _controller = TextEditingController(text: widget.item.text);
-  late final _focus = FocusNode()..addListener(_onFocusChange);
+  late String _lastWritten = widget.item.text;
+  FocusNode get _focus => widget.focusNode;
+  bool _submitting = false;
+  bool _writing = false;
+  String? _queuedText;
+  Completer<void>? _writeDone;
 
-  void _onFocusChange() {
-    if (!_focus.hasFocus) _commit();
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocusChange);
   }
 
-  void _commit() {
-    if (_controller.text != widget.item.text) {
-      widget.onTextChanged(_controller.text);
+  void _onFocusChange() {
+    if (mounted) setState(() {});
+    if (!_focus.hasFocus && !_submitting) unawaited(_commit());
+  }
+
+  Future<void> _write(String text) async {
+    if (_writing) {
+      _queuedText = text;
+      return;
+    }
+    _writing = true;
+    widget.onWriteStateChanged(true);
+    final done = Completer<void>();
+    _writeDone = done;
+    try {
+      String? next = text;
+      while (next != null) {
+        _queuedText = null;
+        if (next != _lastWritten) {
+          await widget.onTextChanged(next);
+          _lastWritten = next;
+        }
+        next = _queuedText;
+      }
+    } finally {
+      _writing = false;
+      _writeDone = null;
+      done.complete();
+      widget.onWriteStateChanged(false);
+    }
+  }
+
+  Future<void> _commit() async {
+    final text = _controller.text;
+    if (_writing) {
+      _queuedText = text;
+      await _writeDone?.future;
+    } else if (text != _lastWritten) {
+      await _write(text);
+    }
+  }
+
+  Future<void> _submit() async {
+    if (_submitting) return;
+    _submitting = true;
+    try {
+      await _commit();
+      await widget.onSubmitted?.call();
+    } finally {
+      _submitting = false;
     }
   }
 
@@ -487,13 +704,13 @@ class _ItemRowState extends State<_ItemRow> {
     // new value, unless this device is the one typing into it.
     if (widget.item.text != old.item.text && !_focus.hasFocus) {
       _controller.text = widget.item.text;
+      _lastWritten = widget.item.text;
     }
   }
 
   @override
   void dispose() {
     _focus.removeListener(_onFocusChange);
-    _focus.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -502,15 +719,34 @@ class _ItemRowState extends State<_ItemRow> {
   Widget build(BuildContext context) {
     final item = widget.item;
     return ListTile(
-      leading: Checkbox(
-        key: Key('check:${item.id}'),
-        value: item.checked,
-        onChanged: widget.onChecked,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+      minLeadingWidth: 0,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.reorderIndex != null)
+            ReorderableDragStartListener(
+              index: widget.reorderIndex!,
+              child: const SizedBox(
+                width: 40,
+                height: 48,
+                child: Icon(Icons.drag_handle),
+              ),
+            ),
+          Checkbox(
+            key: Key('check:${item.id}'),
+            value: item.checked,
+            onChanged: widget.onChecked,
+          ),
+        ],
       ),
       title: TextField(
         key: Key('text:${item.id}'),
         controller: _controller,
         focusNode: _focus,
+        textInputAction: widget.onSubmitted == null
+            ? null
+            : TextInputAction.next,
         decoration: const InputDecoration(
           border: InputBorder.none,
           isDense: true,
@@ -521,20 +757,19 @@ class _ItemRowState extends State<_ItemRow> {
                 color: Theme.of(context).disabledColor,
               )
             : null,
-        onSubmitted: (_) => _commit(),
+        onChanged: _write,
+        onSubmitted: widget.onSubmitted == null
+            ? (_) => _commit()
+            : (_) => _submit(),
       ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            key: Key('delete:${item.id}'),
-            icon: const Icon(Icons.close),
-            tooltip: 'Delete',
-            onPressed: widget.onDelete,
-          ),
-          const Icon(Icons.drag_handle),
-        ],
-      ),
+      trailing: _focus.hasFocus
+          ? IconButton(
+              key: Key('delete:${item.id}'),
+              icon: const Icon(Icons.close),
+              tooltip: 'Delete',
+              onPressed: widget.onDelete,
+            )
+          : null,
     );
   }
 }

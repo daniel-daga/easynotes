@@ -1472,9 +1472,12 @@ class _MasonryGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // About 260 logical pixels a column: narrower and a shopping list wraps
-        // every line, wider and a phone shows one column when it could show two.
-        final columns = (constraints.maxWidth / 260).floor().clamp(1, 4);
+        // Phones use two columns so grid view remains distinct from the list,
+        // including on narrower handsets. Wider layouts add columns at roughly
+        // 260 logical pixels each.
+        final columns = constraints.maxWidth < 600
+            ? 2
+            : (constraints.maxWidth / 260).floor().clamp(2, 4);
         final buckets = List.generate(columns, (_) => <Widget>[]);
         final heights = List.filled(columns, 0.0);
         for (final card in children) {

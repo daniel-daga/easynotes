@@ -84,8 +84,7 @@ class SyncButton extends StatelessWidget {
       tooltip: syncSentence(status),
       onPressed: onPressed,
     );
-    if (status.pending == 0) return button;
-    return Badge.count(count: status.pending, child: button);
+    return button;
   }
 }
 
