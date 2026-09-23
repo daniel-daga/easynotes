@@ -114,6 +114,22 @@ until it has a second real use or a clear independent role.
 
 ## Layout and interaction
 
+### Search
+
+- Search uses a full-width header with a persistent “Back to Home” action.
+  Leaving search clears its text and selected filter.
+- Empty search shows the filter browser, including the People placeholder.
+  Choose exactly one filter across Type, Labels, Reminders, and Colour, then
+  optionally type to search within it. The field names the scope, for example
+  “Search in Checklists.” Results have no filter chips or dropdowns.
+- The always-visible × clears both text and the selected filter and returns
+  to the filter browser. Manually deleting text keeps the selected filter.
+- Search includes Notes and Archive, with archived notes marked. Search
+  opened from Trash includes only Trash. Labels do not implicitly restrict
+  search; select a label explicitly in the filter browser.
+
+### General
+
 - Let content size itself with Material layout widgets. Use fixed dimensions
   only for controls whose target or visual geometry needs them, such as color
   swatches.

@@ -302,9 +302,7 @@ void main() {
     expect(inList, greaterThan(inGrid));
   });
 
-  testWidgets('sync status is available in the home drawer', (
-    tester,
-  ) async {
+  testWidgets('sync status is available in the home drawer', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);
 
@@ -1037,7 +1035,9 @@ void main() {
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
   });
 
-  testWidgets('a search on a label shelf searches that label', (tester) async {
+  testWidgets('search from a label includes notes outside that label', (
+    tester,
+  ) async {
     final library = twoLists();
     await pumpList(tester, library);
     await labelNote(tester, 'groceries', 'errands');
@@ -1049,10 +1049,10 @@ void main() {
 
     await tester.tap(find.byKey(const Key('search-button')));
     await tester.pumpAndSettle();
-    // "screws" is on the unlabelled note, and so is not on this shelf.
+    // Search includes unlabelled notes too.
     await tester.enterText(find.byKey(const Key('search-field')), 'screws');
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
 
     await tester.enterText(find.byKey(const Key('search-field')), 'milk');
     await tester.pumpAndSettle();
@@ -1161,7 +1161,9 @@ void main() {
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
   });
 
-  testWidgets('a search is scoped to the shelf it was made on', (tester) async {
+  testWidgets('search includes Archive and Back always returns Home', (
+    tester,
+  ) async {
     final library = aLongList();
     await pumpList(tester, library);
     await library.setArchived('groceries', true);
@@ -1169,7 +1171,8 @@ void main() {
 
     // Archived, so not in the grid — and so not in a search of the grid.
     await searchFor(tester, 'groc');
-    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.text('Archived'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('search-close')));
     await tester.pumpAndSettle();
@@ -1180,6 +1183,155 @@ void main() {
     await searchFor(tester, 'groc');
 
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('search-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsNothing);
+  });
+
+  for (final width in [360.0, 800.0]) {
+    testWidgets('one search filter and reset at width $width', (tester) async {
+      tester.view.physicalSize = Size(width, 740);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final library = twoLists();
+      await library.createNote(kind: NoteKind.text);
+      await pumpList(tester, library);
+      await tester.tap(find.byKey(const Key('search-button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('search-clear')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('search-clear')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('search-filter-browser')), findsOneWidget);
+      final hintY = tester.getCenter(find.text('Search notes and archive')).dy;
+      await tester.tap(find.byKey(const Key('filter-type-checklist')));
+      await tester.pump();
+      // Check intermediate frames: settling alone misses a hint that jumps.
+      for (final milliseconds in [0, 16, 50, 200]) {
+        await tester.pump(Duration(milliseconds: milliseconds));
+        expect(
+          tester.getCenter(find.text('Search in Checklists')).dy,
+          closeTo(hintY, 0.1),
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('search-field')))
+            .decoration!
+            .hintText,
+        'Search in Checklists',
+      );
+      expect(find.byKey(const Key('search-filter-browser')), findsNothing);
+      expect(find.byType(InputChip), findsNothing);
+      expect(find.byType(ActionChip), findsNothing);
+      expect(find.byIcon(Icons.arrow_drop_down), findsNothing);
+      expect(find.text('Empty note'), findsNothing);
+      await tester.enterText(find.byKey(const Key('search-field')), 'milk');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+      expect(find.byKey(const Key('note:hardware')), findsNothing);
+      // Deleting just the text keeps the scope.
+      await tester.enterText(find.byKey(const Key('search-field')), '');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+      expect(find.byKey(const Key('search-filter-browser')), findsNothing);
+      await tester.enterText(find.byKey(const Key('search-field')), 'missing');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('no-matches')), findsOneWidget);
+      // X resets both scope and text, even from no results.
+      await tester.tap(find.byKey(const Key('search-clear')));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('search-field')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      expect(find.byKey(const Key('search-filter-browser')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('filter-type-text')));
+      await tester.pumpAndSettle();
+      expect(find.text('Empty note'), findsOneWidget);
+      expect(find.byKey(const Key('note:groceries')), findsNothing);
+      expect(
+        tester.getCenter(find.text('Search in Notes')).dy,
+        closeTo(
+          tester.getCenter(find.byKey(const Key('search-field'))).dy,
+          0.1,
+        ),
+      );
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('search-field')))
+            .decoration!
+            .hintText,
+        'Search in Notes',
+      );
+      await tester.tap(find.byKey(const Key('search-close')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('search-field')), findsNothing);
+      expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('label search and colour search do not combine', (tester) async {
+    final library = twoLists();
+    await library.setColour('hardware', NoteColour.red);
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('filter-label-${library.tags.single.id}')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('search-field')))
+          .decoration!
+          .hintText,
+      'Search in errands',
+    );
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    await tester.tap(find.byKey(const Key('search-clear')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('filter-color-red')));
+    await tester.tap(find.byKey(const Key('filter-color-red')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('search-field')))
+          .decoration!
+          .hintText,
+      'Search in Red notes',
+    );
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsNothing);
+  });
+
+  testWidgets('Trash search is separate and system Back returns Home', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await library.setTrashed('groceries', true);
+    await pumpList(tester, library);
+    await searchFor(tester, 'milk');
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('search-close')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('shelf-trash')));
+    await tester.pumpAndSettle();
+    await searchFor(tester, 'milk');
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('search-field')), findsNothing);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(find.byKey(const Key('note:groceries')), findsNothing);
   });
 
   test('a summary is a value', () {

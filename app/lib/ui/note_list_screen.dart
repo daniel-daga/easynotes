@@ -55,17 +55,6 @@ enum _Shelf {
 
 enum _ReminderFilter { hasReminder, noReminder }
 
-extension _ToggleSet<T> on Set<T> {
-  void toggle(T value) {
-    if (!remove(value)) add(value);
-  }
-}
-
-String _kindName(NoteKind kind) => switch (kind) {
-  NoteKind.text => 'Notes',
-  NoteKind.checklist => 'Checklist',
-};
-
 String _colourName(String value) => value == 'none'
     ? 'No colour'
     : '${value[0].toUpperCase()}${value.substring(1)}';
@@ -153,18 +142,19 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// body is rebuilt from it and a controller is not a source of truth.
   final _search = TextEditingController();
   bool _searching = false;
-  bool _showFilters = true;
-  String _query = '';
-  final Set<NoteKind> _kindFilters = {};
-  final Set<String> _tagFilters = {};
-  final Set<String> _colourFilters = {};
-  final Set<_ReminderFilter> _reminderFilters = {};
+  bool get _showFilters => _query.trim().isEmpty && _filter == null;
 
-  bool get _hasFilters =>
-      _kindFilters.isNotEmpty ||
-      _tagFilters.isNotEmpty ||
-      _colourFilters.isNotEmpty ||
-      _reminderFilters.isNotEmpty;
+  bool _inSearchScope(NoteSummary note) =>
+      _where.shelf == _Shelf.trash ? note.trashed : !note.trashed;
+  String _query = '';
+  // One selection across all categories; a new search cannot combine filters.
+  ({String hint, bool Function(NoteSummary, Set<String>) matches})? _filter;
+
+  String get _searchHint =>
+      _filter?.hint ??
+      (_where.shelf == _Shelf.trash
+          ? 'Search Trash'
+          : 'Search notes and archive');
 
   @override
   void dispose() {
@@ -174,82 +164,37 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   void _openSearch() => setState(() {
     _searching = true;
-    _showFilters = true;
   });
 
   void _closeSearch() {
+    FocusManager.instance.primaryFocus?.unfocus();
     _search.clear();
     setState(() {
       _searching = false;
-      _showFilters = true;
+      _where = const _Where.shelf(_Shelf.notes);
       _query = '';
-      _kindFilters.clear();
-      _tagFilters.clear();
-      _colourFilters.clear();
-      _reminderFilters.clear();
+      _filter = null;
     });
   }
 
-  void _toggleKind(NoteKind kind) => setState(() {
-    _kindFilters.toggle(kind);
-    _showFilters = false;
-  });
-
-  void _toggleTag(String id) => setState(() {
-    _tagFilters.toggle(id);
-    _showFilters = false;
-  });
-
-  void _toggleColour(String value) => setState(() {
-    _colourFilters.toggle(value);
-    _showFilters = false;
-  });
-
-  void _toggleReminder(_ReminderFilter value) => setState(() {
-    _reminderFilters.toggle(value);
-    _showFilters = false;
-  });
-
-  bool _matchesFilters(NoteSummary note, Set<String> reminderNoteIds) {
-    if (_kindFilters.isNotEmpty && !_kindFilters.contains(note.kind)) {
-      return false;
-    }
-    if (_tagFilters.isNotEmpty &&
-        !_tagFilters.any((id) => note.tagIds.contains(id))) {
-      return false;
-    }
-    if (_colourFilters.isNotEmpty &&
-        !_colourFilters.contains(note.colour?.name ?? 'none')) {
-      return false;
-    }
-    if (_reminderFilters.isNotEmpty) {
-      final hasReminder = reminderNoteIds.contains(note.id);
-      if (!_reminderFilters.any(
-        (filter) => switch (filter) {
-          _ReminderFilter.hasReminder => hasReminder,
-          _ReminderFilter.noReminder => !hasReminder,
-        },
-      )) {
-        return false;
-      }
-    }
-    return true;
+  void _selectFilter(
+    String hint,
+    bool Function(NoteSummary, Set<String>) matches,
+  ) {
+    setState(() => _filter = (hint: hint, matches: matches));
   }
 
-  void _clearSearchText() {
+  bool _matchesFilter(NoteSummary note, Set<String> reminderNoteIds) =>
+      _filter?.matches(note, reminderNoteIds) ?? true;
+
+  void _resetSearch() {
+    FocusManager.instance.primaryFocus?.unfocus();
     _search.clear();
     setState(() {
       _query = '';
-      _showFilters = true;
+      _filter = null;
     });
   }
-
-  void _clearFilters() => setState(() {
-    _kindFilters.clear();
-    _tagFilters.clear();
-    _colourFilters.clear();
-    _reminderFilters.clear();
-  });
 
   /// Open a note, and hold the handle open only while its screen is on top.
   ///
@@ -562,129 +507,112 @@ class _NoteListScreenState extends State<NoteListScreen> {
             if (mounted) _show(_Where.tag(standing.id, standing.name));
           });
         }
-        return Scaffold(
-          appBar: AppBar(
-            leading: _searching
-                ? IconButton(
-                    key: const Key('search-close'),
-                    icon: const Icon(Icons.arrow_back),
-                    tooltip: 'Stop searching',
-                    onPressed: _closeSearch,
+        return PopScope(
+          canPop: !_searching,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop && _searching) _closeSearch();
+          },
+          child: Scaffold(
+            drawerEnableOpenDragGesture: !_searching,
+            appBar: AppBar(
+              automaticallyImplyLeading: !_searching,
+              titleSpacing: _searching ? 8 : null,
+              title: EasyEntrance(
+                key: _searching
+                    ? const ValueKey('search-input')
+                    : ValueKey('search-launcher:${_where.title}'),
+                child: _searching
+                    ? _searchInput(autofocus: true)
+                    : _searchLauncher(),
+              ),
+              actions: [
+                if (!_searching) ...[
+                  IconButton(
+                    key: const Key('layout-toggle'),
+                    icon: Icon(
+                      _layout == NoteLayout.grid
+                          ? Icons.view_agenda_outlined
+                          : Icons.grid_view,
+                    ),
+                    tooltip: _layout == NoteLayout.grid
+                        ? 'Show as a list'
+                        : 'Show as a grid',
+                    onPressed: _toggleLayout,
+                  ),
+                  if (widget.library.canJoin && _where.isGrid)
+                    IconButton(
+                      key: const Key('join-button'),
+                      icon: const Icon(Icons.group_add_outlined),
+                      tooltip: 'Join a note',
+                      onPressed: _join,
+                    ),
+                  // Only where there is a trash and something in it. An empty
+                  // trash with a button to empty it invites the one gesture that
+                  // cannot be undone, for no result.
+                  if (_where.shelf == _Shelf.trash && notes.isNotEmpty)
+                    IconButton(
+                      key: const Key('empty-trash-button'),
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      tooltip: 'Empty the trash',
+                      onPressed: () => _emptyTrash(notes.length),
+                    ),
+                ],
+              ],
+            ),
+            drawer: _Shelves(
+              current: _where,
+              counts: {
+                for (final shelf in _Shelf.values)
+                  shelf: all.where(shelf.holds).length,
+              },
+              tags: tags,
+              onChosen: _show,
+              onRename: _renameLabel,
+              onForget: _forgetLabel,
+              hasAccount: widget.library.hasAccount,
+              onAccount: _openAccount,
+              syncStream: widget.library.watchSync(),
+              initialSyncStatus: widget.library.syncStatus,
+            ),
+            // Only where a new note would land. One made while looking at the
+            // trash would appear in a grid that is not on screen, and one made
+            // while searching would appear in results it does not match.
+            floatingActionButton: _where.takesNewNotes && !_searching
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        key: const Key('new-list-button'),
+                        heroTag: 'new-list',
+                        tooltip: 'New checklist',
+                        onPressed: () => _createNote(kind: NoteKind.checklist),
+                        child: const Icon(Icons.check_box_outlined),
+                      ),
+                      const SizedBox(height: 12),
+                      FloatingActionButton(
+                        key: const Key('new-note-button'),
+                        heroTag: 'new-note',
+                        tooltip: 'New note',
+                        onPressed: _createNote,
+                        child: const Icon(Icons.add),
+                      ),
+                    ],
                   )
                 : null,
-            title: EasyEntrance(
-              key: _searching
-                  ? const ValueKey('search-input')
-                  : ValueKey('search-launcher:${_where.title}'),
-              child: _searching
-                  ? _searchInput(autofocus: true)
-                  : _searchLauncher(),
-            ),
-            actions: [
-              if (_searching) ...[
-                IconButton(
-                  key: const Key('search-filters'),
-                  icon: Icon(
-                    _showFilters
-                        ? Icons.filter_list_off_outlined
-                        : Icons.filter_list_outlined,
-                  ),
-                  tooltip: _showFilters ? 'Hide filters' : 'Show filters',
-                  onPressed: () => setState(() => _showFilters = !_showFilters),
+            // The banner above content on both the home and detail views: a
+            // failed local write is serious enough to stay visible until noticed.
+            body: Column(
+              children: [
+                StorageBanner(storage: widget.library),
+                InviteBanners(
+                  invites: widget.library,
+                  titleOf: _titleOf,
+                  onReview: _review,
+                  onJoined: _joinedInBackground,
                 ),
-                if (_query.trim().isNotEmpty)
-                  IconButton(
-                    key: const Key('search-clear'),
-                    icon: const Icon(Icons.close),
-                    tooltip: 'Clear search text',
-                    onPressed: _clearSearchText,
-                  ),
-              ] else ...[
-                IconButton(
-                  key: const Key('layout-toggle'),
-                  icon: Icon(
-                    _layout == NoteLayout.grid
-                        ? Icons.view_agenda_outlined
-                        : Icons.grid_view,
-                  ),
-                  tooltip: _layout == NoteLayout.grid
-                      ? 'Show as a list'
-                      : 'Show as a grid',
-                  onPressed: _toggleLayout,
-                ),
-                if (widget.library.canJoin && _where.isGrid)
-                  IconButton(
-                    key: const Key('join-button'),
-                    icon: const Icon(Icons.group_add_outlined),
-                    tooltip: 'Join a note',
-                    onPressed: _join,
-                  ),
-                // Only where there is a trash and something in it. An empty
-                // trash with a button to empty it invites the one gesture that
-                // cannot be undone, for no result.
-                if (_where.shelf == _Shelf.trash && notes.isNotEmpty)
-                  IconButton(
-                    key: const Key('empty-trash-button'),
-                    icon: const Icon(Icons.delete_sweep_outlined),
-                    tooltip: 'Empty the trash',
-                    onPressed: () => _emptyTrash(notes.length),
-                  ),
+                Expanded(child: _body(all, notes)),
               ],
-            ],
-          ),
-          drawer: _Shelves(
-            current: _where,
-            counts: {
-              for (final shelf in _Shelf.values)
-                shelf: all.where(shelf.holds).length,
-            },
-            tags: tags,
-            onChosen: _show,
-            onRename: _renameLabel,
-            onForget: _forgetLabel,
-            hasAccount: widget.library.hasAccount,
-            onAccount: _openAccount,
-            syncStream: widget.library.watchSync(),
-            initialSyncStatus: widget.library.syncStatus,
-          ),
-          // Only where a new note would land. One made while looking at the
-          // trash would appear in a grid that is not on screen, and one made
-          // while searching would appear in results it does not match.
-          floatingActionButton: _where.takesNewNotes && !_searching
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FloatingActionButton.small(
-                      key: const Key('new-list-button'),
-                      heroTag: 'new-list',
-                      tooltip: 'New checklist',
-                      onPressed: () => _createNote(kind: NoteKind.checklist),
-                      child: const Icon(Icons.check_box_outlined),
-                    ),
-                    const SizedBox(height: 12),
-                    FloatingActionButton(
-                      key: const Key('new-note-button'),
-                      heroTag: 'new-note',
-                      tooltip: 'New note',
-                      onPressed: _createNote,
-                      child: const Icon(Icons.add),
-                    ),
-                  ],
-                )
-              : null,
-          // The banner above content on both the home and detail views: a
-          // failed local write is serious enough to stay visible until noticed.
-          body: Column(
-            children: [
-              StorageBanner(storage: widget.library),
-              InviteBanners(
-                invites: widget.library,
-                titleOf: _titleOf,
-                onReview: _review,
-                onJoined: _joinedInBackground,
-              ),
-              Expanded(child: _body(all, notes)),
-            ],
+            ),
           ),
         );
       },
@@ -693,12 +621,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   /// A persistent, pill-shaped entry point to the same local search used by
   /// the expanded field. Keeping it in the app bar makes search easy to reach
-  /// without giving up the drawer or the current shelf's scope.
+  /// while keeping the drawer available outside search.
   Widget _searchLauncher() {
     final theme = Theme.of(context);
     return Semantics(
       button: true,
-      label: 'Search ${_where.title}',
+      label: _where.shelf == _Shelf.trash
+          ? 'Search Trash'
+          : 'Search notes and archive',
       child: Material(
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(28),
@@ -716,7 +646,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      'Search ${_where.title}',
+                      _where.shelf == _Shelf.trash
+                          ? 'Search Trash'
+                          : 'Search notes and archive',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyLarge?.copyWith(
@@ -739,40 +671,71 @@ class _NoteListScreenState extends State<NoteListScreen> {
     return Material(
       color: theme.colorScheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(28),
-      child: SizedBox(
-        height: 48,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              Icon(Icons.search, color: theme.colorScheme.onSurfaceVariant),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  key: const Key('search-field'),
-                  controller: _search,
-                  autofocus: autofocus,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    hintText: 'Search ${_where.title}',
-                    border: InputBorder.none,
-                    isDense: true,
-                    hintStyle: TextStyle(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  onChanged: (value) => setState(() {
-                    _query = value;
-                    _showFilters = value.trim().isEmpty;
-                  }),
-                ),
-              ),
-            ],
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('search-close'),
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back to Home',
+            onPressed: _closeSearch,
           ),
-        ),
+          Expanded(
+            child: TextField(
+              key: const Key('search-field'),
+              controller: _search,
+              autofocus: autofocus,
+              textInputAction: TextInputAction.search,
+              textAlignVertical: TextAlignVertical.center,
+              decoration: InputDecoration(
+                hintText: _searchHint,
+                hintMaxLines: 1,
+                hintFadeDuration: Duration.zero,
+                border: InputBorder.none,
+                isDense: true,
+              ),
+              onChanged: (value) => setState(() => _query = value),
+            ),
+          ),
+          IconButton(
+            key: const Key('search-clear'),
+            icon: const Icon(Icons.close),
+            tooltip: 'Clear search and return to filters',
+            onPressed: _resetSearch,
+          ),
+        ],
       ),
     );
   }
+
+  Widget _filterBrowser(
+    List<NoteSummary> notes,
+    Set<String> reminders,
+  ) => _SearchFilterBrowser(
+    notes: notes,
+    tags: widget.library.tags,
+    reminderNoteIds: reminders,
+    onKind: (kind) => _selectFilter(
+      kind == NoteKind.checklist ? 'Search in Checklists' : 'Search in Notes',
+      (note, _) => note.kind == kind,
+    ),
+    onLabel: (id) => _selectFilter(
+      'Search in ${widget.library.tags.where((tag) => tag.id == id).first.name}',
+      (note, _) => note.tagIds.contains(id),
+    ),
+    onColour: (colour) => _selectFilter(
+      colour == 'none'
+          ? 'Search in notes without colour'
+          : 'Search in ${_colourName(colour)} notes',
+      (note, _) => (note.colour?.name ?? 'none') == colour,
+    ),
+    onReminder: (reminder) => _selectFilter(
+      reminder == _ReminderFilter.hasReminder
+          ? 'Search in notes with reminders'
+          : 'Search in notes without reminders',
+      (note, ids) =>
+          ids.contains(note.id) == (reminder == _ReminderFilter.hasReminder),
+    ),
+  );
 
   /// The grid, the results or the empty line, whichever this screen is showing.
   Widget _body(List<NoteSummary> all, List<NoteSummary> notes) {
@@ -792,42 +755,27 @@ class _NoteListScreenState extends State<NoteListScreen> {
       for (final reminder in widget.library.reminders) reminder.noteId,
     };
     final query = _query.trim();
-    final scopedNotes = all.where(_where.holds).toList();
+    final scopedNotes = all.where(_inSearchScope).toList();
     return Column(
       children: [
-        if (_hasFilters) _selectedFilterChips(),
         Expanded(
           child: _showFilters
-              ? _SearchFilterBrowser(
-                  notes: scopedNotes,
-                  tags: widget.library.tags,
-                  reminderNoteIds: reminders,
-                  kinds: _kindFilters,
-                  labels: _tagFilters,
-                  colours: _colourFilters,
-                  reminderFilters: _reminderFilters,
-                  onKind: _toggleKind,
-                  onLabel: _toggleTag,
-                  onColour: _toggleColour,
-                  onReminder: _toggleReminder,
-                  onClear: _clearFilters,
-                  onDone: () => setState(() => _showFilters = false),
-                )
+              ? _filterBrowser(scopedNotes, reminders)
               : query.isNotEmpty
               ? _SearchResults(
                   library: widget.library,
                   query: query,
-                  where: _where,
                   notes: all,
                   layout: _layout,
-                  matches: (note) => _matchesFilters(note, reminders),
+                  matches: (note) =>
+                      _inSearchScope(note) && _matchesFilter(note, reminders),
                   onTap: _openNote,
                   onHold: _actionsFor,
                 )
               : _FilteredNotes(
                   notes: [
                     for (final note in scopedNotes)
-                      if (_matchesFilters(note, reminders)) note,
+                      if (_matchesFilter(note, reminders)) note,
                   ],
                   layout: _layout,
                   onTap: _openNote,
@@ -838,57 +786,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
   }
 
-  Widget _selectedFilterChips() {
-    final chips = <Widget>[];
-    for (final kind in _kindFilters) {
-      chips.add(
-        _filterChip('Type: ${_kindName(kind)}', () => _toggleKind(kind)),
-      );
-    }
-    for (final id in _tagFilters) {
-      final tag = widget.library.tags.where((tag) => tag.id == id).firstOrNull;
-      chips.add(
-        _filterChip('Label: ${tag?.name ?? 'Label'}', () => _toggleTag(id)),
-      );
-    }
-    for (final value in _colourFilters) {
-      chips.add(
-        _filterChip('Color: ${_colourName(value)}', () => _toggleColour(value)),
-      );
-    }
-    for (final value in _reminderFilters) {
-      chips.add(
-        _filterChip(
-          value == _ReminderFilter.hasReminder ? 'Has reminder' : 'No reminder',
-          () => _toggleReminder(value),
-        ),
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-      child: Row(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(children: chips),
-            ),
-          ),
-          TextButton(onPressed: _clearFilters, child: const Text('Clear')),
-        ],
-      ),
-    );
-  }
-
-  Widget _filterChip(String label, VoidCallback onDeleted) => Padding(
-    padding: const EdgeInsets.only(right: 6),
-    child: InputChip(
-      label: Text(label),
-      onDeleted: onDeleted,
-      deleteIcon: const Icon(Icons.close, size: 18),
-    ),
-  );
-
   /// A card was dropped on another. The library is told which two notes they
   /// were and works out the order key; nothing here counts positions, because
   /// what is on screen is a shelf or a label and the order is over the lot.
@@ -897,39 +794,27 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 }
 
-/// Keep's search browse view: pick facets before typing, or mix facets with a
-/// text query. People are shown as a future facet but disabled because the
+/// Search browse view: choose one filter, then optionally search within it.
+/// People are shown as a future facet but disabled because the
 /// current sharing model does not retain an accepted collaborator roster.
 class _SearchFilterBrowser extends StatefulWidget {
   const _SearchFilterBrowser({
     required this.notes,
     required this.tags,
     required this.reminderNoteIds,
-    required this.kinds,
-    required this.labels,
-    required this.colours,
-    required this.reminderFilters,
     required this.onKind,
     required this.onLabel,
     required this.onColour,
     required this.onReminder,
-    required this.onClear,
-    required this.onDone,
   });
 
   final List<NoteSummary> notes;
   final List<Tag> tags;
   final Set<String> reminderNoteIds;
-  final Set<NoteKind> kinds;
-  final Set<String> labels;
-  final Set<String> colours;
-  final Set<_ReminderFilter> reminderFilters;
   final ValueChanged<NoteKind> onKind;
   final ValueChanged<String> onLabel;
   final ValueChanged<String> onColour;
   final ValueChanged<_ReminderFilter> onReminder;
-  final VoidCallback onClear;
-  final VoidCallback onDone;
 
   @override
   State<_SearchFilterBrowser> createState() => _SearchFilterBrowserState();
@@ -973,26 +858,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
       key: const Key('search-filter-browser'),
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text('Filter by', style: theme.textTheme.titleMedium),
-            ),
-            if (widget.kinds.isNotEmpty ||
-                widget.labels.isNotEmpty ||
-                widget.colours.isNotEmpty ||
-                widget.reminderFilters.isNotEmpty)
-              TextButton(
-                onPressed: widget.onClear,
-                child: const Text('Clear all'),
-              ),
-            TextButton(
-              key: const Key('search-filters-done'),
-              onPressed: widget.onDone,
-              child: const Text('Done'),
-            ),
-          ],
-        ),
         _FilterSection(
           title: 'Types',
           children: [
@@ -1001,7 +866,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               icon: Icons.notes_outlined,
               label: 'Notes',
               count: _kindCount(NoteKind.text),
-              selected: widget.kinds.contains(NoteKind.text),
               onSelected: () => widget.onKind(NoteKind.text),
             ),
             _FacetChip(
@@ -1009,7 +873,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               icon: Icons.check_box_outlined,
               label: 'Checklists',
               count: _kindCount(NoteKind.checklist),
-              selected: widget.kinds.contains(NoteKind.checklist),
               onSelected: () => widget.onKind(NoteKind.checklist),
             ),
           ],
@@ -1036,7 +899,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
                   icon: Icons.label_outline,
                   label: tag.name,
                   count: _labelCount(tag),
-                  selected: widget.labels.contains(tag.id),
                   onSelected: () => widget.onLabel(tag.id),
                 ),
           ],
@@ -1049,9 +911,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               icon: Icons.notifications_outlined,
               label: 'Has reminder',
               count: _reminderCount(_ReminderFilter.hasReminder),
-              selected: widget.reminderFilters.contains(
-                _ReminderFilter.hasReminder,
-              ),
               onSelected: () => widget.onReminder(_ReminderFilter.hasReminder),
             ),
             _FacetChip(
@@ -1059,9 +918,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               icon: Icons.notifications_off_outlined,
               label: 'No reminder',
               count: _reminderCount(_ReminderFilter.noReminder),
-              selected: widget.reminderFilters.contains(
-                _ReminderFilter.noReminder,
-              ),
               onSelected: () => widget.onReminder(_ReminderFilter.noReminder),
             ),
           ],
@@ -1109,7 +965,6 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
                 key: Key('filter-color-$value'),
                 value: value,
                 count: _colourCount(value),
-                selected: widget.colours.contains(value),
                 onSelected: () => widget.onColour(value),
               ),
           ],
@@ -1157,22 +1012,19 @@ class _FacetChip extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.count,
-    required this.selected,
     required this.onSelected,
   });
 
   final IconData icon;
   final String label;
   final int count;
-  final bool selected;
   final VoidCallback onSelected;
 
   @override
-  Widget build(BuildContext context) => FilterChip(
+  Widget build(BuildContext context) => ActionChip(
     avatar: Icon(icon, size: 18),
     label: Text('$label  $count'),
-    selected: selected,
-    onSelected: (_) => onSelected(),
+    onPressed: onSelected,
   );
 }
 
@@ -1181,13 +1033,11 @@ class _ColourFacet extends StatelessWidget {
     super.key,
     required this.value,
     required this.count,
-    required this.selected,
     required this.onSelected,
   });
 
   final String value;
   final int count;
-  final bool selected;
   final VoidCallback onSelected;
 
   @override
@@ -1208,10 +1058,7 @@ class _ColourFacet extends StatelessWidget {
           decoration: BoxDecoration(
             color: colour,
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: selected ? theme.colorScheme.primary : theme.dividerColor,
-              width: selected ? 3 : 1,
-            ),
+            border: Border.all(color: theme.dividerColor, width: 1),
           ),
           child: Center(
             child: value == 'none'
@@ -1263,7 +1110,6 @@ class _SearchResults extends StatefulWidget {
   const _SearchResults({
     required this.library,
     required this.query,
-    required this.where,
     required this.notes,
     required this.layout,
     required this.matches,
@@ -1273,7 +1119,6 @@ class _SearchResults extends StatefulWidget {
 
   final NoteLibrary library;
   final String query;
-  final _Where where;
   final List<NoteSummary> notes;
   final NoteLayout layout;
   final bool Function(NoteSummary) matches;
@@ -1321,11 +1166,7 @@ class _SearchResultsState extends State<_SearchResults> {
     // spinner that flashes says something untrue about what is happening.
     if (hits == null) return const SizedBox.shrink();
 
-    final found = hits
-        .where(
-          (hit) => widget.where.holds(hit.note) && widget.matches(hit.note),
-        )
-        .toList();
+    final found = hits.where((hit) => widget.matches(hit.note)).toList();
     if (found.isEmpty) {
       return Center(
         key: const Key('no-matches'),
@@ -2059,9 +1900,12 @@ class _Swatch extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color:
-                    noteColourTint(context, colour) ?? theme.colorScheme.surface,
+                    noteColourTint(context, colour) ??
+                    theme.colorScheme.surface,
                 border: Border.all(
-                  color: chosen ? theme.colorScheme.primary : theme.dividerColor,
+                  color: chosen
+                      ? theme.colorScheme.primary
+                      : theme.dividerColor,
                   width: chosen ? 3 : 1,
                 ),
               ),
@@ -2277,6 +2121,10 @@ class _NoteCardState extends State<_NoteCard> {
                 // because a shared list that one person has labelled looks the
                 // same to everyone else, which is the whole point of the account
                 // document.
+                if (note.archived && !note.trashed) ...[
+                  const SizedBox(height: 8),
+                  const _Chip(label: 'Archived'),
+                ],
                 if (note.tags.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Wrap(
