@@ -164,6 +164,11 @@ The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
 run without it is a run that skipped the tests that matter there.
 
+For a small private deployment on a Synology NAS, see
+[`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
+container, runs Postgres with persistent storage, and uses DSM's reverse proxy
+for HTTPS and WebSockets.
+
 The web build needs a nightly toolchain and a few extras; `just setup-web`
 installs them, then `just build-web`. Two recipes then run the result in a
 headless browser: `just web-smoke` checks that what a tab writes to IndexedDB is

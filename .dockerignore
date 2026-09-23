@@ -1,0 +1,11 @@
+.git
+.github
+target
+app/.dart_tool
+app/build
+app/.flutter-plugins*
+app/web/pkg
+app/android/.gradle
+app/android/build
+tools/web-smoke/node_modules
+tools/web-bench/node_modules

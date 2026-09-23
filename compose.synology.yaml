@@ -1,0 +1,36 @@
+services:
+  db:
+    container_name: easynotes-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: easynotes
+      POSTGRES_USER: easynotes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ${NAS_DATA_DIR:-/volume1/docker/easynotes-data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U easynotes -d easynotes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  relay:
+    container_name: easynotes-relay
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      RELAY_ADDR: 0.0.0.0:8080
+      DATABASE_URL: postgres://easynotes:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/easynotes
+      RELAY_ALLOWED_ORIGINS: ${RELAY_ALLOWED_ORIGINS:?Set RELAY_ALLOWED_ORIGINS in .env}
+      RUST_LOG: easynotes_relay=info
+    ports:
+      # DSM's reverse proxy connects on the NAS itself. Do not expose this port
+      # directly on the LAN or the Internet; publish HTTPS through DSM instead.
+      - "127.0.0.1:18080:8080"
