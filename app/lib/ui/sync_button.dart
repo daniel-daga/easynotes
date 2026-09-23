@@ -1,8 +1,4 @@
-/// How sync is shown, in one place because two screens show it.
-///
-/// The note list's button is the whole device — every note, worst state first —
-/// and a checklist's is that one note. They are the same button because they
-/// answer the same question: is what I typed anywhere but here?
+/// How sync status is described to the person using the app.
 library;
 
 import 'package:flutter/material.dart';
@@ -62,38 +58,9 @@ Future<void> showSyncDetail(BuildContext context, SyncStatus status) {
   );
 }
 
-/// The sync state, as one button that explains itself when tapped.
-class SyncButton extends StatelessWidget {
-  const SyncButton({super.key, required this.status, required this.onPressed});
-
-  final SyncStatus status;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final icon = switch (status.state) {
-      SyncState.empty => Icons.cloud_outlined,
-      SyncState.offline => Icons.cloud_off_outlined,
-      SyncState.connecting => Icons.cloud_queue_outlined,
-      SyncState.online => Icons.cloud_sync_outlined,
-      SyncState.synced => Icons.cloud_done_outlined,
-    };
-    final button = IconButton(
-      key: const Key('sync-status'),
-      icon: Icon(icon),
-      tooltip: syncSentence(status),
-      onPressed: onPressed,
-    );
-    return button;
-  }
-}
-
-/// The sync state for one screen, fed by its own stream.
-///
-/// Its own stream on purpose: sync changes on the relay's schedule, not on the
-/// note's, and rebuilding a list every time a socket reconnects would be silly.
-class SyncStatusButton extends StatelessWidget {
-  const SyncStatusButton({
+/// A quiet, descriptive sync entry for the home drawer.
+class SyncStatusTile extends StatelessWidget {
+  const SyncStatusTile({
     super.key,
     required this.stream,
     required this.initial,
@@ -103,17 +70,26 @@ class SyncStatusButton extends StatelessWidget {
   final SyncStatus initial;
 
   @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<SyncStatus>(
-      stream: stream,
-      initialData: initial,
-      builder: (context, snapshot) {
-        final status = snapshot.data ?? const SyncStatus.offline();
-        return SyncButton(
-          status: status,
-          onPressed: () => showSyncDetail(context, status),
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => StreamBuilder<SyncStatus>(
+    stream: stream,
+    initialData: initial,
+    builder: (context, snapshot) {
+      final status = snapshot.data ?? const SyncStatus.offline();
+      return ListTile(
+        key: const Key('sync-status'),
+        leading: Icon(_syncIcon(status)),
+        title: const Text('Sync'),
+        subtitle: Text(syncSentence(status)),
+        onTap: () => showSyncDetail(context, status),
+      );
+    },
+  );
 }
+
+IconData _syncIcon(SyncStatus status) => switch (status.state) {
+  SyncState.empty => Icons.cloud_outlined,
+  SyncState.offline => Icons.cloud_off_outlined,
+  SyncState.connecting => Icons.cloud_queue_outlined,
+  SyncState.online => Icons.cloud_sync_outlined,
+  SyncState.synced => Icons.cloud_done_outlined,
+};

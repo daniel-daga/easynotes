@@ -302,13 +302,15 @@ void main() {
     expect(inList, greaterThan(inGrid));
   });
 
-  testWidgets('the sync button is the whole device, not one note', (
+  testWidgets('sync status is available in the home drawer', (
     tester,
   ) async {
     final library = twoLists();
     await pumpList(tester, library);
 
     library.pushStatus(const SyncStatus(state: SyncState.offline, pending: 3));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();

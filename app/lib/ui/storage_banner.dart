@@ -1,11 +1,11 @@
 /// What the app says when it could not keep an edit.
 ///
-/// The counterpart to [SyncButton], and the more serious of the two. That one
-/// answers "is what I typed anywhere but here?", and a no is temporary — the
-/// edit is in the log and goes when there is a network. This answers "is what I
-/// typed even *here*?", and a no is not temporary: the core handed the write
-/// over once and kept no copy, so the edit is gone and no amount of waiting
-/// brings it back.
+/// Sync status lives in the home drawer. A failure to keep an edit is more
+/// serious: sync answers "is what I typed anywhere but here?", and a no is
+/// temporary — the edit is in the log and goes when there is a network. This
+/// answers "is what I typed even *here*?", and a no is not temporary: the core
+/// handed the write over once and kept no copy, so the edit is gone and no
+/// amount of waiting brings it back.
 ///
 /// It can only happen in a browser, for the reason [StorageHealth] gives. It is
 /// drawn on both screens because a person is as likely to be typing into a list

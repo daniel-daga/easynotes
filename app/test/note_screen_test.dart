@@ -8,7 +8,6 @@ library;
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_view.dart';
-import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
@@ -378,69 +377,6 @@ void main() {
 
     expect(core.edits, contains('moveItem($id, 0)'));
     expect(visibleItems(tester), ['three', 'one', 'two']);
-  });
-
-  // -- sync ------------------------------------------------------------------
-
-  testWidgets('the sync button follows the status stream', (tester) async {
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core);
-
-    // Nothing has connected yet.
-    expect(
-      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
-      'Not syncing',
-    );
-
-    core.pushStatus(const SyncStatus(state: SyncState.synced));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
-      'Up to date',
-    );
-  });
-
-  testWidgets('waiting edits are counted where the user can see them', (
-    tester,
-  ) async {
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core);
-
-    core.pushStatus(const SyncStatus(state: SyncState.offline, pending: 2));
-    await tester.pumpAndSettle();
-
-    expect(
-      tester.widget<IconButton>(find.byKey(const Key('sync-status'))).tooltip,
-      'Not syncing, 2 edits waiting',
-    );
-    // The badge is the at-a-glance version of the same fact.
-    expect(find.widgetWithText(Badge, '2'), findsOneWidget);
-  });
-
-  testWidgets('the relay\'s own words are available, not just ours', (
-    tester,
-  ) async {
-    final core = FakeNoteCore(items: const ['milk']);
-    await pumpScreen(tester, core);
-
-    core.pushStatus(
-      const SyncStatus(
-        state: SyncState.offline,
-        pending: 1,
-        lastError: 'relay: Connection refused (os error 111)',
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byKey(const Key('sync-status')));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Not syncing, 1 edit waiting'), findsOneWidget);
-    expect(
-      find.byKey(const Key('sync-error')),
-      findsOneWidget,
-      reason: 'a user who cannot sync should be able to see why',
-    );
   });
 
   testWidgets('says so when an edit could not be kept', (tester) async {

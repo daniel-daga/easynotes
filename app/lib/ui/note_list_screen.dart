@@ -22,8 +22,10 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import '../core/reminder_scheduler.dart';
+import '../core/sync_status.dart';
 import 'account_screen.dart';
 import 'invites.dart';
+import 'note_appearance.dart';
 import 'note_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
@@ -163,8 +165,21 @@ class _NoteListScreenState extends State<NoteListScreen> {
         builder: (context) => NoteScreen(
           core: core,
           storage: widget.library,
+          library: widget.library,
           noteId: id,
           invites: widget.library,
+          onLabels: () async {
+            final note = widget.library.notes
+                .where((note) => note.id == id)
+                .firstOrNull;
+            if (note != null) await _labelsFor(note);
+          },
+          onReminders: () async {
+            final note = widget.library.notes
+                .where((note) => note.id == id)
+                .firstOrNull;
+            if (note != null) await _remindersFor(note);
+          },
         ),
       ),
     );
@@ -473,10 +488,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
                 : Text(_where.title),
             actions: [
               if (!_searching) ...[
-                SyncStatusButton(
-                  stream: widget.library.watchSync(),
-                  initial: widget.library.syncStatus,
-                ),
                 IconButton(
                   key: const Key('search-button'),
                   icon: const Icon(Icons.search),
@@ -527,6 +538,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
             onForget: _forgetLabel,
             hasAccount: widget.library.hasAccount,
             onAccount: _openAccount,
+            syncStream: widget.library.watchSync(),
+            initialSyncStatus: widget.library.syncStatus,
           ),
           // Only where a new note would land. One made while looking at the
           // trash would appear in a grid that is not on screen, and one made
@@ -553,9 +566,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   ],
                 )
               : null,
-          // The banner above whatever is on screen, rather than beside the
-          // sync button: this is not a state to glance at, and a person who has
-          // lost an edit should not have to notice an icon to find out.
+          // The banner above content on both the home and detail views: a
+          // failed local write is serious enough to stay visible until noticed.
           body: Column(
             children: [
               StorageBanner(storage: widget.library),
@@ -878,6 +890,8 @@ class _Shelves extends StatelessWidget {
     required this.onForget,
     required this.hasAccount,
     required this.onAccount,
+    required this.syncStream,
+    required this.initialSyncStatus,
   });
 
   final _Where current;
@@ -897,6 +911,8 @@ class _Shelves extends StatelessWidget {
   /// needs to find out about before they lose the phone.
   final bool hasAccount;
   final VoidCallback onAccount;
+  final Stream<SyncStatus> syncStream;
+  final SyncStatus initialSyncStatus;
 
   static const _icons = {
     _Shelf.notes: Icons.lightbulb_outline,
@@ -979,6 +995,11 @@ class _Shelves extends StatelessWidget {
                 onTap: () => go(_Where.tag(tag.id, tag.name)),
               ),
           ],
+          const Divider(),
+          SyncStatusTile(
+            stream: syncStream,
+            initial: initialSyncStatus,
+          ),
           const Divider(),
           ListTile(
             key: const Key('account-entry'),
@@ -1394,7 +1415,7 @@ class _Swatch extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: cardColour(context, colour) ?? theme.colorScheme.surface,
+            color: noteColourTint(context, colour) ?? theme.colorScheme.surface,
             border: Border.all(
               color: chosen ? theme.colorScheme.primary : theme.dividerColor,
               width: chosen ? 3 : 1,
@@ -1407,34 +1428,6 @@ class _Swatch extends StatelessWidget {
       ),
     );
   }
-}
-
-/// What a note's colour looks like on this device, in this theme.
-///
-/// The account document holds a *name*, because a colour has to mean something
-/// on a phone in the dark and on a desktop in daylight and cannot be sent as a
-/// number. The name is turned into a tint of the surface, so a card is legible
-/// in either theme with the same text colour on it.
-@visibleForTesting
-Color? cardColour(BuildContext context, NoteColour? colour) {
-  if (colour == null) return null;
-  final scheme = Theme.of(context).colorScheme;
-  final base = switch (colour) {
-    NoteColour.red => const Color(0xFFE53935),
-    NoteColour.orange => const Color(0xFFF57C00),
-    NoteColour.yellow => const Color(0xFFFDD835),
-    NoteColour.green => const Color(0xFF43A047),
-    NoteColour.teal => const Color(0xFF00897B),
-    NoteColour.blue => const Color(0xFF1E88E5),
-    NoteColour.purple => const Color(0xFF8E24AA),
-    NoteColour.pink => const Color(0xFFD81B60),
-    NoteColour.brown => const Color(0xFF6D4C41),
-    NoteColour.grey => const Color(0xFF757575),
-  };
-  // A tint rather than the colour itself: Keep's cards are pale, and a card that
-  // is fully saturated needs its own text colour to stay readable.
-  final strength = scheme.brightness == Brightness.dark ? 0.32 : 0.22;
-  return Color.alphaBlend(base.withValues(alpha: strength), scheme.surface);
 }
 
 /// A grid of cards of different heights, in the shortest column each time.
@@ -1548,7 +1541,7 @@ class _NoteCard extends StatelessWidget {
     final hidden = isList ? note.items - note.preview.length : 0;
     return Card(
       margin: EdgeInsets.zero,
-      color: cardColour(context, note.colour),
+      color: noteColourTint(context, note.colour),
       child: InkWell(
         key: Key('note:${note.id}'),
         onTap: onTap,

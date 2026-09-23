@@ -2,10 +2,10 @@
 /// merge has left content on both sides — both.
 ///
 /// Keep-ish enough to be recognisable; ugly is fine. What is *not* negotiable is
-/// where the state comes from. There is exactly one `StreamBuilder` at the top,
-/// and every widget below it is a function of the [NoteView] it yields. No
-/// widget here holds a copy of the list, and no gesture edits one — a tap sends
-/// an edit to the core and the screen waits to be told what happened.
+/// where the state comes from. The note content comes from [NoteView], and its
+/// personal appearance and placement come from the library's note list. No
+/// widget here holds a copy of either, and no gesture edits a local snapshot —
+/// each action goes to the core or library and the screen waits for its stream.
 ///
 /// That matters beyond tidiness: it is why a remote edit arriving from the relay
 /// takes exactly the same path through the UI as a local one, and therefore why
@@ -20,8 +20,8 @@ import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
 import 'invites.dart';
+import 'note_appearance.dart';
 import 'storage_banner.dart';
-import 'sync_button.dart';
 
 class NoteScreen extends StatefulWidget {
   const NoteScreen({
@@ -30,6 +30,9 @@ class NoteScreen extends StatefulWidget {
     required this.storage,
     required this.noteId,
     required this.invites,
+    this.library,
+    this.onLabels,
+    this.onReminders,
   });
 
   final NoteCore core;
@@ -40,6 +43,12 @@ class NoteScreen extends StatefulWidget {
   /// How this note is shared with another person. The device's, like
   /// [storage], because an invite lives on the relay the device talks to.
   final Invites invites;
+
+  /// The note's personal placement and appearance controls. Optional for small
+  /// isolated screen previews; the app supplies it when opening a note.
+  final NoteLibrary? library;
+  final Future<void> Function()? onLabels;
+  final Future<void> Function()? onReminders;
 
   /// Whether the device is keeping what is typed here.
   ///
@@ -63,6 +72,8 @@ class _NoteScreenState extends State<NoteScreen> {
   bool _allowPop = false;
   bool _waitingToPop = false;
   bool _crossedOffExpanded = false;
+  late final Stream<List<NoteSummary>>? _noteSummaries =
+      widget.library?.watchNotes();
 
   @override
   void dispose() {
@@ -304,57 +315,299 @@ class _NoteScreenState extends State<NoteScreen> {
       initialData: widget.core.current,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
-        final isText = note.kind == NoteKind.text;
-        return PopScope<Object?>(
-          canPop:
-              _allowPop || (_pendingItemWrites == 0 && _newBlankItems.isEmpty),
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) unawaited(_popAfterItemWrites());
+        final library = widget.library;
+        if (library == null) return _screen(note, null);
+        return StreamBuilder<List<NoteSummary>>(
+          stream: _noteSummaries,
+          initialData: library.notes,
+          builder: (context, summaries) {
+            final summary = summaries.data
+                ?.where((summary) => summary.id == widget.noteId)
+                .firstOrNull;
+            return _screen(note, summary);
           },
-          child: Scaffold(
-            appBar: AppBar(
-              title: _TitleField(
-                // Keyed on the title so that a title arriving from another device
-                // rebuilds the field instead of leaving stale text in it.
+        );
+      },
+    );
+  }
+
+  Widget _screen(NoteView note, NoteSummary? summary) {
+    final isText = note.kind == NoteKind.text;
+    final library = widget.library;
+    final tint = noteColourTint(context, summary?.colour);
+    return PopScope<Object?>(
+      canPop:
+          _allowPop || (_pendingItemWrites == 0 && _newBlankItems.isEmpty),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_popAfterItemWrites());
+      },
+      child: Scaffold(
+        backgroundColor: tint,
+        appBar: AppBar(
+          backgroundColor: tint,
+          title: null,
+          actions: [
+            if (library != null && summary != null)
+              IconButton(
+                key: const Key('pin-button'),
+                icon: Icon(
+                  summary.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                ),
+                tooltip: summary.pinned ? 'Unpin' : 'Pin',
+                onPressed: () => library.setPinned(
+                  summary.id,
+                  !summary.pinned,
+                ),
+              ),
+            IconButton(
+              key: const Key('share-button'),
+              icon: const Icon(Icons.ios_share),
+              tooltip: 'Share this list',
+              onPressed: _share,
+            ),
+            if (library != null && summary != null)
+              IconButton(
+                key: const Key('archive-button'),
+                icon: Icon(
+                  summary.archived
+                      ? Icons.unarchive_outlined
+                      : Icons.archive_outlined,
+                ),
+                tooltip: summary.archived ? 'Unarchive' : 'Archive',
+                onPressed: () async {
+                  await library.setArchived(summary.id, !summary.archived);
+                  if (mounted) Navigator.of(context).pop();
+                },
+              ),
+          ],
+        ),
+        body: Column(
+          children: [
+            StorageBanner(storage: widget.storage),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: _TitleField(
                 key: ValueKey('title:${note.title}'),
                 title: note.title,
                 hint: isText ? 'Title' : 'Untitled list',
                 onChanged: widget.core.setTitle,
               ),
-              actions: [
-                // Keep's "show checkboxes": the same note, its content carried
-                // across. Shared, so it switches the note for everyone on it.
-                IconButton(
-                  key: const Key('kind-toggle'),
-                  icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
-                  tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
-                  onPressed: () => widget.core.setKind(
-                    isText ? NoteKind.checklist : NoteKind.text,
-                  ),
-                ),
-                SyncStatusButton(
-                  stream: widget.core.watchSync(),
-                  initial: widget.core.syncStatus,
-                ),
-                IconButton(
-                  key: const Key('share-button'),
-                  icon: const Icon(Icons.ios_share),
-                  tooltip: 'Share this list',
-                  onPressed: _share,
-                ),
-              ],
             ),
-            body: Column(
-              children: [
-                StorageBanner(storage: widget.storage),
-                Expanded(child: isText ? _text(note) : _checklist(note)),
-              ],
-            ),
-          ),
-        );
-      },
+            Expanded(child: isText ? _text(note) : _checklist(note)),
+          ],
+        ),
+        bottomNavigationBar: library == null || summary == null
+            ? _KindToggleBar(
+                isText: isText,
+                onKindToggle: () => widget.core.setKind(
+                  isText ? NoteKind.checklist : NoteKind.text,
+                ),
+              )
+            : _NoteToolbar(
+                note: summary,
+                library: library,
+                isText: isText,
+                onKindToggle: () => widget.core.setKind(
+                  isText ? NoteKind.checklist : NoteKind.text,
+                ),
+                onLabels: widget.onLabels,
+                onReminders: widget.onReminders,
+                onTrash: () async {
+                  await library.setTrashed(summary.id, !summary.trashed);
+                  if (mounted) Navigator.of(context).pop();
+                },
+              ),
+      ),
     );
   }
+}
+
+class _NoteToolbar extends StatelessWidget {
+  const _NoteToolbar({
+    required this.note,
+    required this.library,
+    required this.isText,
+    required this.onKindToggle,
+    required this.onTrash,
+    this.onLabels,
+    this.onReminders,
+  });
+
+  final NoteSummary note;
+  final NoteLibrary library;
+  final bool isText;
+  final VoidCallback onKindToggle;
+  final Future<void> Function() onTrash;
+  final Future<void> Function()? onLabels;
+  final Future<void> Function()? onReminders;
+
+  Future<void> _chooseColour(BuildContext context) => showModalBottomSheet<void>(
+    context: context,
+    builder: (context) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _ColourChoice(
+              colour: null,
+              selected: note.colour == null,
+              onTap: () async {
+                Navigator.of(context).pop();
+                await library.setColour(note.id, null);
+              },
+            ),
+            for (final colour in NoteColour.values)
+              _ColourChoice(
+                colour: colour,
+                selected: note.colour == colour,
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await library.setColour(note.id, colour);
+                },
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Material(
+      color: noteColourTint(context, note.colour) ??
+          Theme.of(context).colorScheme.surface,
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('colour-button'),
+            tooltip: 'Change colour',
+            icon: const Icon(Icons.palette_outlined),
+            onPressed: () => _chooseColour(context),
+          ),
+          IconButton(
+            key: const Key('kind-toggle'),
+            icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
+            tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+            onPressed: onKindToggle,
+          ),
+          const Spacer(),
+          PopupMenuButton<String>(
+            key: const Key('note-more-menu'),
+            tooltip: 'More note actions',
+            onSelected: (action) {
+              switch (action) {
+                case 'labels':
+                  if (onLabels != null) unawaited(onLabels!());
+                  break;
+                case 'reminders':
+                  if (onReminders != null) unawaited(onReminders!());
+                  break;
+                case 'trash':
+                  unawaited(onTrash());
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              if (onLabels != null)
+                const PopupMenuItem(
+                  value: 'labels',
+                  child: ListTile(
+                    leading: Icon(Icons.label_outline),
+                    title: Text('Labels'),
+                  ),
+                ),
+              if (onReminders != null)
+                const PopupMenuItem(
+                  value: 'reminders',
+                  child: ListTile(
+                    leading: Icon(Icons.notifications_outlined),
+                    title: Text('Reminders'),
+                  ),
+                ),
+              PopupMenuItem(
+                value: 'trash',
+                child: ListTile(
+                  leading: Icon(
+                    note.trashed
+                        ? Icons.restore_from_trash
+                        : Icons.delete_outline,
+                  ),
+                  title: Text(note.trashed ? 'Restore' : 'Move to trash'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _KindToggleBar extends StatelessWidget {
+  const _KindToggleBar({required this.isText, required this.onKindToggle});
+
+  final bool isText;
+  final VoidCallback onKindToggle;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: IconButton(
+        key: const Key('kind-toggle'),
+        icon: Icon(isText ? Icons.check_box_outlined : Icons.notes),
+        tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+        onPressed: onKindToggle,
+      ),
+    ),
+  );
+}
+
+class _ColourChoice extends StatelessWidget {
+  const _ColourChoice({
+    required this.colour,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final NoteColour? colour;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    selected: selected,
+    label: colour == null ? 'No colour' : '${colour!.name} colour',
+    child: Tooltip(
+      message: colour == null ? 'No colour' : colour!.name,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: noteColourTint(context, colour) ??
+                Theme.of(context).colorScheme.surface,
+            border: Border.all(
+              color: selected
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).dividerColor,
+              width: selected ? 3 : 1,
+            ),
+          ),
+          child: colour == null
+              ? const Icon(Icons.format_color_reset_outlined, size: 20)
+              : null,
+        ),
+      ),
+    ),
+  );
 }
 
 /// The note title. Commits on submit or on losing focus rather than per
