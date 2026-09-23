@@ -5,13 +5,13 @@ encrypted, lists can be edited live by several people, and sharing needs no
 email account. See [`docs/design.md`](docs/design.md) for the product and
 architecture.
 
-**Status: Slices 1 and 2 complete, except for the Android and iOS builds.** The vertical spike works —
+**Status: Slices 1 and 2 complete. Android has now been built and exercised on a Pixel; iOS still needs a Mac, and the full hardware demo remains open.** The vertical spike works —
 one Rust core for crypto, CRDT, storage and sync, driving a Flutter UI on Linux
 desktop and in a browser, with a relay that stores and forwards ciphertext and
-nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest account of
-where that got to, including what it did not do, and
-[`docs/plan-slice-03.md`](docs/plan-slice-03.md) is what happens next: the
-mobile builds, and then accounts, so that one person can have two devices.
+nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest
+account of where that got to, including what it did not do. The remaining Slice
+3 work is recorded in [`docs/plan-slice-03.md`](docs/plan-slice-03.md): finish
+the platform and hardware checks, including iOS and the Pixel invite flow.
 
 The app now opens on a grid of lists rather than on the single note Slice 1
 had: make one, join someone else's and it is added rather than swapped in, and
@@ -115,9 +115,11 @@ write the phrase down while it still exists. Reminders now complete the first
 local account-document feature beyond placement: they sync as private account
 state and schedule locally, with push wake-ups deliberately deferred.
 
-Android and iOS have still never been built — that is the largest open gap, two
-slices old now, and the next thing to do on a machine that has an Android SDK
-and a Mac.
+Android now builds and runs on a Pixel. Real-device Wi-Fi sync and local data
+surviving an offline force-stop/relaunch have been verified; the invite approval
+flow still needs a successful Pixel check, and iOS needs a Mac. See the current
+hardware notes in [`docs/pixel-demo-2026-09-23.md`](docs/pixel-demo-2026-09-23.md)
+and the remaining work in [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
 
 ## Layout
 
