@@ -32,9 +32,12 @@
 //! — not for someone else holding the same link, and not for the relay — and
 //! the salt means only something that held the link could have made it.
 //!
-//! The key is fresh per request rather than the device's own X25519 key on
-//! purpose: a device key in a request would be a stable identifier the owner's
-//! device learns about the guest's, which it has no need of.
+//! The grant key is fresh per request rather than the device's X25519 key, so
+//! approval remains bound to one request. The signed request also carries the
+//! guest's Ed25519 author key, encrypted for the owner, so the accepted device
+//! can be named in the note's encrypted collaborator directory. This is the
+//! deliberate owner-side identity disclosure in ADR 0020; the relay still sees
+//! only the opaque request payload.
 //!
 //! ## The safety code
 //!
@@ -45,7 +48,8 @@
 //! protocol needs.
 
 use crate::crypto::{
-    local_aad, open_blob, random_bytes, seal_blob, AuthorKey, NoteKey, NOTE_KEY_LEN, PUBKEY_LEN,
+    local_aad, open_blob, random_bytes, seal_blob, AuthorKey, DeviceIdentity, NoteKey,
+    NOTE_KEY_LEN, PUBKEY_LEN, SIG_LEN,
 };
 use crate::error::{CoreError, Result};
 use crate::ids::{InviteId, NoteId};
@@ -78,6 +82,8 @@ const TOKEN_LABEL: &[u8] = b"easynotes/invite/token/v1";
 const REQUEST_KEY_LABEL: &[u8] = b"easynotes/invite/request-key/v1";
 const REQUEST_DOMAIN: &[u8] = b"easynotes/invite/request/v1";
 const GRANT_DOMAIN: &[u8] = b"easynotes/invite/grant/v1";
+const SIGNED_REQUEST_VERSION: u8 = 2;
+const REQUEST_IDENTITY_DOMAIN: &[u8] = b"easynotes/invite/request-identity/v1";
 const CODE_DOMAIN: &[u8] = b"easynotes/invite/code/v1";
 const OWNED_GRANT_VERSION: u8 = 2;
 const ROTATING_GRANT_VERSION: u8 = 3;
@@ -272,6 +278,8 @@ impl std::fmt::Debug for GuestKey {
 pub struct JoinRequest {
     /// The public half of the key the grant is to be sealed to.
     pub guest: [u8; PUBLIC_LEN],
+    /// The device key that will sign note edits. Missing on legacy requests.
+    pub author: Option<AuthorKey>,
     /// Whatever the guest typed. Not verified by anything — it is a person's
     /// word, and the safety code is what a careful owner checks instead.
     pub name: String,
@@ -297,15 +305,26 @@ fn clip_name(name: &str) -> &str {
     &name[..end]
 }
 
-/// Seal a request for the owner: the guest's public key and a name.
+/// Seal a request for the owner: the grant key, author key, and a name.
 ///
-/// `version | guest public key | name`, under the request key, bound to the
-/// invite's ID so a request cannot be moved to another invite.
-pub fn seal_request(secret: &InviteSecret, guest: &GuestKey, name: &str) -> Result<Vec<u8>> {
+/// `version | guest key | author key | signature | name`, under the request
+/// key. The signature binds the guest's one-time grant key and chosen name to
+/// the device key that will author its edits.
+pub fn seal_request(
+    secret: &InviteSecret,
+    guest: &GuestKey,
+    identity: &DeviceIdentity,
+    name: &str,
+) -> Result<Vec<u8>> {
     let name = clip_name(name);
-    let mut plain = Vec::with_capacity(1 + PUBLIC_LEN + name.len());
-    plain.push(INVITE_VERSION);
+    let author = identity.public_key();
+    let message = request_identity_message(secret, &guest.public(), &author, name);
+    let signature = identity.sign(&message);
+    let mut plain = Vec::with_capacity(1 + 2 * PUBKEY_LEN + SIG_LEN + name.len());
+    plain.push(SIGNED_REQUEST_VERSION);
     plain.extend_from_slice(&guest.public());
+    plain.extend_from_slice(&author.0);
+    plain.extend_from_slice(&signature);
     plain.extend_from_slice(name.as_bytes());
     seal_blob(
         &secret.request_cipher(),
@@ -320,16 +339,66 @@ pub fn open_request(secret: &InviteSecret, sealed: &[u8]) -> Result<JoinRequest>
         &secret.aad(REQUEST_DOMAIN),
         sealed,
     )?;
-    if plain.len() < 1 + PUBLIC_LEN || plain[0] != INVITE_VERSION {
-        return Err(CoreError::MalformedInvite("request has an unknown shape"));
-    }
-    let guest: [u8; PUBLIC_LEN] = plain[1..1 + PUBLIC_LEN].try_into().unwrap();
-    let name = String::from_utf8(plain[1 + PUBLIC_LEN..].to_vec())
+    let version = *plain
+        .first()
+        .ok_or(CoreError::MalformedInvite("request has an unknown shape"))?;
+    let (guest, author, name_at) = match version {
+        INVITE_VERSION if plain.len() >= 1 + PUBLIC_LEN => (
+            plain[1..1 + PUBLIC_LEN].try_into().unwrap(),
+            None,
+            1 + PUBLIC_LEN,
+        ),
+        SIGNED_REQUEST_VERSION if plain.len() >= 1 + 2 * PUBKEY_LEN + SIG_LEN => {
+            let guest: [u8; PUBLIC_LEN] = plain[1..1 + PUBLIC_LEN].try_into().unwrap();
+            let author = AuthorKey(
+                plain[1 + PUBLIC_LEN..1 + 2 * PUBKEY_LEN]
+                    .try_into()
+                    .unwrap(),
+            );
+            let signature: [u8; SIG_LEN] = plain
+                [1 + 2 * PUBKEY_LEN..1 + 2 * PUBKEY_LEN + SIG_LEN]
+                .try_into()
+                .unwrap();
+            let name_at = 1 + 2 * PUBKEY_LEN + SIG_LEN;
+            let name = String::from_utf8(plain[name_at..].to_vec())
+                .map_err(|_| CoreError::MalformedInvite("name is not UTF-8"))?;
+            let message = request_identity_message(secret, &guest, &author, &name);
+            if !author.verify(&message, &signature) {
+                return Err(CoreError::MalformedInvite(
+                    "request identity signature is invalid",
+                ));
+            }
+            (guest, Some(author), name_at)
+        }
+        _ => return Err(CoreError::MalformedInvite("request has an unknown shape")),
+    };
+    let name = String::from_utf8(plain[name_at..].to_vec())
         .map_err(|_| CoreError::MalformedInvite("name is not UTF-8"))?;
     if name.len() > MAX_NAME_BYTES {
         return Err(CoreError::MalformedInvite("name is too long"));
     }
-    Ok(JoinRequest { guest, name })
+    Ok(JoinRequest {
+        guest,
+        author,
+        name,
+    })
+}
+
+fn request_identity_message(
+    secret: &InviteSecret,
+    guest: &[u8; PUBLIC_LEN],
+    author: &AuthorKey,
+    name: &str,
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(
+        REQUEST_IDENTITY_DOMAIN.len() + 16 + 2 * PUBKEY_LEN + name.len(),
+    );
+    message.extend_from_slice(REQUEST_IDENTITY_DOMAIN);
+    message.extend_from_slice(secret.id().as_bytes());
+    message.extend_from_slice(guest);
+    message.extend_from_slice(&author.0);
+    message.extend_from_slice(name.as_bytes());
+    message
 }
 
 /// The key a grant is sealed under, from one side of the agreement or the other.
@@ -519,10 +588,12 @@ mod tests {
     fn a_request_opens_for_the_link_and_not_for_another() {
         let secret = InviteSecret::random();
         let guest = GuestKey::random();
-        let sealed = seal_request(&secret, &guest, "  Anna  ").unwrap();
+        let identity = DeviceIdentity::generate();
+        let sealed = seal_request(&secret, &guest, &identity, "  Anna  ").unwrap();
         let request = open_request(&secret, &sealed).unwrap();
         assert_eq!(request.name, "Anna");
         assert_eq!(request.guest, guest.public());
+        assert_eq!(request.author, Some(identity.public_key()));
         assert!(open_request(&InviteSecret::random(), &sealed).is_err());
     }
 
@@ -530,7 +601,13 @@ mod tests {
     fn a_long_name_is_cut_on_a_character_boundary() {
         let secret = InviteSecret::random();
         let name = "ü".repeat(MAX_NAME_BYTES);
-        let sealed = seal_request(&secret, &GuestKey::random(), &name).unwrap();
+        let sealed = seal_request(
+            &secret,
+            &GuestKey::random(),
+            &DeviceIdentity::generate(),
+            &name,
+        )
+        .unwrap();
         let request = open_request(&secret, &sealed).unwrap();
         assert!(request.name.len() <= MAX_NAME_BYTES);
         assert!(request.name.chars().all(|c| c == 'ü'));
@@ -540,7 +617,11 @@ mod tests {
     fn a_grant_opens_for_the_guest_it_was_made_for_and_nobody_else() {
         let secret = InviteSecret::random();
         let guest = GuestKey::random();
-        let request = open_request(&secret, &seal_request(&secret, &guest, "").unwrap()).unwrap();
+        let request = open_request(
+            &secret,
+            &seal_request(&secret, &guest, &DeviceIdentity::generate(), "").unwrap(),
+        )
+        .unwrap();
         let (note, key) = (NoteId::random(), NoteKey::random());
         let grant = seal_grant(&secret, &request, note, &key).unwrap();
 
@@ -559,7 +640,11 @@ mod tests {
     fn a_tampered_grant_does_not_open() {
         let secret = InviteSecret::random();
         let guest = GuestKey::random();
-        let request = open_request(&secret, &seal_request(&secret, &guest, "").unwrap()).unwrap();
+        let request = open_request(
+            &secret,
+            &seal_request(&secret, &guest, &DeviceIdentity::generate(), "").unwrap(),
+        )
+        .unwrap();
         let mut grant =
             seal_grant(&secret, &request, NoteId::random(), &NoteKey::random()).unwrap();
         let last = grant.len() - 1;
@@ -572,6 +657,7 @@ mod tests {
         let secret = InviteSecret::random();
         let request = JoinRequest {
             guest: [0u8; 32],
+            author: None,
             name: String::new(),
         };
         assert!(seal_grant(&secret, &request, NoteId::random(), &NoteKey::random()).is_err());
@@ -581,7 +667,11 @@ mod tests {
     fn both_sides_compute_the_same_safety_code() {
         let secret = InviteSecret::random();
         let guest = GuestKey::random();
-        let request = open_request(&secret, &seal_request(&secret, &guest, "").unwrap()).unwrap();
+        let request = open_request(
+            &secret,
+            &seal_request(&secret, &guest, &DeviceIdentity::generate(), "").unwrap(),
+        )
+        .unwrap();
         let code = request.code(&secret);
         assert_eq!(code, safety_code(&secret, &guest.public()));
         assert_eq!(code.len(), 7);

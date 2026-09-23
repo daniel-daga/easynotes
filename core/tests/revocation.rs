@@ -27,9 +27,10 @@ fn invite_guest<D: NoteDoc>(
 ) {
     let outgoing = owner.new_invite(note).unwrap();
     let guest_key = GuestKey::random();
+    let guest_identity = easynotes_core::crypto::DeviceIdentity::generate();
     let request = invite::open_request(
         &outgoing.secret,
-        &invite::seal_request(&outgoing.secret, &guest_key, "Bea").unwrap(),
+        &invite::seal_request(&outgoing.secret, &guest_key, &guest_identity, "Bea").unwrap(),
     )
     .unwrap();
     let grant = owner.seal_grant(&outgoing, &request).unwrap();

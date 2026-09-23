@@ -2130,9 +2130,14 @@ impl Library {
         let secret = InviteSecret::from_link(&link).map_err(|e| e.to_string())?;
         let http = self.shared.http_base()?;
         let guest = GuestKey::random();
-        let (s, g, n) = (secret.clone(), guest.clone(), name.clone());
+        let sealed_request = self
+            .shared
+            .locked()?
+            .seal_join_request(&secret, &guest, &name)
+            .map_err(|e| e.to_string())?;
+        let (s, payload) = (secret.clone(), sealed_request);
         let request = on_network(async move {
-            invite::request(&http, &s, &g, &n)
+            invite::request(&http, &s, &payload)
                 .await
                 .map_err(|e| e.to_string())
         })

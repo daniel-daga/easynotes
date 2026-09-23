@@ -176,7 +176,13 @@ fn an_accepted_grant_adds_the_note_and_stops_the_wait() {
     };
     guest.remember_join(&waiting).unwrap();
 
-    let sealed = invite::seal_request(&waiting.secret, &waiting.guest, "Anna").unwrap();
+    let sealed = invite::seal_request(
+        &waiting.secret,
+        &waiting.guest,
+        guest.identity(),
+        "Anna",
+    )
+    .unwrap();
     let request = invite::open_request(&outgoing.secret, &sealed).unwrap();
     let grant = owner.seal_grant(&outgoing, &request).unwrap();
     let (id, key) = invite::open_grant(&waiting.secret, &waiting.guest, &grant).unwrap();

@@ -774,6 +774,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         &self.identity
     }
 
+    /// Make the encrypted, signed part of a join request while the device
+    /// identity is available inside the core.
+    pub fn seal_join_request(
+        &self,
+        secret: &crate::invite::InviteSecret,
+        guest: &crate::invite::GuestKey,
+        name: &str,
+    ) -> Result<Vec<u8>> {
+        crate::invite::seal_request(secret, guest, &self.identity, name)
+    }
+
     // -- lifecycle ----------------------------------------------------------
 
     pub fn create_note(&mut self, kind: NoteKind) -> Result<NoteId> {

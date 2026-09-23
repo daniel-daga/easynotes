@@ -140,6 +140,12 @@ impl AuthorKey {
         VerifyingKey::from_bytes(&self.0)
             .map_err(|_| CoreError::Crypto("not a valid Ed25519 point"))
     }
+
+    /// Verify a detached statement signed by this author key.
+    pub fn verify(&self, message: &[u8], signature: &[u8; SIG_LEN]) -> bool {
+        self.verifying_key()
+            .is_ok_and(|key| key.verify(message, &Signature::from_bytes(signature)).is_ok())
+    }
 }
 
 impl std::fmt::Debug for AuthorKey {

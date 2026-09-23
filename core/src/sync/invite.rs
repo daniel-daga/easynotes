@@ -68,10 +68,9 @@ pub async fn open(
 pub async fn request(
     http_base: &str,
     secret: &InviteSecret,
-    guest: &GuestKey,
-    name: &str,
+    sealed_request: &[u8],
 ) -> Result<String> {
-    let payload = URL_SAFE_NO_PAD.encode(invite::seal_request(secret, guest, name)?);
+    let payload = URL_SAFE_NO_PAD.encode(sealed_request);
     let joined: wire::JoinedInvite = call_json(
         &invite_url(http_base, secret.id(), "/requests"),
         &wire::JoinInvite {
