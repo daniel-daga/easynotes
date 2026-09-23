@@ -27,3 +27,6 @@
 # wrong for CI and for a cloud session, and the run configurations carry a
 # developer's own relay address.
 /.idea/
+
+# Attachments saved by Codex belong to the local task, not the source tree.
+/.codex-remote-attachments/
