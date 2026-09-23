@@ -262,6 +262,9 @@ struct OpenNote<D: NoteDoc> {
     /// envelope a no-op at the core level, independently of the CRDT's own
     /// idempotence.
     seen: HashSet<(AuthorKey, u64)>,
+    /// Envelopes applied in memory whose log/index update did not finish. Sync
+    /// replay repairs these before moving the cursor; normal echoes stay cheap.
+    pending_remote: HashSet<(AuthorKey, u64)>,
     watch: watch::Sender<NoteView>,
 }
 
@@ -277,6 +280,7 @@ struct OpenAccount<A: AccountDoc> {
     key: NoteKey,
     next_counter: u64,
     seen: HashSet<(AuthorKey, u64)>,
+    pending_remote: HashSet<(AuthorKey, u64)>,
 }
 
 /// Where a sealed account-document envelope goes the moment it is made.
@@ -469,6 +473,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter,
                 seen,
+                pending_remote: HashSet::new(),
             },
             length,
         ))
@@ -748,10 +753,39 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         }
         let plain = env.open(&self.account.key)?;
         if !self.account.seen.insert((env.author, env.counter)) {
+            // Applying the CRDT and recording the envelope are separate
+            // operations. If the append failed after the in-memory apply, the
+            // sync engine reconnects and replays this envelope; make that retry
+            // finish persistence before its cursor can move on.
+            let identity = (env.author, env.counter);
+            if !self.account.pending_remote.contains(&identity) {
+                return Ok(());
+            }
+            {
+                if !self
+                    .store
+                    .load(self.account_id)?
+                    .iter()
+                    .any(|stored| stored == envelope)
+                {
+                    self.store.append(self.account_id, envelope)?;
+                }
+            }
+            if env.author == self.identity.public_key() {
+                self.account.next_counter = self.account.next_counter.max(env.counter + 1);
+            }
+            self.placements = self.account.doc.view();
+            self.adopt_unplaced()?;
+            self.refresh_library();
+            self.account.pending_remote.remove(&identity);
             return Ok(());
         }
         self.account.doc.apply_remote(&plain)?;
-        self.store.append(self.account_id, envelope)?;
+        let identity = (env.author, env.counter);
+        self.account.pending_remote.insert(identity);
+        if let Err(error) = self.store.append(self.account_id, envelope) {
+            return Err(error);
+        }
         if env.author == self.identity.public_key() {
             self.account.next_counter = self.account.next_counter.max(env.counter + 1);
         }
@@ -763,6 +797,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // runs it when the batch has settled.
         self.adopt_unplaced()?;
         self.refresh_library();
+        self.account.pending_remote.remove(&identity);
         Ok(())
     }
 
@@ -811,6 +846,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter: 0,
                 seen: HashSet::new(),
+                pending_remote: HashSet::new(),
                 watch: tx,
             },
         );
@@ -945,6 +981,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 key,
                 next_counter,
                 seen,
+                pending_remote: HashSet::new(),
                 watch: tx,
             },
         );
@@ -2011,30 +2048,72 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             }
             return Ok(old);
         }
-        let note = self
-            .open
-            .get_mut(&id)
-            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        let (already_seen, duplicate_view) = {
+            let note = self
+                .open
+                .get_mut(&id)
+                .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
 
-        // `open` verifies the signature before it decrypts.
-        let plain = env.open(&note.key)?;
+            // `open` verifies the signature before it decrypts.
+            let plain = env.open(&note.key)?;
+            let already_seen = !note.seen.insert((env.author, env.counter));
+            let duplicate_view = already_seen.then(|| note.doc.view());
+            if !already_seen {
+                if env.kind == EnvelopeKind::Snapshot {
+                    note.doc = D::load(&self.actor, &plain)?;
+                } else if env.kind == EnvelopeKind::Update {
+                    note.doc.apply_remote(&plain)?;
+                }
+                note.pending_remote.insert((env.author, env.counter));
+            }
+            (already_seen, duplicate_view)
+        };
 
-        if !note.seen.insert((env.author, env.counter)) {
-            // Already applied. Persisting it again would grow the log for nothing.
-            return Ok(note.doc.view());
+        if already_seen {
+            // Applying the CRDT and recording the envelope are separate
+            // operations. If the append failed after the in-memory apply, sync
+            // replays this envelope after reconnect; make that retry finish
+            // persistence before its cursor can move on.
+            let identity = (env.author, env.counter);
+            if !self
+                .open
+                .get(&id)
+                .expect("just borrowed")
+                .pending_remote
+                .contains(&identity)
+            {
+                return Ok(duplicate_view.expect("seen envelopes have a current view"));
+            }
+            if !self.store.load(id)?.iter().any(|stored| stored == envelope) {
+                self.store.append(id, envelope)?;
+            }
+            let view = duplicate_view.expect("seen envelopes have a current view");
+            let note = self.open.get_mut(&id).expect("just borrowed");
+            let _ = note.watch.send_replace(view.clone());
+            self.reindex(id)?;
+            self.refresh_library();
+            self.open
+                .get_mut(&id)
+                .expect("just borrowed")
+                .pending_remote
+                .remove(&identity);
+            return Ok(view);
         }
-        if env.kind == EnvelopeKind::Snapshot {
-            note.doc = D::load(&self.actor, &plain)?;
-        } else if env.kind == EnvelopeKind::Update {
-            note.doc.apply_remote(&plain)?;
+        let identity = (env.author, env.counter);
+        if let Err(error) = self.store.append(id, envelope) {
+            return Err(error);
         }
-        self.store.append(id, envelope)?;
 
         let note = self.open.get_mut(&id).expect("just borrowed");
         let view = note.doc.view();
         let _ = note.watch.send_replace(view.clone());
         self.reindex(id)?;
         self.refresh_library();
+        self.open
+            .get_mut(&id)
+            .expect("just borrowed")
+            .pending_remote
+            .remove(&identity);
         Ok(view)
     }
 

@@ -1055,7 +1055,7 @@ impl Device {
         };
         match incoming {
             Incoming::Envelope { seq, envelope } => {
-                live.receive(peer, id, me, seq, &envelope);
+                live.receive(peer, id, me, seq, &envelope)?;
                 // Once the backlog is drained, every envelope is its own
                 // settled batch: it is one edit, made by a device that was
                 // itself up to date, so the state it leaves the document in is
@@ -1236,8 +1236,14 @@ impl Live {
         me: &AuthorKey,
         seq: i64,
         envelope: &[u8],
-    ) {
+    ) -> std::result::Result<(), String> {
         if let Err(e) = peer.apply_remote(note, envelope) {
+            if matches!(e, CoreError::Storage(_)) {
+                // Do not advance past an envelope that could not be persisted.
+                // Ending the session makes the next subscription replay it from
+                // the last saved cursor.
+                return Err(e.to_string());
+            }
             // A rejected envelope is a fact about that envelope, not a reason to
             // stop or to ask for it again — hence the cursor moving on below. The
             // core has already refused to let it near the document.
@@ -1255,6 +1261,7 @@ impl Live {
             }
         }
         self.advance(peer, note, seq);
+        Ok(())
     }
 
     /// The relay has our envelope: drop it from the outbox and remember how far

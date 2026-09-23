@@ -25,7 +25,7 @@ class ReminderScheduler {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
   StreamSubscription<List<Reminder>>? _updates;
-  final Map<String, Timer> _webTimers = {};
+  final Map<String, Timer> _inProcessTimers = {};
   bool _started = false;
 
   /// Start after the library is open. This never asks for notification
@@ -48,6 +48,17 @@ class ReminderScheduler {
           requestAlertPermission: false,
           requestBadgePermission: false,
           requestSoundPermission: false,
+        ),
+        macOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
+        linux: LinuxInitializationSettings(defaultActionName: 'Open'),
+        windows: WindowsInitializationSettings(
+          appName: 'EasyNotes',
+          appUserModelId: 'EasyNotes.EasyNotes.Desktop',
+          guid: '45b9c55e-998e-4aca-9e37-a09f52545141',
         ),
       ),
     );
@@ -96,13 +107,28 @@ class ReminderScheduler {
     final reminders = [
       for (final reminder in _library.reminders)
         if (noteById[reminder.noteId]?.trashed != true) reminder,
-    ]..sort((a, b) => a.fireAt.compareTo(b.fireAt));
+    ];
+
+    // Rank by the next actual firing, not the original timestamp. Expired
+    // one-shot reminders have no future occurrence and must not occupy one of
+    // the operating system's limited pending-notification slots.
+    final scheduled = <({Reminder reminder, tz.TZDateTime occurrence})>[];
+    for (final reminder in reminders) {
+      final occurrence = _nextOccurrence(
+        reminder,
+        _location(reminder.timezone),
+      );
+      if (occurrence != null) {
+        scheduled.add((reminder: reminder, occurrence: occurrence));
+      }
+    }
+    scheduled.sort((a, b) => a.occurrence.compareTo(b.occurrence));
 
     // iOS retains only 64 pending local notifications. Its native repeating
     // triggers count as one, so this keeps the nearest 64 reminder identities.
-    final wanted = reminders.take(64).toList();
-    if (kIsWeb) {
-      await _reconcileWeb(wanted, noteById);
+    final wanted = scheduled.take(64).map((entry) => entry.reminder).toList();
+    if (kIsWeb || defaultTargetPlatform == TargetPlatform.linux) {
+      await _reconcileInProcess(wanted, noteById);
       return;
     }
     final pending = await _notifications.pendingNotificationRequests();
@@ -145,21 +171,21 @@ class ReminderScheduler {
     }
   }
 
-  /// Browsers cannot hand a future notification to the OS. While the tab is
-  /// open, a timer still gives the documented web behaviour; closing the tab
-  /// loses the timer, and Web Push remains deliberately out of this slice.
-  Future<void> _reconcileWeb(
+  /// Browsers and Linux cannot hand a future notification to the OS through
+  /// this plugin. While the app is running, a timer can still show it; closing
+  /// the tab or app loses the timer.
+  Future<void> _reconcileInProcess(
     List<Reminder> reminders,
     Map<String, NoteSummary> noteById,
   ) async {
-    for (final timer in _webTimers.values) {
+    for (final timer in _inProcessTimers.values) {
       timer.cancel();
     }
-    _webTimers.clear();
+    _inProcessTimers.clear();
     final used = <int>{};
     for (final reminder in reminders) {
       final title = noteById[reminder.noteId]?.title.trim();
-      _scheduleWeb(
+      _scheduleInProcess(
         reminder,
         _notificationId(reminder.id, used),
         title == null || title.isEmpty ? 'EasyNotes reminder' : title,
@@ -167,25 +193,28 @@ class ReminderScheduler {
     }
   }
 
-  void _scheduleWeb(Reminder reminder, int id, String title) {
+  void _scheduleInProcess(Reminder reminder, int id, String title) {
     final due = _nextOccurrence(reminder, _location(reminder.timezone));
     if (due == null) return;
     final delay = due.difference(
       tz.TZDateTime.now(_location(reminder.timezone)),
     );
-    _webTimers[reminder.id] = Timer(
+    _inProcessTimers[reminder.id] = Timer(
       delay.isNegative ? Duration.zero : delay,
       () async {
         await _notifications.show(
           id: id,
           title: title,
           body: 'Reminder',
+          notificationDetails: kIsWeb
+              ? null
+              : const NotificationDetails(linux: LinuxNotificationDetails()),
           payload: '$_payloadPrefix${reminder.id}',
         );
         if (reminder.repeat != ReminderRepeat.never) {
-          _scheduleWeb(reminder, id, title);
+          _scheduleInProcess(reminder, id, title);
         } else {
-          _webTimers.remove(reminder.id);
+          _inProcessTimers.remove(reminder.id);
         }
       },
     );
@@ -377,10 +406,10 @@ class ReminderScheduler {
 
   Future<void> dispose() async {
     await _updates?.cancel();
-    for (final timer in _webTimers.values) {
+    for (final timer in _inProcessTimers.values) {
       timer.cancel();
     }
-    _webTimers.clear();
+    _inProcessTimers.clear();
     if (identical(instance, this)) instance = null;
   }
 }

@@ -35,7 +35,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, OwnedMutexGuard};
 
 /// How many pending fan-out messages a slow subscriber may fall behind by before
 /// the relay stops buffering for it. It is not dropped: it is told to resubscribe
@@ -53,6 +53,10 @@ pub struct AppState {
     pub auth: Auth,
     /// One broadcast channel per note that currently has subscribers.
     channels: Mutex<HashMap<String, Fanout>>,
+    /// Serializes appending and broadcasting one note's envelopes. The store
+    /// assigns sequence numbers, so the corresponding fan-out must keep that
+    /// same order even when concurrent websocket handlers append at once.
+    append_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AppState {
@@ -61,6 +65,7 @@ impl AppState {
             store,
             auth: Auth::new(),
             channels: Mutex::new(HashMap::new()),
+            append_locks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -70,6 +75,17 @@ impl AppState {
             .entry(note.to_string())
             .or_insert_with(|| broadcast::channel(FANOUT_BUFFER).0)
             .clone()
+    }
+
+    async fn append_lock(&self, note: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.append_locks.lock().unwrap();
+            locks
+                .entry(note.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
     }
 }
 
@@ -445,6 +461,10 @@ pub(crate) async fn append(state: &Arc<AppState>, note: &str, envelope_b64: &str
         ));
     }
 
+    // Hold the per-note lock through both persistence and fan-out. If two
+    // handlers committed in sequence order but broadcast in the opposite order,
+    // subscribers would advance their cursor past an edit they had not received.
+    let _append = state.append_lock(note).await;
     let seq = state.store.append(note, &raw).await?;
     // `send` fails only when nobody is listening, which is not an error.
     let _ = state.channel(note).send((seq, raw));
