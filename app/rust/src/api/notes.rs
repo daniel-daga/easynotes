@@ -542,7 +542,7 @@ impl Statuses {
     }
 
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
-        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
             tx: Arc::new(watch::channel(SyncStatus::offline()).0),
             epoch: 0,
@@ -552,7 +552,7 @@ impl Statuses {
     /// The same, for a note that must already have a channel. `None` means it
     /// does not — which, since [`Statuses::forget`], means the note is gone.
     fn existing<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> Option<T> {
-        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         per_note.get_mut(&note).map(f)
     }
 
@@ -598,14 +598,14 @@ impl Statuses {
     /// here is dropped, and its channel goes with it so that the device's status
     /// stops counting a note that does not exist toward what is pending.
     fn forget(&self, note: NoteId) {
-        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         per_note.remove(&note);
         drop(per_note);
         self.refresh();
     }
 
     fn refresh(&self) {
-        let per_note = self.per_note.lock().expect("status lock poisoned");
+        let per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         let each: Vec<SyncStatus> = per_note
             .values()
             .map(|status| status.tx.borrow().clone())
@@ -618,7 +618,7 @@ impl Statuses {
     /// whose last word may not arrive before their tasks are gone — and whose
     /// last word is now ignored, because ending an epoch is what this is.
     fn all_offline(&self) {
-        let mut per_note = self.per_note.lock().expect("status lock poisoned");
+        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         for status in per_note.values_mut() {
             status.epoch += 1;
             status.tx.send_replace(SyncStatus::offline());
@@ -673,10 +673,7 @@ impl Peer {
     }
 
     fn locked(&self) -> Result<Open<'_>, String> {
-        let guard = self
-            .core
-            .lock()
-            .map_err(|_| "core lock poisoned".to_string())?;
+        let guard = crate::lock::lock(&self.core).map_err(|_| "core lock poisoned".to_string())?;
         if guard.is_none() {
             return Err(closed());
         }
@@ -687,9 +684,7 @@ impl Peer {
     /// connection and lets the last WAL checkpoint run. Closing twice is not an
     /// error: the second one has nothing to do.
     fn close(&self) -> Result<(), String> {
-        let taken = self
-            .core
-            .lock()
+        let taken = crate::lock::lock(&self.core)
             .map_err(|_| "core lock poisoned".to_string())?
             .take();
         drop(taken);
@@ -849,16 +844,14 @@ impl Shared {
     /// over, and the relay is not asked for its backlog again.
     fn connect_note(&self, note: NoteId) -> Result<(), String> {
         let connection = {
-            let device = self.device.lock().map_err(|_| "sync lock poisoned")?;
+            let device = crate::lock::lock(&self.device).map_err(|_| "sync lock poisoned")?;
             let Some(device) = device.as_ref() else {
                 return Ok(());
             };
             let epoch = self.statuses.begin(note);
             device.connect(note, self.statuses.clone(), epoch)?
         };
-        let previous = self
-            .connections
-            .lock()
+        let previous = crate::lock::lock(&self.connections)
             .map_err(|_| "sync lock poisoned".to_string())?
             .insert(note, connection);
         if let Some(previous) = previous {
@@ -869,7 +862,7 @@ impl Shared {
 
     /// The relay's HTTP address, for the calls that are not a socket.
     fn http_base(&self) -> Result<String, String> {
-        let relay = self.relay.lock().map_err(|_| "relay lock poisoned")?;
+        let relay = crate::lock::lock(&self.relay).map_err(|_| "relay lock poisoned")?;
         let relay = relay
             .as_ref()
             .ok_or("Sharing needs a relay, and this device is not connected to one.")?;
@@ -922,9 +915,7 @@ impl Shared {
         };
         let allowed: std::collections::HashSet<_> = wanted.iter().copied().collect();
         let retired = {
-            let mut connections = self
-                .connections
-                .lock()
+            let mut connections = crate::lock::lock(&self.connections)
                 .map_err(|_| "sync lock poisoned".to_string())?;
             let retired: Vec<_> = connections
                 .keys()
@@ -941,9 +932,7 @@ impl Shared {
             self.statuses.forget(id);
         }
         {
-            let open = self
-                .connections
-                .lock()
+            let open = crate::lock::lock(&self.connections)
                 .map_err(|_| "sync lock poisoned".to_string())?;
             wanted.retain(|id| !open.contains_key(id));
         }
@@ -959,9 +948,7 @@ impl Shared {
     /// channel in place because the note is still there and a screen may still be
     /// watching it. Here there will be no note, so the channel goes too.
     fn disconnect_note(&self, note: NoteId) -> Result<(), String> {
-        let connection = self
-            .connections
-            .lock()
+        let connection = crate::lock::lock(&self.connections)
             .map_err(|_| "sync lock poisoned".to_string())?
             .remove(&note);
         if let Some(connection) = connection {
@@ -992,7 +979,7 @@ impl Shared {
     }
 
     fn with_connection(&self, note: NoteId, then: impl FnOnce(&Connection)) {
-        if let Ok(connections) = self.connections.lock() {
+        if let Ok(connections) = crate::lock::lock(&self.connections) {
             if let Some(connection) = connections.get(&note) {
                 then(connection);
             }
@@ -1383,9 +1370,8 @@ impl OpenLibraries {
         let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         // A poisoned registry still holds the truth about what is open; the
         // panic that poisoned it was somebody else's.
-        let mut open = Self::registry()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut open =
+            crate::lock::lock(Self::registry()).unwrap_or_else(|poisoned| poisoned.into_inner());
         // Libraries Dart has already let go of: nothing to retire, and no
         // reason to keep an entry for every temp directory a test suite opens.
         open.retain(|_, held| held.shared.strong_count() > 0);
@@ -2527,16 +2513,10 @@ impl Library {
         // this is also how a device is moved to a different relay.
         self.disconnect()?;
         let device = Device::open(self.shared.core.clone(), &relay)?;
-        *self
-            .shared
-            .device
-            .lock()
-            .map_err(|_| "sync lock poisoned".to_string())? = Some(device);
-        *self
-            .shared
-            .relay
-            .lock()
-            .map_err(|_| "relay lock poisoned".to_string())? = Some(relay);
+        *crate::lock::lock(&self.shared.device).map_err(|_| "sync lock poisoned".to_string())? =
+            Some(device);
+        *crate::lock::lock(&self.shared.relay).map_err(|_| "relay lock poisoned".to_string())? =
+            Some(relay);
         // `syncable` rather than the note list: the list is the grid, and a
         // note this device holds only a key for — one that arrived in the
         // account document and whose log has never been fetched — has no card
@@ -2561,10 +2541,7 @@ impl Library {
     /// line and pockets the phone expects the other phone to have it.
     #[frb(sync)]
     pub fn send_held_edits(&self) -> Result<(), String> {
-        let connections = self
-            .shared
-            .connections
-            .lock()
+        let connections = crate::lock::lock(&self.shared.connections)
             .map_err(|_| "sync lock poisoned".to_string())?;
         for connection in connections.values() {
             connection.flush();
@@ -2575,26 +2552,17 @@ impl Library {
     /// Stop syncing everything. Edits still work and still queue; nothing is
     /// lost.
     pub fn disconnect(&self) -> Result<(), String> {
-        *self
-            .shared
-            .relay
-            .lock()
-            .map_err(|_| "relay lock poisoned".to_string())? = None;
+        *crate::lock::lock(&self.shared.relay).map_err(|_| "relay lock poisoned".to_string())? =
+            None;
         let connections: Vec<Connection> = {
-            let mut open = self
-                .shared
-                .connections
-                .lock()
+            let mut open = crate::lock::lock(&self.shared.connections)
                 .map_err(|_| "sync lock poisoned".to_string())?;
             open.drain().map(|(_, connection)| connection).collect()
         };
         for connection in connections {
             connection.shutdown();
         }
-        let device = self
-            .shared
-            .device
-            .lock()
+        let device = crate::lock::lock(&self.shared.device)
             .map_err(|_| "sync lock poisoned".to_string())?
             .take();
         if let Some(device) = device {

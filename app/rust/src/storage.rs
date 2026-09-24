@@ -39,7 +39,7 @@ impl Pending {
     /// Losing a batch is the one thing that must not happen, so the queue is
     /// read through the poison rather than unwrapped.
     fn locked(&self) -> std::sync::MutexGuard<'_, Vec<StorageBatch>> {
-        match self.0.lock() {
+        match crate::lock::lock(&self.0) {
             Ok(pending) => pending,
             Err(poisoned) => poisoned.into_inner(),
         }
