@@ -92,9 +92,6 @@ class _Where {
       ? shelf.empty
       : 'Nothing here is labelled "${tagName ?? ''}".';
 
-  /// Whether this is the plain grid, where a list can be joined.
-  bool get isGrid => tag == null && shelf == _Shelf.notes;
-
   /// Whether a new note made here would be visible afterwards. True on the grid
   /// and on a label — where the note is given that label, so it does not appear
   /// and then vanish.
@@ -392,9 +389,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// only way in, so it closes itself.
   void _show(_Where where) => setState(() => _where = where);
 
-  /// Ask to join a list by its invite link, and wait to be let in.
+  /// Ask to join a list by its invite link, and wait to be let in. A tapped
+  /// link arrives as [initialLink] and is only confirmed; without one, the
+  /// drawer's "Join with a link" asks for it to be pasted.
   ///
-  /// The wait is a dialog because somebody who has just pasted a link is
+  /// The wait is a dialog because somebody who has just opened a link is
   /// usually on the phone to the person who sent it; closing it keeps the
   /// request, and [InviteBanners] keeps waiting where the dialog left off.
   Future<void> _join({String? initialLink}) async {
@@ -623,13 +622,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
                         : 'Show as a grid',
                     onPressed: _toggleLayout,
                   ),
-                  if (widget.library.canJoin && _where.isGrid)
-                    IconButton(
-                      key: const Key('join-button'),
-                      icon: const Icon(Icons.group_add_outlined),
-                      tooltip: 'Join a note',
-                      onPressed: _join,
-                    ),
                   // Only where there is a trash and something in it. An empty
                   // trash with a button to empty it invites the one gesture that
                   // cannot be undone, for no result.
@@ -655,6 +647,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onForget: _forgetLabel,
               hasAccount: widget.library.hasAccount,
               onAccount: _openAccount,
+              // A tapped invite link is the way in; this is for one that
+              // arrived somewhere it could not be tapped.
+              onJoin: widget.library.canJoin ? _join : null,
               watchSync: widget.library.watchSync,
               initialSyncStatus: widget.library.syncStatus,
             ),
@@ -1467,6 +1462,7 @@ class _Shelves extends StatelessWidget {
     required this.onForget,
     required this.hasAccount,
     required this.onAccount,
+    required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
   });
@@ -1488,6 +1484,7 @@ class _Shelves extends StatelessWidget {
   /// needs to find out about before they lose the phone.
   final bool hasAccount;
   final VoidCallback onAccount;
+  final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
 
@@ -1587,6 +1584,16 @@ class _Shelves extends StatelessWidget {
               onAccount();
             },
           ),
+          if (onJoin != null)
+            ListTile(
+              key: const Key('join-entry'),
+              leading: const Icon(Icons.group_add_outlined),
+              title: const Text('Join with a link'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onJoin!();
+              },
+            ),
         ],
       ),
     );

@@ -135,7 +135,7 @@ void main() {
       expect(library.profileName, 'Olga');
       expect(find.text('Olga (you)'), findsOneWidget);
 
-      await tapKey(tester, 'copy-invite-link');
+      await tapKey(tester, 'send-invite-link');
       final invite = library.invitesFor('groceries').single;
       expect(find.byKey(const Key('invite-link')), findsOneWidget);
 
@@ -162,7 +162,7 @@ void main() {
     await tapKey(tester, 'share-button');
     await tapKey(tester, 'setup-not-now');
     expect(library.hasAccount, isFalse);
-    expect(find.byKey(const Key('copy-invite-link')), findsNothing);
+    expect(find.byKey(const Key('send-invite-link')), findsNothing);
   });
 
   testWidgets(
@@ -171,9 +171,17 @@ void main() {
       final library = FakeNoteLibrary(
         notes: {'hardware': FakeNoteCore(title: 'Hardware')},
       );
-      await pumpList(tester, library);
+      // The link is tapped in a messenger; the app opens on it.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NoteListScreen(
+            library: library,
+            initialInviteLink: 'easynotes://join#abc',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-      await tapKey(tester, 'join-button');
       await tapKey(tester, 'setup-restore');
       await tester.enterText(
         find.byKey(const Key('adopt-phrase-field')),
@@ -183,12 +191,10 @@ void main() {
       await tapKey(tester, 'adopt-confirm');
       await giveName(tester, 'Anna');
 
-      // The join dialog has no name field: it says whose name it uses.
+      // The join dialog has no name field, and nothing to paste: it says
+      // whose name it uses and asks for a yes.
       expect(find.byKey(const Key('join-name-field')), findsNothing);
-      await tester.enterText(
-        find.byKey(const Key('join-link-field')),
-        'easynotes://join#abc',
-      );
+      expect(find.byKey(const Key('join-link-field')), findsNothing);
       expect(find.text('Ask to join as Anna'), findsOneWidget);
       await tester.tap(find.byKey(const Key('join-confirm')));
       await waitAWhile(tester);

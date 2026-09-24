@@ -1,9 +1,10 @@
 /// Sharing a note with other people, from both ends.
 ///
-/// The owner's side is [ShareDialog]: copy a link, send it however they like,
+/// The owner's side is [ShareDialog]: send a link through the share sheet,
 /// approve whoever asks with one tap, and remove anyone later. The guest's
-/// side is [JoinDialog] and [WaitingDialog]: paste the link, ask to join under
-/// the name the account shares with, and wait to be let in. [InviteBanners] is
+/// side is [JoinDialog] and [WaitingDialog]: tap the link (or, from the
+/// drawer, paste it), ask to join under the name the account shares with, and
+/// wait to be let in. [InviteBanners] is
 /// what sits above the grid while either side is waiting, so that closing a
 /// dialog does not mean missing the answer.
 ///
@@ -21,6 +22,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/content_sharing.dart';
 import '../core/invite_links.dart';
 import '../core/invites.dart';
 import 'account_screen.dart';
@@ -264,14 +266,39 @@ class _ShareDialogState extends State<ShareDialog> {
     webOrigin: Uri.base.replace(query: '', fragment: '').toString(),
   );
 
+  /// Send the link through the platform's share sheet, making it first if
+  /// there is none open. Where there is no share sheet it is copied instead.
+  Future<void> _sendLink() => _act(() async {
+    final invite = await _openInvite();
+    if (invite == null) return;
+    // The link goes last: a guest who pastes the whole message rather than
+    // tapping it still gets in, because the core reads after the last `#`.
+    final shared = await shareContent(
+      'Join my shared note in EasyNotes: ${_link(invite)}',
+    );
+    if (!shared) _copy(invite);
+    await _refresh();
+  });
+
   /// Copy the link, making it first if there is none open.
   Future<void> _copyLink() => _act(() async {
+    final invite = await _openInvite();
+    if (invite == null) return;
+    _copy(invite);
+    await _refresh();
+  });
+
+  Future<Invite?> _openInvite() async {
     final invite = _invite ?? await widget.invites.createInvite(widget.noteId);
-    if (!mounted) return;
+    if (!mounted) return null;
     setState(() {
       _invite = invite;
       _notice = null;
     });
+    return invite;
+  }
+
+  void _copy(Invite invite) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     // The link is on screen whatever the clipboard does: a platform without
     // one still lets it be copied by hand.
@@ -283,8 +310,7 @@ class _ShareDialogState extends State<ShareDialog> {
         onError: (_) => null,
       ),
     );
-    await _refresh();
-  });
+  }
 
   Future<void> _approve(JoinRequest request) => _act(() async {
     final approval = await widget.invites.approveRequest(
@@ -511,19 +537,30 @@ class _ShareDialogState extends State<ShareDialog> {
                 const Divider(height: 28),
                 if (invite == null)
                   const Text(
-                    'Copy a link and send it to one person, any way you like. '
-                    'When they open it you will see them here, and approve '
-                    'them with one tap. The link works once and stops after '
-                    'seven days.',
+                    'Send a link to one person, any way you like. When they '
+                    'open it you will see them here, and approve them with '
+                    'one tap. The link works once and stops after seven days.',
                   )
                 else ...[
-                  SelectableText(
-                    _link(invite),
-                    key: const Key('invite-link'),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SelectableText(
+                          _link(invite),
+                          key: const Key('invite-link'),
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        key: const Key('copy-invite-link'),
+                        icon: const Icon(Icons.copy),
+                        tooltip: 'Copy link',
+                        onPressed: _busy ? null : _copyLink,
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -572,10 +609,10 @@ class _ShareDialogState extends State<ShareDialog> {
           ),
         if (canManage)
           FilledButton.icon(
-            key: const Key('copy-invite-link'),
-            onPressed: _busy ? null : _copyLink,
-            icon: const Icon(Icons.link),
-            label: const Text('Copy link'),
+            key: const Key('send-invite-link'),
+            onPressed: _busy ? null : _sendLink,
+            icon: const Icon(Icons.send),
+            label: const Text('Send link'),
           ),
         TextButton(
           key: const Key('share-done'),
@@ -587,8 +624,10 @@ class _ShareDialogState extends State<ShareDialog> {
   }
 }
 
-/// Asks for an invite link, and pops with the request it made. The name is
-/// the account's: the button says it, and there is no field for it.
+/// Asks to join by an invite link, and pops with the request it made. A link
+/// that was tapped is only confirmed; the drawer's way in asks for one to be
+/// pasted. The name is the account's: the button says it, and there is no
+/// field for it.
 class JoinDialog extends StatefulWidget {
   const JoinDialog({super.key, required this.invites, this.initialLink});
 
@@ -632,21 +671,32 @@ class _JoinDialogState extends State<JoinDialog> {
   @override
   Widget build(BuildContext context) {
     final name = widget.invites.profileName ?? '';
+    // A tapped link needs only a yes: showing its secret in a field to be
+    // checked would ask the guest to judge something they cannot read.
+    final tapped = widget.initialLink != null;
     return AlertDialog(
-      title: const Text('Join a note'),
+      title: Text(tapped ? 'Join a shared note?' : 'Join with a link'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextField(
-            key: const Key('join-link-field'),
-            controller: _link,
-            autofocus: widget.initialLink == null,
-            decoration: const InputDecoration(
-              labelText: 'Invite link',
-              hintText: 'easynotes://join#…',
+          if (tapped)
+            const Text(
+              'Whoever sent you this link will see your request and let you '
+              'in.',
+              key: Key('join-explainer'),
+            )
+          else
+            TextField(
+              key: const Key('join-link-field'),
+              controller: _link,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Invite link',
+                hintText: 'Paste the link you were sent',
+              ),
+              onSubmitted: (_) => _ask(),
             ),
-            onSubmitted: (_) => _ask(),
-          ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -737,7 +787,11 @@ class _WaitingDialogState extends State<WaitingDialog> {
     final ended = _ended;
     if (ended != null) {
       return AlertDialog(
-        title: const Text('Request declined'),
+        title: Text(
+          ended.state == JoinState.declined
+              ? 'Request declined'
+              : 'This link stopped working',
+        ),
         content: Text(
           ended.state == JoinState.declined
               ? 'The owner turned this request away.'

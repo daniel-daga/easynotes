@@ -12,6 +12,7 @@ import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Future<void> pumpScreen(
@@ -37,7 +38,7 @@ Future<void> pumpScreen(
 Future<String> makeLink(WidgetTester tester, FakeNoteLibrary invites) async {
   await tester.tap(find.byKey(const Key('share-button')));
   await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const Key('copy-invite-link')));
+  await tester.tap(find.byKey(const Key('send-invite-link')));
   await tester.pumpAndSettle();
   return invites.invitesFor('this-note').single.id;
 }
@@ -120,7 +121,7 @@ void main() {
     expect(find.byKey(const Key('people-footer')), findsOneWidget);
     expect(find.text('Names are chosen by each person.'), findsOneWidget);
     expect(find.textContaining('Device'), findsNothing);
-    expect(find.byKey(const Key('copy-invite-link')), findsNothing);
+    expect(find.byKey(const Key('send-invite-link')), findsNothing);
     expect(find.byKey(const Key('stop-sharing')), findsNothing);
     expect(find.byKey(const Key('remove-other-anna')), findsNothing);
     await tester.tap(find.byKey(const Key('share-done')));
@@ -323,6 +324,51 @@ void main() {
       expect(find.byKey(const Key('invite-waiting')), findsOneWidget);
     });
 
+    testWidgets('Send link hands the link to the share sheet', (tester) async {
+      const channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+      final sent = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        sent.add((call.arguments as Map)['text'] as String);
+        return true;
+      });
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+
+      await makeLink(tester, invites);
+
+      final link = invites.invitesFor('this-note').single.link;
+      // The link last, so a pasted message still reads as one.
+      expect(sent, ['Join my shared note in EasyNotes: $link']);
+      expect(find.text('Link copied'), findsNothing);
+    });
+
+    testWidgets('with no share sheet, Send link copies instead', (
+      tester,
+    ) async {
+      String? copied;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+
+      await makeLink(tester, invites);
+
+      expect(copied, invites.invitesFor('this-note').single.link);
+      expect(find.text('Link copied'), findsOneWidget);
+      expect(find.byKey(const Key('copy-invite-link')), findsOneWidget);
+    });
+
     testWidgets('someone who asks is shown with their code and can be let in', (
       tester,
     ) async {
@@ -436,7 +482,7 @@ void main() {
 
       await tester.tap(find.byKey(const Key('share-button')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('copy-invite-link')));
+      await tester.tap(find.byKey(const Key('send-invite-link')));
       await tester.pumpAndSettle();
 
       expect(find.textContaining('needs a relay'), findsOneWidget);

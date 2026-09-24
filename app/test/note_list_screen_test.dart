@@ -197,7 +197,9 @@ void main() {
     });
 
     Future<void> ask(WidgetTester tester, String link) async {
-      await tester.tap(find.byKey(const Key('join-button')));
+      await tester.tap(find.byTooltip('Open navigation menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('join-entry')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('join-link-field')), link);
       // The name is the account's: the button says it, and nothing asks.
@@ -229,6 +231,40 @@ void main() {
         hasLength(1),
       );
       expect(find.byKey(const Key('join-code')), findsNothing);
+    });
+
+    testWidgets('a tapped link only asks for a yes', (tester) async {
+      final library = twoLists()..setUpSharing('Anna');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NoteListScreen(
+            library: library,
+            initialInviteLink: 'easynotes://join#abc',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Nothing to paste or check: the link is already in hand.
+      expect(find.byKey(const Key('join-link-field')), findsNothing);
+      expect(find.byKey(const Key('join-explainer')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('join-confirm')));
+      await settleWhileWaiting(tester);
+
+      expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
+      expect(find.byKey(const Key('join-code')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('join-stop-waiting')));
+      await settleWhileWaiting(tester);
+    });
+
+    testWidgets('there is no join button on the grid, only in the drawer', (
+      tester,
+    ) async {
+      await pumpList(tester, twoLists());
+      expect(find.byKey(const Key('join-button')), findsNothing);
+      await tester.tap(find.byTooltip('Open navigation menu'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('join-entry')), findsOneWidget);
     });
 
     testWidgets('an empty link asks nothing', (tester) async {
@@ -316,11 +352,13 @@ void main() {
     });
   });
 
-  testWidgets('there is no join button where joining is not possible', (
+  testWidgets('there is no way to join where joining is not possible', (
     tester,
   ) async {
     await pumpList(tester, FakeNoteLibrary(canJoin: false));
-    expect(find.byKey(const Key('join-button')), findsNothing);
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('join-entry')), findsNothing);
   });
 
   testWidgets('the layout toggle switches between the grid and a list', (
