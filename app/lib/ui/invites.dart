@@ -1,6 +1,6 @@
 /// Sharing a note with another person, from both ends.
 ///
-/// The owner's side is [ShareDialog]: make a link, send it however they like,
+/// The owner's side is [CollaboratorsDialog]: make a link, send it however they like,
 /// and let in whoever asks — after checking the six digits, if they are
 /// careful. The guest's side is [JoinDialog] and [WaitingDialog]: paste the
 /// link, say who you are, and wait to be let in. [InviteBanners] is what sits
@@ -35,17 +35,24 @@ String _days(Duration left) {
 }
 
 /// Everything the owner of a note does about inviting someone to it.
-class ShareDialog extends StatefulWidget {
-  const ShareDialog({super.key, required this.invites, required this.noteId});
+class CollaboratorsDialog extends StatefulWidget {
+  const CollaboratorsDialog({
+    super.key,
+    required this.invites,
+    required this.noteId,
+  });
 
   final Invites invites;
   final String noteId;
 
   @override
-  State<ShareDialog> createState() => _ShareDialogState();
+  State<CollaboratorsDialog> createState() => _CollaboratorsDialogState();
 }
 
-class _ShareDialogState extends State<ShareDialog> {
+class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
+  Collaborators? _directory;
+  String? _directoryError;
+  Timer? _directoryPoll;
   Invite? _invite;
   InviteRequests? _requests;
   String? _error;
@@ -59,6 +66,10 @@ class _ShareDialogState extends State<ShareDialog> {
   @override
   void initState() {
     super.initState();
+    _loadDirectory();
+    _directoryPoll = Timer.periodic(invitePollInterval, (_) {
+      if (mounted) setState(_loadDirectory);
+    });
     // The newest open invite, if this note has one: a person who closed the
     // dialog and came back should find the link they sent, not a new one.
     final open = widget.invites.invitesFor(widget.noteId);
@@ -67,8 +78,71 @@ class _ShareDialogState extends State<ShareDialog> {
 
   @override
   void dispose() {
+    _directoryPoll?.cancel();
     _poll?.cancel();
     super.dispose();
+  }
+
+  void _loadDirectory() {
+    try {
+      _directory = widget.invites.collaborators(widget.noteId);
+      _directoryError = null;
+    } catch (_) {
+      _directory = null;
+      _directoryError = 'Could not load collaborators. Retrying…';
+    }
+  }
+
+  List<Widget> _people() {
+    final directory = _directory;
+    if (directory == null) {
+      return [Text(_directoryError ?? 'Loading collaborators…')];
+    }
+    return [
+      Text('Who has access', style: Theme.of(context).textTheme.titleSmall),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+        title: Text(directory.canManage ? 'You' : 'Note owner'),
+        subtitle: const Text('Owner · manages access'),
+      ),
+      for (final person in directory.people)
+        ListTile(
+          key: Key('collaborator-${person.id}'),
+          contentPadding: EdgeInsets.zero,
+          leading: CircleAvatar(child: Text(person.initials)),
+          title: Text(
+            '${person.displayName}${person.id == directory.currentDevice ? ' (you)' : ''}',
+          ),
+          subtitle: Text(
+            'Can edit · Device ${person.id.length > 8 ? person.id.substring(0, 8) : person.id}',
+          ),
+        ),
+      if (!directory.canManage &&
+          !directory.people.any((p) => p.id == directory.currentDevice))
+        const ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: CircleAvatar(child: Icon(Icons.person_outline)),
+          title: Text('You'),
+          subtitle: Text('Can edit'),
+        ),
+      if (directory.people.isEmpty)
+        const Text(
+          'No collaborators recorded yet.',
+          key: Key('collaborators-empty'),
+        ),
+      const SizedBox(height: 8),
+      Text(
+        'Names are chosen by collaborators. Each entry is one device. Older shares may not appear in this list.',
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      if (_directoryError != null) Text(_directoryError!),
+      if (!directory.canManage) ...[
+        const SizedBox(height: 12),
+        const Text('Only the owner can add collaborators or remove access.'),
+      ],
+      const Divider(height: 28),
+    ];
   }
 
   void _watch(Invite invite) {
@@ -117,13 +191,21 @@ class _ShareDialogState extends State<ShareDialog> {
   }
 
   Future<void> _act(Future<void> Function() action) async {
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
       await action();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _loadDirectory();
+        });
+      }
     }
   }
 
@@ -132,6 +214,7 @@ class _ShareDialogState extends State<ShareDialog> {
     if (!mounted) return;
     setState(() {
       _admitted = null;
+      _revoked = false;
       _requests = null;
       _error = null;
     });
@@ -312,16 +395,14 @@ class _ShareDialogState extends State<ShareDialog> {
       ),
       const SizedBox(height: 12),
       if (pending.isEmpty)
-        const Text('Nobody has asked to join yet.', key: Key('invite-waiting'))
-      else
-        for (final request in pending) _request(request),
+        const Text('Nobody has asked to join yet.', key: Key('invite-waiting')),
     ];
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Share this note'),
+      title: const Text('Add collaborators'),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -329,7 +410,17 @@ class _ShareDialogState extends State<ShareDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ..._content(),
+              if (_directory?.canManage == true &&
+                  (_requests?.pending.isNotEmpty ?? false)) ...[
+                Text(
+                  'Requests to join',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                for (final request in _requests!.pending) _request(request),
+                const Divider(height: 28),
+              ],
+              ..._people(),
+              if (_directory?.canManage == true) ..._content(),
               if (_error != null) ...[
                 const SizedBox(height: 12),
                 Text(
@@ -343,24 +434,24 @@ class _ShareDialogState extends State<ShareDialog> {
         ),
       ),
       actions: [
-        TextButton(
-          key: const Key('revoke-collaborators'),
-          onPressed: _busy ? null : _revoke,
-          child: const Text('Remove everyone'),
-        ),
-        if (_invite != null)
+        if (_directory?.canManage == true)
+          TextButton(
+            key: const Key('revoke-collaborators'),
+            onPressed: _busy ? null : _revoke,
+            child: const Text('Remove everyone'),
+          ),
+        if (_directory?.canManage == true && _invite != null)
           TextButton(
             key: const Key('withdraw-invite'),
             onPressed: _busy ? null : _withdraw,
             child: const Text('Cancel the link'),
           )
-        else
-          TextButton(
+        else if (_directory?.canManage == true)
+          FilledButton.icon(
             key: const Key('create-invite'),
             onPressed: _busy ? null : _create,
-            child: Text(
-              _admitted == null ? 'Make a link' : 'Invite someone else',
-            ),
+            icon: const Icon(Icons.person_add_outlined),
+            label: const Text('Invite by link'),
           ),
         TextButton(
           key: const Key('share-done'),

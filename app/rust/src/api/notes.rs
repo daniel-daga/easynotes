@@ -116,6 +116,7 @@ impl From<easynotes_core::crdt::NoteView> for NoteView {
 
 /// One card in the grid: enough to draw a note without opening it.
 pub struct NoteSummaryView {
+    pub collaborators: Vec<CollaboratorView>,
     pub id: String,
     pub kind: NoteKindView,
     pub title: String,
@@ -153,6 +154,7 @@ pub struct LabelView {
 impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
     fn from(s: easynotes_core::note::NoteSummary) -> Self {
         Self {
+            collaborators: s.collaborators.into_iter().map(Into::into).collect(),
             id: s.id.encode(),
             kind: s.kind.into(),
             title: s.title,
@@ -185,6 +187,26 @@ pub struct TagView {
     pub id: String,
     pub name: String,
     pub notes: u32,
+}
+
+pub struct CollaboratorView {
+    pub id: String,
+    pub name: String,
+}
+
+impl From<easynotes_core::collaborators::Collaborator> for CollaboratorView {
+    fn from(c: easynotes_core::collaborators::Collaborator) -> Self {
+        Self {
+            id: c.id,
+            name: c.name,
+        }
+    }
+}
+
+pub struct CollaboratorsView {
+    pub people: Vec<CollaboratorView>,
+    pub can_manage: bool,
+    pub current_device: String,
 }
 
 /// How a reminder repeats, mirrored for Flutter rather than exposing a core
@@ -1844,6 +1866,23 @@ impl Library {
         Ok(())
     }
 
+    #[frb(sync)]
+    pub fn collaborators(&self, id: String) -> Result<CollaboratorsView, String> {
+        let id = note_id(&id)?;
+        let mut core = self.shared.locked()?;
+        core.open_note(id).map_err(|e| e.to_string())?;
+        Ok(CollaboratorsView {
+            people: core
+                .collaborators(id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            can_manage: core.can_manage_collaborators(id),
+            current_device: core.device_key().encode(),
+        })
+    }
+
     /// Forget every note in the trash. Returns how many there were.
     pub fn empty_trash(&self) -> Result<u32, String> {
         // Asked for the list, then told to empty it, rather than one call: every
@@ -2045,6 +2084,20 @@ impl Library {
             }
         };
         if !listing.open {
+            for request in &listing.requests {
+                if matches!(request.state, RequestState::Approved) {
+                    if let Some(join) = &request.join {
+                        let envelope = self
+                            .shared
+                            .locked()?
+                            .record_collaborator(&outgoing, join)
+                            .map_err(|e| e.to_string())?;
+                        if let Some(envelope) = envelope {
+                            self.shared.publish(outgoing.note, envelope);
+                        }
+                    }
+                }
+            }
             self.shared.forget_invite(&outgoing)?;
         }
         Ok(InviteRequestsView {
@@ -2107,6 +2160,14 @@ impl Library {
                 .map_err(|e| e.to_string())
         })
         .await?;
+        let envelope = self
+            .shared
+            .locked()?
+            .record_collaborator(&outgoing, &join)
+            .map_err(|e| e.to_string())?;
+        if let Some(envelope) = envelope {
+            self.shared.publish(outgoing.note, envelope);
+        }
         self.shared.forget_invite(&outgoing)
     }
 

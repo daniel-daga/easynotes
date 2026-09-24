@@ -345,10 +345,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _join({String? initialLink}) async {
     final join = await showDialog<PendingJoin>(
       context: context,
-      builder: (context) => JoinDialog(
-        invites: widget.library,
-        initialLink: initialLink,
-      ),
+      builder: (context) =>
+          JoinDialog(invites: widget.library, initialLink: initialLink),
     );
     if (join == null || !mounted) return;
     final id = await showDialog<String>(
@@ -368,7 +366,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// Answer whoever asked to join one of this device's lists.
   Future<void> _review(String noteId) => showDialog<void>(
     context: context,
-    builder: (context) => ShareDialog(invites: widget.library, noteId: noteId),
+    builder: (context) =>
+        CollaboratorsDialog(invites: widget.library, noteId: noteId),
   );
 
   /// A request that was waiting in the background was let in.
@@ -742,6 +741,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
     notes: notes,
     tags: widget.library.tags,
     reminderNoteIds: reminders,
+    onPerson: (person) => _selectFilter(
+      'Search with ${person.displayName}',
+      (note, _) => note.collaborators.any((p) => p.id == person.id),
+    ),
     onKind: (kind) => _selectFilter(
       kind == NoteKind.checklist ? 'Search in Checklists' : 'Search in Notes',
       (note, _) => note.kind == kind,
@@ -823,8 +826,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 }
 
 /// Search browse view: choose one filter, then optionally search within it.
-/// People are shown as a future facet but disabled because the
-/// current sharing model does not retain an accepted collaborator roster.
+/// People use the verified directory cached with each note summary.
 class _SearchFilterBrowser extends StatefulWidget {
   const _SearchFilterBrowser({
     required this.notes,
@@ -834,6 +836,7 @@ class _SearchFilterBrowser extends StatefulWidget {
     required this.onLabel,
     required this.onColour,
     required this.onReminder,
+    required this.onPerson,
   });
 
   final List<NoteSummary> notes;
@@ -843,6 +846,7 @@ class _SearchFilterBrowser extends StatefulWidget {
   final ValueChanged<String> onLabel;
   final ValueChanged<String> onColour;
   final ValueChanged<_ReminderFilter> onReminder;
+  final ValueChanged<Collaborator> onPerson;
 
   @override
   State<_SearchFilterBrowser> createState() => _SearchFilterBrowserState();
@@ -873,6 +877,15 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
     final labels = widget.tags
         .where((tag) => _labelCount(tag) > 0)
         .toList(growable: false);
+    final people =
+        <String, Collaborator>{
+          for (final note in widget.notes)
+            for (final person in note.collaborators) person.id: person,
+        }.values.toList()..sort(
+          (a, b) => a.displayName.toLowerCase().compareTo(
+            b.displayName.toLowerCase(),
+          ),
+        );
     final visibleLabels = _showAllLabels ? labels : labels.take(8).toList();
     final colourValues = [
       'none',
@@ -953,29 +966,27 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
         _FilterSection(
           title: 'People',
           children: [
-            Container(
-              key: const Key('filter-people-unavailable'),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.people_outline, color: theme.colorScheme.outline),
-                  const SizedBox(width: 12),
-                  Expanded(
+            if (people.isEmpty)
+              Text(
+                'Collaborators appear here after an invite is approved.',
+                style: theme.textTheme.bodySmall,
+              )
+            else
+              for (final person in people)
+                ActionChip(
+                  key: Key('filter-person-${person.id}'),
+                  avatar: CircleAvatar(
                     child: Text(
-                      'People filters will be available when EasyNotes can show '
-                      'who has access to each note.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
+                      person.initials,
+                      style: const TextStyle(fontSize: 11),
                     ),
                   ),
-                ],
-              ),
-            ),
+                  label: Text(
+                    '${person.displayName}  ${widget.notes.where((n) => n.collaborators.any((p) => p.id == person.id)).length}',
+                  ),
+                  tooltip: 'Device ${person.id}',
+                  onPressed: () => widget.onPerson(person),
+                ),
           ],
         ),
         _FilterSection(

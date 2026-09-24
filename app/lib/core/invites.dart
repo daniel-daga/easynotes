@@ -14,6 +14,40 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+@immutable
+class Collaborator {
+  const Collaborator({required this.id, required this.name});
+  final String id;
+  final String name;
+  String get displayName => name.isEmpty ? 'Unnamed collaborator' : name;
+  String get initials => name.trim().isEmpty
+      ? '?'
+      : name
+            .trim()
+            .split(RegExp(r'\s+'))
+            .take(2)
+            .map((s) => String.fromCharCode(s.runes.first))
+            .join()
+            .toUpperCase();
+  @override
+  bool operator ==(Object other) =>
+      other is Collaborator && id == other.id && name == other.name;
+  @override
+  int get hashCode => Object.hash(id, name);
+}
+
+@immutable
+class Collaborators {
+  const Collaborators({
+    this.people = const [],
+    required this.canManage,
+    this.currentDevice = '',
+  });
+  final List<Collaborator> people;
+  final bool canManage;
+  final String currentDevice;
+}
+
 /// An invite this device has open.
 @immutable
 class Invite {
@@ -137,6 +171,8 @@ class JoinCheck {
 
 /// What a device can do about invites, on either side of one.
 abstract class Invites {
+  Collaborators collaborators(String noteId);
+
   /// Open an invite to a note and return it, link and all.
   Future<Invite> createInvite(String noteId);
 

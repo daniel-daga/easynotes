@@ -95,6 +95,13 @@ impl AutomergeNote {
 }
 
 impl NoteDoc for AutomergeNote {
+    fn collaborator_assertions(&self) -> Vec<String> {
+        self.doc
+            .keys(ROOT)
+            .filter(|key| key.starts_with("collaborator:"))
+            .map(|key| Self::str_at(&self.doc, &ROOT, &key))
+            .collect()
+    }
     type Account = super::AutomergeAccount;
 
     fn create(actor: &[u8; 16]) -> Self {
@@ -117,6 +124,18 @@ impl NoteDoc for AutomergeNote {
         self.doc
             .transact::<_, _, AutomergeError>(|tx| {
                 match edit {
+                    Edit::AddCollaborator(raw) => {
+                        tx.put(ROOT, crate::collaborators::key(raw), raw.as_str())?;
+                    }
+                    Edit::ClearCollaborators => {
+                        let keys: Vec<String> = tx
+                            .keys(ROOT)
+                            .filter(|key| key.starts_with("collaborator:"))
+                            .collect();
+                        for key in keys {
+                            tx.delete(ROOT, key)?;
+                        }
+                    }
                     Edit::SetTitle(t) => {
                         tx.put(ROOT, TITLE, t.as_str())?;
                     }

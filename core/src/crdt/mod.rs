@@ -132,6 +132,8 @@ impl NoteView {
 /// [`crate::note::Note`] turns "insert at index 3" into a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
+    AddCollaborator(String),
+    ClearCollaborators,
     SetTitle(String),
     AddItem {
         id: ItemId,
@@ -222,6 +224,8 @@ pub(crate) fn splice<'a>(old: &str, new: &'a str) -> Option<(usize, usize, &'a s
 /// same set of updates, in any order and with any duplicates, must produce equal
 /// [`NoteView`]s. `tests/convergence.rs` holds that to account for both backends.
 pub trait NoteDoc: Sized {
+    /// Untrusted assertions; callers must verify against the pinned owner.
+    fn collaborator_assertions(&self) -> Vec<String>;
     /// The account document from the same backend.
     ///
     /// An associated type rather than a second parameter on

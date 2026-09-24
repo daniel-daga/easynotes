@@ -4,6 +4,7 @@
 //! That is deliberate — it is what keeps the security-critical code auditable.
 
 pub mod account;
+pub mod collaborators;
 pub mod crdt;
 pub mod crypto;
 pub mod error;

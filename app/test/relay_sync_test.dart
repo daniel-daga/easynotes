@@ -213,65 +213,65 @@ void main() {
   }, skip: skip);
 
   group("one person's two devices", () {
+    test('a device adopted from a recovery phrase gets the notes and the '
+        'placements', () async {
+      // The slice's definition of done, point 2, from the app's own API.
+      // `relay/tests/account.rs` holds it over cores and engines; this is the
+      // same claim with the bridge, the library and a real Keystore-shaped
+      // master key in the way.
+      final a = await device();
+      final phrase = await a.createAccount();
+      expect(phrase, hasLength(12));
+      expect(a.hasAccount, isTrue);
+
+      final noteId = await a.createNote();
+      final groceries = a.openNote(noteId);
+      addTearDown(groceries.dispose);
+      await groceries.setTitle('Groceries');
+      await groceries.addItem('milk');
+      await a.setColour(noteId, NoteColour.teal);
+      await a.setPinned(noteId, true);
+
+      // B has never seen a share blob. Twelve words is all it is given.
+      final b = await device();
+      expect(b.hasAccount, isFalse);
+      await b.adoptAccount(phrase.join(' '));
+      expect(b.hasAccount, isTrue);
+
+      await _untilNotes(
+        b.watchNotes(),
+        (notes) => notes.any(
+          (note) =>
+              note.id == noteId &&
+              note.title == 'Groceries' &&
+              note.colour == NoteColour.teal &&
+              note.pinned,
+        ),
+        "B never received A's note with A's placements on it",
+      );
+
+      // And it is the note rather than a card of one: B can open it and read
+      // what is inside, which means the key travelled too.
+      final bGroceries = b.openNote(noteId);
+      addTearDown(bGroceries.dispose);
+      await _until(
+        bGroceries.watch(),
+        (view) => view.items.any((item) => item.text == 'milk'),
+        'B never received the note contents',
+      );
+    });
+
     test(
-      'a device adopted from a recovery phrase gets the notes and the '
-      'placements',
+      'a phrase that is not a phrase is refused with something to say',
       () async {
-        // The slice's definition of done, point 2, from the app's own API.
-        // `relay/tests/account.rs` holds it over cores and engines; this is the
-        // same claim with the bridge, the library and a real Keystore-shaped
-        // master key in the way.
-        final a = await device();
-        final phrase = await a.createAccount();
-        expect(phrase, hasLength(12));
-        expect(a.hasAccount, isTrue);
-
-        final noteId = await a.createNote();
-        final groceries = a.openNote(noteId);
-        addTearDown(groceries.dispose);
-        await groceries.setTitle('Groceries');
-        await groceries.addItem('milk');
-        await a.setColour(noteId, NoteColour.teal);
-        await a.setPinned(noteId, true);
-
-        // B has never seen a share blob. Twelve words is all it is given.
-        final b = await device();
-        expect(b.hasAccount, isFalse);
-        await b.adoptAccount(phrase.join(' '));
-        expect(b.hasAccount, isTrue);
-
-        await _untilNotes(
-          b.watchNotes(),
-          (notes) => notes.any(
-            (note) =>
-                note.id == noteId &&
-                note.title == 'Groceries' &&
-                note.colour == NoteColour.teal &&
-                note.pinned,
-          ),
-          "B never received A's note with A's placements on it",
+        final library = await device();
+        await expectLater(
+          library.adoptAccount('milk bread eggs'),
+          throwsA(anything),
         );
-
-        // And it is the note rather than a card of one: B can open it and read
-        // what is inside, which means the key travelled too.
-        final bGroceries = b.openNote(noteId);
-        addTearDown(bGroceries.dispose);
-        await _until(
-          bGroceries.watch(),
-          (view) => view.items.any((item) => item.text == 'milk'),
-          'B never received the note contents',
-        );
+        expect(library.hasAccount, isFalse);
       },
     );
-
-    test('a phrase that is not a phrase is refused with something to say', () async {
-      final library = await device();
-      await expectLater(
-        library.adoptAccount('milk bread eggs'),
-        throwsA(anything),
-      );
-      expect(library.hasAccount, isFalse);
-    });
   }, skip: skip);
 
   group('sharing with another person by invite', () {
@@ -306,6 +306,8 @@ void main() {
 
         await owner.approveRequest(invite.id, request.id);
         expect(owner.invitesFor(noteId), isEmpty);
+        expect(owner.collaborators(noteId).people.single.name, 'Anna');
+        expect(owner.collaborators(noteId).canManage, isTrue);
 
         final joined = await guest.checkJoin(waiting.inviteId);
         expect(joined.state, JoinState.joined);
@@ -314,6 +316,18 @@ void main() {
 
         final b = guest.openNote(joined.noteId!);
         addTearDown(b.dispose);
+        await guest
+            .watchNotes()
+            .firstWhere(
+              (notes) => notes.any(
+                (n) => n.id == noteId && n.collaborators.length == 1,
+              ),
+            )
+            .timeout(patience);
+        final directory = guest.collaborators(noteId);
+        expect(directory.canManage, isFalse);
+        expect(directory.people.single.id, directory.currentDevice);
+        expect(directory.people.single.name, 'Anna');
         await _until(
           b.watch(),
           (view) =>

@@ -76,8 +76,8 @@ class _NoteScreenState extends State<NoteScreen> {
   bool _waitingToPop = false;
   bool _crossedOffExpanded = false;
   bool _deletionPopScheduled = false;
-  late final Stream<List<NoteSummary>>? _noteSummaries =
-      widget.library?.watchNotes();
+  late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
+      ?.watchNotes();
 
   @override
   void dispose() {
@@ -141,7 +141,7 @@ class _NoteScreenState extends State<NoteScreen> {
   Future<void> _share() => showDialog<void>(
     context: context,
     builder: (context) =>
-        ShareDialog(invites: widget.invites, noteId: widget.noteId),
+        CollaboratorsDialog(invites: widget.invites, noteId: widget.noteId),
   );
 
   Future<void> _shareContent(NoteView note) => showDialog<void>(
@@ -367,8 +367,7 @@ class _NoteScreenState extends State<NoteScreen> {
     final library = widget.library;
     final tint = noteColourTint(context, summary?.colour);
     return PopScope<Object?>(
-      canPop:
-          _allowPop || (_pendingItemWrites == 0 && _newBlankItems.isEmpty),
+      canPop: _allowPop || (_pendingItemWrites == 0 && _newBlankItems.isEmpty),
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_popAfterItemWrites());
       },
@@ -379,15 +378,9 @@ class _NoteScreenState extends State<NoteScreen> {
           title: null,
           actions: [
             IconButton(
-              key: const Key('share-content-button'),
-              icon: const Icon(Icons.text_snippet_outlined),
-              tooltip: 'Share note content',
-              onPressed: () => _shareContent(note),
-            ),
-            IconButton(
               key: const Key('share-button'),
-              icon: const Icon(Icons.ios_share),
-              tooltip: 'Invite a collaborator',
+              icon: const Icon(Icons.person_add_outlined),
+              tooltip: 'Add collaborators',
               onPressed: _share,
             ),
           ],
@@ -409,12 +402,14 @@ class _NoteScreenState extends State<NoteScreen> {
         ),
         bottomNavigationBar: library == null || summary == null
             ? _KindToggleBar(
+                onSend: () => _shareContent(widget.core.current),
                 isText: isText,
                 onKindToggle: () => widget.core.setKind(
                   isText ? NoteKind.checklist : NoteKind.text,
                 ),
               )
             : _NoteToolbar(
+                onSend: () => _shareContent(widget.core.current),
                 note: summary,
                 library: library,
                 isText: isText,
@@ -435,6 +430,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
 class _NoteToolbar extends StatelessWidget {
   const _NoteToolbar({
+    required this.onSend,
     required this.note,
     required this.library,
     required this.isText,
@@ -445,6 +441,7 @@ class _NoteToolbar extends StatelessWidget {
   });
 
   final NoteSummary note;
+  final Future<void> Function() onSend;
   final NoteLibrary library;
   final bool isText;
   final VoidCallback onKindToggle;
@@ -452,40 +449,41 @@ class _NoteToolbar extends StatelessWidget {
   final Future<void> Function()? onLabels;
   final Future<void> Function()? onReminders;
 
-  Future<void> _chooseColour(BuildContext context) => showModalBottomSheet<void>(
-    context: context,
-    builder: (context) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: SizedBox(
-          height: 64,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: EdgeInsets.zero,
-            children: [
-              _ColourChoice(
-                colour: null,
-                selected: note.colour == null,
-                onTap: () async {
-                  Navigator.of(context).pop();
-                  await library.setColour(note.id, null);
-                },
+  Future<void> _chooseColour(BuildContext context) =>
+      showModalBottomSheet<void>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: SizedBox(
+              height: 64,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.zero,
+                children: [
+                  _ColourChoice(
+                    colour: null,
+                    selected: note.colour == null,
+                    onTap: () async {
+                      Navigator.of(context).pop();
+                      await library.setColour(note.id, null);
+                    },
+                  ),
+                  for (final colour in NoteColour.values)
+                    _ColourChoice(
+                      colour: colour,
+                      selected: note.colour == colour,
+                      onTap: () async {
+                        Navigator.of(context).pop();
+                        await library.setColour(note.id, colour);
+                      },
+                    ),
+                ],
               ),
-              for (final colour in NoteColour.values)
-                _ColourChoice(
-                  colour: colour,
-                  selected: note.colour == colour,
-                  onTap: () async {
-                    Navigator.of(context).pop();
-                    await library.setColour(note.id, colour);
-                  },
-                ),
-            ],
+            ),
           ),
         ),
-      ),
-    ),
-  );
+      );
 
   Future<void> _showActions(BuildContext context) => showModalBottomSheet<void>(
     context: context,
@@ -505,9 +503,8 @@ class _NoteToolbar extends StatelessWidget {
                   note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
                 ),
                 title: Text(note.pinned ? 'Unpin' : 'Pin'),
-                onTap: () => run(
-                  () => library.setPinned(note.id, !note.pinned),
-                ),
+                onTap: () =>
+                    run(() => library.setPinned(note.id, !note.pinned)),
               ),
             if (!note.trashed && onLabels != null)
               ListTile(
@@ -521,6 +518,12 @@ class _NoteToolbar extends StatelessWidget {
                 title: const Text('Reminders'),
                 onTap: () => run(onReminders!),
               ),
+            ListTile(
+              key: const Key('share-content-button'),
+              leading: const Icon(Icons.ios_share),
+              title: const Text('Send a copy'),
+              onTap: () => run(onSend),
+            ),
             if (!note.trashed)
               ListTile(
                 leading: Icon(
@@ -550,7 +553,8 @@ class _NoteToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SafeArea(
     child: Material(
-      color: noteColourTint(context, note.colour) ??
+      color:
+          noteColourTint(context, note.colour) ??
           Theme.of(context).colorScheme.surface,
       child: Row(
         children: [
@@ -582,23 +586,47 @@ class _NoteToolbar extends StatelessWidget {
 }
 
 class _KindToggleBar extends StatelessWidget {
-  const _KindToggleBar({required this.isText, required this.onKindToggle});
+  const _KindToggleBar({
+    required this.isText,
+    required this.onKindToggle,
+    required this.onSend,
+  });
 
   final bool isText;
   final VoidCallback onKindToggle;
+  final Future<void> Function() onSend;
 
   @override
   Widget build(BuildContext context) => SafeArea(
-    child: Align(
-      alignment: Alignment.centerLeft,
-      child: IconButton(
-        key: const Key('kind-toggle'),
-        icon: Icon(
-          isText ? Icons.check_box_outlined : Icons.notes_outlined,
+    child: Row(
+      children: [
+        IconButton(
+          key: const Key('kind-toggle'),
+          icon: Icon(isText ? Icons.check_box_outlined : Icons.notes_outlined),
+          tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+          onPressed: onKindToggle,
         ),
-        tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
-        onPressed: onKindToggle,
-      ),
+        const Spacer(),
+        IconButton(
+          key: const Key('note-more-menu'),
+          tooltip: 'More note actions',
+          icon: const Icon(Icons.more_vert),
+          onPressed: () => showModalBottomSheet<void>(
+            context: context,
+            builder: (context) => SafeArea(
+              child: ListTile(
+                key: const Key('share-content-button'),
+                leading: const Icon(Icons.ios_share),
+                title: const Text('Send a copy'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  unawaited(onSend());
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
     ),
   );
 }
@@ -631,7 +659,8 @@ class _ColourChoice extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: noteColourTint(context, colour) ??
+              color:
+                  noteColourTint(context, colour) ??
                   Theme.of(context).colorScheme.surface,
               border: Border.all(
                 color: selected
@@ -1096,9 +1125,7 @@ class _ContentShareDialogState extends State<_ContentShareDialog> {
       if (!mounted) return;
       final messenger = ScaffoldMessenger.maybeOf(context);
       Navigator.of(context).pop();
-      messenger?.showSnackBar(
-        const SnackBar(content: Text('Content copied')),
-      );
+      messenger?.showSnackBar(const SnackBar(content: Text('Content copied')));
     } catch (_) {
       if (mounted) setState(() => _fallback = true);
     }

@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `rekey`, `reminder_id`, `reminder_time`, `report`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -88,6 +88,8 @@ abstract class Library implements RustOpaqueInterface {
   /// only makes sure the engine finds nothing to write to.
   Future<void> close();
 
+  CollaboratorsView collaborators({required String id});
+
   /// Start syncing every note with the relay at `relay` (`http://host:port`
   /// or `wss://host`), and every note made or joined after this.
   ///
@@ -139,13 +141,11 @@ abstract class Library implements RustOpaqueInterface {
   /// Forget every note in the trash. Returns how many there were.
   Future<int> emptyTrash();
 
-  /// Forget a note for good: its log, its snapshot, its index entry, its key
-  /// and this person's placement of it.
+  /// Permanently delete a note from this person's account and synced devices.
   ///
   /// There is no undo, which is why the UI offers it only from the trash and
-  /// only behind a confirmation. It removes **this device's copy**: a note that
-  /// has been shared is on the relay and on every guest's device under a key
-  /// they hold, and nothing here reaches either. See
+  /// only behind a confirmation. Other devices purge their copies when they
+  /// sync. A collaborator's separate account and relay history remain. See
   /// `docs/adr/0010-forgetting-a-note.md`.
   Future<void> forgetNote({required String id});
 
@@ -442,6 +442,49 @@ abstract class Note implements RustOpaqueInterface {
   Stream<SyncStatus> watchSync();
 }
 
+class CollaboratorView {
+  final String id;
+  final String name;
+
+  const CollaboratorView({required this.id, required this.name});
+
+  @override
+  int get hashCode => id.hashCode ^ name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CollaboratorView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          name == other.name;
+}
+
+class CollaboratorsView {
+  final List<CollaboratorView> people;
+  final bool canManage;
+  final String currentDevice;
+
+  const CollaboratorsView({
+    required this.people,
+    required this.canManage,
+    required this.currentDevice,
+  });
+
+  @override
+  int get hashCode =>
+      people.hashCode ^ canManage.hashCode ^ currentDevice.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CollaboratorsView &&
+          runtimeType == other.runtimeType &&
+          people == other.people &&
+          canManage == other.canManage &&
+          currentDevice == other.currentDevice;
+}
+
 class InviteRequestsView {
   /// False once somebody has been let in, or the invite has expired.
   final bool open;
@@ -657,6 +700,7 @@ enum NoteLayout { grid, list }
 
 /// One card in the grid: enough to draw a note without opening it.
 class NoteSummaryView {
+  final List<CollaboratorView> collaborators;
   final String id;
   final NoteKindView kind;
   final String title;
@@ -688,6 +732,7 @@ class NoteSummaryView {
   final List<LabelView> tags;
 
   const NoteSummaryView({
+    required this.collaborators,
     required this.id,
     required this.kind,
     required this.title,
@@ -703,6 +748,7 @@ class NoteSummaryView {
 
   @override
   int get hashCode =>
+      collaborators.hashCode ^
       id.hashCode ^
       kind.hashCode ^
       title.hashCode ^
@@ -720,6 +766,7 @@ class NoteSummaryView {
       identical(this, other) ||
       other is NoteSummaryView &&
           runtimeType == other.runtimeType &&
+          collaborators == other.collaborators &&
           id == other.id &&
           kind == other.kind &&
           title == other.title &&

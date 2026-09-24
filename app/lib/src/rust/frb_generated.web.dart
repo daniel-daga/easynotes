@@ -86,6 +86,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NoteColour dco_decode_box_autoadd_note_colour(dynamic raw);
 
   @protected
+  CollaboratorView dco_decode_collaborator_view(dynamic raw);
+
+  @protected
+  CollaboratorsView dco_decode_collaborators_view(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -114,6 +120,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<CollaboratorView> dco_decode_list_collaborator_view(dynamic raw);
 
   @protected
   List<InviteView> dco_decode_list_invite_view(dynamic raw);
@@ -297,6 +306,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NoteColour sse_decode_box_autoadd_note_colour(SseDeserializer deserializer);
 
   @protected
+  CollaboratorView sse_decode_collaborator_view(SseDeserializer deserializer);
+
+  @protected
+  CollaboratorsView sse_decode_collaborators_view(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
@@ -327,6 +342,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<CollaboratorView> sse_decode_list_collaborator_view(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<InviteView> sse_decode_list_invite_view(SseDeserializer deserializer);
@@ -540,6 +560,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_collaborator_view(
+    CollaboratorView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_collaborators_view(
+    CollaboratorsView self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
@@ -574,6 +606,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_collaborator_view(
+    List<CollaboratorView> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_invite_view(

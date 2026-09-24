@@ -129,6 +129,14 @@ fn any_bool(v: Option<Out>) -> bool {
 }
 
 impl NoteDoc for YrsNote {
+    fn collaborator_assertions(&self) -> Vec<String> {
+        let txn = self.doc.transact();
+        self.root
+            .iter(&txn)
+            .filter(|(key, _)| key.starts_with("collaborator:"))
+            .map(|(_, value)| any_str(Some(value)))
+            .collect()
+    }
     type Account = super::YrsAccount;
 
     fn create(actor: &[u8; 16]) -> Self {
@@ -151,6 +159,21 @@ impl NoteDoc for YrsNote {
             let mut txn = self.doc.transact_mut();
             let items = &self.root;
             match edit {
+                Edit::AddCollaborator(raw) => {
+                    self.root
+                        .insert(&mut txn, crate::collaborators::key(raw), raw.as_str());
+                }
+                Edit::ClearCollaborators => {
+                    let keys: Vec<String> = self
+                        .root
+                        .keys(&txn)
+                        .filter(|key| key.starts_with("collaborator:"))
+                        .map(str::to_owned)
+                        .collect();
+                    for key in keys {
+                        self.root.remove(&mut txn, &key);
+                    }
+                }
                 Edit::SetTitle(t) => {
                     self.root.insert(&mut txn, TITLE, t.as_str());
                 }

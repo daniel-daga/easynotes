@@ -118,8 +118,8 @@ until it has a second real use or a clear independent role.
 
 - Search uses a full-width header with a persistent “Back to Home” action.
   Leaving search clears its text and selected filter.
-- Empty search shows the filter browser, including the People placeholder.
-  Choose exactly one filter across Type, Labels, Reminders, and Colour, then
+- Empty search shows the filter browser, including approved collaborators under People.
+  Choose exactly one filter across Type, Labels, Reminders, People, and Colour, then
   optionally type to search within it. The field names the scope, for example
   “Search in Checklists.” Results have no filter chips or dropdowns.
 - The always-visible × clears both text and the selected filter and returns
@@ -129,6 +129,13 @@ until it has a second real use or a clear independent role.
   search; select a label explicitly in the filter browser.
 
 ### General
+
+- A note's person-plus action opens Add collaborators: owner, approved device
+  identities, pending requests, invite links, and owner-only Remove everyone.
+  Names are self-chosen; older shares may lack directory entries. People search
+  matches device identity, so equal names do not merge different collaborators.
+- Send a copy lives in the bottom-right overflow menu below Reminders. It opens
+  the content preview with system sharing and copy actions.
 
 - Let content size itself with Material layout widgets. Use fixed dimensions
   only for controls whose target or visual geometry needs them, such as color

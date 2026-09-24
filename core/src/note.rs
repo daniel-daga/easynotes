@@ -133,6 +133,7 @@ pub const JOINS: &str = "joins";
 /// An invite this device opened and has not seen answered, withdrawn or expired.
 #[derive(Clone, Debug)]
 pub struct OutgoingInvite {
+    pub generation: u64,
     pub note: NoteId,
     pub secret: crate::invite::InviteSecret,
     pub owner: crate::invite::OwnerSecret,
@@ -266,6 +267,8 @@ impl PendingJoin {
 /// The stored shape of both, which is strings so a row stays readable JSON.
 #[derive(Serialize, Deserialize)]
 struct StoredInvite {
+    #[serde(default)]
+    generation: u64,
     note: String,
     secret: String,
     owner: String,
@@ -289,6 +292,7 @@ struct StoredJoin {
 /// clear.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteSummary {
+    pub collaborators: Vec<crate::collaborators::Collaborator>,
     pub id: NoteId,
     pub kind: NoteKind,
     pub title: String,
@@ -1299,6 +1303,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         };
         let view = note.doc.view();
         let entry = IndexEntry {
+            collaborators: self.collaborators(id)?,
             version: crate::index::ENTRY_VERSION,
             kind: view.kind,
             title: view.title,
@@ -1389,6 +1394,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .index
             .iter()
             .map(|(id, entry)| NoteSummary {
+                collaborators: entry.collaborators.clone(),
                 id: *id,
                 kind: entry.kind,
                 title: entry.title.clone(),
@@ -2585,6 +2591,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             return Err(CoreError::Crypto("only the owner can invite collaborators"));
         }
         Ok(OutgoingInvite {
+            generation: access.generation,
             note,
             secret: crate::invite::InviteSecret::random(),
             owner: crate::invite::OwnerSecret::random(),
@@ -2603,6 +2610,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .into_iter()
             .map(|s| {
                 Ok(OutgoingInvite {
+                    generation: s.generation,
                     note: NoteId::decode(&s.note)?,
                     secret: crate::invite::InviteSecret::from_link(&s.secret)?,
                     owner: crate::invite::OwnerSecret::decode(&s.owner)?,
@@ -2616,6 +2624,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let stored: Vec<StoredInvite> = invites
             .iter()
             .map(|i| StoredInvite {
+                generation: i.generation,
                 note: i.note.encode(),
                 secret: i.secret.code(),
                 owner: i.owner.encode(),
@@ -2662,6 +2671,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let access = account::note_access_of(self.account.doc.entries())
             .remove(&invite.note)
             .ok_or_else(|| CoreError::UnknownNote(invite.note.encode()))?;
+        if access.generation != invite.generation {
+            return Err(CoreError::Crypto("this invite predates an access change"));
+        }
         if !access.owned || access.owner.is_none() {
             return Err(CoreError::Crypto("only the owner can invite collaborators"));
         }
@@ -2823,6 +2835,83 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     // -- persistence --------------------------------------------------------
 
+    pub fn can_manage_collaborators(&self, id: NoteId) -> bool {
+        account::note_access_of(self.account.doc.entries())
+            .get(&id)
+            .is_some_and(|a| a.owned && a.rotation_seed.is_some())
+    }
+
+    pub fn collaborators(&self, id: NoteId) -> Result<Vec<crate::collaborators::Collaborator>> {
+        let note = self.note(id)?;
+        let access = account::note_access_of(self.account.doc.entries()).remove(&id);
+        let Some(access) = access else {
+            return Ok(Vec::new());
+        };
+        let Some(owner) = access.owner else {
+            return Ok(Vec::new());
+        };
+        let mut people: Vec<_> = note
+            .doc
+            .collaborator_assertions()
+            .iter()
+            .filter_map(|raw| crate::collaborators::verify(raw, owner, id, access.generation))
+            .collect();
+        people.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.name.cmp(&b.name)));
+        people.dedup_by(|a, b| a.id == b.id);
+        people.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(people)
+    }
+
+    /// Called only after the relay confirms approval; safe to replay after a
+    /// crash before the local invite was forgotten. Old-generation approvals
+    /// never restore access after a concurrent revocation.
+    pub fn record_collaborator(
+        &mut self,
+        invite: &OutgoingInvite,
+        request: &crate::invite::JoinRequest,
+    ) -> Result<Option<Vec<u8>>> {
+        self.ensure_open(invite.note)?;
+        let access = account::note_access_of(self.account.doc.entries())
+            .remove(&invite.note)
+            .ok_or_else(|| CoreError::UnknownNote(invite.note.encode()))?;
+        if access.generation != invite.generation {
+            return Ok(None);
+        }
+        let seed = access
+            .rotation_seed
+            .as_ref()
+            .ok_or(CoreError::Crypto("only the owner can record collaborators"))?;
+        let owner = DeviceIdentity::from_seed(seed);
+        if access.owner != Some(owner.public_key()) {
+            return Err(CoreError::Crypto("invalid directory owner"));
+        }
+        let Some(author) = request.author else {
+            return Ok(None);
+        };
+        let raw = crate::collaborators::sign(
+            &owner,
+            invite.note,
+            access.generation,
+            author,
+            &request.name,
+        );
+        if self
+            .note(invite.note)?
+            .doc
+            .collaborator_assertions()
+            .contains(&raw)
+        {
+            return Ok(None);
+        }
+        self.apply_local(invite.note, Edit::AddCollaborator(raw))
+            .map(Some)
+    }
+
     /// Write an encrypted snapshot. Slice 2 uses this to compact the log; Slice 1
     /// writes it so that `open_note` exercises the snapshot path.
     pub fn save_snapshot(&mut self, id: NoteId) -> Result<()> {
@@ -2882,6 +2971,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .get_mut(&id)
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
         let new_key = NoteKey::random();
+        let mut rotated_doc = D::load(&self.actor, &note.doc.snapshot())?;
+        if !rotated_doc.collaborator_assertions().is_empty() {
+            rotated_doc.apply_local(&Edit::ClearCollaborators)?;
+        }
         let generation = access.generation.saturating_add(1);
         let envelope = Envelope::seal_kind(
             &rotation_identity,
@@ -2889,7 +2982,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             &new_key,
             generation,
             EnvelopeKind::Snapshot,
-            &note.doc.snapshot(),
+            &rotated_doc.snapshot(),
         )?;
         let encoded = envelope.encode();
         self.store
@@ -2903,6 +2996,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.store
             .put_meta(id, KEY_GENERATION, &generation.to_be_bytes())?;
         note.key = new_key.clone();
+        note.doc = rotated_doc;
         note.seen.clear();
         note.seen.insert((envelope.author, envelope.counter));
 

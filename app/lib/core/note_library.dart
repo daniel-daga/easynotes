@@ -157,9 +157,11 @@ class NoteSummary {
     this.archived = false,
     this.trashed = false,
     this.tags = const [],
+    this.collaborators = const [],
   });
 
   final String id;
+  final List<Collaborator> collaborators;
   final NoteKind kind;
   final String title;
 
@@ -204,6 +206,7 @@ class NoteSummary {
       other.archived == archived &&
       other.trashed == trashed &&
       listEquals(other.preview, preview) &&
+      listEquals(other.collaborators, collaborators) &&
       listEquals(other.tags, tags);
 
   @override
@@ -219,6 +222,7 @@ class NoteSummary {
     archived,
     trashed,
     Object.hashAll(tags),
+    Object.hashAll(collaborators),
   );
 
   @override

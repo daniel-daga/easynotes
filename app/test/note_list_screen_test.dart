@@ -34,6 +34,37 @@ FakeNoteLibrary twoLists() => FakeNoteLibrary(
 );
 
 void main() {
+  testWidgets(
+    'People filters use device identity and update after revocation',
+    (tester) async {
+      final library = twoLists();
+      library.setCollaborators(
+        'groceries',
+        const Collaborators(
+          canManage: true,
+          people: [Collaborator(id: 'anna', name: 'Anna')],
+        ),
+      );
+      library.setCollaborators(
+        'hardware',
+        const Collaborators(
+          canManage: true,
+          people: [Collaborator(id: 'another-anna', name: 'Anna')],
+        ),
+      );
+      await pumpList(tester, library);
+      await tester.tap(find.byKey(const Key('search-button')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('filter-person-anna')));
+      await tester.tap(find.byKey(const Key('filter-person-anna')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+      expect(find.byKey(const Key('note:hardware')), findsNothing);
+      await library.revokeCollaborators('groceries');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('note:groceries')), findsNothing);
+    },
+  );
   testWidgets('shows a card per note, newest first', (tester) async {
     await pumpList(tester, twoLists());
 

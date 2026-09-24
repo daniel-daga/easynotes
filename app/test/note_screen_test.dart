@@ -7,6 +7,7 @@ library;
 
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_screen.dart';
@@ -50,6 +51,68 @@ List<String> visibleItems(WidgetTester tester) => tester
     .toList();
 
 void main() {
+  testWidgets(
+    'collaborators survive closing the dialog and guests cannot manage access',
+    (tester) async {
+      final invites = FakeNoteLibrary();
+      invites.setCollaborators(
+        'this-note',
+        const Collaborators(
+          canManage: false,
+          currentDevice: 'anna-device',
+          people: [
+            Collaborator(id: 'anna-device', name: 'Anna'),
+            Collaborator(id: 'other-device', name: 'Anna'),
+          ],
+        ),
+      );
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      await tester.tap(find.byKey(const Key('share-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Anna (you)'), findsOneWidget);
+      expect(find.text('Anna'), findsOneWidget);
+      expect(find.text('Note owner'), findsOneWidget);
+      expect(find.byKey(const Key('create-invite')), findsNothing);
+      expect(find.byKey(const Key('revoke-collaborators')), findsNothing);
+      await tester.tap(find.byKey(const Key('share-done')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('share-button')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('collaborator-anna-device')), findsOneWidget);
+    },
+  );
+
+  testWidgets('send a copy moves below Reminders in the overflow menu', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    final library = FakeNoteLibrary(notes: {'note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteScreen(
+          core: core,
+          storage: library,
+          noteId: 'note',
+          invites: library,
+          library: library,
+          onReminders: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.person_add_outlined), findsOneWidget);
+    expect(find.byKey(const Key('share-content-button')), findsNothing);
+    await tester.tap(find.byKey(const Key('note-more-menu')));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('Send a copy')).dy,
+      greaterThan(tester.getTopLeft(find.text('Reminders')).dy),
+    );
+    await tester.tap(find.text('Send a copy'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
+    expect(find.text('Share as Markdown'), findsOneWidget);
+  });
   testWidgets('renders the title and items it is given', (tester) async {
     final core = FakeNoteCore(
       title: 'Groceries',
@@ -187,6 +250,13 @@ void main() {
       expect(invites.calls, contains('approveRequest($id, request-0)'));
       expect(find.byKey(const Key('invite-admitted')), findsOneWidget);
       expect(find.byKey(const Key('invite-link')), findsNothing);
+      expect(find.text('Anna'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('share-done')));
+      await tester.pumpAndSettle();
+      invites.relayError = 'Offline';
+      await tester.tap(find.byKey(const Key('share-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Anna'), findsOneWidget);
     });
 
     testWidgets('turning someone away keeps the link for someone else', (
@@ -220,25 +290,29 @@ void main() {
       expect(find.byKey(const Key('invite-link')), findsNothing);
     });
 
-    testWidgets('removing collaborators names the limit and rotates after confirmation', (
-      tester,
-    ) async {
-      final invites = FakeNoteLibrary();
-      await pumpScreen(tester, FakeNoteCore(), invites: invites);
-      final id = await makeLink(tester, invites);
+    testWidgets(
+      'removing collaborators names the limit and rotates after confirmation',
+      (tester) async {
+        final invites = FakeNoteLibrary();
+        await pumpScreen(tester, FakeNoteCore(), invites: invites);
+        final id = await makeLink(tester, invites);
 
-      await tester.tap(find.byKey(const Key('revoke-collaborators')));
-      await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('revoke-collaborators')));
+        await tester.pumpAndSettle();
 
-      expect(find.textContaining('cannot erase anything'), findsOneWidget);
-      expect(invites.calls, isNot(contains('revokeCollaborators(this-note)')));
-      await tester.tap(find.byKey(const Key('confirm-revoke')));
-      await tester.pumpAndSettle();
+        expect(find.textContaining('cannot erase anything'), findsOneWidget);
+        expect(
+          invites.calls,
+          isNot(contains('revokeCollaborators(this-note)')),
+        );
+        await tester.tap(find.byKey(const Key('confirm-revoke')));
+        await tester.pumpAndSettle();
 
-      expect(invites.calls, contains('withdrawInvite($id)'));
-      expect(invites.calls, contains('revokeCollaborators(this-note)'));
-      expect(find.byKey(const Key('sharing-revoked')), findsOneWidget);
-    });
+        expect(invites.calls, contains('withdrawInvite($id)'));
+        expect(invites.calls, contains('revokeCollaborators(this-note)'));
+        expect(find.byKey(const Key('sharing-revoked')), findsOneWidget);
+      },
+    );
 
     testWidgets('coming back finds the link that was sent', (tester) async {
       final invites = FakeNoteLibrary();

@@ -184,6 +184,17 @@ class FakeNoteLibrary implements NoteLibrary {
   /// with no relay.
   String? relayError;
 
+  final Map<String, Collaborators> directories = {};
+
+  @override
+  Collaborators collaborators(String noteId) =>
+      directories[noteId] ?? const Collaborators(canManage: true);
+
+  void setCollaborators(String noteId, Collaborators value) {
+    directories[noteId] = value;
+    _emit();
+  }
+
   @override
   Future<Invite> createInvite(String noteId) async {
     calls.add('createInvite($noteId)');
@@ -245,6 +256,18 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   Future<void> approveRequest(String inviteId, String requestId) async {
     calls.add('approveRequest($inviteId, $requestId)');
+    final noteId = _invites[inviteId]!.noteId;
+    final request = _requests[inviteId]!.firstWhere((r) => r.id == requestId);
+    setCollaborators(
+      noteId,
+      Collaborators(
+        canManage: true,
+        people: [
+          ...collaborators(noteId).people,
+          Collaborator(id: '$inviteId-$requestId', name: request.name),
+        ],
+      ),
+    );
     _answer(inviteId, requestId, JoinRequestState.approved);
     _closed.add(inviteId);
     _invites.remove(inviteId);
@@ -266,6 +289,7 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   Future<void> revokeCollaborators(String noteId) async {
     calls.add('revokeCollaborators($noteId)');
+    setCollaborators(noteId, const Collaborators(canManage: true));
   }
 
   @override
@@ -684,6 +708,7 @@ class FakeNoteLibrary implements NoteLibrary {
     final summaries = [
       for (final id in _order)
         NoteSummary(
+          collaborators: collaborators(id).people,
           id: id,
           kind: _cores[id]!.current.kind,
           title: _cores[id]!.current.title,

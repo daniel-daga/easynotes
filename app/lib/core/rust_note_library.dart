@@ -204,6 +204,18 @@ class RustNoteLibrary implements NoteLibrary {
 
   // -- invites --------------------------------------------------------------
 
+  @override
+  Collaborators collaborators(String noteId) {
+    final view = _library.collaborators(id: noteId);
+    return Collaborators(
+      people: [
+        for (final p in view.people) Collaborator(id: p.id, name: p.name),
+      ],
+      canManage: view.canManage,
+      currentDevice: view.currentDevice,
+    );
+  }
+
   static Invite _toInvite(rust.InviteView invite) => Invite(
     id: invite.id,
     noteId: invite.note,
@@ -495,6 +507,9 @@ class RustNoteLibrary implements NoteLibrary {
   }
 
   static NoteSummary _toSummary(rust.NoteSummaryView s) => NoteSummary(
+    collaborators: [
+      for (final p in s.collaborators) Collaborator(id: p.id, name: p.name),
+    ],
     id: s.id,
     kind: RustNoteCore.fromRustKind(s.kind),
     title: s.title,
