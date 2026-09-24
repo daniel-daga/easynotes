@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import '../core/reminder_scheduler.dart';
+import '../core/shared_text.dart';
 import '../core/sync_status.dart';
 import 'account_screen.dart';
 import 'invites.dart';
@@ -119,11 +120,18 @@ class NoteListScreen extends StatefulWidget {
     required this.library,
     this.initialInviteLink,
     this.inviteLinks,
+    this.initialSharedText,
+    this.sharedTexts,
   });
 
   final NoteLibrary library;
   final String? initialInviteLink;
   final Stream<String>? inviteLinks;
+
+  /// Text another app shared in, which becomes a new note and opens: at
+  /// launch, and then whenever the app is sent more while it runs.
+  final SharedText? initialSharedText;
+  final Stream<SharedText>? sharedTexts;
 
   @override
   State<NoteListScreen> createState() => _NoteListScreenState();
@@ -141,6 +149,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   NoteLayout get _layout => widget.library.layout;
   _Where _where = const _Where.shelf(_Shelf.notes);
   StreamSubscription<String>? _inviteSubscription;
+  StreamSubscription<SharedText>? _shareSubscription;
 
   /// Watches the list for notes this device was just removed from, to say so
   /// once: “You no longer have access to ‘Groceries’.”
@@ -172,12 +181,15 @@ class _NoteListScreenState extends State<NoteListScreen> {
   void initState() {
     super.initState();
     _inviteSubscription = widget.inviteLinks?.listen(_showJoinForLink);
+    _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
     _removalSubscription = widget.library.watchNotes().listen(
       (_) => _sayRemovals(),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final link = widget.initialInviteLink;
       if (link != null) _showJoinForLink(link);
+      final shared = widget.initialSharedText;
+      if (shared != null) unawaited(_noteFromShare(shared));
       _sayRemovals();
     });
   }
@@ -199,6 +211,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   @override
   void dispose() {
     _inviteSubscription?.cancel();
+    _shareSubscription?.cancel();
     _removalSubscription?.cancel();
     _search.dispose();
     super.dispose();
@@ -269,6 +282,25 @@ class _NoteListScreenState extends State<NoteListScreen> {
       ),
     );
     await core.dispose();
+  }
+
+  /// Make a note of what another app shared, and open it: on the main shelf,
+  /// wherever the list happened to be, because a shared note is new and not
+  /// filed yet.
+  Future<void> _noteFromShare(SharedText shared) async {
+    final String id;
+    try {
+      id = await createNoteFromSharedText(widget.library, shared);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('Could not make a note of that: $error')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _where = const _Where.shelf(_Shelf.notes));
+    await _openNote(id);
   }
 
   /// A text note unless asked for a list, as in Keep: most quick notes are not

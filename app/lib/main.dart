@@ -8,6 +8,9 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'core/address_bar_stub.dart'
+    if (dart.library.js_interop) 'core/address_bar.dart'
+    as address_bar;
 import 'core/browser_store.dart';
 import 'core/deep_links.dart';
 import 'core/invite_links.dart';
@@ -16,6 +19,7 @@ import 'core/note_library.dart';
 import 'core/reminder_scheduler.dart';
 import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
+import 'core/shared_text.dart';
 import 'ui/note_list_screen.dart';
 
 ThemeData _easyNotesTheme(Brightness brightness) {
@@ -81,6 +85,11 @@ bool get _hasNativeDeepLinks =>
     (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS);
 
+/// Where another app's share sheet can hand text in. Android only among the
+/// native platforms: iOS needs a share extension, which is not built yet.
+bool get _hasNativeShares =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final initialInvite = kIsWeb
@@ -88,10 +97,18 @@ Future<void> main() async {
       : _hasNativeDeepLinks
       ? await DeepLinks.initialInvite()
       : null;
+  final initialShare = kIsWeb
+      ? sharedTextFromUri(Uri.base)
+      : _hasNativeShares
+      ? await SharedTexts.initial()
+      : null;
+  // Read, so gone from the address: a reload must not make the note twice.
+  if (kIsWeb) address_bar.dropQuery();
   runApp(
     EasyNotesApp(
       library: await openLibrary(),
       initialInviteLink: initialInvite,
+      initialSharedText: initialShare,
     ),
   );
 }
@@ -156,10 +173,12 @@ class EasyNotesApp extends StatefulWidget {
     super.key,
     required this.library,
     this.initialInviteLink,
+    this.initialSharedText,
   });
 
   final NoteLibrary library;
   final String? initialInviteLink;
+  final SharedText? initialSharedText;
 
   @override
   State<EasyNotesApp> createState() => _EasyNotesAppState();
@@ -208,6 +227,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
         library: library,
         initialInviteLink: widget.initialInviteLink,
         inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
+        initialSharedText: widget.initialSharedText,
+        sharedTexts: _hasNativeShares ? SharedTexts.incoming : null,
       ),
     );
   }

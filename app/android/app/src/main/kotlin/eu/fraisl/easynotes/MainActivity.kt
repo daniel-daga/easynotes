@@ -11,10 +11,26 @@ class MainActivity : FlutterActivity() {
     private val eventChannel = "eu.fraisl.easynotes/deep_links/events"
     private var pendingLink: String? = null
     private var linkSink: EventChannel.EventSink? = null
+    private var pendingText: Map<String, String?>? = null
+    private var textSink: EventChannel.EventSink? = null
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         pendingLink = intent?.dataString
+        // A relaunch after the process was killed replays the launching
+        // intent; only a fresh launch is a new share.
+        if (savedInstanceState == null) pendingText = sharedText(intent)
         super.onCreate(savedInstanceState)
+    }
+
+    /// The text and subject of an ACTION_SEND, or null for any other intent.
+    private fun sharedText(intent: Intent?): Map<String, String?>? {
+        if (intent?.action != Intent.ACTION_SEND) return null
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+        if (text.isNullOrBlank()) return null
+        return mapOf(
+            "text" to text,
+            "subject" to intent.getStringExtra(Intent.EXTRA_SUBJECT),
+        )
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -48,6 +64,33 @@ class MainActivity : FlutterActivity() {
                 result.notImplemented()
             }
         }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "eu.fraisl.easynotes/shared_text",
+        ).setMethodCallHandler { call, result ->
+            if (call.method == "getInitialText") {
+                result.success(pendingText)
+                pendingText = null
+            } else {
+                result.notImplemented()
+            }
+        }
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "eu.fraisl.easynotes/shared_text/events",
+        ).setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                textSink = events
+                pendingText?.let {
+                    events?.success(it)
+                    pendingText = null
+                }
+            }
+
+            override fun onCancel(arguments: Any?) {
+                textSink = null
+            }
+        })
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, eventChannel)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -67,6 +110,10 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        sharedText(intent)?.let { shared ->
+            textSink?.success(shared) ?: run { pendingText = shared }
+            return
+        }
         val link = intent.dataString ?: return
         if (link.startsWith("easynotes://join#")) {
             linkSink?.success(link) ?: run { pendingLink = link }
