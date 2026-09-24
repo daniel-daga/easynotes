@@ -88,6 +88,41 @@ Build** and **Start** in Container Manager. The database directory is separate
 from the containers and survives normal rebuilds. Do not remove the project's
 data directory when cleaning up containers.
 
+## 5. Check and rotate the token signing key
+
+The key signs the short-lived access tokens devices get from the handshake
+([ADR 0021](../../docs/adr/0021-stateless-relay-tokens.md)). To confirm the
+relay is using yours, look for this line in the relay container's log at start:
+
+```text
+using configured relay token signing key
+```
+
+If you see `RELAY_TOKEN_SIGNING_KEY is unset` instead, the relay is using a
+throwaway key it made at start. Compose refuses to start without the variable,
+so that only happens when the relay is run by some other route.
+
+**Rotating** is safe and needs nothing from anyone using the app. A device asks
+for a new token every time it connects, and it only presents the token when the
+socket opens. A rotation therefore costs, at most, each device's next
+reconnect: a connection that was already open stays open, and one opening with
+a token the new key does not recognise is refused and retried with a fresh
+handshake. To rotate:
+
+1. Generate a new key with the command in step 1, and replace the value in
+   `.env`. Update your protected backup at the same time.
+2. Recreate the relay container (**Project → Action → Stop**, then **Start**). If
+   you run more than one relay instance, give every instance the new key before
+   starting any of them. An instance still on the old key would refuse tokens
+   issued by the others.
+3. Check the log line above, then `/v1/health`.
+
+Rotate after the key may have leaked (an `.env` copied somewhere it should not
+be, or a backup lost) and whenever someone who had it no longer should. There
+is no need to rotate on a schedule: the key protects tokens that last fifteen
+minutes, and it protects no note content. Notes are end-to-end encrypted under
+keys the relay never holds.
+
 ## Troubleshooting
 
 - **Container Manager cannot build:** confirm it has access to the full

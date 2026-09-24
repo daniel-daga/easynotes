@@ -136,7 +136,10 @@ and the remaining work in [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
 
 Portable text sharing is available: text notes share as plain text, checklists
 share as Markdown task lists, and pasting task-list Markdown into a text note
-then switching to checklist mode keeps checked items. The details are in
+then switching to checklist mode keeps checked items. The other direction works
+too: text shared *into* EasyNotes from another app's share sheet (Android, or
+an installed web app through the Web Share Target) becomes a new note, and a
+checklist shared out and back in comes back as a checklist. The details are in
 [`docs/plan-text-interchange.md`](docs/plan-text-interchange.md); the
 Google Keep Takeout importer is deferred.
 
@@ -177,9 +180,10 @@ just run-linux https://relay.example     # or wherever yours is
 With no relay there, nothing breaks: the app is a local notes app and the status
 button in the app bar says so, with the count of edits that have not left the
 device. The web build says the same thing about the same relay — it reaches one
-through the browser's own WebSocket. To share a list, open it and press the share button, then paste the blob
-into the join button on the note list of the other device. It carries the note's
-key, so it is as sensitive as the list itself.
+through the browser's own WebSocket. To share a list, open it, press the share
+button and send the link it makes. The link carries no key: the other person
+asks to join with it and you approve them ([ADR 0015](docs/adr/0015-invites.md),
+[ADR 0023](docs/adr/0023-access-packages.md)).
 
 The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
@@ -188,7 +192,7 @@ run without it is a run that skipped the tests that matter there.
 Production relays should set `RELAY_TOKEN_SIGNING_KEY` to a stable base64url
 encoding of 32 random bytes. The same value must be shared by every relay
 instance and kept across restarts so signed device tokens remain valid; the
-Synology setup documents key generation and storage. Without it, the relay uses
+Synology setup documents key generation, storage and rotation. Without it, the relay uses
 a temporary process key intended only for local development.
 
 For a small private deployment on a Synology NAS, see
@@ -233,8 +237,13 @@ reading the whole database at open.
 | [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers |
 | [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
 | [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
+| [ADR 0018](docs/adr/0018-revocation.md) | Revocation is a creator-signed key generation |
+| [ADR 0019](docs/adr/0019-reminders.md) | Reminders are account state mirrored to local schedulers |
+| [ADR 0020](docs/adr/0020-collaborator-directory.md) | *Superseded by 0023:* an encrypted collaborator directory |
 | [ADR 0021](docs/adr/0021-stateless-relay-tokens.md) | Stateless relay tokens: signed expiry and shared one-use challenges |
 | [ADR 0022](docs/adr/0022-account-wide-deletion.md) | Permanent deletion across one person's devices |
+| [ADR 0023](docs/adr/0023-access-packages.md) | Share with people: account member keys and access packages |
+| [ADR 0024](docs/adr/0024-relay-storage-quota.md) | *Proposed:* a storage quota for an anonymous relay |
 
 ## Security, in one paragraph
 
