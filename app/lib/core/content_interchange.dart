@@ -5,6 +5,6 @@ import 'note_view.dart';
 String contentForSharing(NoteView note) {
   if (note.kind == NoteKind.text) return note.body;
   return note.items
-      .map((item) => '- [${item.checked ? 'x' : ' '}] ${item.text}')
+      .map((item) => '[${item.checked ? 'x' : ' '}] ${item.text}')
       .join('\n');
 }

@@ -1,7 +1,7 @@
 /// Text another app shared *into* EasyNotes, and the note it becomes.
 ///
 /// The other half of `contentForSharing`: that one sends a note out as plain
-/// text or Markdown task lines, and this takes the same format back in through
+/// text or `[x] item` task lines, and this takes the same format back in through
 /// the platform's share sheet. See `docs/plan-text-interchange.md`.
 ///
 /// Android delivers `ACTION_SEND` of `text/plain` to `MainActivity`, which
@@ -69,11 +69,11 @@ SharedText? sharedTextFromUri(Uri uri) {
   );
 }
 
-final _taskLine = RegExp(r'^\s*[-*+]\s+\[[ xX]\](\s|$)');
+final _taskLine = RegExp(r'^\s*(?:[-*+]\s+)?\[[ xX]\](\s|$)');
 
-/// Whether every line with something on it is a Markdown task line — which is
-/// what EasyNotes itself sends for a checklist, so a list shared out and back
-/// in comes back a list. One plain line among them and it stays text: a
+/// Whether every line with something on it is a task line — `[x] item`, with or
+/// without a Markdown bullet in front. That is what EasyNotes itself sends for
+/// a checklist, so a list shared out and back in comes back a list. One plain line among them and it stays text: a
 /// paragraph that happens to contain a checkbox is still a paragraph.
 bool looksLikeTaskList(String text) {
   final lines = text.split('\n').where((line) => line.trim().isNotEmpty);

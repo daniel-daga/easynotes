@@ -156,7 +156,7 @@ void main() {
     await tester.tap(find.text('Send a copy'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
-    expect(find.text('Share as Markdown'), findsOneWidget);
+    expect(find.text('Share as checklist'), findsOneWidget);
   });
   testWidgets('renders the title and items it is given', (tester) async {
     final core = FakeNoteCore(

@@ -31,29 +31,28 @@ mod sharing;
 pub use sharing::{Approved, Outgoing, People, Person};
 
 /// Read the deliberately small Markdown task-list form supported by paste to
-/// checklist. Lines outside that form retain the existing plain-text behavior.
+/// checklist: `[ ] item` or `[x] item`, optionally after a `-`, `*` or `+`
+/// bullet. Lines outside that form retain the existing plain-text behavior.
 fn parse_task_line(line: &str) -> (String, bool) {
-    let bytes = line.as_bytes();
-    if bytes.len() >= 4 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1].is_ascii_whitespace()
+    let trimmed = line.trim_start();
+    let bytes = trimmed.as_bytes();
+    let mut marker = 0;
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1].is_ascii_whitespace()
     {
-        let mut marker = 1;
+        marker = 1;
         while marker < bytes.len() && bytes[marker].is_ascii_whitespace() {
             marker += 1;
         }
-        let supported = bytes.get(marker) == Some(&b'[')
-            && bytes.get(marker + 2) == Some(&b']')
-            && matches!(bytes.get(marker + 1), Some(b' ' | b'x' | b'X'))
-            && bytes
-                .get(marker + 3)
-                .is_none_or(|byte| byte.is_ascii_whitespace());
-        if supported {
-            let checked = matches!(bytes[marker + 1], b'x' | b'X');
-            let mut text_at = marker + 3;
-            while text_at < bytes.len() && bytes[text_at].is_ascii_whitespace() {
-                text_at += 1;
-            }
-            return (line[text_at..].trim().to_owned(), checked);
-        }
+    }
+    let supported = bytes.get(marker) == Some(&b'[')
+        && bytes.get(marker + 2) == Some(&b']')
+        && matches!(bytes.get(marker + 1), Some(b' ' | b'x' | b'X'))
+        && bytes
+            .get(marker + 3)
+            .is_none_or(|byte| byte.is_ascii_whitespace());
+    if supported {
+        let checked = matches!(bytes[marker + 1], b'x' | b'X');
+        return (trimmed[marker + 3..].trim().to_owned(), checked);
     }
     (line.to_owned(), false)
 }

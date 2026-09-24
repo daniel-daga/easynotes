@@ -145,6 +145,35 @@ fn text_to_checklist_makes_a_line_an_item<D: NoteDoc>() {
     assert_eq!(a.view(id).unwrap(), view);
 }
 
+fn task_markers_keep_their_ticks_with_or_without_a_bullet<D: NoteDoc>() {
+    let (mut a, _, id) = pair::<D>(NoteKind::Text);
+    body(
+        &mut a,
+        id,
+        "[x] milk\n[ ] bread\n- [X] eggs\n  * [ ]  butter \n[x]\n[y] jam\n[x]tea",
+    );
+    a.set_kind(id, NoteKind::Checklist).unwrap().unwrap();
+
+    let view = a.view(id).unwrap();
+    let items: Vec<(&str, bool)> = view
+        .items
+        .iter()
+        .map(|i| (i.text.as_str(), i.checked))
+        .collect();
+    assert_eq!(
+        items,
+        [
+            ("milk", true),
+            ("bread", false),
+            ("eggs", true),
+            ("butter", false),
+            ("", true),
+            ("[y] jam", false),
+            ("[x]tea", false),
+        ]
+    );
+}
+
 fn checklist_to_text_keeps_checked_items_as_lines<D: NoteDoc>() {
     let (mut a, mut b, id) = pair::<D>(NoteKind::Checklist);
     let mut wire = Vec::new();
@@ -276,6 +305,7 @@ both_backends!(
     an_edit_from_a_stale_screen_keeps_what_arrived_meanwhile,
     typing_outside_ascii_converges,
     text_to_checklist_makes_a_line_an_item,
+    task_markers_keep_their_ticks_with_or_without_a_bullet,
     checklist_to_text_keeps_checked_items_as_lines,
     switching_there_and_back_keeps_the_lines,
     typing_while_the_other_device_converts_is_not_hidden,

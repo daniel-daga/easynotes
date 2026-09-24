@@ -49,7 +49,9 @@ void main() {
         looksLikeTaskList('- [ ] milk\n\n* [x] bread\n+ [X] eggs'),
         isTrue,
       );
+      expect(looksLikeTaskList('[ ] milk\n[x] bread\n  - [ ] eggs'), isTrue);
       expect(looksLikeTaskList('- [ ] milk\nand also bread'), isFalse);
+      expect(looksLikeTaskList('[x]bread'), isFalse);
       expect(looksLikeTaskList('- milk'), isFalse);
       expect(looksLikeTaskList(''), isFalse);
     });
@@ -58,7 +60,7 @@ void main() {
       final library = FakeNoteLibrary();
       final id = await createNoteFromSharedText(
         library,
-        const SharedText(text: '- [ ] milk\n- [x] bread', subject: 'Shop'),
+        const SharedText(text: '[ ] milk\n- [x] bread', subject: 'Shop'),
       );
       final view = library.core(id).current;
       expect(view.kind, NoteKind.checklist);

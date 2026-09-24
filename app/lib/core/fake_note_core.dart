@@ -199,9 +199,11 @@ class FakeNoteCore implements NoteCore {
 }
 
 (String, bool) _parseTaskLine(String line) {
-  final match = RegExp(r'^[-*+]\s+\[([ xX])\]\s?(.*)$').firstMatch(line);
+  final match = RegExp(
+    r'^\s*(?:[-*+]\s+)?\[([ xX])\](?:\s(.*))?$',
+  ).firstMatch(line);
   if (match == null) return (line, false);
-  return (match.group(2)!.trim(), match.group(1)!.toLowerCase() == 'x');
+  return ((match.group(2) ?? '').trim(), match.group(1)!.toLowerCase() == 'x');
 }
 
 class _Item {

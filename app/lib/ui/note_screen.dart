@@ -165,7 +165,7 @@ class _NoteScreenState extends State<NoteScreen> {
     context: context,
     builder: (context) => _ContentShareDialog(
       text: contentForSharing(note),
-      format: note.kind == NoteKind.text ? 'text' : 'Markdown',
+      format: note.kind == NoteKind.text ? 'text' : 'checklist',
     ),
   );
 
