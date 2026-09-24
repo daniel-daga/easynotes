@@ -26,11 +26,13 @@ pub enum CoreError {
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]
     UnknownNote(String),
-    /// A rotated owner note is waiting for the snapshot matching its account
-    /// register. The envelope was safely skipped or retained, so sync can move
-    /// its cursor forward and continue waiting for the matching snapshot.
-    #[error("owner note rotation is waiting for its matching snapshot")]
-    RotationPending,
+    /// A shared note this device cannot read yet: no package has granted it a
+    /// key. The envelope was verified and kept, so sync can move its cursor on
+    /// and the note opens when its grant arrives.
+    #[error("waiting for access to this note")]
+    AccessPending,
+    #[error("sharing needs a name: set one up first")]
+    NoProfileName,
     #[error("unknown item {0}")]
     UnknownItem(String),
     #[error("crdt: {0}")]

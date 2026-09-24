@@ -3,6 +3,7 @@
 //! This crate is callable from a plain `cargo test` with no Flutter in the loop.
 //! That is deliberate — it is what keeps the security-critical code auditable.
 
+pub mod access;
 pub mod account;
 pub mod collaborators;
 pub mod crdt;

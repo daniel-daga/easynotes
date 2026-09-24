@@ -10,10 +10,11 @@
 
 use super::transport::post;
 use super::wire::{self, invite_status, invite_url, RequestState};
-use crate::crypto::{AuthorKey, NoteKey};
+use crate::account::MemberIdentity;
+use crate::crypto::AuthorKey;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
-use crate::invite::{self, GuestKey, InviteSecret, JoinRequest, OwnerSecret};
+use crate::invite::{self, InviteSecret, JoinRequest, OwnerSecret};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -88,20 +89,19 @@ pub enum Answer {
         expires_in: u64,
     },
     Declined,
-    /// Approved, and the grant opened: here is the note.
+    /// Approved, and the answer opened: which note, and whose key signs its
+    /// access packages. The note key comes from the note's current package.
     Approved {
         note: NoteId,
-        key: NoteKey,
-        owner: Option<AuthorKey>,
-        generation: u64,
+        owner: AuthorKey,
     },
 }
 
-/// Ask how a request went, and open the grant if there is one.
+/// Ask how a request went, and open the answer if there is one.
 pub async fn poll(
     http_base: &str,
     secret: &InviteSecret,
-    guest: &GuestKey,
+    member: &MemberIdentity,
     request: &str,
 ) -> Result<Answer> {
     let polled: wire::PolledRequest = call_json(
@@ -116,15 +116,9 @@ pub async fn poll(
             expires_in: polled.expires_in,
         },
         (RequestState::Declined, _) => Answer::Declined,
-        (RequestState::Approved, Some(grant)) => {
-            let (note, key, owner, generation) =
-                invite::open_owned_grant(secret, guest, &unb64(&grant)?)?;
-            Answer::Approved {
-                note,
-                key,
-                owner,
-                generation,
-            }
+        (RequestState::Approved, Some(answer)) => {
+            let (note, owner) = invite::open_answer(secret, member, &unb64(&answer)?)?;
+            Answer::Approved { note, owner }
         }
         (RequestState::Approved, None) => {
             return Err(wire::net("relay approved a request and sent no grant"))
@@ -175,9 +169,9 @@ pub async fn list(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -
     })
 }
 
-/// Approve a request with a grant sealed for it —
-/// [`crate::note::NoteCore::seal_grant`] makes one, so the note key never
-/// passes through here.
+/// Approve a request with the answer sealed for it —
+/// [`crate::note::NoteCore::approval_answer`] makes one once the package that
+/// lets the person in is on the relay.
 pub async fn approve(
     http_base: &str,
     secret: &InviteSecret,

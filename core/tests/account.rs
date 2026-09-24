@@ -819,13 +819,10 @@ fn a_forgotten_note_cannot_be_opened<D: NoteDoc>() {
 
     assert!(core.open_note(id).is_err());
     assert!(core.view(id).is_err());
-    // A blob carries the key, so importing it puts the note back — with nothing
-    // on it, because the log it described is gone. That is the honest outcome
-    // and worth pinning: a delete is not a way to stop someone re-adding a note
-    // they were given, it is a way to remove this device's copy.
-    let back = core.import_share_blob(&blob).unwrap();
-    assert_eq!(back, id);
-    assert_eq!(core.view(id).unwrap().title, "");
+    // A blob carries the key, and it still cannot put the note back: the
+    // account's deletion marker outranks every way a key can arrive (ADR 0022).
+    assert!(core.import_share_blob(&blob).is_err());
+    assert!(core.view(id).is_err());
 }
 
 /// It stays forgotten, and nothing gives the note a placement again.
@@ -872,6 +869,8 @@ fn a_late_envelope_leaves_no_note_behind<D: NoteDoc>() {
     core.forget_note(gone).unwrap();
     // The engine's last act for a note it is being disconnected from. Nothing
     // here is contrived: `run_note` saves the cursor after `apply_remote` fails.
+    // The account's deletion marker makes that a no-op (ADR 0022), so it
+    // leaves no row at all.
     core.set_sync_cursor(
         gone,
         SyncCursor {
@@ -880,7 +879,7 @@ fn a_late_envelope_leaves_no_note_behind<D: NoteDoc>() {
         },
     )
     .unwrap();
-    assert!(core.store().notes().unwrap().contains(&gone));
+    assert!(!core.store().notes().unwrap().contains(&gone));
 
     // A list is drawn, which is where the sweep runs.
     assert_eq!(titles(&core.notes().unwrap()), vec!["groceries"]);

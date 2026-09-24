@@ -310,7 +310,7 @@ fn forgetting_a_note_takes_its_key_out_of_the_account<D: NoteDoc>() {
     deliver_account(&phone, &mut laptop);
 
     assert!(
-        !easynotes_core::crdt::account::note_keys_of(phone.account_entries()).contains_key(&note),
+        !easynotes_core::crdt::account::note_access_of(phone.account_entries()).contains_key(&note),
         "the register is gone from the document"
     );
     assert!(

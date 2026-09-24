@@ -132,8 +132,6 @@ impl NoteView {
 /// [`crate::note::Note`] turns "insert at index 3" into a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
-    AddCollaborator(String),
-    ClearCollaborators,
     SetTitle(String),
     AddItem {
         id: ItemId,
@@ -224,8 +222,6 @@ pub(crate) fn splice<'a>(old: &str, new: &'a str) -> Option<(usize, usize, &'a s
 /// same set of updates, in any order and with any duplicates, must produce equal
 /// [`NoteView`]s. `tests/convergence.rs` holds that to account for both backends.
 pub trait NoteDoc: Sized {
-    /// Untrusted assertions; callers must verify against the pinned owner.
-    fn collaborator_assertions(&self) -> Vec<String>;
     /// The account document from the same backend.
     ///
     /// An associated type rather than a second parameter on
@@ -262,6 +258,19 @@ pub trait NoteDoc: Sized {
 
     /// The full state, for the encrypted snapshot that lets a client skip the log.
     fn snapshot(&self) -> Vec<u8>;
+
+    /// Fold a whole document, as [`NoteDoc::snapshot`] produces one, into this
+    /// one. Idempotent like [`NoteDoc::apply_remote`], and it keeps everything
+    /// this document already had: a device switching to a new key merges the
+    /// snapshot rather than replacing its copy with it
+    /// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §7).
+    fn merge_snapshot(&mut self, snapshot: &[u8]) -> Result<()>;
+
+    /// One update holding everything this document has that `base` — a
+    /// snapshot this document has already merged — lacks, or `None` when it
+    /// has nothing more. What a device re-sends under a new key: its own
+    /// offline typing, and edits it received just before the switch.
+    fn missing_from(&self, base: &[u8]) -> Result<Option<Vec<u8>>>;
 
     fn backend_name() -> &'static str;
 }

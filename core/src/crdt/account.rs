@@ -28,8 +28,10 @@
 //! "l:<label id>"            -> string   a label's name
 //! "m:<note id>:<label id>"  -> bool     that note carries that label
 //! "s:<name>"                -> string   a setting
-//! "k:<note id>"             -> string   that note's key, base64url
+//! "k:<note id>"             -> string   what this person holds of that note
 //! "deleted:<note id>"       -> bool     this note is permanently deleted
+//! "removed:<note>:<invite>" -> bool     this person was removed from that note
+//! "profile:name"            -> string   the name this person shares under
 //!
 //! "t:<note id>:<name>"      -> bool     a label, as it used to be stored
 //! ```
@@ -76,26 +78,23 @@
 //! memberships of a label that has no ID yet, and [`view_of`] reports them as
 //! such so that nothing between here and that migration has to know.
 //!
-//! ## Why a note's key is in here
+//! ## Why a note's record is in here
 //!
 //! This document is the only thing one person's two devices share that nobody
-//! else can read, so it is the only place a note key can travel between them.
+//! else can read, so it is where a device learns which notes this person has.
 //! A `k:` register per note is what makes a second device adopted from a
-//! recovery phrase able to *open* the notes it syncs, rather than merely to
-//! hold their ciphertext ([ADR
-//! 0013](../../../docs/adr/0013-recovery-phrase.md)).
-//!
-//! These are registers like any other, which is what keeps item 4's rotation
-//! possible: rotating a note's key is writing a new value here, not a migration.
-//! Two devices that somehow wrote different keys for one note would converge on
-//! one of them — that is last-writer-wins doing exactly what it does everywhere
-//! else in this document, and the losing key is not lost, because a key only
-//! ever gets here from the device that minted it or from a share blob.
+//! recovery phrase find the notes it should sync ([ADR
+//! 0013](../../../docs/adr/0013-recovery-phrase.md)). For a note this person
+//! made, it carries the owner key's seed and the key the note had before it was
+//! shared; for a note somebody shared with them, only the owner key and the
+//! invite that let them in. A shared note's key comes from its current access
+//! package, never from here ([ADR
+//! 0023](../../../docs/adr/0023-access-packages.md)).
 //!
 //! **[`view_of`] ignores them, on purpose.** An [`AccountView`] is handed out by
 //! [`NoteCore::account`](crate::note::NoteCore::account), cloned on every
 //! change and printed by `Debug`, and key material has no business in a
-//! structure like that. The keys come out through [`note_keys_of`] instead,
+//! structure like that. The records come out through [`note_access_of`] instead,
 //! which has exactly one caller.
 //!
 //! A key this version does not understand is ignored rather than dropped, so a
@@ -103,7 +102,7 @@
 //! colour a newer one set.
 
 use crate::error::Result;
-use crate::ids::{LabelId, NoteId, ReminderId};
+use crate::ids::{InviteId, LabelId, NoteId, ReminderId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Keys that hold a placement field, a label's name, a membership, and a
@@ -116,6 +115,13 @@ const SETTING: &str = "s:";
 /// merely store it. See the module docs.
 const NOTE_KEY: &str = "k:";
 const DELETED_NOTE: &str = "deleted:";
+/// A membership this person was removed from ([ADR
+/// 0023](../../../docs/adr/0023-access-packages.md) §2). Keyed by the invite
+/// that admitted it, so a later invite is not blocked by it.
+const REMOVED: &str = "removed:";
+/// The name this person's requests carry. One register, so every device of
+/// the account asks to join under the same one.
+const PROFILE_NAME: &str = "profile:name";
 /// A reminder's scalar fields. Reminders deliberately have no container: two
 /// devices may create or amend them at once, so they follow the account
 /// document's flat-register rule.
@@ -368,6 +374,8 @@ pub struct AccountView {
     /// [`crate::note::NoteCore`]; the document itself keeps strings so that a
     /// setting added later needs no change here.
     pub settings: BTreeMap<String, String>,
+    /// The name this person shares under, once they have chosen one.
+    pub profile_name: Option<String>,
 }
 
 impl AccountView {
@@ -543,17 +551,27 @@ pub enum AccountEdit {
         name: String,
         value: String,
     },
-    /// Record a note's key, so this person's other devices can open it.
+    /// Record what this person holds of a note, so their other devices can
+    /// find it: see [`NoteRecord`].
     ///
-    /// Written when a note is created and when one arrives by share blob —
-    /// the two moments a key enters this device — and carried as base64url
-    /// because the document stores scalars and a `Value::Str` is the scalar a
-    /// backend already has. The bytes are no more exposed for being text: this
-    /// document is sealed under a key only the recovery phrase derives.
-    SetNoteKey {
+    /// Carried as base64url because the document stores scalars and a
+    /// `Value::Str` is the scalar a backend already has. The bytes are no more
+    /// exposed for being text: this document is sealed under a key only the
+    /// recovery phrase derives.
+    SetNoteRecord {
         note: NoteId,
-        /// base64url, no padding: 43 characters for a 32-byte key.
-        key: String,
+        record: String,
+    },
+    /// This person was removed from a note: the record goes and the marker
+    /// that keeps a restored phone from fetching the note again arrives, in
+    /// one transaction.
+    MarkRemoved {
+        note: NoteId,
+        invite: InviteId,
+    },
+    /// The name this person shares under.
+    SetProfileName {
+        name: String,
     },
     /// Create or amend all fields in one CRDT transaction. The individual
     /// fields are registers so independent concurrent amendments survive.
@@ -620,6 +638,26 @@ fn note_key_key(note: NoteId) -> String {
 
 fn deleted_note_key(note: NoteId) -> String {
     format!("{DELETED_NOTE}{}", note.encode())
+}
+
+fn removed_key(note: NoteId, invite: InviteId) -> String {
+    format!("{REMOVED}{}:{}", note.encode(), invite.encode())
+}
+
+/// Every membership this person was removed from.
+pub fn removed_of(
+    entries: impl IntoIterator<Item = (String, Value)>,
+) -> BTreeSet<(NoteId, InviteId)> {
+    entries
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let rest = key.strip_prefix(REMOVED)?;
+            let (note, invite) = rest.split_once(':')?;
+            (value == Value::Bool(true))
+                .then(|| Some((NoteId::decode(note).ok()?, InviteId::decode(invite).ok()?)))
+                .flatten()
+        })
+        .collect()
 }
 
 pub fn deleted_notes_of(entries: impl IntoIterator<Item = (String, Value)>) -> BTreeSet<NoteId> {
@@ -748,8 +786,15 @@ impl AccountEdit {
             AccountEdit::SetSetting { name, value } => {
                 vec![(format!("{SETTING}{name}"), Some(Value::Str(value.clone())))]
             }
-            AccountEdit::SetNoteKey { note, key } => {
-                vec![(note_key_key(*note), Some(Value::Str(key.clone())))]
+            AccountEdit::SetNoteRecord { note, record } => {
+                vec![(note_key_key(*note), Some(Value::Str(record.clone())))]
+            }
+            AccountEdit::MarkRemoved { note, invite } => vec![
+                (note_key_key(*note), None),
+                (removed_key(*note, *invite), Some(Value::Bool(true))),
+            ],
+            AccountEdit::SetProfileName { name } => {
+                vec![(PROFILE_NAME.to_string(), Some(Value::Str(name.clone())))]
             }
             AccountEdit::SetReminder { reminder } => vec![
                 (
@@ -843,133 +888,165 @@ pub fn legacy_tag_write(note: NoteId, tag: &str) -> (String, Option<Value>) {
     (legacy_tag_key(note, tag), Some(Value::Bool(true)))
 }
 
-/// The note keys this document carries, for the one caller that needs them.
+/// What this person holds of one note, as the account document records it
+/// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §2).
 ///
 /// Deliberately not part of [`view_of`], and deliberately not a field on
 /// [`AccountView`]. That view is cloned on every change, handed out by
 /// [`NoteCore::account`](crate::note::NoteCore::account) and derives `Debug`;
-/// key material in it would be key material in a log line one day. This
-/// function is called once, at the moment a device reconciles what the document
-/// knows with what its keyring holds, and the result goes straight into the
-/// keyring.
+/// key material in it would be key material in a log line one day. This comes
+/// out through [`note_access_of`] instead, and goes straight to the core.
 ///
-/// A malformed or wrong-length value is skipped rather than fatal, for the
-/// reason an unknown key is kept: a build that writes something else here must
-/// not be able to stop this one from opening the notes it *can* read.
+/// A malformed value is skipped rather than fatal, for the reason an unknown
+/// key is kept: a build that writes something else here must not be able to
+/// stop this one from opening the notes it *can* read.
 #[derive(Clone)]
-pub struct NoteAccess {
-    pub key: crate::crypto::NoteKey,
-    /// The device that created the note and is allowed to rotate its key.
-    /// `None` is a legacy share whose owner was never recorded.
-    pub owner: Option<crate::crypto::AuthorKey>,
-    pub owned: bool,
-    pub generation: u64,
-    /// Present only in the creator's account document. Guests receive the
-    /// public `owner` half in their grant, never this signing seed.
-    pub rotation_seed: Option<crate::crypto::DeviceSeed>,
+pub enum NoteRecord {
+    /// This person made the note. The seed signs its access packages; the key
+    /// is the one it had before it was ever shared, and the only one a note
+    /// that never was has.
+    Owner {
+        owner_seed: [u8; 32],
+        key: crate::crypto::NoteKey,
+    },
+    /// Somebody let this person in. The owner key is what their packages are
+    /// checked against; the key itself comes from the current package.
+    Guest {
+        owner: crate::crypto::AuthorKey,
+        invite: InviteId,
+    },
+    /// A bare key from a share blob: the test and walkthrough path, with no
+    /// owner and so no packages.
+    Key { key: crate::crypto::NoteKey },
 }
 
+impl NoteRecord {
+    pub fn owned(&self) -> bool {
+        matches!(self, NoteRecord::Owner { .. })
+    }
+
+    /// The owner key packages must be signed by, if the note has one.
+    pub fn owner(&self) -> Option<crate::crypto::AuthorKey> {
+        match self {
+            NoteRecord::Owner { owner_seed, .. } => {
+                Some(crate::crypto::DeviceIdentity::from_signing_seed(owner_seed).public_key())
+            }
+            NoteRecord::Guest { owner, .. } => Some(*owner),
+            NoteRecord::Key { .. } => None,
+        }
+    }
+
+    /// The signing identity, on an owner's devices only.
+    pub fn owner_identity(&self) -> Option<crate::crypto::DeviceIdentity> {
+        match self {
+            NoteRecord::Owner { owner_seed, .. } => {
+                Some(crate::crypto::DeviceIdentity::from_signing_seed(owner_seed))
+            }
+            _ => None,
+        }
+    }
+
+    /// The key the record itself carries, which is a note's key only until it
+    /// has a current package.
+    pub fn key(&self) -> Option<&crate::crypto::NoteKey> {
+        match self {
+            NoteRecord::Owner { key, .. } | NoteRecord::Key { key } => Some(key),
+            NoteRecord::Guest { .. } => None,
+        }
+    }
+
+    pub fn invite(&self) -> Option<InviteId> {
+        match self {
+            NoteRecord::Guest { invite, .. } => Some(*invite),
+            _ => None,
+        }
+    }
+
+    pub fn encode(&self) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let mut raw = vec![RECORD_VERSION];
+        match self {
+            NoteRecord::Owner { owner_seed, key } => {
+                raw.push(1);
+                raw.extend_from_slice(&self.owner().expect("an owner record has one").0);
+                raw.extend_from_slice(owner_seed);
+                raw.extend_from_slice(&key.0);
+            }
+            NoteRecord::Guest { owner, invite } => {
+                raw.push(0);
+                raw.extend_from_slice(&owner.0);
+                raw.extend_from_slice(invite.as_bytes());
+            }
+            NoteRecord::Key { key } => {
+                raw.push(2);
+                raw.extend_from_slice(&key.0);
+            }
+        }
+        let encoded = URL_SAFE_NO_PAD.encode(&raw);
+        zeroize::Zeroize::zeroize(&mut raw);
+        encoded
+    }
+
+    fn decode(encoded: &str) -> Option<Self> {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let mut raw = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+        let parsed = (|| match (raw.first()?, raw.get(1)?, raw.len()) {
+            (&RECORD_VERSION, 1, 98) => {
+                let owner_seed: [u8; 32] = raw[34..66].try_into().ok()?;
+                let record = NoteRecord::Owner {
+                    owner_seed,
+                    key: crate::crypto::NoteKey(raw[66..98].try_into().ok()?),
+                };
+                // The public key is stored for readability of the format and
+                // checked, so a record cannot claim one key and sign as another.
+                (record.owner()?.0[..] == raw[2..34]).then_some(record)
+            }
+            (&RECORD_VERSION, 0, 50) => Some(NoteRecord::Guest {
+                owner: crate::crypto::AuthorKey(raw[2..34].try_into().ok()?),
+                invite: InviteId::from_bytes(raw[34..50].try_into().ok()?),
+            }),
+            (&RECORD_VERSION, 2, 34) => Some(NoteRecord::Key {
+                key: crate::crypto::NoteKey(raw[2..34].try_into().ok()?),
+            }),
+            _ => None,
+        })();
+        zeroize::Zeroize::zeroize(&mut raw);
+        parsed
+    }
+}
+
+const RECORD_VERSION: u8 = 3;
+
+/// Every note this person holds something of, minus the permanently deleted
+/// and the memberships they were removed from.
 pub fn note_access_of(
     entries: impl IntoIterator<Item = (String, Value)>,
-) -> BTreeMap<NoteId, NoteAccess> {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-
+) -> BTreeMap<NoteId, NoteRecord> {
     let entries: Vec<_> = entries.into_iter().collect();
     let deleted = deleted_notes_of(entries.clone());
-    let mut keys = BTreeMap::new();
+    let removed = removed_of(entries.clone());
+    let mut records = BTreeMap::new();
     for (key, value) in entries {
         let (Some(id), Value::Str(encoded)) = (key.strip_prefix(NOTE_KEY), value) else {
             continue;
         };
-        let (Ok(note), Ok(raw)) = (NoteId::decode(id), URL_SAFE_NO_PAD.decode(&encoded)) else {
+        let (Ok(note), Some(record)) = (NoteId::decode(id), NoteRecord::decode(&encoded)) else {
             continue;
         };
-        let access = if raw.len() == crate::crypto::NOTE_KEY_LEN {
-            NoteAccess {
-                key: crate::crypto::NoteKey(raw.as_slice().try_into().unwrap()),
-                owner: None,
-                owned: false,
-                generation: 0,
-                rotation_seed: None,
-            }
-        } else if raw.len() >= 2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN + 8
-            && raw[0] == 2
-        {
-            let base = 2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN + 8;
-            let owned = raw[1 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN] == 1;
-            if raw.len() != base + if owned { 64 } else { 0 } {
-                continue;
-            }
-            NoteAccess {
-                key: crate::crypto::NoteKey(
-                    raw[1..1 + crate::crypto::NOTE_KEY_LEN].try_into().unwrap(),
-                ),
-                owner: Some(crate::crypto::AuthorKey(
-                    raw[1 + crate::crypto::NOTE_KEY_LEN
-                        ..1 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN]
-                        .try_into()
-                        .unwrap(),
-                )),
-                owned,
-                generation: u64::from_be_bytes(
-                    raw[2 + crate::crypto::NOTE_KEY_LEN + crate::crypto::PUBKEY_LEN..base]
-                        .try_into()
-                        .unwrap(),
-                ),
-                rotation_seed: owned
-                    .then(|| crate::crypto::DeviceSeed(raw[base..].try_into().unwrap())),
-            }
-        } else {
+        if deleted.contains(&note) {
             continue;
-        };
-        if !deleted.contains(&note) {
-            keys.insert(note, access);
         }
+        if record
+            .invite()
+            .is_some_and(|invite| removed.contains(&(note, invite)))
+        {
+            continue;
+        }
+        records.insert(note, record);
     }
-    keys
-}
-
-pub fn note_keys_of(
-    entries: impl IntoIterator<Item = (String, Value)>,
-) -> BTreeMap<NoteId, crate::crypto::NoteKey> {
-    note_access_of(entries)
-        .into_iter()
-        .map(|(note, access)| (note, access.key))
-        .collect()
-}
-
-/// Write a note's key into the document, as [`AccountEdit::SetNoteKey`] wants it.
-pub fn encode_note_key(key: &crate::crypto::NoteKey) -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    URL_SAFE_NO_PAD.encode(key.0)
-}
-
-pub fn encode_note_access(
-    key: &crate::crypto::NoteKey,
-    owner: crate::crypto::AuthorKey,
-    owned: bool,
-    generation: u64,
-    rotation_seed: Option<&crate::crypto::DeviceSeed>,
-) -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    let mut raw = Vec::with_capacity(
-        2 + crate::crypto::NOTE_KEY_LEN
-            + crate::crypto::PUBKEY_LEN
-            + 8
-            + rotation_seed.map_or(0, |_| 64),
-    );
-    raw.push(2);
-    raw.extend_from_slice(&key.0);
-    raw.extend_from_slice(&owner.0);
-    raw.push(u8::from(owned));
-    raw.extend_from_slice(&generation.to_be_bytes());
-    if let Some(seed) = rotation_seed {
-        raw.extend_from_slice(&seed.0);
-    }
-    URL_SAFE_NO_PAD.encode(raw)
+    records
 }
 
 /// Turn what a backend holds into what the app reads. Shared for the same reason
@@ -977,7 +1054,7 @@ pub fn encode_note_access(
 ///
 /// `k:` keys fall through to the "a key from a future version" arm at the
 /// bottom and are ignored, which is what keeps note keys out of this structure.
-/// See [`note_keys_of`].
+/// See [`note_access_of`].
 pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountView {
     let entries: Vec<_> = entries.into_iter().collect();
     let deleted = deleted_notes_of(entries.clone());
@@ -995,6 +1072,13 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
                 .entry(id)
                 .or_default()
                 .insert(field.to_string(), value);
+            continue;
+        }
+        if key == PROFILE_NAME {
+            if let Value::Str(name) = value {
+                let name = crate::access::clip_name(&name);
+                view.profile_name = (!name.is_empty()).then(|| name.to_string());
+            }
             continue;
         }
         if let Some(name) = key.strip_prefix(SETTING) {

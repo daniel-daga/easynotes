@@ -33,7 +33,7 @@ use crate::crdt::NoteDoc;
 use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
-use crate::note::{NoteCore, SyncCursor};
+use crate::note::{NoteCore, Outgoing, SyncCursor};
 use crate::store::{Keyring, OpStore};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,11 +132,15 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
     /// It must therefore be cheap and idempotent: it runs per envelope for as
     /// long as a connection is up.
     ///
-    /// Nothing for a note, hence the default: a note's envelopes mean the same
-    /// thing whether they arrived in a backlog or one at a time.
-    fn settled(&self, note: NoteId) -> Result<()> {
+    /// For a note it is when the note's access packages are acted on — a new
+    /// key switched to, a removal carried out, an owner's change published —
+    /// and what comes back is sent at once ([ADR
+    /// 0023](../../docs/adr/0023-access-packages.md) §5–7). Nothing, by
+    /// default: a note without packages means the same thing whether its
+    /// envelopes arrived in a backlog or one at a time.
+    fn settled(&self, note: NoteId) -> Result<Outgoing> {
         let _ = note;
-        Ok(())
+        Ok(Outgoing::default())
     }
 }
 
@@ -213,12 +217,13 @@ where
             .squash(note, &envelopes)
     }
 
-    fn settled(&self, note: NoteId) -> Result<()> {
+    fn settled(&self, note: NoteId) -> Result<Outgoing> {
         let mut core = self.lock().map_err(|_| poisoned())?;
         if core.account_id() == Some(note) {
             core.adopt_note_keys()?;
+            return Ok(Outgoing::default());
         }
-        Ok(())
+        core.settle_note(note)
     }
 }
 
@@ -321,10 +326,10 @@ enum Command {
         envelope: Vec<u8>,
         now: bool,
     },
-    /// A key rotation supersedes every old-generation envelope still queued.
-    Rekey {
+    /// Act on the note's access packages now, if it is caught up: an owner's
+    /// change has been saved and should not wait for the next arrival.
+    Settle {
         note: NoteId,
-        envelope: Vec<u8>,
     },
     /// One note's held typing, or every note's.
     Flush {
@@ -459,13 +464,11 @@ impl SyncHandle {
         });
     }
 
-    /// Publish a key-rotation snapshot and discard old-key work still held by
-    /// the pacing layer. The snapshot already contains those edits.
-    pub fn rekey(&self, envelope: Vec<u8>) {
-        let _ = self.commands.send(Command::Rekey {
-            note: self.note,
-            envelope,
-        });
+    /// Ask the engine to settle the note — see [`SyncPeer::settled`] — if it
+    /// is caught up with the relay. If it is not, it will be as soon as it is,
+    /// and settles then.
+    pub fn settle(&self) {
+        let _ = self.commands.send(Command::Settle { note: self.note });
     }
 
     /// Send whatever is being held back, now. For the moments the app may not
@@ -753,7 +756,11 @@ async fn session<P: SyncPeer>(
             // dropping this future when another branch wins loses nothing.
             incoming = sync.next() => match incoming {
                 Ok(Some(Routed::Note(id, incoming))) => {
-                    match device.receive(peer, &me, id, incoming) {
+                    let received = device.receive(peer, &me, id, incoming);
+                    if let Err(e) = device.send_urgent(&mut sync).await {
+                        return lost(caught, e);
+                    }
+                    match received {
                         Ok(Received::Continue) => {}
                         Ok(Received::Caught) => caught = true,
                         Ok(Received::Reset) => {
@@ -822,15 +829,8 @@ async fn wait(
                         note.publish();
                     }
                 }
-                Some(Command::Rekey { note, envelope }) => {
-                    if let Some(note) = device.notes.get_mut(&note) {
-                        note.release();
-                        note.outbox.clear();
-                        note.covered = None;
-                        note.held.push(envelope);
-                        note.publish();
-                    }
-                }
+                // Offline: the next connection's `Caught` settles it.
+                Some(Command::Settle { .. }) => {}
                 Some(Command::Flush { .. }) => {}
                 Some(Command::Released) => {
                     device.released = true;
@@ -959,7 +959,17 @@ impl Device {
                 // A `Publish` still in the channel for anything read here is the
                 // same edit arriving a second time. The counter says so, because
                 // the log gets an edit before the channel does.
-                live.covered = unsent.last().map(|(counter, _)| *counter);
+                // Ours only: an access package is signed by the note's owner
+                // key and carries a revision, not one of this device's
+                // counters.
+                let me = peer.device_key().ok();
+                live.covered = unsent
+                    .iter()
+                    .filter(|(_, envelope)| {
+                        Envelope::decode(envelope).is_ok_and(|e| Some(e.author) == me)
+                    })
+                    .map(|(counter, _)| *counter)
+                    .max();
                 live.release();
                 let unsent = unsent.into_iter().map(|(_, envelope)| envelope).collect();
                 live.outbox = live.squash(peer, id, unsent);
@@ -1033,15 +1043,14 @@ impl Device {
                     self.flush(peer, note, sync).await?;
                 }
             }
-            Command::Rekey { note, envelope } => {
+            Command::Settle { note } => {
                 let Some(live) = self.notes.get_mut(&note) else {
                     return Ok(Next::Continue);
                 };
-                live.release();
-                live.outbox.clear();
-                live.covered = None;
-                live.hold(envelope);
-                self.flush(peer, note, sync).await?;
+                if live.caught {
+                    settle(peer, note, live);
+                    self.send_urgent(sync).await?;
+                }
             }
             Command::Flush { note: Some(note) } => self.flush(peer, note, sync).await?,
             Command::Flush { note: None } => {
@@ -1085,6 +1094,28 @@ impl Device {
         live.publish();
         for envelope in &batch {
             sync.append(id, envelope).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Send what settling any note said to send.
+    async fn send_urgent(&mut self, sync: &mut DeviceSync) -> std::result::Result<(), String> {
+        for (id, live) in self.notes.iter_mut() {
+            if live.urgent.is_empty() || !live.on_socket {
+                continue;
+            }
+            let urgent = std::mem::take(&mut live.urgent);
+            for envelope in &urgent {
+                if !live.outbox.contains(envelope) {
+                    live.outbox.push(envelope.clone());
+                }
+            }
+            live.publish();
+            for envelope in &urgent {
+                sync.append(*id, envelope)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
         }
         Ok(())
     }
@@ -1165,8 +1196,9 @@ impl Device {
 /// the connection has already applied, so this is a line for the UI rather than
 /// a reason to drop a socket.
 fn settle<P: SyncPeer>(peer: &P, note: NoteId, live: &mut Live) {
-    if let Err(e) = peer.settled(note) {
-        live.note_error(e.to_string());
+    match peer.settled(note) {
+        Ok(out) => live.take(out),
+        Err(e) => live.note_error(e.to_string()),
     }
 }
 
@@ -1190,6 +1222,8 @@ struct Live {
     /// Anything at or below it is already in the outbox, whatever it was folded
     /// into on the way.
     covered: Option<u64>,
+    /// What settling the note said to send, waiting for the socket.
+    urgent: Vec<Vec<u8>>,
     pacing: Pacing,
     /// Restarted by every held edit.
     quiet: Option<super::timer::Timer>,
@@ -1211,6 +1245,7 @@ impl Live {
             outbox: Vec::new(),
             held: Vec::new(),
             covered: None,
+            urgent: Vec::new(),
             pacing,
             quiet: None,
             cap: None,
@@ -1238,8 +1273,25 @@ impl Live {
 
     fn fail(&mut self, reason: String) {
         self.caught = false;
+        // Nothing here is lost with it: every envelope settling hands out is in
+        // the log, and the next connection's catch-up reads it from there.
+        self.urgent.clear();
         self.current.last_error = Some(reason);
         self.set_state(SyncState::Offline);
+    }
+
+    /// Take what settling the note said to send. A new key means everything
+    /// held back and queued under the old one is superseded: its content is in
+    /// the state the new key opens, and sending it would hand it to whoever the
+    /// key change removed.
+    fn take(&mut self, out: Outgoing) {
+        if out.rekey {
+            self.release();
+            self.outbox.clear();
+            self.covered = None;
+        }
+        self.urgent.extend(out.envelopes);
+        self.publish();
     }
 
     /// Something went wrong that did not end the connection.
@@ -1312,10 +1364,10 @@ impl Live {
                 // the last saved cursor.
                 return Err(e.to_string());
             }
-            if matches!(e, CoreError::RotationPending) {
-                // The verified envelope was skipped or durably retained while
-                // this owner waits for the account register's matching full
-                // snapshot. The cursor may advance to that recovery point.
+            if matches!(e, CoreError::AccessPending) {
+                // Verified and kept: this device has no key for the note yet,
+                // and the package that grants one will make it readable. The
+                // cursor may move past it.
             } else {
                 // A rejected envelope is a fact about that envelope, not a reason to
                 // stop or to ask for it again — hence the cursor moving on below. The

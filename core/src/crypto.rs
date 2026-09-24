@@ -94,6 +94,20 @@ impl DeviceIdentity {
         identity
     }
 
+    /// An identity that only ever signs: a note's owner key
+    /// ([ADR 0018](../../docs/adr/0018-revocation.md) §1), rebuilt from the
+    /// 32-byte seed the owner's account document keeps. Its X25519 half is
+    /// derived so the type stays one type, and nothing agrees with it.
+    pub fn from_signing_seed(seed: &[u8; 32]) -> Self {
+        let mut x: [u8; 32] = Sha256::digest(seed).into();
+        let identity = Self {
+            signing: SigningKey::from_bytes(seed),
+            x25519: x25519_dalek::StaticSecret::from(x),
+        };
+        x.zeroize();
+        identity
+    }
+
     /// Ed25519 public key. This is the device's identity everywhere: it is what the
     /// relay authenticates, and what collaborators check updates against.
     pub fn public_key(&self) -> AuthorKey {
@@ -273,8 +287,14 @@ pub struct Envelope {
 pub enum EnvelopeKind {
     #[default]
     Update = 0,
+    /// A whole document. Only ever a local row now: a note's relay log carries
+    /// updates and access packages, and a snapshot there is refused.
     Snapshot = 1,
-    Revocation = 2,
+    /// An access package, signed by the note's owner key
+    /// ([ADR 0023](../../docs/adr/0023-access-packages.md) §4). Its ciphertext
+    /// field starts with a signed cleartext prefix; see
+    /// [`Envelope::seal_with_clear`].
+    Access = 3,
 }
 
 impl EnvelopeKind {
@@ -282,7 +302,7 @@ impl EnvelopeKind {
         match raw {
             0 => Ok(Self::Update),
             1 => Ok(Self::Snapshot),
-            2 => Ok(Self::Revocation),
+            3 => Ok(Self::Access),
             _ => Err(CoreError::MalformedEnvelope("unknown envelope kind")),
         }
     }
@@ -408,6 +428,102 @@ impl Envelope {
             });
         }
         Ok(envelope)
+    }
+
+    /// Seal an envelope whose ciphertext field begins with `clear`: bytes the
+    /// signature covers and the cipher does not hide, followed by `plaintext`
+    /// encrypted with `clear` bound into its AAD.
+    ///
+    /// What an access package is made of: its revision, parent and grant slots
+    /// have to be readable by a device that does not hold the key the body is
+    /// sealed under, because working out which package is current must not need
+    /// one.
+    pub fn seal_with_clear(
+        identity: &DeviceIdentity,
+        note_id: NoteId,
+        key: &NoteKey,
+        counter: u64,
+        kind: EnvelopeKind,
+        clear: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Self> {
+        let author = identity.public_key();
+        let key_id = key.id();
+        let mut nonce = [0u8; NONCE_LEN];
+        random_bytes(&mut nonce);
+        let mut body_aad = aad(
+            ENVELOPE_VERSION,
+            &note_id,
+            &author,
+            counter,
+            Some(&key_id),
+            kind,
+        );
+        body_aad.extend_from_slice(clear);
+        let sealed = key
+            .cipher()
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &body_aad,
+                },
+            )
+            .map_err(|_| CoreError::Crypto("encryption failed"))?;
+        let mut ciphertext = Vec::with_capacity(clear.len() + sealed.len());
+        ciphertext.extend_from_slice(clear);
+        ciphertext.extend_from_slice(&sealed);
+        let mut envelope = Self {
+            version: ENVELOPE_VERSION,
+            note_id,
+            author,
+            counter,
+            key_id: Some(key_id),
+            kind,
+            nonce,
+            signature: [0u8; SIG_LEN],
+            ciphertext,
+        };
+        envelope.signature = identity.sign(&envelope.signed_bytes());
+        if envelope.encoded_len() > MAX_ENVELOPE_BYTES {
+            return Err(CoreError::TooLarge {
+                limit: MAX_ENVELOPE_BYTES,
+            });
+        }
+        Ok(envelope)
+    }
+
+    /// The first `clear_len` bytes of the ciphertext field, which only
+    /// [`Envelope::seal_with_clear`] puts there. Not verified: call
+    /// [`Envelope::verify`] before believing them.
+    pub fn clear(&self, clear_len: usize) -> Result<&[u8]> {
+        self.ciphertext
+            .get(..clear_len)
+            .ok_or(CoreError::MalformedEnvelope("shorter than its cleartext"))
+    }
+
+    /// Verify, then decrypt what follows a `clear_len`-byte cleartext.
+    pub fn open_with_clear(&self, key: &NoteKey, clear_len: usize) -> Result<Vec<u8>> {
+        self.verify()?;
+        let clear = self.clear(clear_len)?;
+        let mut body_aad = aad(
+            self.version,
+            &self.note_id,
+            &self.author,
+            self.counter,
+            self.key_id.as_ref(),
+            self.kind,
+        );
+        body_aad.extend_from_slice(clear);
+        key.cipher()
+            .decrypt(
+                XNonce::from_slice(&self.nonce),
+                Payload {
+                    msg: &self.ciphertext[clear_len..],
+                    aad: &body_aad,
+                },
+            )
+            .map_err(|_| CoreError::Crypto("decryption failed"))
     }
 
     /// Verify the author's signature, **then** decrypt. Never reorder these two.

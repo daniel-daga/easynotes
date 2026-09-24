@@ -95,13 +95,6 @@ impl AutomergeNote {
 }
 
 impl NoteDoc for AutomergeNote {
-    fn collaborator_assertions(&self) -> Vec<String> {
-        self.doc
-            .keys(ROOT)
-            .filter(|key| key.starts_with("collaborator:"))
-            .map(|key| Self::str_at(&self.doc, &ROOT, &key))
-            .collect()
-    }
     type Account = super::AutomergeAccount;
 
     fn create(actor: &[u8; 16]) -> Self {
@@ -124,18 +117,6 @@ impl NoteDoc for AutomergeNote {
         self.doc
             .transact::<_, _, AutomergeError>(|tx| {
                 match edit {
-                    Edit::AddCollaborator(raw) => {
-                        tx.put(ROOT, crate::collaborators::key(raw), raw.as_str())?;
-                    }
-                    Edit::ClearCollaborators => {
-                        let keys: Vec<String> = tx
-                            .keys(ROOT)
-                            .filter(|key| key.starts_with("collaborator:"))
-                            .collect();
-                        for key in keys {
-                            tx.delete(ROOT, key)?;
-                        }
-                    }
                     Edit::SetTitle(t) => {
                         tx.put(ROOT, TITLE, t.as_str())?;
                     }
@@ -258,6 +239,25 @@ impl NoteDoc for AutomergeNote {
 
     fn snapshot(&self) -> Vec<u8> {
         self.doc.save()
+    }
+
+    fn merge_snapshot(&mut self, snapshot: &[u8]) -> Result<()> {
+        // `load_incremental` reads a saved document as readily as a run of
+        // changes, and skips every change it already has.
+        self.apply_remote(snapshot)
+    }
+
+    fn missing_from(&self, base: &[u8]) -> Result<Option<Vec<u8>>> {
+        let heads = Automerge::load(base)
+            .map_err(|e| CoreError::Crdt(format!("loading snapshot: {e}")))?
+            .get_heads();
+        // Changes are identified by hash, so what the base lacks is exactly
+        // the changes that are not among its heads' ancestors. This document
+        // has merged the base, so every one of those heads is known here.
+        if self.doc.get_changes(&heads).is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.doc.save_after(&heads)))
     }
 
     fn backend_name() -> &'static str {

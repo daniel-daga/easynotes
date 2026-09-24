@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 3;
+pub const ENTRY_VERSION: u8 = 4;
 
 /// One note, as the list and the search read it.
 ///

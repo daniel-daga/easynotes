@@ -12,8 +12,17 @@
 //! ```text
 //! phrase ──BIP-39──> seed ──HKDF──> account root
 //!                                      ├──> the account document's key
-//!                                      └──> the account document's ID
+//!                                      ├──> the account document's ID
+//!                                      ├──> the member key (Ed25519)
+//!                                      └──> the box key (X25519)
 //! ```
+//!
+//! The last two are this person as the people they share notes with know them
+//! ([ADR 0023](../../docs/adr/0023-access-packages.md)): the member key's
+//! public half is their member ID, and every access grant is sealed to the box
+//! key, so a phone restored from the words opens every note shared with them.
+//! Neither ever authors an envelope, which is what keeps them away from the
+//! relay.
 //!
 //! And that is all. In particular it does **not** derive note keys. Those stay
 //! random, and a second device gets them by reading them out of the account
@@ -41,7 +50,7 @@
 //! sixteen bytes indistinguishable from any note ID and unlinkable to anything
 //! else this person has.
 
-use crate::crypto::{NoteKey, MASTER_KEY_LEN, NOTE_KEY_LEN};
+use crate::crypto::{AuthorKey, NoteKey, MASTER_KEY_LEN, NOTE_KEY_LEN};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use hkdf::Hkdf;
@@ -65,6 +74,8 @@ const SALT: &[u8] = b"easynotes/account/v1";
 const INFO_ROOT: &[u8] = b"account-root/v1";
 const INFO_DOC_KEY: &[u8] = b"account-doc-key/v1";
 const INFO_DOC_ID: &[u8] = b"account-doc-id/v1";
+const INFO_MEMBER_SIGN: &[u8] = b"account-member-sign/v1";
+const INFO_MEMBER_BOX: &[u8] = b"account-member-box/v1";
 
 /// A recovery phrase: twelve English words, with BIP-39's checksum in them.
 ///
@@ -215,6 +226,66 @@ impl AccountRoot {
             .expect("16 bytes is a valid HKDF-SHA256 output length");
         NoteId::from_bytes(id)
     }
+
+    /// This person as the people they share notes with know them: the member
+    /// key that signs their invite requests and the box key their grants are
+    /// sealed to ([ADR 0023](../../docs/adr/0023-access-packages.md) §1).
+    ///
+    /// Derived, so a phone restored from the phrase holds both before anything
+    /// has synced, and so every note shared with this person opens on it.
+    /// Neither ever authors an envelope: the author is in the cleartext header,
+    /// and a key that appeared there would be a per-person identifier the relay
+    /// could read.
+    pub fn member(&self) -> MemberIdentity {
+        let mut sign = [0u8; 32];
+        let mut boxed = [0u8; 32];
+        let hk = self.hkdf();
+        hk.expand(INFO_MEMBER_SIGN, &mut sign)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        hk.expand(INFO_MEMBER_BOX, &mut boxed)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        let member = MemberIdentity {
+            signing: ed25519_dalek::SigningKey::from_bytes(&sign),
+            boxed: x25519_dalek::StaticSecret::from(boxed),
+        };
+        sign.zeroize();
+        boxed.zeroize();
+        member
+    }
+}
+
+/// A person, as a collaborator: see [`AccountRoot::member`].
+pub struct MemberIdentity {
+    signing: ed25519_dalek::SigningKey,
+    boxed: x25519_dalek::StaticSecret,
+}
+
+impl MemberIdentity {
+    /// The member ID: what a package's list names this person by.
+    pub fn id(&self) -> AuthorKey {
+        AuthorKey(self.signing.verifying_key().to_bytes())
+    }
+
+    /// The public half of the key grants and invite answers are sealed to.
+    pub fn box_public(&self) -> [u8; 32] {
+        x25519_dalek::PublicKey::from(&self.boxed).to_bytes()
+    }
+
+    pub(crate) fn sign(&self, message: &[u8]) -> [u8; crate::crypto::SIG_LEN] {
+        use ed25519_dalek::Signer;
+        self.signing.sign(message).to_bytes()
+    }
+
+    pub(crate) fn agree(&self, peer: &[u8; 32]) -> x25519_dalek::SharedSecret {
+        self.boxed
+            .diffie_hellman(&x25519_dalek::PublicKey::from(*peer))
+    }
+}
+
+impl std::fmt::Debug for MemberIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MemberIdentity({:?})", self.id())
+    }
 }
 
 impl std::fmt::Debug for AccountRoot {
@@ -329,6 +400,34 @@ mod tests {
         assert_eq!(root.document_id().encode(), DOC_ID);
         assert_eq!(hex::encode(root.document_key().0), DOC_KEY_HEX);
     }
+
+    /// The same promise for the two keys a person shares notes with: a phone
+    /// restored in five years must still be the member every package names.
+    #[test]
+    fn the_member_keys_are_pinned_to_a_known_phrase() {
+        let root = RecoveryPhrase::parse(
+            "abandon abandon abandon abandon abandon abandon \
+             abandon abandon abandon abandon abandon about",
+        )
+        .expect("the BIP-39 all-zero test vector")
+        .root();
+        let member = root.member();
+        assert_eq!(hex::encode(member.id().0), MEMBER_ID_HEX);
+        assert_eq!(hex::encode(member.box_public()), MEMBER_BOX_HEX);
+    }
+
+    #[test]
+    fn the_member_keys_are_not_the_other_derivations() {
+        let root = RecoveryPhrase::generate().root();
+        let member = root.member();
+        assert_ne!(member.id().0, member.box_public());
+        assert_ne!(member.id().0, root.document_key().0);
+        assert_ne!(&member.box_public(), root.as_bytes());
+        assert_ne!(RecoveryPhrase::generate().root().member().id(), member.id());
+    }
+
+    const MEMBER_ID_HEX: &str = "98e8d0196b23b568c79da4207054e7a18535762ac93f465c7073e493ea1f14f5";
+    const MEMBER_BOX_HEX: &str = "3ff4b971fe2aafa1e52f70e1162fda7e7c44c4a43854a96a10f8b977e174dc25";
 
     // Filled in from the first run; see the test above for what changing them
     // would mean.
