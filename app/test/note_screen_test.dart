@@ -5,6 +5,8 @@
 /// list must follow the stream even when the change did not originate here.
 library;
 
+import 'dart:async';
+
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
@@ -283,13 +285,73 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(visibleItems(tester), ['milk', '', 'bread']);
-    final inserted = core.current.items[1].id;
+    expect(core.current.items.map((item) => item.text), ['milk', '', 'bread']);
     expect(
-      tester
-          .widget<TextField>(find.byKey(Key('text:$inserted')))
-          .focusNode!
-          .hasFocus,
-      isTrue,
+      focusedFieldText(tester),
+      '',
+      reason: 'the new row has the keyboard',
+    );
+  });
+
+  testWidgets('typing on after enter, before the new item exists, keeps every '
+      'letter', (tester) async {
+    // Making an item is a round trip to the core, and a person types straight
+    // through it. The keyboard has to be in the new row from the moment Enter
+    // is pressed: on Android a letter sent while it moves is dropped, so it
+    // cannot move a round trip later, which is when the next letter comes.
+    final core = _SlowAddCore(items: const ['milk', 'bread']);
+    await pumpScreen(tester, core);
+    final milk = core.current.items[0].id;
+
+    await tester.showKeyboard(find.byKey(Key('text:$milk')));
+    core.gate = Completer<void>();
+    await tester.testTextInput.receiveAction(TextInputAction.next);
+    await tester.pump();
+    // The core has not answered, and the new row already has the keyboard.
+    expect(visibleItems(tester), ['milk', '', 'bread']);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'eggs',
+        selection: TextSelection.collapsed(offset: 4),
+      ),
+    );
+    await tester.pump();
+    // And Enter again, still before it has.
+    await tester.testTextInput.receiveAction(TextInputAction.next);
+    await tester.pump();
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'jam',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+    await tester.pump();
+    expect(visibleItems(tester), ['milk', 'eggs', 'jam', 'bread']);
+
+    core.gate!.complete();
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'jam!',
+        selection: TextSelection.collapsed(offset: 4),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpAndSettle();
+
+    expect(visibleItems(tester), ['milk', 'eggs', 'jam!', 'bread']);
+    expect(core.current.items.map((item) => item.text), [
+      'milk',
+      'eggs',
+      'jam!',
+      'bread',
+    ], reason: 'and that is what the core holds');
+    expect(
+      focusedFieldText(tester),
+      'jam!',
+      reason: 'the keyboard never left the row it was typing into',
     );
   });
 
@@ -729,4 +791,33 @@ void main() {
       expect(core.edits, isEmpty);
     });
   });
+}
+
+/// The text of whichever item field has the keyboard, or null.
+String? focusedFieldText(WidgetTester tester) => tester
+    .widgetList<TextField>(find.byType(TextField))
+    .where((field) => field.focusNode?.hasFocus ?? false)
+    .map((field) => field.controller?.text)
+    .firstOrNull;
+
+/// A core that makes items only when told to, so a test can type into the
+/// time it takes.
+class _SlowAddCore extends FakeNoteCore {
+  _SlowAddCore({super.items});
+
+  Completer<void>? gate;
+
+  @override
+  Future<String> addItem(String text) async {
+    await gate?.future;
+    return super.addItem(text);
+  }
+
+  /// A new text comes back later, as it does across the bridge — by when the
+  /// field it was typed for may already have the keyboard.
+  @override
+  Future<void> setItemText(String itemId, String text) async {
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    return super.setItemText(itemId, text);
+  }
 }

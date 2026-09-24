@@ -70,6 +70,20 @@ class _NoteScreenState extends State<NoteScreen> {
   final Map<String, GlobalKey<_ItemRowState>> _itemRowKeys = {};
   final Map<String, FocusNode> _itemFocusNodes = {};
   final Set<String> _newBlankItems = {};
+
+  /// Items Enter has made that the core has not answered for yet. Each is
+  /// drawn at once with the keyboard in it, under a stand-in ID; see
+  /// [_insertItemAfter].
+  final List<_PendingItem> _pending = [];
+  int _pendingCount = 0;
+
+  /// Every stand-in ID the core has since answered for, and with what.
+  final Map<String, String> _answered = {};
+
+  /// The other way round: the stand-in a real item's row was first drawn
+  /// under, which its text field keeps as its key. A new key would be a new
+  /// field, and a new field is the keyboard moving.
+  final Map<String, String> _standInFor = {};
   int _pendingItemWrites = 0;
   Completer<void>? _itemWritesDone;
   bool _allowPop = false;
@@ -84,7 +98,8 @@ class _NoteScreenState extends State<NoteScreen> {
 
   @override
   void dispose() {
-    for (final focus in _itemFocusNodes.values) {
+    // A set: an item Enter made is under its stand-in ID and its own.
+    for (final focus in _itemFocusNodes.values.toSet()) {
       focus.dispose();
     }
     super.dispose();
@@ -179,12 +194,15 @@ class _NoteScreenState extends State<NoteScreen> {
       () => GlobalKey<_ItemRowState>(debugLabel: 'item:${item.id}'),
     ),
     item: item,
+    fieldId: _standInFor[item.id] ?? item.id,
     focusNode: _focusForItem(item.id),
     reorderIndex: reorderIndex,
-    onChecked: (v) => widget.core.setChecked(item.id, v ?? false),
-    onTextChanged: (t) => widget.core.setItemText(item.id, t),
+    onChecked: (v) async =>
+        widget.core.setChecked(await _resolve(item.id), v ?? false),
+    onTextChanged: (t) async =>
+        widget.core.setItemText(await _resolve(item.id), t),
     onWriteStateChanged: _itemWriteStateChanged,
-    onDelete: () => _removeItem(item.id),
+    onDelete: () async => _removeItem(await _resolve(item.id)),
     onSubmitted: onSubmitted,
   );
 
@@ -196,18 +214,104 @@ class _NoteScreenState extends State<NoteScreen> {
     _itemRowKeys.remove(id);
   }
 
+  /// The core's ID for a row's item, waiting for it if the row is one Enter
+  /// made and the core has not answered for yet.
+  Future<String> _resolve(String id) async {
+    final answered = _answered[id];
+    if (answered != null) return answered;
+    for (final pending in _pending) {
+      if (pending.key == id) return pending.id.future;
+    }
+    return id;
+  }
+
+  /// Enter in an item: a new one after it, with the keyboard in it.
+  ///
+  /// The row is drawn and focused *now*, under a stand-in ID, and the core is
+  /// asked for the item afterwards. Moving the keyboard to another field
+  /// retires Android's input connection, and a letter sent to the retired one
+  /// is dropped. So the move has to happen at Enter, before the next letter —
+  /// not a round trip to the core later, which is exactly when a person is
+  /// typing it. When the core answers, the real item takes over the stand-in's
+  /// row key and focus node, so the keyboard does not move again.
   Future<void> _insertItemAfter(String itemId) async {
-    final before = widget.core.current.items;
-    if (!before.any((item) => item.id == itemId)) return;
+    final pending = _PendingItem('pending:${_pendingCount++}', itemId);
+    setState(() => _pending.add(pending));
+    _focusForItem(pending.key).requestFocus();
+    _itemWriteStateChanged(true);
+    try {
+      final after = await _resolve(itemId);
+      final id = await widget.core.addItem('');
+      _newBlankItems.add(id);
+      _itemRowKeys[id] = _itemRowKeys.putIfAbsent(
+        pending.key,
+        () => GlobalKey<_ItemRowState>(debugLabel: 'item:$id'),
+      );
+      _itemFocusNodes[id] = _focusForItem(pending.key);
+      _answered[pending.key] = id;
+      _standInFor[id] = pending.key;
+      pending.id.complete(id);
+      final current = widget.core.current.items;
+      final index = current.indexWhere((item) => item.id == after);
+      if (index >= 0) await widget.core.moveItem(id, index + 1);
+      pending.placed = true;
+    } catch (e) {
+      if (!pending.id.isCompleted) pending.id.completeError(e);
+      if (mounted) setState(() => _pending.remove(pending));
+      rethrow;
+    } finally {
+      _itemWriteStateChanged(false);
+    }
+    if (mounted) setState(() {});
+  }
 
-    final insertedId = await widget.core.addItem('');
-    _newBlankItems.add(insertedId);
-    final current = widget.core.current.items;
-    final index = current.indexWhere((item) => item.id == itemId);
-    if (index >= 0) await widget.core.moveItem(insertedId, index + 1);
+  /// The unchecked rows as drawn: the core's, with each pending item after the
+  /// row it was made from, until the core's view has it in that place.
+  List<ItemView> _withPending(NoteView note, List<ItemView> active) {
+    if (_pending.isEmpty) return active;
+    final ids = [for (final item in note.items) item.id];
+    // A pending item is done with once the core has placed it and the view
+    // shows it where it was drawn.
+    _pending.removeWhere((pending) {
+      final id = _answered[pending.key];
+      if (!pending.placed || id == null) return false;
+      final at = ids.indexOf(id);
+      if (at < 0) return false;
+      final after = _answered[pending.after] ?? pending.after;
+      return at > 0 && ids[at - 1] == after;
+    });
+    final shown = {for (final p in _pending) _answered[p.key]}..remove(null);
+    final rows = <ItemView>[];
+    final drawn = <_PendingItem>{};
+    void follow(String id) {
+      for (final pending in _pending) {
+        if (pending.after != id && _answered[pending.after] != id) continue;
+        if (!drawn.add(pending)) continue;
+        final real = _answered[pending.key];
+        rows.add(
+          ItemView(
+            id: real ?? pending.key,
+            text: '',
+            checked: false,
+            order: '',
+          ),
+        );
+        follow(pending.key);
+        if (real != null) follow(real);
+      }
+    }
 
-    final focus = _focusForItem(insertedId);
-    focus.requestFocus();
+    for (final item in active) {
+      if (shown.contains(item.id)) continue;
+      rows.add(item);
+      follow(item.id);
+    }
+    // Made after a row that is not drawn here — Enter in a crossed-off item —
+    // so it goes where the core will put a new unchecked item: last.
+    for (final pending in _pending.where((p) => !drawn.contains(p)).toList()) {
+      follow(pending.after);
+    }
+    return rows;
   }
 
   _BodyField _bodyField(NoteView note, {bool expands = false}) => _BodyField(
@@ -245,7 +349,10 @@ class _NoteScreenState extends State<NoteScreen> {
 
   /// A checklist, with any body a merge left on it above the items.
   Widget _checklist(NoteView note) {
-    final active = note.items.where((item) => !item.checked).toList();
+    final active = _withPending(
+      note,
+      note.items.where((item) => !item.checked).toList(),
+    );
     final crossedOff = note.items.where((item) => item.checked).toList();
     final addIndex = active.length;
     final crossedHeaderIndex = addIndex + 1;
@@ -280,6 +387,7 @@ class _NoteScreenState extends State<NoteScreen> {
       onReorderItem: (oldIndex, newIndex) {
         if (oldIndex >= active.length) return;
         final moving = active[oldIndex];
+        if (_pending.isNotEmpty) return;
         final remaining = note.items
             .where((item) => item.id != moving.id)
             .toList();
@@ -945,6 +1053,7 @@ class _ItemRow extends StatefulWidget {
   const _ItemRow({
     super.key,
     required this.item,
+    required this.fieldId,
     required this.focusNode,
     this.reorderIndex,
     required this.onChecked,
@@ -955,6 +1064,10 @@ class _ItemRow extends StatefulWidget {
   });
 
   final ItemView item;
+
+  /// What the text field is keyed by: the item's ID, or the stand-in its row
+  /// was first drawn under (see [_NoteScreenState._standInFor]).
+  final String fieldId;
   final FocusNode focusNode;
   final int? reorderIndex;
   final ValueChanged<bool?> onChecked;
@@ -1028,8 +1141,11 @@ class _ItemRowState extends State<_ItemRow> {
     if (_submitting) return;
     _submitting = true;
     try {
-      await _commit();
+      // Not in turn: saving this row's text waits for its ID when it is one
+      // Enter made, and the next row has to be there before the next letter.
+      final saved = _commit();
       await widget.onSubmitted?.call();
+      await saved;
     } finally {
       _submitting = false;
     }
@@ -1079,7 +1195,7 @@ class _ItemRowState extends State<_ItemRow> {
         ],
       ),
       title: TextField(
-        key: Key('text:${item.id}'),
+        key: Key('text:${widget.fieldId}'),
         controller: _controller,
         focusNode: _focus,
         textInputAction: widget.onSubmitted == null
@@ -1099,6 +1215,10 @@ class _ItemRowState extends State<_ItemRow> {
         onSubmitted: widget.onSubmitted == null
             ? (_) => _commit()
             : (_) => _submit(),
+        // Enter moves the keyboard to the item it makes, and nowhere else.
+        // Flutter's default for `next` would move it at once to whatever
+        // field happens to come next.
+        onEditingComplete: widget.onSubmitted == null ? null : () {},
       ),
       trailing: _focus.hasFocus
           ? IconButton(
@@ -1189,4 +1309,20 @@ class _ContentShareDialogState extends State<_ContentShareDialog> {
       ),
     ],
   );
+}
+
+/// An item Enter has made, drawn before the core has answered for it.
+class _PendingItem {
+  _PendingItem(this.key, this.after);
+
+  /// The stand-in ID the row is drawn under until the core's arrives.
+  final String key;
+
+  /// The item — or stand-in — it was made after.
+  final String after;
+
+  final Completer<String> id = Completer<String>();
+
+  /// Moved into place in the core, so the core's view will show it there.
+  bool placed = false;
 }
