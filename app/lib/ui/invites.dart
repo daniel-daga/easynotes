@@ -261,10 +261,8 @@ class _ShareDialogState extends State<ShareDialog> {
     }
   }
 
-  String _link(Invite invite) => inviteLinkForSharing(
-    invite.link,
-    webOrigin: Uri.base.replace(query: '', fragment: '').toString(),
-  );
+  String _link(Invite invite) =>
+      inviteLinkForSharing(invite.link, webOrigin: Uri.base.toString());
 
   /// Send the link through the platform's share sheet, making it first if
   /// there is none open. Where there is no share sheet it is copied instead.
