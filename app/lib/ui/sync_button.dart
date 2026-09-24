@@ -59,20 +59,33 @@ Future<void> showSyncDetail(BuildContext context, SyncStatus status) {
 }
 
 /// A quiet, descriptive sync entry for the home drawer.
-class SyncStatusTile extends StatelessWidget {
-  const SyncStatusTile({
-    super.key,
-    required this.stream,
-    required this.initial,
-  });
+///
+/// Takes the function that opens the stream rather than a stream: `watchSync`
+/// hands out a single-subscription stream, and the drawer's list drops and
+/// rebuilds this tile as it scrolls, so each mount has to open its own.
+class SyncStatusTile extends StatefulWidget {
+  const SyncStatusTile({super.key, required this.watch, required this.initial});
 
-  final Stream<SyncStatus> stream;
+  final Stream<SyncStatus> Function() watch;
   final SyncStatus initial;
 
   @override
+  State<SyncStatusTile> createState() => _SyncStatusTileState();
+}
+
+class _SyncStatusTileState extends State<SyncStatusTile> {
+  late Stream<SyncStatus> _stream = widget.watch();
+
+  @override
+  void didUpdateWidget(SyncStatusTile old) {
+    super.didUpdateWidget(old);
+    if (widget.watch != old.watch) _stream = widget.watch();
+  }
+
+  @override
   Widget build(BuildContext context) => StreamBuilder<SyncStatus>(
-    stream: stream,
-    initialData: initial,
+    stream: _stream,
+    initialData: widget.initial,
     builder: (context, snapshot) {
       final status = snapshot.data ?? const SyncStatus.offline();
       return ListTile(

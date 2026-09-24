@@ -23,6 +23,10 @@ Future<void> pumpList(WidgetTester tester, FakeNoteLibrary library) async {
   await tester.pumpAndSettle();
 }
 
+/// The shelf the screen is on. The app bar is a search launcher rather than a
+/// heading, so the shelf is read from the key the launcher is given for it.
+Finder onShelf(String title) => find.byKey(ValueKey('search-launcher:$title'));
+
 FakeNoteLibrary twoLists() => FakeNoteLibrary(
   notes: {
     'groceries': FakeNoteCore(
@@ -146,7 +150,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(library.calls, contains('createNote()'));
-    expect(find.byKey(const Key('new-item-field')), findsOneWidget);
+    expect(find.byKey(const Key('add-list-entry')), findsOneWidget);
   });
 
   testWidgets('a text note\'s card shows its lines, and no tally', (
@@ -344,10 +348,24 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
+    // The drawer says it in a line, and the tile opens the same sentence.
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('sync-status')),
+        matching: find.text('Not syncing, 3 edits waiting'),
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Not syncing, 3 edits waiting'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Not syncing, 3 edits waiting'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('a layout chosen on another device is drawn without a restart', (
@@ -596,7 +614,7 @@ void main() {
     await tester.tap(find.byKey(const Key('shelf-archive')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Archive'), findsOneWidget);
+    expect(onShelf('Archive'), findsOneWidget);
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsNothing);
     // Nothing is made where it would not be seen.
@@ -689,7 +707,7 @@ void main() {
       expect(find.byKey(const Key('confirm-delete')), findsOneWidget);
       // The one thing the app cannot do is said on the dialog that does it.
       expect(
-        find.textContaining('stays with whoever you shared it with'),
+        find.textContaining('People you shared this note with keep their'),
         findsOneWidget,
       );
 
@@ -756,7 +774,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('empty-trash-button')));
     await tester.pumpAndSettle();
-    expect(find.text('Delete all 2 lists for good?'), findsOneWidget);
+    expect(find.text('Delete all 2 notes permanently?'), findsOneWidget);
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
 
@@ -973,7 +991,7 @@ void main() {
     // The label still exists — it outlives the notes that carried it — so the
     // shelf is a real place to be standing, and it says what it is: empty.
     // This is the half that changed when a label stopped being its own name.
-    expect(find.text('errands'), findsWidgets);
+    expect(onShelf('errands'), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsNothing);
     expect(find.textContaining('Nothing here is labelled'), findsOneWidget);
   });
@@ -995,7 +1013,7 @@ void main() {
 
     // A shelf that does not exist cannot say why it is empty, so the screen
     // goes somewhere that can.
-    expect(find.text('EasyNotes'), findsWidgets);
+    expect(onShelf('EasyNotes'), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
   });
 

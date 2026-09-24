@@ -50,6 +50,12 @@ List<String> visibleItems(WidgetTester tester) => tester
     .map((f) => f.controller!.text)
     .toList();
 
+/// Unfold the crossed-off items, which start collapsed below the rest.
+Future<void> showCrossedOff(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('crossed-off-items')));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('the list is people, not phones, and a guest cannot manage it', (
     tester,
@@ -134,40 +140,68 @@ void main() {
     expect(find.byKey(const Key('empty-state')), findsOneWidget);
   });
 
-  testWidgets('adding an item sends an edit and clears the field', (
+  testWidgets('adding an entry makes a blank item, focused, saved as typed', (
     tester,
   ) async {
     final core = FakeNoteCore();
     await pumpScreen(tester, core);
 
-    await tester.enterText(
-      find.byKey(const Key('new-item-field')),
-      'asparagus',
-    );
-    await tester.tap(find.byKey(const Key('add-item-button')));
+    await tester.tap(find.byKey(const Key('add-list-entry')));
     await tester.pumpAndSettle();
 
-    expect(core.edits, contains('addItem(asparagus)'));
-    expect(visibleItems(tester), ['asparagus']);
-    final field = tester.widget<TextField>(
-      find.byKey(const Key('new-item-field')),
-    );
+    expect(core.edits, ['addItem()']);
+    final id = core.current.items.single.id;
     expect(
-      field.controller!.text,
-      isEmpty,
-      reason: 'the field should be ready for the next item',
+      tester.widget<TextField>(find.byKey(Key('text:$id'))).focusNode!.hasFocus,
+      isTrue,
+      reason: 'the new row should be ready to type into',
     );
+
+    await tester.enterText(find.byKey(Key('text:$id')), 'asparagus');
+    await tester.pumpAndSettle();
+    expect(core.edits, contains('setItemText($id, asparagus)'));
+    expect(visibleItems(tester), ['asparagus']);
   });
 
-  testWidgets('a blank item is not added', (tester) async {
+  testWidgets('an entry left blank is gone when the note is closed', (
+    tester,
+  ) async {
     final core = FakeNoteCore();
-    await pumpScreen(tester, core);
-
-    await tester.enterText(find.byKey(const Key('new-item-field')), '   ');
-    await tester.tap(find.byKey(const Key('add-item-button')));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            key: const Key('open'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NoteScreen(
+                  core: core,
+                  storage: FakeStorageHealth(),
+                  noteId: 'this-note',
+                  invites: FakeNoteLibrary()..setUpSharing(),
+                ),
+              ),
+            ),
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open')));
     await tester.pumpAndSettle();
 
-    expect(core.edits, isEmpty);
+    await tester.tap(find.byKey(const Key('add-list-entry')));
+    await tester.pumpAndSettle();
+    final id = core.current.items.single.id;
+    await tester.enterText(find.byKey(Key('text:$id')), '   ');
+    await tester.pumpAndSettle();
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(NoteScreen), findsNothing);
+    expect(core.edits, contains('removeItem($id)'));
+    expect(core.current.items, isEmpty);
   });
 
   testWidgets('checking an item sends an edit and strikes the text through', (
@@ -181,27 +215,45 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(core.edits, contains('setChecked($id, true)'));
+    // Crossed off, it moves below the rest, folded away until asked for.
+    expect(visibleItems(tester), ['milk']);
+    expect(find.text('Crossed off items (1)'), findsOneWidget);
+    await showCrossedOff(tester);
     final text = tester.widget<TextField>(find.byKey(Key('text:$id')));
     expect(text.style?.decoration, TextDecoration.lineThrough);
   });
 
-  testWidgets('editing an item commits when the field loses focus', (
-    tester,
-  ) async {
-    // Committing per keystroke would put one update per character on the relay.
+  testWidgets('editing an item saves it as it is typed', (tester) async {
+    // The core folds a burst of typing into one envelope (ADR 0016), so the
+    // screen does not wait for the field to lose focus.
     final core = FakeNoteCore(items: const ['eggs']);
     await pumpScreen(tester, core);
     final id = core.current.items[0].id;
 
     await tester.enterText(find.byKey(Key('text:$id')), 'eggs (12)');
-    await tester.pump();
-    expect(core.edits, isEmpty, reason: 'typing alone should not send an edit');
-
-    // Move focus away.
-    await tester.tap(find.byKey(const Key('new-item-field')));
     await tester.pumpAndSettle();
 
-    expect(core.edits, contains('setItemText($id, eggs (12))'));
+    expect(core.edits, ['setItemText($id, eggs (12))']);
+  });
+
+  testWidgets('enter in an item starts a new one after it', (tester) async {
+    final core = FakeNoteCore(items: const ['milk', 'bread']);
+    await pumpScreen(tester, core);
+    final milk = core.current.items[0].id;
+
+    await tester.showKeyboard(find.byKey(Key('text:$milk')));
+    await tester.testTextInput.receiveAction(TextInputAction.next);
+    await tester.pumpAndSettle();
+
+    expect(visibleItems(tester), ['milk', '', 'bread']);
+    final inserted = core.current.items[1].id;
+    expect(
+      tester
+          .widget<TextField>(find.byKey(Key('text:$inserted')))
+          .focusNode!
+          .hasFocus,
+      isTrue,
+    );
   });
 
   testWidgets('deleting an item sends an edit', (tester) async {
@@ -209,6 +261,10 @@ void main() {
     await pumpScreen(tester, core);
     final id = core.current.items[0].id;
 
+    // The X is only on the row being edited.
+    expect(find.byKey(Key('delete:$id')), findsNothing);
+    await tester.showKeyboard(find.byKey(Key('text:$id')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(Key('delete:$id')));
     await tester.pumpAndSettle();
 
@@ -385,8 +441,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(visibleItems(tester), ['coffee', 'oat milk']);
+    expect(visibleItems(tester), ['coffee']);
     expect(find.text('Shopping'), findsOneWidget);
+    await showCrossedOff(tester);
+    expect(visibleItems(tester), ['coffee', 'oat milk']);
     expect(
       core.edits,
       isEmpty,

@@ -623,7 +623,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onForget: _forgetLabel,
               hasAccount: widget.library.hasAccount,
               onAccount: _openAccount,
-              syncStream: widget.library.watchSync(),
+              watchSync: widget.library.watchSync,
               initialSyncStatus: widget.library.syncStatus,
             ),
             // Only where a new note would land. One made while looking at the
@@ -1435,7 +1435,7 @@ class _Shelves extends StatelessWidget {
     required this.onForget,
     required this.hasAccount,
     required this.onAccount,
-    required this.syncStream,
+    required this.watchSync,
     required this.initialSyncStatus,
   });
 
@@ -1456,7 +1456,7 @@ class _Shelves extends StatelessWidget {
   /// needs to find out about before they lose the phone.
   final bool hasAccount;
   final VoidCallback onAccount;
-  final Stream<SyncStatus> syncStream;
+  final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
 
   static const _icons = {
@@ -1541,7 +1541,7 @@ class _Shelves extends StatelessWidget {
               ),
           ],
           const Divider(),
-          SyncStatusTile(stream: syncStream, initial: initialSyncStatus),
+          SyncStatusTile(watch: watchSync, initial: initialSyncStatus),
           const Divider(),
           ListTile(
             key: const Key('account-entry'),
