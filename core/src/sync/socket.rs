@@ -50,6 +50,17 @@ impl DeviceSync {
         self.socket.send(wire::append_note(note, envelope)).await
     }
 
+    /// Hand the relay a base for a subscribed note. What becomes of it comes
+    /// back through [`next`](Self::next): the base itself, as an update, or a
+    /// refusal.
+    pub async fn compact(
+        &mut self,
+        note: NoteId,
+        request: &crate::compaction::Request,
+    ) -> Result<()> {
+        self.socket.send(wire::compact_note(note, request)).await
+    }
+
     /// The next thing from the relay, or `None` when it closes. Cancel-safe.
     pub async fn next(&mut self) -> Result<Option<Routed>> {
         match self.socket.recv().await? {

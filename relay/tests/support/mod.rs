@@ -158,6 +158,8 @@ impl Device {
                 Some(Incoming::Caught { .. }) => self.settle().await,
                 Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
+                // Only the device socket says these.
+                Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
                 None => {
                     self.sync = None;
                     return;

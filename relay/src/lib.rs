@@ -7,11 +7,13 @@ pub mod error;
 pub mod invite;
 pub mod limit;
 pub mod protocol;
+pub mod quota;
 pub mod store;
 pub mod sync;
 
 pub use app::{router, router_with, AppState, Origins, RelayConfig};
-pub use store::{MemoryStore, PostgresStore, RelayStore};
+pub use quota::Limits;
+pub use store::{Appended, MemoryStore, PostgresStore, RelayStore};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,7 +43,7 @@ impl Relay {
         addr: SocketAddr,
         config: RelayConfig,
     ) -> anyhow::Result<Self> {
-        let state = AppState::new(store, config.token_signing_key);
+        let state = AppState::with_limits(store, config.token_signing_key, config.storage);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let app = router_with(state.clone(), config);

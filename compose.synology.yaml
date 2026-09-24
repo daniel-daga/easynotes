@@ -30,6 +30,7 @@ services:
       DATABASE_URL: postgres://easynotes:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/easynotes
       RELAY_ALLOWED_ORIGINS: ${RELAY_ALLOWED_ORIGINS:?Set RELAY_ALLOWED_ORIGINS in .env}
       RELAY_TOKEN_SIGNING_KEY: ${RELAY_TOKEN_SIGNING_KEY:?Set RELAY_TOKEN_SIGNING_KEY in .env}
+      RELAY_STORAGE_CEILING: ${RELAY_STORAGE_CEILING:-}
       RUST_LOG: easynotes_relay=info
     ports:
       # DSM's reverse proxy connects on the NAS itself. Do not expose this port

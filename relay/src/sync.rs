@@ -306,8 +306,28 @@ async fn handle(
             }
             // The sender gets its own append back through the fan-out, like
             // everyone else.
-            if let Err(e) = app::append(state, &note, &envelope).await {
-                refuse(out, Some(note), &e.to_string());
+            match app::append(state, &note, &envelope).await {
+                Ok(accepted) => {
+                    if accepted.crowded {
+                        let _ = out.try_send(SyncServerMessage::Crowded { note });
+                    }
+                }
+                Err(e) => refuse(out, Some(note), &e.to_string()),
+            }
+        }
+        SyncClientMessage::Compact {
+            note,
+            covers,
+            base,
+            key,
+            signature,
+        } => {
+            if !subs.0.contains_key(&note) {
+                return refuse(out, Some(note), "not subscribed to that note");
+            }
+            if let Err(reason) = app::compact(state, &note, covers, &base, &key, &signature).await {
+                tracing::debug!(note = %note, %reason, "compaction refused");
+                let _ = out.try_send(SyncServerMessage::CompactRefused { note, reason });
             }
         }
     }

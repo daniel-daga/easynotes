@@ -770,6 +770,16 @@ impl easynotes_core::sync::SyncPeer for Peer {
         self.open()?.unsent(note, after)
     }
 
+    /// The relay asked for a base, and the engine found this device caught up
+    /// with nothing in flight: the core says whether it can vouch for the rest.
+    fn compaction(
+        &self,
+        note: NoteId,
+        covers: i64,
+    ) -> easynotes_core::error::Result<Option<easynotes_core::compaction::Request>> {
+        self.open()?.compaction(note, covers)
+    }
+
     /// The account document's backlog has landed: take the note keys it carries,
     /// and connect whatever they turned into a note this device can read.
     ///

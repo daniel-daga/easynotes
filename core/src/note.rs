@@ -2802,6 +2802,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // it as a snapshot of itself is work for its own sake.
             return Ok(0);
         }
+        let envelope = self.seal_account_snapshot()?;
+        self.store.replace_log(self.account_id, &[envelope])?;
+        Ok(before)
+    }
+
+    /// The whole account document as one envelope under a fresh counter.
+    fn seal_account_snapshot(&mut self) -> Result<Vec<u8>> {
         let blob = self.account.doc.snapshot();
         let counter = self.account.next_counter;
         self.account.next_counter += 1;
@@ -2813,9 +2820,91 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             &blob,
         )?;
         self.account.seen.insert((envelope.author, counter));
+        Ok(envelope.encode())
+    }
+
+    /// A base for the relay: the whole document, sealed as an ordinary update
+    /// by this device, and signed with the topic's compaction key as covering
+    /// everything up to relay sequence `covers`
+    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    ///
+    /// The caller — the sync engine — vouches that this device has applied
+    /// everything the relay holds up to `covers` and that the relay holds
+    /// everything this device wrote. This checks what only the core can see:
+    /// that nothing this device holds is outside the document. `None` when
+    /// something is:
+    ///
+    /// * **No key, or a key being taken away.** A device waiting to remove
+    ///   somebody must not publish anything under the key they hold, a base
+    ///   least of all.
+    /// * **Envelopes under a key it has not been granted.** They are in the
+    ///   relay's log and not in this document, so a base from here would drop
+    ///   them for everyone.
+    /// * **A key switch that has not been sent.** Its update is not on the
+    ///   relay yet.
+    ///
+    /// A note's base is not written to its log: its counter is kept in the
+    /// note's counter row, so it is never reused, and its content is the
+    /// document the log already rebuilds. The account document's base is its
+    /// log — [`NoteCore::compact_account`] — so the relay and this device end
+    /// up holding the same one envelope.
+    pub fn compaction(
+        &mut self,
+        id: NoteId,
+        covers: i64,
+    ) -> Result<Option<crate::compaction::Request>> {
+        if covers <= 0 {
+            return Ok(None);
+        }
+        if id == self.account_id && self.account_id() == Some(id) {
+            let base = self.seal_account_snapshot()?;
+            self.store
+                .replace_log(self.account_id, std::slice::from_ref(&base))?;
+            return Ok(Some(crate::compaction::Request::sign(
+                id,
+                &self.account.key,
+                covers,
+                base,
+            )));
+        }
+        if self.is_account(id)
+            || account::is_deleted(self.account.doc.entries(), id)
+            || self.keyring.note_key(id)?.is_none()
+            || self.holds_back(id)?
+            || self.switched.contains_key(&id)
+        {
+            return Ok(None);
+        }
+        self.ensure_open(id)?;
+        let current = self.note(id)?.key.id();
+        let ledger = self.ledger(id)?;
+        for raw in self.store.load(id)? {
+            let env = Envelope::decode(&raw)?;
+            let ungranted = env
+                .key_id
+                .is_some_and(|key_id| key_id != current && !ledger.has_held(&key_id));
+            if ungranted {
+                return Ok(None);
+            }
+        }
+        let identity = &self.identity;
+        let note = self
+            .open
+            .get_mut(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?;
+        let counter = note.next_counter;
+        note.next_counter += 1;
+        let base = Envelope::seal(identity, id, &note.key, counter, &note.doc.snapshot())?;
+        note.seen.insert((base.author, counter));
+        let key = note.key.clone();
         self.store
-            .replace_log(self.account_id, &[envelope.encode()])?;
-        Ok(before)
+            .put_meta(id, NEXT_COUNTER, &(counter + 1).to_be_bytes())?;
+        Ok(Some(crate::compaction::Request::sign(
+            id,
+            &key,
+            covers,
+            base.encode(),
+        )))
     }
 
     /// Re-send the current view to everyone watching, without changing anything.

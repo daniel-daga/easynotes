@@ -17,6 +17,12 @@ pub enum RelayError {
     Gone(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
+    /// The note's live log is at its cap ([`crate::quota::Limits`]).
+    #[error("note_full")]
+    NoteFull,
+    /// The relay is at its ceiling and will not start a new note.
+    #[error("relay_full")]
+    RelayFull,
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -30,6 +36,7 @@ impl IntoResponse for RelayError {
             RelayError::NotFound => StatusCode::NOT_FOUND,
             RelayError::Gone(_) => StatusCode::GONE,
             RelayError::Conflict(_) => StatusCode::CONFLICT,
+            RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // The body carries the category and never the detail: a storage error's

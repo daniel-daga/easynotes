@@ -13,6 +13,10 @@
 //!   socket should not need an environment variable set to refuse a flood.
 //! * `RELAY_TOKEN_SIGNING_KEY` — a stable base64url Ed25519 seed for tokens
 //!   shared across restarts and instances. Unset generates a temporary key.
+//! * `RELAY_STORAGE_CEILING` — how many bytes every note's live log may hold
+//!   together before the relay refuses to start new notes (appends to existing
+//!   ones still go). A whole number of bytes, or `off`. Unset means
+//!   [`easynotes_relay::app::DEFAULT_CEILING`], 16 GiB.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -64,6 +68,26 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::warn!(
             "RELAY_TOKEN_SIGNING_KEY is unset: device tokens will not survive a restart and instances will not share tokens"
         ),
+    }
+    match std::env::var("RELAY_STORAGE_CEILING")
+        .as_deref()
+        .map(str::trim)
+    {
+        // Empty is unset: what compose passes when `.env` leaves it blank.
+        Ok("") | Err(_) => {}
+        Ok("off") => {
+            tracing::warn!(
+                "RELAY_STORAGE_CEILING=off: new notes are accepted however full the relay is"
+            );
+            config.storage.ceiling = None;
+        }
+        Ok(raw) => {
+            let bytes: u64 = raw.trim().parse().map_err(|_| {
+                anyhow::anyhow!("RELAY_STORAGE_CEILING must be a whole number of bytes, or off")
+            })?;
+            config.storage.ceiling = Some(bytes);
+            tracing::info!(bytes, "new notes stop at this much stored");
+        }
     }
     match std::env::var("RELAY_ALLOWED_ORIGINS") {
         Ok(raw) => {

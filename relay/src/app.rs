@@ -19,7 +19,8 @@ use crate::error::{RelayError, Result};
 use crate::invite;
 use crate::limit::RateLimit;
 use crate::protocol::*;
-use crate::store::RelayStore;
+use crate::quota::{Limits, Proposal, Refusal};
+use crate::store::{Appended, RelayStore};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::StatusCode;
@@ -51,6 +52,8 @@ type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
 pub struct AppState {
     pub store: Arc<dyn RelayStore>,
     pub auth: Auth,
+    /// How much a note may keep, and when to ask for a compaction.
+    pub limits: Limits,
     /// One broadcast channel per note that currently has subscribers.
     channels: Mutex<HashMap<String, Fanout>>,
     /// Serializes appending and broadcasting one note's envelopes. The store
@@ -61,9 +64,18 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Arc<dyn RelayStore>, token_signing_key: [u8; 32]) -> Arc<Self> {
+        Self::with_limits(store, token_signing_key, Limits::default())
+    }
+
+    pub fn with_limits(
+        store: Arc<dyn RelayStore>,
+        token_signing_key: [u8; 32],
+        limits: Limits,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
             auth: Auth::new(token_signing_key),
+            limits,
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
         })
@@ -176,6 +188,9 @@ pub struct RelayConfig {
     /// on an answer polls, and that must not spend the budget its device needs
     /// to reconnect its notes.
     pub invites: RateLimit,
+    /// How much one note may keep, and the whole relay
+    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    pub storage: Limits,
 }
 
 impl Default for RelayConfig {
@@ -190,6 +205,7 @@ impl Default for RelayConfig {
             handshake: RateLimit::unlimited(),
             sockets: RateLimit::unlimited(),
             invites: RateLimit::unlimited(),
+            storage: Limits::default(),
         }
     }
 }
@@ -219,9 +235,19 @@ impl RelayConfig {
             // A guest and an owner each poll every few seconds while a screen
             // is waiting; this is several of those at once from one address.
             invites: RateLimit::new(120, 60),
+            storage: Limits {
+                ceiling: Some(DEFAULT_CEILING),
+                ..Limits::default()
+            },
         }
     }
 }
+
+/// Where a public relay stops starting new notes unless told otherwise:
+/// 16 GiB of live logs. ADR 0006's largest measured note compacts to under
+/// 100 KiB, so this is a very large household's worth many times over, and
+/// small enough to leave a home server's disk room when somebody floods it.
+pub const DEFAULT_CEILING: u64 = 16 << 30;
 
 pub fn router(state: Arc<AppState>) -> Router {
     router_with(state, RelayConfig::default())
@@ -445,11 +471,10 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> any
                     match serde_json::from_str::<ClientMessage>(&t) {
                         Ok(ClientMessage::Append { envelope }) => {
                             match append(&state, note, &envelope).await {
-                                Ok(seq) => {
-                                    // The sender gets its own append back through
-                                    // the broadcast, like everyone else.
-                                    let _ = seq;
-                                }
+                                // The sender gets its own append back through
+                                // the broadcast, like everyone else. There is
+                                // no compaction on this route.
+                                Ok(_) => {}
                                 Err(e) => send_error(&mut tx, &e.to_string()).await?,
                             }
                         }
@@ -467,8 +492,19 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> any
     }
 }
 
-/// Validate, store, fan out. The only place the relay writes anything.
-pub(crate) async fn append(state: &Arc<AppState>, note: &str, envelope_b64: &str) -> Result<i64> {
+/// An append that was stored.
+pub(crate) struct Accepted {
+    /// The note's log has grown enough that the appender should compact it.
+    pub crowded: bool,
+}
+
+/// Validate, store, fan out. The only place the relay writes an envelope a
+/// device sent; [`compact`] is the only place it removes any.
+pub(crate) async fn append(
+    state: &Arc<AppState>,
+    note: &str,
+    envelope_b64: &str,
+) -> Result<Accepted> {
     let raw = URL_SAFE_NO_PAD
         .decode(envelope_b64)
         .map_err(|_| RelayError::BadRequest("envelope is not base64url".into()))?;
@@ -491,10 +527,58 @@ pub(crate) async fn append(state: &Arc<AppState>, note: &str, envelope_b64: &str
     // handlers committed in sequence order but broadcast in the opposite order,
     // subscribers would advance their cursor past an edit they had not received.
     let _append = state.append_lock(note).await;
-    let seq = state.store.append(note, &raw).await?;
-    // `send` fails only when nobody is listening, which is not an error.
-    let _ = state.channel(note).send((seq, raw));
-    Ok(seq)
+    match state.store.append_within(note, &raw, &state.limits).await? {
+        Appended::Stored { seq, crowded } => {
+            // `send` fails only when nobody is listening, which is not an error.
+            let _ = state.channel(note).send((seq, raw));
+            Ok(Accepted { crowded })
+        }
+        Appended::NoteFull => Err(RelayError::NoteFull),
+        Appended::RelayFull => Err(RelayError::RelayFull),
+    }
+}
+
+/// Check a compaction, apply it, and fan the base out like any append.
+///
+/// Every subscriber gets the base, the ones already caught up included: it is
+/// a merge that changes nothing for them, and one snapshot per compaction is
+/// cheaper than telling who needs it. One whose cursor is below `covers`
+/// finds the envelopes the base replaced gone and the base in their place.
+pub(crate) async fn compact(
+    state: &Arc<AppState>,
+    note: &str,
+    covers: i64,
+    base_b64: &str,
+    key_b64: &str,
+    signature_b64: &str,
+) -> std::result::Result<i64, String> {
+    let decode = |raw: &str| URL_SAFE_NO_PAD.decode(raw).ok();
+    let (Some(base), Some(key), Some(signature)) =
+        (decode(base_b64), decode(key_b64), decode(signature_b64))
+    else {
+        return Err("not base64url".into());
+    };
+    if base.len() > MAX_ENVELOPE_BYTES {
+        return Err("the base is too large".into());
+    }
+    let (Ok(key), Ok(signature)) = (key.try_into(), signature.try_into()) else {
+        return Err("a key or signature of the wrong length".into());
+    };
+    let proposal = Proposal {
+        covers,
+        base: &base,
+        key,
+        signature,
+    };
+    let _append = state.append_lock(note).await;
+    match state.store.compact(note, &proposal).await {
+        Ok(Ok(seq)) => {
+            let _ = state.channel(note).send((seq, base));
+            Ok(seq)
+        }
+        Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 async fn send(tx: &mut Sink, msg: &ServerMessage) -> anyhow::Result<()> {

@@ -142,6 +142,15 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
         let _ = note;
         Ok(Outgoing::default())
     }
+
+    /// A base for the relay to compact this note's log to, covering everything
+    /// up to `covers` — see [`NoteCore::compaction`]. `None` when this device
+    /// cannot vouch for all of it, which is the default: a peer that never
+    /// compacts only ever costs the relay space.
+    fn compaction(&self, note: NoteId, covers: i64) -> Result<Option<crate::compaction::Request>> {
+        let _ = (note, covers);
+        Ok(None)
+    }
 }
 
 fn poisoned() -> CoreError {
@@ -224,6 +233,12 @@ where
             return Ok(Outgoing::default());
         }
         core.settle_note(note)
+    }
+
+    fn compaction(&self, note: NoteId, covers: i64) -> Result<Option<crate::compaction::Request>> {
+        self.lock()
+            .map_err(|_| poisoned())?
+            .compaction(note, covers)
     }
 }
 
@@ -928,6 +943,9 @@ impl Device {
         };
         live.on_socket = false;
         live.caught = false;
+        live.crowded = false;
+        live.compact = None;
+        live.compacting = None;
 
         // Re-read rather than trust what we remember: the core has been editing
         // and persisting while we were away.
@@ -1098,10 +1116,19 @@ impl Device {
         Ok(())
     }
 
-    /// Send what settling any note said to send.
+    /// Send what settling any note said to send, and any base a note has
+    /// made for the relay.
     async fn send_urgent(&mut self, sync: &mut DeviceSync) -> std::result::Result<(), String> {
         for (id, live) in self.notes.iter_mut() {
-            if live.urgent.is_empty() || !live.on_socket {
+            if !live.on_socket {
+                continue;
+            }
+            if let Some(request) = live.compact.take() {
+                sync.compact(*id, &request)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            if live.urgent.is_empty() {
                 continue;
             }
             let urgent = std::mem::take(&mut live.urgent);
@@ -1164,6 +1191,10 @@ impl Device {
                 if live.caught {
                     settle(peer, id, live);
                 }
+                // The echo that empties the outbox may be what a waiting
+                // compaction was waiting for. After settling, which may have
+                // something of its own to send first.
+                live.compact_if_due(peer, id);
                 Ok(Received::Continue)
             }
             Incoming::Caught { seq } => {
@@ -1186,6 +1217,16 @@ impl Device {
                 live.note_error(message);
                 Ok(Received::Continue)
             }
+            Incoming::Crowded => {
+                live.crowded = true;
+                live.compact_if_due(peer, id);
+                Ok(Received::Continue)
+            }
+            // Not the person's problem: the log is as it was, and whoever
+            // compacts it next will. This device does not try again on this
+            // connection, so a relay that keeps refusing does not cost it a
+            // snapshot per edit.
+            Incoming::CompactRefused(_) => Ok(Received::Continue),
         }
     }
 }
@@ -1224,6 +1265,15 @@ struct Live {
     covered: Option<u64>,
     /// What settling the note said to send, waiting for the socket.
     urgent: Vec<Vec<u8>>,
+    /// The relay has asked for a compaction on this connection, and this
+    /// device has not yet made one.
+    crowded: bool,
+    /// A base made for the relay, waiting for the socket.
+    compact: Option<crate::compaction::Request>,
+    /// The base sent on this connection, until the relay echoes it back. Set,
+    /// it stops another being made; left set by a refusal, it stops this
+    /// connection trying again.
+    compacting: Option<Vec<u8>>,
     pacing: Pacing,
     /// Restarted by every held edit.
     quiet: Option<super::timer::Timer>,
@@ -1246,6 +1296,9 @@ impl Live {
             held: Vec::new(),
             covered: None,
             urgent: Vec::new(),
+            crowded: false,
+            compact: None,
+            compacting: None,
             pacing,
             quiet: None,
             cap: None,
@@ -1273,6 +1326,9 @@ impl Live {
 
     fn fail(&mut self, reason: String) {
         self.caught = false;
+        self.crowded = false;
+        self.compact = None;
+        self.compacting = None;
         // Nothing here is lost with it: every envelope settling hands out is in
         // the log, and the next connection's catch-up reads it from there.
         self.urgent.clear();
@@ -1375,6 +1431,10 @@ impl Live {
                 self.current.last_error = Some(e.to_string());
             }
         }
+        if self.compacting.as_deref() == Some(envelope) {
+            // The relay took the base: another may be made when it next asks.
+            self.compacting = None;
+        }
         if let Ok(parsed) = Envelope::decode(envelope) {
             if &parsed.author == me {
                 self.acknowledge(parsed.counter, envelope);
@@ -1388,6 +1448,32 @@ impl Live {
         }
         self.advance(peer, note, seq);
         Ok(())
+    }
+
+    /// Make a base for the relay if it asked for one and this device can vouch
+    /// for everything up to its cursor: caught up, and with nothing of its own
+    /// in flight or held back, so that the relay has every edit this device
+    /// made and the base has every edit the relay has
+    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    fn compact_if_due<P: SyncPeer>(&mut self, peer: &P, note: NoteId) {
+        if !self.crowded
+            || !self.caught
+            || self.compacting.is_some()
+            || !self.outbox.is_empty()
+            || !self.held.is_empty()
+            || !self.urgent.is_empty()
+        {
+            return;
+        }
+        self.crowded = false;
+        match peer.compaction(note, self.cursor.last_seq) {
+            Ok(Some(request)) => {
+                self.compacting = Some(request.base.clone());
+                self.compact = Some(request);
+            }
+            Ok(None) => {}
+            Err(e) => self.note_error(e.to_string()),
+        }
     }
 
     /// The relay has our envelope: drop it from the outbox and remember how far

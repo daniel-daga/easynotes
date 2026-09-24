@@ -25,6 +25,9 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   tr -d '=\n'`, store it in `.env`, and keep a protected backup. Every relay
   instance must use the same key. Changing it immediately invalidates active
   device tokens; retaining it lets them remain usable until expiry.
+- Optionally set `RELAY_STORAGE_CEILING` to the number of bytes the relay
+  may hold before it refuses to start new notes. Notes it already has keep
+  working. Leave it empty for the default of 16 GiB, or set it to `off`.
 - Set `NAS_DATA_DIR` to a persistent shared-folder path, for example
   `/volume1/docker/easynotes-data`.
 

@@ -1,8 +1,11 @@
 //! Where ciphertext goes.
 //!
 //! Two implementations: Postgres for production, in-memory for tests and for
-//! `just run-relay`. Both are append-only logs keyed by note ID, with a
-//! per-note monotonic sequence number.
+//! `just run-relay`. Both are logs keyed by note ID, with a per-note monotonic
+//! sequence number. They only grow, except where a member compacts one to a
+//! base ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)), which drops
+//! what the base makes redundant and leaves gaps behind it: a `since` cursor
+//! means "after this", never "exactly this many".
 //!
 //! Note IDs are stored as the opaque 22-character base64url strings the client
 //! sends. The relay never decodes them into anything meaningful, because there is
@@ -10,6 +13,7 @@
 
 use crate::error::{RelayError, Result};
 use crate::protocol::{RequestState, MAX_INVITE_REQUESTS};
+use crate::quota::{self, Limits, Proposal, Refusal, Topic};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,11 +25,54 @@ pub struct Stored {
     pub envelope: Vec<u8>,
 }
 
+/// What became of an append.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Appended {
+    /// Stored at `seq`. `crowded` when the note's log has grown enough that
+    /// whoever appended should compact it.
+    Stored { seq: i64, crowded: bool },
+    /// The note's live log is at its cap. Nothing was stored.
+    NoteFull,
+    /// The relay is at its ceiling and this would have started a new note.
+    RelayFull,
+}
+
+/// No limits at all: what [`RelayStore::append`] applies.
+const UNLIMITED: Limits = Limits {
+    note_bytes: u64::MAX,
+    crowded_envelopes: u64::MAX,
+    crowded_bytes: u64::MAX,
+    ceiling: None,
+};
+
 #[async_trait]
 pub trait RelayStore: Send + Sync + 'static {
-    /// Append and return the sequence number assigned. Sequence numbers start at
-    /// 1 and increase by one per note, with no gaps.
-    async fn append(&self, note: &str, envelope: &[u8]) -> Result<i64>;
+    /// Append under `limits` ([`crate::quota`]). Sequence numbers start at 1
+    /// and increase by one per note.
+    async fn append_within(&self, note: &str, envelope: &[u8], limits: &Limits)
+        -> Result<Appended>;
+
+    /// Append with nothing limited, and return the sequence number assigned.
+    async fn append(&self, note: &str, envelope: &[u8]) -> Result<i64> {
+        match self.append_within(note, envelope, &UNLIMITED).await? {
+            Appended::Stored { seq, .. } => Ok(seq),
+            other => Err(RelayError::Storage(format!(
+                "unlimited append refused: {other:?}"
+            ))),
+        }
+    }
+
+    /// Compact a note to a base, if [`quota::authorise`] allows it: drop every
+    /// envelope at or below `covers` that is not a kept package, and store the
+    /// base as a new envelope at the head. Returns the base's sequence number.
+    async fn compact(
+        &self,
+        note: &str,
+        proposal: &Proposal<'_>,
+    ) -> Result<std::result::Result<i64, Refusal>>;
+
+    /// A note's bookkeeping. The default for a note the store has never seen.
+    async fn topic(&self, note: &str) -> Result<Topic>;
 
     /// Everything with `seq > since`, oldest first.
     async fn since(&self, note: &str, since: i64) -> Result<Vec<Stored>>;
@@ -154,9 +201,22 @@ fn swept(expires_at: i64, now: i64) -> bool {
 /// stops being accepted.
 type Challenges = HashMap<Vec<u8>, ([u8; 32], i64)>;
 
+/// One stored envelope, and whether compaction must leave it.
+#[derive(Clone)]
+struct Row {
+    stored: Stored,
+    keep: bool,
+}
+
+#[derive(Default)]
+struct Log {
+    rows: Vec<Row>,
+    topic: Topic,
+}
+
 #[derive(Default, Clone)]
 pub struct MemoryStore {
-    notes: Arc<Mutex<HashMap<String, Vec<Stored>>>>,
+    notes: Arc<Mutex<HashMap<String, Log>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
     auth_challenges: Arc<Mutex<Challenges>>,
 }
@@ -172,7 +232,7 @@ impl MemoryStore {
             .lock()
             .unwrap()
             .values()
-            .flat_map(|v| v.iter().map(|s| s.envelope.clone()))
+            .flat_map(|log| log.rows.iter().map(|r| r.stored.envelope.clone()))
             .collect()
     }
 
@@ -201,23 +261,107 @@ impl MemoryStore {
 
 #[async_trait]
 impl RelayStore for MemoryStore {
-    async fn append(&self, note: &str, envelope: &[u8]) -> Result<i64> {
+    async fn append_within(
+        &self,
+        note: &str,
+        envelope: &[u8],
+        limits: &Limits,
+    ) -> Result<Appended> {
         let mut notes = self.notes.lock().unwrap();
+        if !notes.contains_key(note) {
+            if let Some(ceiling) = limits.ceiling {
+                let total: u64 = notes.values().map(|log| log.topic.live_bytes).sum();
+                if total >= ceiling {
+                    return Ok(Appended::RelayFull);
+                }
+            }
+        }
         let log = notes.entry(note.to_string()).or_default();
-        let seq = log.len() as i64 + 1;
-        log.push(Stored {
-            seq,
-            envelope: envelope.to_vec(),
+        let class = quota::classify(&log.topic, note, envelope);
+        let bytes = envelope.len() as u64;
+        // An owner's package goes whatever the cap says: it is how a person is
+        // removed, and removing somebody must not wait on a full note.
+        if !class.keep && log.topic.live_bytes + bytes > limits.note_bytes {
+            return Ok(Appended::NoteFull);
+        }
+        let topic = &mut log.topic;
+        topic.head += 1;
+        topic.live_envelopes += 1;
+        topic.live_bytes += bytes;
+        if !class.keep {
+            topic.loose_envelopes += 1;
+            topic.loose_bytes += bytes;
+        }
+        if let Some(owner) = class.owner {
+            topic.owner = Some(owner);
+        }
+        if let Some(current) = class.current {
+            topic.current = Some(current);
+        }
+        let seq = topic.head;
+        let crowded = topic.crowded(limits);
+        log.rows.push(Row {
+            stored: Stored {
+                seq,
+                envelope: envelope.to_vec(),
+            },
+            keep: class.keep,
         });
-        Ok(seq)
+        Ok(Appended::Stored { seq, crowded })
     }
 
-    async fn since(&self, note: &str, since: i64) -> Result<Vec<Stored>> {
+    async fn compact(
+        &self,
+        note: &str,
+        proposal: &Proposal<'_>,
+    ) -> Result<std::result::Result<i64, Refusal>> {
+        let mut notes = self.notes.lock().unwrap();
+        let Some(log) = notes.get_mut(note) else {
+            return Ok(Err(Refusal::Stale));
+        };
+        let register = match quota::authorise(&log.topic, note, proposal) {
+            Ok(register) => register,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        log.rows
+            .retain(|row| row.keep || row.stored.seq > proposal.covers);
+        let topic = &mut log.topic;
+        topic.head += 1;
+        topic.covers = proposal.covers;
+        if register {
+            topic.registered = Some(proposal.key);
+        }
+        let seq = topic.head;
+        log.rows.push(Row {
+            stored: Stored {
+                seq,
+                envelope: proposal.base.to_vec(),
+            },
+            keep: false,
+        });
+        let topic = &mut log.topic;
+        topic.live_envelopes = log.rows.len() as u64;
+        topic.live_bytes = log
+            .rows
+            .iter()
+            .map(|r| r.stored.envelope.len() as u64)
+            .sum();
+        let loose = log.rows.iter().filter(|r| !r.keep);
+        topic.loose_envelopes = loose.clone().count() as u64;
+        topic.loose_bytes = loose.map(|r| r.stored.envelope.len() as u64).sum();
+        Ok(Ok(seq))
+    }
+
+    async fn topic(&self, note: &str) -> Result<Topic> {
         let notes = self.notes.lock().unwrap();
         Ok(notes
             .get(note)
-            .map(|log| log.iter().filter(|s| s.seq > since).cloned().collect())
+            .map(|log| log.topic.clone())
             .unwrap_or_default())
+    }
+
+    async fn since(&self, note: &str, since: i64) -> Result<Vec<Stored>> {
+        self.page(note, since, usize::MAX).await
     }
 
     async fn page(&self, note: &str, since: i64, limit: usize) -> Result<Vec<Stored>> {
@@ -225,10 +369,11 @@ impl RelayStore for MemoryStore {
         Ok(notes
             .get(note)
             .map(|log| {
-                log.iter()
-                    .filter(|s| s.seq > since)
+                log.rows
+                    .iter()
+                    .filter(|r| r.stored.seq > since)
                     .take(limit)
-                    .cloned()
+                    .map(|r| r.stored.clone())
                     .collect()
             })
             .unwrap_or_default())
@@ -236,7 +381,7 @@ impl RelayStore for MemoryStore {
 
     async fn head(&self, note: &str) -> Result<i64> {
         let notes = self.notes.lock().unwrap();
-        Ok(notes.get(note).and_then(|l| l.last()).map_or(0, |s| s.seq))
+        Ok(notes.get(note).map_or(0, |log| log.topic.head))
     }
 
     async fn save_auth_challenge(
@@ -432,6 +577,43 @@ impl PostgresStore {
             )
             .execute(&mut *conn)
             .await?;
+            // ADR 0024: what compaction must leave, and each topic's
+            // bookkeeping. Added rather than declared above, so a relay whose
+            // tables predate them gains them on its next start.
+            for statement in [
+                "ALTER TABLE note_log ADD COLUMN IF NOT EXISTS keep BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS live_envelopes BIGINT NOT NULL DEFAULT 0",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS live_bytes BIGINT NOT NULL DEFAULT 0",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS loose_envelopes BIGINT NOT NULL DEFAULT 0",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS loose_bytes BIGINT NOT NULL DEFAULT 0",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS owner BYTEA",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_revision BIGINT",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_digest BYTEA",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_compaction BYTEA",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS registered BYTEA",
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS covers BIGINT NOT NULL DEFAULT 0",
+            ] {
+                sqlx::query(statement).execute(&mut *conn).await?;
+            }
+            // Topics stored before there was any bookkeeping start with none.
+            // Counted once: a topic with anything in it never counts zero again,
+            // because a compaction leaves at least its base.
+            sqlx::query(
+                r#"
+                UPDATE note_head h SET
+                    live_envelopes = c.n, live_bytes = c.b,
+                    loose_envelopes = c.n, loose_bytes = c.b
+                FROM (
+                    SELECT l.note_id, count(*) AS n, COALESCE(sum(length(l.envelope)), 0) AS b
+                    FROM note_log l JOIN note_head z ON z.note_id = l.note_id
+                    WHERE z.live_envelopes = 0 AND z.seq > 0
+                    GROUP BY l.note_id
+                ) c
+                WHERE h.note_id = c.note_id
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
             sqlx::query(
                 r#"
                 CREATE TABLE IF NOT EXISTS auth_challenges (
@@ -492,40 +674,145 @@ impl PostgresStore {
 
 #[async_trait]
 impl RelayStore for PostgresStore {
-    async fn append(&self, note: &str, envelope: &[u8]) -> Result<i64> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| RelayError::Storage(e.to_string()))?;
+    async fn append_within(
+        &self,
+        note: &str,
+        envelope: &[u8],
+        limits: &Limits,
+    ) -> Result<Appended> {
+        let mut tx = self.pool.begin().await.map_err(pg)?;
 
-        // Allocating the number and writing the row are one transaction, so a
-        // crash between them cannot burn a sequence number and leave a hole that
-        // a client's `since` cursor would wait on forever.
-        let (seq,): (i64,) = sqlx::query_as(
+        // The topic's row, locked. Allocating the number and writing the row
+        // are one transaction under that lock, so concurrent appenders queue
+        // rather than collide, and a crash between the two cannot burn a
+        // sequence number.
+        //
+        // The obvious `SELECT MAX(seq) + 1` does not work here: readers do not
+        // block each other, so sixteen concurrent appends all compute the same
+        // number and fifteen of them lose on the primary key.
+        let mut topic = match lock_topic(&mut tx, note).await? {
+            Some(topic) => topic,
+            None => {
+                if let Some(ceiling) = limits.ceiling {
+                    let (total,): (i64,) = sqlx::query_as(
+                        "SELECT COALESCE(sum(live_bytes), 0)::BIGINT FROM note_head",
+                    )
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(pg)?;
+                    if total as u64 >= ceiling {
+                        return Ok(Appended::RelayFull);
+                    }
+                }
+                sqlx::query(
+                    "INSERT INTO note_head (note_id, seq) VALUES ($1, 0) ON CONFLICT (note_id) DO NOTHING",
+                )
+                .bind(note)
+                .execute(&mut *tx)
+                .await
+                .map_err(pg)?;
+                lock_topic(&mut tx, note)
+                    .await?
+                    .ok_or_else(|| RelayError::Storage("topic row vanished".into()))?
+            }
+        };
+
+        let class = quota::classify(&topic, note, envelope);
+        let bytes = envelope.len() as u64;
+        if !class.keep && topic.live_bytes + bytes > limits.note_bytes {
+            return Ok(Appended::NoteFull);
+        }
+        topic.head += 1;
+        topic.live_envelopes += 1;
+        topic.live_bytes += bytes;
+        if !class.keep {
+            topic.loose_envelopes += 1;
+            topic.loose_bytes += bytes;
+        }
+        if let Some(owner) = class.owner {
+            topic.owner = Some(owner);
+        }
+        if let Some(current) = class.current {
+            topic.current = Some(current);
+        }
+        save_topic(&mut tx, note, &topic).await?;
+
+        sqlx::query("INSERT INTO note_log (note_id, seq, envelope, keep) VALUES ($1, $2, $3, $4)")
+            .bind(note)
+            .bind(topic.head)
+            .bind(envelope)
+            .bind(class.keep)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+
+        tx.commit().await.map_err(pg)?;
+        Ok(Appended::Stored {
+            seq: topic.head,
+            crowded: topic.crowded(limits),
+        })
+    }
+
+    async fn compact(
+        &self,
+        note: &str,
+        proposal: &Proposal<'_>,
+    ) -> Result<std::result::Result<i64, Refusal>> {
+        let mut tx = self.pool.begin().await.map_err(pg)?;
+        let Some(mut topic) = lock_topic(&mut tx, note).await? else {
+            return Ok(Err(Refusal::Stale));
+        };
+        let register = match quota::authorise(&topic, note, proposal) {
+            Ok(register) => register,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        sqlx::query("DELETE FROM note_log WHERE note_id = $1 AND seq <= $2 AND NOT keep")
+            .bind(note)
+            .bind(proposal.covers)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+        topic.head += 1;
+        topic.covers = proposal.covers;
+        if register {
+            topic.registered = Some(proposal.key);
+        }
+        sqlx::query(
+            "INSERT INTO note_log (note_id, seq, envelope, keep) VALUES ($1, $2, $3, FALSE)",
+        )
+        .bind(note)
+        .bind(topic.head)
+        .bind(proposal.base)
+        .execute(&mut *tx)
+        .await
+        .map_err(pg)?;
+        let (live, live_bytes, loose, loose_bytes): (i64, i64, i64, i64) = sqlx::query_as(
             r#"
-            INSERT INTO note_head (note_id, seq) VALUES ($1, 1)
-            ON CONFLICT (note_id) DO UPDATE SET seq = note_head.seq + 1
-            RETURNING seq
+            SELECT count(*),
+                   COALESCE(sum(length(envelope)), 0)::BIGINT,
+                   count(*) FILTER (WHERE NOT keep),
+                   COALESCE(sum(length(envelope)) FILTER (WHERE NOT keep), 0)::BIGINT
+            FROM note_log WHERE note_id = $1
             "#,
         )
         .bind(note)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| RelayError::Storage(e.to_string()))?;
+        .map_err(pg)?;
+        topic.live_envelopes = live as u64;
+        topic.live_bytes = live_bytes as u64;
+        topic.loose_envelopes = loose as u64;
+        topic.loose_bytes = loose_bytes as u64;
+        save_topic(&mut tx, note, &topic).await?;
+        tx.commit().await.map_err(pg)?;
+        Ok(Ok(topic.head))
+    }
 
-        sqlx::query("INSERT INTO note_log (note_id, seq, envelope) VALUES ($1, $2, $3)")
-            .bind(note)
-            .bind(seq)
-            .bind(envelope)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| RelayError::Storage(e.to_string()))?;
-
-        tx.commit()
-            .await
-            .map_err(|e| RelayError::Storage(e.to_string()))?;
-        Ok(seq)
+    async fn topic(&self, note: &str) -> Result<Topic> {
+        let mut tx = self.pool.begin().await.map_err(pg)?;
+        let topic = read_topic(&mut tx, note, false).await?;
+        tx.commit().await.map_err(pg)?;
+        Ok(topic.unwrap_or_default())
     }
 
     async fn since(&self, note: &str, since: i64) -> Result<Vec<Stored>> {
@@ -536,7 +823,7 @@ impl RelayStore for PostgresStore {
         .bind(since)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| RelayError::Storage(e.to_string()))?;
+        .map_err(pg)?;
         Ok(rows
             .into_iter()
             .map(|(seq, envelope)| Stored { seq, envelope })
@@ -552,7 +839,7 @@ impl RelayStore for PostgresStore {
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| RelayError::Storage(e.to_string()))?;
+        .map_err(pg)?;
         Ok(rows
             .into_iter()
             .map(|(seq, envelope)| Stored { seq, envelope })
@@ -564,7 +851,7 @@ impl RelayStore for PostgresStore {
             .bind(note)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| RelayError::Storage(e.to_string()))?;
+            .map_err(pg)?;
         Ok(row.map_or(0, |r| r.0))
     }
 
@@ -799,6 +1086,115 @@ impl RelayStore for PostgresStore {
             .map_err(pg)?;
         Ok(())
     }
+}
+
+type TopicRow = (
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    i64,
+);
+
+/// A topic's row, locked for the rest of the transaction.
+async fn lock_topic(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note: &str,
+) -> Result<Option<Topic>> {
+    read_topic(tx, note, true).await
+}
+
+async fn read_topic(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note: &str,
+    lock: bool,
+) -> Result<Option<Topic>> {
+    let sql = format!(
+        "SELECT seq, live_envelopes, live_bytes, loose_envelopes, loose_bytes, owner, \
+         current_revision, current_digest, current_compaction, registered, covers \
+         FROM note_head WHERE note_id = $1{}",
+        if lock { " FOR UPDATE" } else { "" }
+    );
+    let row: Option<TopicRow> = sqlx::query_as(&sql)
+        .bind(note)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(pg)?;
+    let Some((
+        head,
+        live,
+        live_bytes,
+        loose,
+        loose_bytes,
+        owner,
+        revision,
+        digest,
+        compaction,
+        registered,
+        covers,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let current = match (revision, digest, compaction) {
+        (Some(revision), Some(digest), Some(compaction)) => Some(quota::Current {
+            revision: revision as u64,
+            digest: key32(digest)?,
+            compaction: key32(compaction)?,
+        }),
+        _ => None,
+    };
+    Ok(Some(Topic {
+        head,
+        live_envelopes: live as u64,
+        live_bytes: live_bytes as u64,
+        loose_envelopes: loose as u64,
+        loose_bytes: loose_bytes as u64,
+        owner: owner.map(key32).transpose()?,
+        current,
+        registered: registered.map(key32).transpose()?,
+        covers,
+    }))
+}
+
+async fn save_topic(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note: &str,
+    topic: &Topic,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE note_head SET seq = $2, live_envelopes = $3, live_bytes = $4, \
+         loose_envelopes = $5, loose_bytes = $6, owner = $7, current_revision = $8, \
+         current_digest = $9, current_compaction = $10, registered = $11, covers = $12 \
+         WHERE note_id = $1",
+    )
+    .bind(note)
+    .bind(topic.head)
+    .bind(topic.live_envelopes as i64)
+    .bind(topic.live_bytes as i64)
+    .bind(topic.loose_envelopes as i64)
+    .bind(topic.loose_bytes as i64)
+    .bind(topic.owner.map(|k| k.to_vec()))
+    .bind(topic.current.map(|c| c.revision as i64))
+    .bind(topic.current.map(|c| c.digest.to_vec()))
+    .bind(topic.current.map(|c| c.compaction.to_vec()))
+    .bind(topic.registered.map(|k| k.to_vec()))
+    .bind(topic.covers)
+    .execute(&mut **tx)
+    .await
+    .map_err(pg)?;
+    Ok(())
+}
+
+fn key32(raw: Vec<u8>) -> Result<[u8; 32]> {
+    raw.try_into()
+        .map_err(|_| RelayError::Storage("a stored key is not 32 bytes".into()))
 }
 
 fn pg(e: sqlx::Error) -> RelayError {

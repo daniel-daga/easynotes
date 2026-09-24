@@ -96,6 +96,26 @@ pub enum Incoming {
     Reset,
     /// The relay refused something. Not fatal — the connection stays up.
     Rejected(String),
+    /// The note's relay log has grown enough to compact. Said only to the
+    /// device whose append crossed the line ([ADR
+    /// 0024](../../../docs/adr/0024-relay-storage-quota.md)).
+    Crowded,
+    /// The relay would not take this device's base. Nothing is lost: the log
+    /// it would have replaced is still there.
+    CompactRefused(String),
+}
+
+/// What a person is told about a refusal the relay names with a code.
+fn said(message: String) -> String {
+    match message.as_str() {
+        "note_full" => "This note has grown too large for the relay to keep more of it. \
+                        Your changes are safe on this device."
+            .into(),
+        "relay_full" => "The relay is not accepting new notes right now. \
+                         This one is safe on this device."
+            .into(),
+        _ => message,
+    }
 }
 
 pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
@@ -140,7 +160,7 @@ pub(crate) fn parse(text: &str, last_seq: &mut i64) -> Result<Incoming> {
             *last_seq = 0;
             Incoming::Reset
         }
-        ServerMessage::Error { message } => Incoming::Rejected(message),
+        ServerMessage::Error { message } => Incoming::Rejected(said(message)),
     })
 }
 
@@ -157,9 +177,24 @@ pub(crate) fn note_url(ws_base: &str, note: crate::ids::NoteId, token: &str) -> 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum DeviceMessage<'a> {
-    Subscribe { note: &'a str, since: i64 },
-    Unsubscribe { note: &'a str },
-    Append { note: &'a str, envelope: String },
+    Subscribe {
+        note: &'a str,
+        since: i64,
+    },
+    Unsubscribe {
+        note: &'a str,
+    },
+    Append {
+        note: &'a str,
+        envelope: String,
+    },
+    Compact {
+        note: &'a str,
+        covers: i64,
+        base: String,
+        key: String,
+        signature: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -176,6 +211,13 @@ enum DeviceReply {
     },
     Reset {
         note: String,
+    },
+    Crowded {
+        note: String,
+    },
+    CompactRefused {
+        note: String,
+        reason: String,
     },
     Error {
         #[serde(default)]
@@ -221,6 +263,20 @@ pub(crate) fn append_note(note: crate::ids::NoteId, envelope: &[u8]) -> String {
     })
 }
 
+/// Hand the relay a base for a note — see [`crate::compaction`].
+pub(crate) fn compact_note(
+    note: crate::ids::NoteId,
+    request: &crate::compaction::Request,
+) -> String {
+    device(&DeviceMessage::Compact {
+        note: &note.encode(),
+        covers: request.covers,
+        base: URL_SAFE_NO_PAD.encode(&request.base),
+        key: URL_SAFE_NO_PAD.encode(request.key.0),
+        signature: URL_SAFE_NO_PAD.encode(request.signature),
+    })
+}
+
 /// Read one message from a device's socket.
 ///
 /// No cursor here, unlike [`parse`]: there is one per note, and the engine
@@ -246,7 +302,12 @@ pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
             Routed::Note(note(&raw)?, Incoming::Caught { seq })
         }
         DeviceReply::Reset { note: raw } => Routed::Note(note(&raw)?, Incoming::Reset),
+        DeviceReply::Crowded { note: raw } => Routed::Note(note(&raw)?, Incoming::Crowded),
+        DeviceReply::CompactRefused { note: raw, reason } => {
+            Routed::Note(note(&raw)?, Incoming::CompactRefused(reason))
+        }
         DeviceReply::Error { note: raw, message } => {
+            let message = said(message);
             match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
                 Some(note) => Routed::Note(note, Incoming::Rejected(message)),
                 None => Routed::Unrouted(message),
@@ -498,6 +559,52 @@ mod tests {
         }
         // An update for a note that cannot exist is the relay talking nonsense.
         assert!(parse_routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
+    }
+
+    #[test]
+    fn a_full_note_is_said_in_words() {
+        let note = crate::ids::NoteId::from_bytes([0u8; 16]);
+        match parse_routed(
+            r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"note_full"}"#,
+        )
+        .unwrap()
+        {
+            Routed::Note(n, Incoming::Rejected(words)) => {
+                assert_eq!(n, note);
+                assert!(words.contains("too large"), "{words}");
+            }
+            _ => panic!("expected a rejection"),
+        }
+        assert!(matches!(
+            parse_routed(r#"{"type":"crowded","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
+            Routed::Note(n, Incoming::Crowded) if n == note
+        ));
+        assert!(matches!(
+            parse_routed(r#"{"type":"compact_refused","note":"AAAAAAAAAAAAAAAAAAAAAA","reason":"stale"}"#).unwrap(),
+            Routed::Note(n, Incoming::CompactRefused(r)) if n == note && r == "stale"
+        ));
+    }
+
+    #[test]
+    fn a_compaction_says_everything_the_relay_checks() {
+        let note = crate::ids::NoteId::from_bytes([0u8; 16]);
+        let request = crate::compaction::Request::sign(
+            note,
+            &crate::crypto::NoteKey([1u8; 32]),
+            9,
+            b"hi".to_vec(),
+        );
+        let text = compact_note(note, &request);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["type"], "compact");
+        assert_eq!(value["note"], "AAAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(value["covers"], 9);
+        assert_eq!(value["base"], "aGk");
+        assert_eq!(value["key"], URL_SAFE_NO_PAD.encode(request.key.0));
+        assert_eq!(
+            value["signature"],
+            URL_SAFE_NO_PAD.encode(request.signature)
+        );
     }
 
     #[test]

@@ -49,6 +49,8 @@ async fn drain(sync: &mut NoteSync) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => return out,
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
+            // Only the device socket says these.
+            Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => return out,
         }
     }
@@ -67,6 +69,8 @@ async fn take(sync: &mut NoteSync, n: usize) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => {}
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
+            // Only the device socket says these.
+            Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
         }
     }

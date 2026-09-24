@@ -28,7 +28,7 @@ use easynotes_core::ids::NoteId;
 use easynotes_core::note::{NoteCore, NoteKind, NoteSummary};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
 use easynotes_core::sync::{RelayEndpoint, SyncEngine, SyncHandle, SyncState};
-use easynotes_relay::{MemoryStore as RelayLog, Relay};
+use easynotes_relay::{Limits, MemoryStore as RelayLog, Relay, RelayConfig, RelayStore};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -277,4 +277,88 @@ async fn a_note_made_on_the_second_device_reaches_the_first() {
 
     a.wait_until("the note B made", || a.texts(made_on_b) == ["drill bits"])
         .await;
+}
+
+/// ADR 0024 for the account document, whose log is the one that grows with
+/// every colour change. The device that writes compacts it with a key its
+/// phrase derives, and a device adopted afterwards gets the placements from
+/// the base.
+#[tokio::test]
+async fn the_account_document_compacts_on_the_relay_too() {
+    let log = RelayLog::new();
+    let relay = Relay::serve_with(
+        Arc::new(log.clone()),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            storage: Limits {
+                crowded_envelopes: 8,
+                ..Limits::default()
+            },
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+
+    let a = Device::new("A", &endpoint);
+    let phrase = a.create_account();
+    let note = a.create_note();
+    a.add_item(note, "milk");
+    a.wait_until_synced().await;
+    let account = a.core.lock().unwrap().account_id().unwrap().encode();
+
+    let colours = [Colour::Red, Colour::Teal, Colour::Yellow];
+    let mut i = 0;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while log.topic(&account).await.unwrap().covers == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the account was never compacted: {:?}",
+            log.topic(&account).await.unwrap()
+        );
+        let head = log.head(&account).await.unwrap();
+        a.core
+            .lock()
+            .unwrap()
+            .set_colour(note, Some(colours[i % 3]))
+            .unwrap();
+        i += 1;
+        // Until the relay has it. Waiting for "synced" alone would not do:
+        // the status says so before the engine has even been handed the edit.
+        while log.head(&account).await.unwrap() == head {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a colour never reached the relay"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        a.wait_until_synced().await;
+    }
+    let last = colours[(i - 1) % 3];
+    assert!(log.topic(&account).await.unwrap().registered.is_some());
+
+    let b = Device::new("B", &endpoint);
+    b.adopt_account(&phrase);
+    b.wait_until("A's note in A's last colour", || {
+        // The summary first: it is what opens a note that arrived before its
+        // key, and `texts` reads only an open one.
+        let Some(summary) = b.summary(note) else {
+            return false;
+        };
+        summary.placement.colour == Some(last) && b.texts(note) == ["milk"]
+    })
+    .await;
+
+    // And A goes on writing after the base, under counters it has not used.
+    a.core
+        .lock()
+        .unwrap()
+        .set_colour(note, Some(Colour::Blue))
+        .unwrap();
+    b.wait_until("A's next colour", || {
+        b.summary(note)
+            .is_some_and(|s| s.placement.colour == Some(Colour::Blue))
+    })
+    .await;
 }

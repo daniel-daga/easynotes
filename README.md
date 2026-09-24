@@ -195,6 +195,12 @@ instance and kept across restarts so signed device tokens remain valid; the
 Synology setup documents key generation, storage and rotation. Without it, the relay uses
 a temporary process key intended only for local development.
 
+A relay stops taking *new* notes once every note together holds 16 GiB. Notes it
+already has keep working. `RELAY_STORAGE_CEILING` sets that ceiling in bytes, or
+`off` removes it. Each note's live log is capped at 32 MiB. Members keep far
+below that by compacting it when the relay asks
+([ADR 0024](docs/adr/0024-relay-storage-quota.md)).
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy
@@ -245,7 +251,7 @@ reading the whole database at open.
 | [ADR 0021](docs/adr/0021-stateless-relay-tokens.md) | Stateless relay tokens: signed expiry and shared one-use challenges |
 | [ADR 0022](docs/adr/0022-account-wide-deletion.md) | Permanent deletion across one person's devices |
 | [ADR 0023](docs/adr/0023-access-packages.md) | Share with people: account member keys and access packages |
-| [ADR 0024](docs/adr/0024-relay-storage-quota.md) | *Proposed:* a storage quota for an anonymous relay |
+| [ADR 0024](docs/adr/0024-relay-storage-quota.md) | A storage quota for an anonymous relay: members compact a note's log to a base |
 
 ## Security, in one paragraph
 

@@ -6,6 +6,7 @@
 pub mod access;
 pub mod account;
 pub mod collaborators;
+pub mod compaction;
 pub mod crdt;
 pub mod crypto;
 pub mod error;

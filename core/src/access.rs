@@ -14,13 +14,16 @@
 //! 0      1        format (01)
 //! 1      8        revision (= the envelope counter)
 //! 9      32       parent digest (zeros at revision 1)
-//! 41     32 × 80  grant slots
-//! 2601   …        body, sealed under the note key with the prefix in its AAD
+//! 41     32       compaction key for this package's note key
+//! 73     32 × 80  grant slots
+//! 2633   …        body, sealed under the note key with the prefix in its AAD
 //! ```
 //!
 //! The prefix is signed and not hidden, so any device — including one that has
 //! just been removed and holds no key that opens anything — reaches the same
-//! answer about which package is current.
+//! answer about which package is current. So does the relay, which reads the
+//! compaction key out of the current package to decide who may compact the
+//! note's log ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
 
 use crate::account::MemberIdentity;
 use crate::crypto::{random_bytes, AuthorKey, DeviceIdentity, Envelope, EnvelopeKind, NoteKey};
@@ -44,7 +47,9 @@ pub const MAX_NAME_BYTES: usize = 64;
 const FORMAT: u8 = 1;
 const SLOT_LEN: usize = 32 + 32 + 16;
 /// Bytes of the ciphertext field that are signed and not encrypted.
-pub const PREFIX_LEN: usize = 1 + 8 + 32 + MAX_MEMBERS * SLOT_LEN;
+pub const PREFIX_LEN: usize = SLOTS_AT + MAX_MEMBERS * SLOT_LEN;
+/// Where the grant slots start in the prefix.
+const SLOTS_AT: usize = 1 + 8 + 32 + 32;
 const RECORD_LEN: usize = 32 + 32 + 1 + 16 + 1 + MAX_NAME_BYTES;
 const MEMBERSHIP_LEN: usize = 32 + 16;
 const BODY_FIXED_LEN: usize =
@@ -361,6 +366,7 @@ pub fn build(
     prefix.push(FORMAT);
     prefix.extend_from_slice(&revision.to_be_bytes());
     prefix.extend_from_slice(&parent);
+    prefix.extend_from_slice(&crate::compaction::public_key(note, key).0);
     for slot in slots {
         prefix.extend_from_slice(&slot);
     }
@@ -394,6 +400,9 @@ pub struct Package {
     pub revision: u64,
     pub parent: Option<Digest>,
     pub digest: Digest,
+    /// Who may compact the note's relay log while this package is current:
+    /// the compaction key of the note key it establishes.
+    pub compaction: AuthorKey,
 }
 
 impl Package {
@@ -425,6 +434,7 @@ impl Package {
         let revision = u64::from_be_bytes(prefix[1..9].try_into().unwrap());
         let parent: Digest = prefix[9..41].try_into().unwrap();
         let parent = (parent != [0u8; 32]).then_some(parent);
+        let compaction = AuthorKey(prefix[41..SLOTS_AT].try_into().unwrap());
         if revision != envelope.counter || revision == 0 || (revision == 1) != parent.is_none() {
             return Err(CoreError::MalformedEnvelope(
                 "an access package's revision and parent disagree",
@@ -435,6 +445,7 @@ impl Package {
             revision,
             parent,
             digest: digest(bytes),
+            compaction,
             envelope,
         })
     }
@@ -446,7 +457,7 @@ impl Package {
         let prefix = self.envelope.clear(PREFIX_LEN).ok()?;
         let parent = self.parent.unwrap_or([0u8; 32]);
         let recipient = member.box_public();
-        for slot in prefix[41..].chunks_exact(SLOT_LEN) {
+        for slot in prefix[SLOTS_AT..].chunks_exact(SLOT_LEN) {
             let ephemeral: [u8; 32] = slot[..32].try_into().unwrap();
             let shared = member.agree(&ephemeral);
             let Some((cipher, aad)) = grant_parts(
@@ -811,7 +822,25 @@ mod tests {
         let a = build(&signer, note, 1, None, &key, &few).unwrap();
         let b = build(&signer, note, 1, None, &key, &many).unwrap();
         assert_eq!(a.len(), b.len());
-        assert_eq!(a.len(), 10_522);
+        assert_eq!(a.len(), 10_554);
+    }
+
+    #[test]
+    fn a_package_names_the_compaction_key_of_the_key_it_establishes() {
+        let signer = owner();
+        let note = NoteId::random();
+        let key = NoteKey::random();
+        let (_, oe) = person("O", true);
+        let body = Body {
+            list: vec![oe],
+            ..Body::default()
+        };
+        let bytes = build(&signer, note, 1, None, &key, &body).unwrap();
+        let package = Package::parse(&bytes, note, signer.public_key()).unwrap();
+        assert_eq!(
+            package.compaction,
+            crate::compaction::public_key(note, &key)
+        );
     }
 
     #[test]

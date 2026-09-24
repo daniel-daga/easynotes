@@ -13,7 +13,7 @@ use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
 use easynotes_core::sync::{Pacing, RelayEndpoint, SyncEngine, SyncHandle, SyncState};
-use easynotes_relay::{MemoryStore as RelayLog, Relay, RelayStore};
+use easynotes_relay::{Limits, MemoryStore as RelayLog, Relay, RelayConfig, RelayStore};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -836,4 +836,111 @@ async fn typing_held_when_the_app_is_killed_goes_on_the_next_launch() {
     let mut b = App::guest("B", &a.share_blob());
     b.connect(&endpoint);
     b.wait_for_items(&["milk"]).await;
+}
+
+/// A relay that asks for a compaction after `envelopes` compactable envelopes
+/// rather than ADR 0024's 1 024, so that a test can see one happen.
+async fn crowded_relay(envelopes: u64) -> (Relay, RelayLog, RelayEndpoint) {
+    let log = RelayLog::new();
+    let relay = Relay::serve_with(
+        Arc::new(log.clone()),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            storage: Limits {
+                crowded_envelopes: envelopes,
+                ..Limits::default()
+            },
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    (relay, log, endpoint)
+}
+
+async fn wait_for_compaction(log: &RelayLog, note: NoteId) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while tokio::time::Instant::now() < deadline {
+        if log.topic(&note.encode()).await.unwrap().covers > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the relay's log was never compacted");
+}
+
+/// ADR 0024 end to end: the relay asks the device that is writing, the device
+/// hands it a base, and the relay drops what the base covers. A device that
+/// was away the whole time, and one that has never seen the note, both arrive
+/// at the same list from what is left.
+#[tokio::test]
+async fn a_crowded_note_is_compacted_and_every_device_still_converges() {
+    let (_relay, log, endpoint) = crowded_relay(8).await;
+
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    a.add_item("item 0");
+    a.wait_until_synced().await;
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["item 0"]).await;
+    b.disconnect();
+
+    let mut expected = vec!["item 0".to_string()];
+    for i in 1..30 {
+        let item = format!("item {i}");
+        a.add_item(&item);
+        expected.push(item);
+        a.wait_until_synced().await;
+    }
+    wait_for_compaction(&log, a.note).await;
+    let topic = log.topic(&a.note.encode()).await.unwrap();
+    assert!(
+        topic.live_envelopes < 20,
+        "thirty edits should not all still be on the relay: {topic:?}"
+    );
+    assert!(
+        topic.registered.is_some(),
+        "the first compaction registers its key"
+    );
+
+    let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+    // B's cursor is from before the base.
+    b.connect(&endpoint);
+    b.wait_for_items(&expected).await;
+    b.wait_until_synced().await;
+
+    let mut c = App::guest("C", &a.share_blob());
+    c.connect(&endpoint);
+    c.wait_for_items(&expected).await;
+
+    // And the note goes on: an edit after the base reaches everyone.
+    c.add_item("after");
+    let mut more = expected.clone();
+    more.push("after");
+    a.wait_for_items(&more).await;
+    b.wait_for_items(&more).await;
+}
+
+/// The device that compacted does not send its base again on a relaunch, and
+/// does not count it as pending: the relay's echo acknowledged it.
+#[tokio::test]
+async fn a_base_is_acknowledged_like_an_edit() {
+    let (_relay, log, endpoint) = crowded_relay(4).await;
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    for i in 0..8 {
+        a.add_item(&format!("item {i}"));
+        a.wait_until_synced().await;
+    }
+    wait_for_compaction(&log, a.note).await;
+    a.wait_until_synced().await;
+    let head = log.head(&a.note.encode()).await.unwrap();
+
+    a.relaunch();
+    a.connect(&endpoint);
+    a.wait_until_synced().await;
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), head);
 }

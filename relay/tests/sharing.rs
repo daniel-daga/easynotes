@@ -16,8 +16,8 @@ use easynotes_core::invite::InviteSecret;
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
 use easynotes_core::sync::invite::{self, Answer};
-use easynotes_core::sync::{RelayEndpoint, SyncEngine, SyncHandle};
-use easynotes_relay::{MemoryStore as RelayLog, Relay};
+use easynotes_core::sync::{DeviceSync, Incoming, RelayEndpoint, Routed, SyncEngine, SyncHandle};
+use easynotes_relay::{Limits, MemoryStore as RelayLog, Relay, RelayConfig, RelayStore};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -365,4 +365,126 @@ async fn the_relay_learns_no_person_from_sharing() {
         adds[0], adds[1],
         "a package's size says how many people share"
     );
+}
+
+/// ADR 0024 on a shared note. A guest compacts, because any member may. The
+/// person removed still holds the old key, and the relay no longer takes a
+/// compaction signed with it. And somebody let in after all of that gets the
+/// note, because a compaction never drops the owner's packages, which are
+/// how a newcomer learns the key.
+#[tokio::test]
+async fn a_member_compacts_a_shared_note_and_the_removed_one_cannot() {
+    let log = RelayLog::new();
+    let relay = Relay::serve_with(
+        Arc::new(log.clone()),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            storage: Limits {
+                crowded_envelopes: 8,
+                ..Limits::default()
+            },
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    let owner = Phone::new("Olga", &endpoint);
+    let anna = Phone::new("Anna", &endpoint);
+    let ben = Phone::new("Ben", &endpoint);
+    let note = owner.create_note("Groceries");
+    let_in(&owner, &anna, note).await;
+    let_in(&owner, &ben, note).await;
+    ben.wait_until("the title", || {
+        ben.title(note).as_deref() == Some("Groceries")
+    })
+    .await;
+
+    // What Anna could keep from before she was removed.
+    let blob = owner.core.lock().unwrap().export_share_blob(note).unwrap();
+    let (_, old_key) = easynotes_core::crypto::import_share_blob(&blob).unwrap();
+
+    let anna_member = anna.core.lock().unwrap().member().unwrap().id().encode();
+    {
+        let mut core = owner.core.lock().unwrap();
+        let people = core.people(note).unwrap();
+        let row = people
+            .people
+            .iter()
+            .find(|p| p.member == anna_member)
+            .unwrap();
+        let (member, invite) = (row.member.clone(), row.invite.clone());
+        core.remove_person(note, &member, &invite).unwrap();
+    }
+    owner.settle(note);
+    owner
+        .wait_until("the removal made", || {
+            !owner.core.lock().unwrap().holds_back(note).unwrap()
+        })
+        .await;
+    ben.wait_until("the new key", || ben.title(note).is_some())
+        .await;
+
+    // Ben writes until the relay asks somebody to compact, and somebody does.
+    let topic = note.encode();
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let mut last = String::new();
+    let mut i = 0;
+    while log.topic(&topic).await.unwrap().covers == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nobody compacted: {:?}",
+            log.topic(&topic).await.unwrap()
+        );
+        i += 1;
+        last = format!("Groceries {i}");
+        ben.set_title(note, &last);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let state = log.topic(&topic).await.unwrap();
+    let blob = ben.core.lock().unwrap().export_share_blob(note).unwrap();
+    let (_, bens_key) = easynotes_core::crypto::import_share_blob(&blob).unwrap();
+    assert_ne!(bens_key.0, old_key.0, "removing Anna changed the key");
+    assert_eq!(
+        state.authority(),
+        Some(easynotes_core::compaction::public_key(note, &bens_key).0),
+        "the current package names the key Ben holds"
+    );
+
+    // Anna, or anyone with her old key, is refused.
+    let stranger = easynotes_core::crypto::DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&endpoint.http_base, &stranger)
+        .await
+        .unwrap();
+    let mut sync = DeviceSync::connect(&endpoint.ws_base, &token)
+        .await
+        .unwrap();
+    sync.subscribe(note, 0).await.unwrap();
+    let head = log.head(&topic).await.unwrap();
+    let base = easynotes_core::crypto::Envelope::seal(&stranger, note, &old_key, 1, b"nothing")
+        .unwrap()
+        .encode();
+    let request = easynotes_core::compaction::Request::sign(note, &old_key, head, base);
+    sync.compact(note, &request).await.unwrap();
+    let refused = tokio::time::timeout(PATIENCE, async {
+        loop {
+            match sync.next().await.unwrap() {
+                Some(Routed::Note(_, Incoming::CompactRefused(reason))) => return reason,
+                Some(_) => {}
+                None => panic!("the relay hung up"),
+            }
+        }
+    })
+    .await
+    .expect("no answer to the compaction");
+    assert_eq!(refused, "not this note's compaction key");
+    assert_eq!(log.topic(&topic).await.unwrap().covers, state.covers);
+
+    // Somebody new, after the compaction.
+    let carl = Phone::new("Carl", &endpoint);
+    let_in(&owner, &carl, note).await;
+    carl.wait_until("Ben's last title", || {
+        carl.title(note).as_deref() == Some(last.as_str())
+    })
+    .await;
 }

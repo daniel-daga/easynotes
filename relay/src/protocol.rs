@@ -85,6 +85,13 @@ pub enum ServerMessage {
 // because the path no longer says which note a message is about. A note can be
 // subscribed at any point in the socket's life, not only first.
 
+/// What an append is refused with when the note's live log is at its cap.
+pub const NOTE_FULL: &str = "note_full";
+
+/// What an append that would start a new note is refused with when the relay
+/// is at its ceiling.
+pub const RELAY_FULL: &str = "relay_full";
+
 /// How many notes one socket may be subscribed to at once. A device's notes,
 /// not an enumeration of the relay.
 pub const MAX_SUBSCRIPTIONS: usize = 4096;
@@ -105,6 +112,19 @@ pub enum SyncClientMessage {
     Unsubscribe { note: String },
     /// An envelope to append to a note this socket is subscribed to.
     Append { note: String, envelope: String },
+    /// Compact a subscribed note to a base: see [`crate::quota`] and
+    /// [ADR 0024](../../docs/adr/0024-relay-storage-quota.md). All base64url.
+    Compact {
+        note: String,
+        /// Everything at or below this sequence number is in the base.
+        covers: i64,
+        /// The base: an ordinary sealed update holding the whole document.
+        base: String,
+        /// The note's compaction key, 32 bytes.
+        key: String,
+        /// Its signature over `easynotes_core::compaction::transcript`, 64 bytes.
+        signature: String,
+    },
 }
 
 /// Server to client, over `/v1/sync`.
@@ -122,6 +142,13 @@ pub enum SyncServerMessage {
     /// This note's cursor is beyond the relay's current log. The client must
     /// reset its local cursor and resubscribe from the beginning.
     Reset { note: String },
+    /// This note's log has grown enough to be worth compacting. Said to the
+    /// device whose append crossed the line, and to nobody else, so that one
+    /// member does it rather than all of them at once.
+    Crowded { note: String },
+    /// A compaction was refused. The device that asked stops asking until it
+    /// reconnects, rather than sending a snapshot with every edit.
+    CompactRefused { note: String, reason: String },
     /// Something was refused. `note` is absent when the message it answers
     /// could not be read far enough to say which note it was about.
     Error {
