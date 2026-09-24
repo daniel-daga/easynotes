@@ -30,9 +30,7 @@ use tokio::sync::watch;
 /// checklist. Lines outside that form retain the existing plain-text behavior.
 fn parse_task_line(line: &str) -> (String, bool) {
     let bytes = line.as_bytes();
-    if bytes.len() >= 4
-        && matches!(bytes[0], b'-' | b'*' | b'+')
-        && bytes[1].is_ascii_whitespace()
+    if bytes.len() >= 4 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1].is_ascii_whitespace()
     {
         let mut marker = 1;
         while marker < bytes.len() && bytes[marker].is_ascii_whitespace() {
@@ -528,6 +526,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // every device after its first launch on this build — writes nothing
         // here.
         core.adopt_legacy_tags()?;
+        core.reconcile_deleted_notes()?;
         // What the account document knows about note keys, the keyring may not
         // yet: a device adopted from a phrase learns its keys by syncing this
         // document, and the sync happened during the *last* run. Cheap on every
@@ -640,6 +639,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// relay, because every device in the world would be sharing that topic.
     pub fn account_id(&self) -> Option<NoteId> {
         (self.account_id != ACCOUNT_DOC).then_some(self.account_id)
+    }
+
+    /// Whether this account permanently deleted a note.
+    pub fn is_deleted_note(&self, note: NoteId) -> bool {
+        account::is_deleted(self.account.doc.entries(), note)
     }
 
     pub fn has_account(&self) -> bool {
@@ -818,6 +822,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// verified rotation snapshot is available. Equal-generation replacement is
     /// owner-only and follows the merged account register, never envelope order.
     pub fn adopt_note_keys(&mut self) -> Result<usize> {
+        self.reconcile_deleted_notes()?;
         let mut taken = 0;
         let mut rotated = Vec::new();
         let access = account::note_access_of(self.account.doc.entries());
@@ -924,6 +929,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 self.account.next_counter = self.account.next_counter.max(env.counter + 1);
             }
             self.placements = self.account.doc.view();
+            self.reconcile_deleted_notes()?;
             self.adopt_unplaced()?;
             self.refresh_library();
             self.account.pending_remote.remove(&identity);
@@ -944,6 +950,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // key this device would then keep for ever; see
         // [`NoteCore::adopt_note_keys`] for the case that breaks. The caller
         // runs it when the batch has settled.
+        self.reconcile_deleted_notes()?;
         self.adopt_unplaced()?;
         self.refresh_library();
         self.account.pending_remote.remove(&identity);
@@ -1043,6 +1050,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // Not a note, whatever the caller was handed. Opening it as one would
             // replay this person's placements into an empty checklist and put a
             // blank card in their grid.
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
+        if account::is_deleted(self.account.doc.entries(), id) {
             return Err(CoreError::UnknownNote(id.encode()));
         }
         if let Some(note) = self.open.get(&id) {
@@ -1189,6 +1199,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     fn note(&self, id: NoteId) -> Result<&OpenNote<D>> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
         self.open
             .get(&id)
             .ok_or_else(|| CoreError::UnknownNote(id.encode()))
@@ -1330,6 +1343,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// and searched without its document ever being replayed — so the first
     /// thing that needs the document has to say so.
     fn ensure_open(&mut self, id: NoteId) -> Result<()> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
         if self.open.contains_key(&id) {
             return Ok(());
         }
@@ -1777,32 +1793,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // confirmation. [ADR 0010](../../docs/adr/0010-forgetting-a-note.md) records
     // what it does, in what order, and what it cannot do.
 
-    /// Forget a note for good: its log, its snapshot, its sealed index entry,
-    /// its key, and this person's placement of it.
-    ///
-    /// **The order is the whole of the crash story**, and it is store, then key,
-    /// then placement:
-    ///
-    /// * The store goes first because that is where the note *is* — the log, the
-    ///   snapshot, and the index entry that holds its whole text. Each store does
-    ///   that much atomically ([`OpStore::forget`]), so there is no moment at
-    ///   which some of those three are gone and the rest are readable.
-    /// * The key goes second, and cannot go in the same transaction because it is
-    ///   not in the same database. A crash in between leaves 32 bytes that open
-    ///   nothing that exists, which is the harmless way round; the other order
-    ///   would leave the note's ciphertext with no way to read it — indistinguishable
-    ///   from a note whose key never arrived, and so something the next launch
-    ///   would keep rather than finish deleting.
-    /// * The placement goes last, because a note with no placement keys reads
-    ///   back as a note *in the grid* ([`AccountEdit::ForgetNote`]). Clearing it
-    ///   before the note was gone would put the note the person just deleted back
-    ///   on the shelf they deleted it from.
-    ///
-    /// **What it does not do** is reach anything that is not this device. A note
-    /// that has been shared is on the relay and on every guest's device, sealed
-    /// under a key they hold; forgetting it here removes this device's copy and
-    /// nothing else, and there is no message that would remove theirs. That is
-    /// revocation, it needs key rotation, and it is Slice 3's.
+    /// Permanently delete a note from this person's account. The encrypted
+    /// account marker is appended first and acts as the recovery record if local
+    /// cleanup fails. Other devices enforce it when they sync. A collaborator's
+    /// separate account and already-decrypted copies are unaffected.
     ///
     /// Forgetting a note this device does not have is not an error, for the same
     /// reason [`OpStore::forget`] says so: it is what finishing an interrupted
@@ -1814,26 +1808,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // can have been handed by the note list.
             return Err(CoreError::UnknownNote(id.encode()));
         }
-        // In memory first, so that nothing between here and the end of this
-        // function can write back what is about to be removed: a reindex of a
-        // still-open document would put the note's text in a fresh metadata row
-        // after the store had forgotten the old one.
-        self.open.remove(&id);
-        self.index.remove(&id);
-        self.store.forget(id)?;
-        self.keyring.forget_note_key(id)?;
-        // An invite to a note this device no longer has could never be
-        // approved: there is no key left to seal into the grant. The relay's
-        // copy expires on its own.
-        let invites = self.invites()?;
-        if invites.iter().any(|i| i.note == id) {
-            let kept: Vec<_> = invites.into_iter().filter(|i| i.note != id).collect();
-            self.put_invites(&kept)?;
-        }
-        // The labels have to be read before anything else is removed, because
-        // they are the one part of a placement that cannot be named without
-        // looking ([`AccountEdit::ForgetNote`]). Both shapes, because a device
-        // can be forgetting a note on the same launch that migrates it.
+        // Record the account-wide deletion first. It is the recovery record if
+        // local storage cleanup fails or the process stops halfway through.
         let placement = self.placement(id);
         let tags = placement.tags.into_iter().collect();
         let legacy_tags = placement.legacy_tags.into_iter().collect();
@@ -1843,16 +1819,55 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .into_iter()
             .map(|reminder| reminder.id)
             .collect();
-        self.apply_account(AccountEdit::ForgetNote {
+        self.apply_account(AccountEdit::DeleteNote {
             note: id,
             tags,
             legacy_tags,
             reminders,
         })?;
-        // `apply_account` refreshes the list, but only when it had something to
-        // write: a note nobody ever coloured, pinned or ordered produces an empty
-        // update and returns early. The card still has to go.
+        self.purge_note_local(id)?;
+        Ok(())
+    }
+
+    /// Remove a device-local copy without recording an account deletion.
+    /// Revocation uses this when a collaborator receives a newer owner key.
+    pub fn purge_note_local(&mut self, id: NoteId) -> Result<()> {
+        if self.is_account(id) {
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
+        let has_local_state = self.open.contains_key(&id)
+            || self.index.contains_key(&id)
+            || self.store.notes()?.contains(&id)
+            || self.keyring.note_key(id)?.is_some();
+        if has_local_state {
+            self.open.remove(&id);
+            self.index.remove(&id);
+            self.store.forget(id)?;
+            self.keyring.forget_note_key(id)?;
+        }
+        let invites = self.invites()?;
+        if invites.iter().any(|invite| invite.note == id) {
+            let kept: Vec<_> = invites
+                .into_iter()
+                .filter(|invite| invite.note != id)
+                .collect();
+            self.put_invites(&kept)?;
+        }
         self.refresh_library();
+        Ok(())
+    }
+
+    /// Enforce all account deletion markers locally. Safe to repeat after a
+    /// crash; the account marker remains until every device has had a chance to
+    /// observe it.
+    fn reconcile_deleted_notes(&mut self) -> Result<()> {
+        let entries = self.account.doc.entries();
+        let deleted = account::deleted_notes_of(entries.clone());
+        for id in deleted {
+            let cleanup = account::deletion_edit(entries.clone(), id);
+            self.apply_account(cleanup)?;
+            self.purge_note_local(id)?;
+        }
         Ok(())
     }
 
@@ -1869,10 +1884,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// searched, and what is left of it is ciphertext.
     pub fn trashed_notes(&mut self) -> Result<Vec<NoteId>> {
         Ok(self
-            .notes()?
-            .into_iter()
-            .filter(|note| note.placement.trashed)
-            .map(|note| note.id)
+            .placements
+            .placements
+            .iter()
+            .filter(|(id, placement)| {
+                placement.trashed && !account::is_deleted(self.account.doc.entries(), **id)
+            })
+            .map(|(id, _)| *id)
             .collect())
     }
 
@@ -1968,6 +1986,26 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)): the relay hearing about
     /// it is a separate thing from it being safe.
     fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
+        let target = match &edit {
+            AccountEdit::SetColour { note, .. }
+            | AccountEdit::SetPinned { note, .. }
+            | AccountEdit::SetArchived { note, .. }
+            | AccountEdit::SetTrashed { note, .. }
+            | AccountEdit::SetOrder { note, .. }
+            | AccountEdit::SetTag { note, .. }
+            | AccountEdit::DropLegacyTag { note, .. }
+            | AccountEdit::SetNoteKey { note, .. }
+            | AccountEdit::ForgetNote { note, .. } => Some(*note),
+            AccountEdit::SetReminder { reminder } => Some(reminder.note),
+            AccountEdit::DeleteNote { .. }
+            | AccountEdit::SetLabelName { .. }
+            | AccountEdit::ForgetLabel { .. }
+            | AccountEdit::ForgetReminder { .. }
+            | AccountEdit::SetSetting { .. } => None,
+        };
+        if let Some(note) = target.filter(|note| self.is_deleted_note(*note)) {
+            return Err(CoreError::UnknownNote(note.encode()));
+        }
         let update = self.account.doc.apply_local(&edit)?;
         self.seal_account_update(update)
     }
@@ -2174,6 +2212,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Unknown, tampered, replayed and misrouted envelopes are all rejected here,
     /// before the CRDT sees anything.
     pub fn apply_remote(&mut self, id: NoteId, envelope: &[u8]) -> Result<NoteView> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            self.purge_note_local(id)?;
+            return Err(CoreError::UnknownNote(id.encode()));
+        }
         let env = Envelope::decode(envelope)?;
         if env.note_id != id {
             return Err(CoreError::WrongNote {
@@ -2263,7 +2305,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 }
             } else if env.counter > current_generation {
                 // A guest accepts only a strictly newer creator-signed rotation.
-                self.forget_note(id)?;
+                self.purge_note_local(id)?;
             }
             return Ok(old);
         }
@@ -2735,6 +2777,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 "the account document is not a note",
             ));
         }
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Err(CoreError::MalformedShareBlob(
+                "this note was permanently deleted",
+            ));
+        }
         if self.open.contains_key(&id) {
             return Ok(id);
         }
@@ -3027,7 +3074,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .chain(placed)
             .chain(pending_owner_rotations)
         {
-            if self.is_account(id) || !seen.insert(id) {
+            if self.is_account(id)
+                || account::is_deleted(self.account.doc.entries(), id)
+                || !seen.insert(id)
+            {
                 continue;
             }
             let key_missing = self.keyring.note_key(id)?.is_none();
@@ -3043,6 +3093,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     pub fn sync_cursor(&self, id: NoteId) -> Result<SyncCursor> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Ok(SyncCursor::default());
+        }
         match self.store.get_meta(id, SYNC_CURSOR)? {
             Some(raw) => serde_json::from_slice(&raw)
                 .map_err(|e| CoreError::Storage(format!("unreadable sync cursor: {e}"))),
@@ -3051,6 +3104,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     pub fn set_sync_cursor(&mut self, id: NoteId, cursor: SyncCursor) -> Result<()> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Ok(());
+        }
         let raw = serde_json::to_vec(&cursor)
             .map_err(|e| CoreError::Storage(format!("unwritable sync cursor: {e}")))?;
         self.store.put_meta(id, SYNC_CURSOR, &raw)
@@ -3062,6 +3118,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// holds every edit this device made, so an app that is killed between an
     /// offline edit and the next connection has lost nothing.
     pub fn unsent(&self, id: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
+        if account::is_deleted(self.account.doc.entries(), id) {
+            return Ok(Vec::new());
+        }
         let me = self.identity.public_key();
         let mut out = Vec::new();
         for raw in self.store.load(id)? {

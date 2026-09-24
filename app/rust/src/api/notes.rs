@@ -683,6 +683,14 @@ impl easynotes_core::crypto::DeviceSigner for Peer {
 }
 
 impl easynotes_core::sync::SyncPeer for Peer {
+    fn account_topic(&self) -> easynotes_core::error::Result<Option<NoteId>> {
+        Ok(self.open()?.account_id())
+    }
+
+    fn is_deleted(&self, note: NoteId) -> easynotes_core::error::Result<bool> {
+        Ok(self.open()?.is_deleted_note(note))
+    }
+
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> easynotes_core::error::Result<()> {
         let mut core = self.open()?;
         // One of these connections is not a note. The account document reaches
@@ -726,19 +734,17 @@ impl easynotes_core::sync::SyncPeer for Peer {
     /// card — so nothing else on this device would ever notice it, and its
     /// contents arrive only over a connection it does not yet have.
     fn settled(&self, note: NoteId) -> easynotes_core::error::Result<()> {
-        let adopted = {
+        {
             let mut core = self.open()?;
             if core.account_id() != Some(note) {
                 return Ok(());
             }
-            core.adopt_note_keys()?
-        };
-        if adopted > 0 {
-            if let Some(device) = self.device.upgrade() {
-                device
-                    .connect_new_documents()
-                    .map_err(easynotes_core::error::CoreError::Storage)?;
-            }
+            core.adopt_note_keys()?;
+        }
+        if let Some(device) = self.device.upgrade() {
+            device
+                .connect_new_documents()
+                .map_err(easynotes_core::error::CoreError::Storage)?;
         }
         Ok(())
     }
@@ -851,6 +857,26 @@ impl Shared {
             wanted.extend(core.account_id());
             wanted
         };
+        let allowed: std::collections::HashSet<_> = wanted.iter().copied().collect();
+        let retired = {
+            let mut connections = self
+                .connections
+                .lock()
+                .map_err(|_| "sync lock poisoned".to_string())?;
+            let retired: Vec<_> = connections
+                .keys()
+                .copied()
+                .filter(|id| !allowed.contains(id))
+                .collect();
+            retired
+                .into_iter()
+                .filter_map(|id| connections.remove(&id).map(|connection| (id, connection)))
+                .collect::<Vec<_>>()
+        };
+        for (id, connection) in retired {
+            connection.shutdown();
+            self.statuses.forget(id);
+        }
         {
             let open = self
                 .connections
@@ -1792,13 +1818,11 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
-    /// Forget a note for good: its log, its snapshot, its index entry, its key
-    /// and this person's placement of it.
+    /// Permanently delete a note from this person's account and synced devices.
     ///
     /// There is no undo, which is why the UI offers it only from the trash and
-    /// only behind a confirmation. It removes **this device's copy**: a note that
-    /// has been shared is on the relay and on every guest's device under a key
-    /// they hold, and nothing here reaches either. See
+    /// only behind a confirmation. Other devices purge their copies when they
+    /// sync. A collaborator's separate account and relay history remain. See
     /// `docs/adr/0010-forgetting-a-note.md`.
     pub fn forget_note(&self, id: String) -> Result<(), String> {
         let id = note_id(&id)?;

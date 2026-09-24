@@ -295,13 +295,8 @@ fn an_arriving_key_never_replaces_one_this_device_holds<D: NoteDoc>() {
 /// would remove the note here and hand it back there, which is the opposite of
 /// what the gesture promises.
 ///
-/// What this does **not** do, and is worth being exact about: a device that had
-/// already taken the key into its keyring keeps it. Nothing in this project
-/// propagates a delete between devices yet — `forget_note` is local, and the
-/// account document carries placements and keys rather than operations. That is
-/// a feature of its own and not part of item 2; the register going away is the
-/// half that is buildable here, and it is the half that governs every device
-/// set up from now on.
+/// A marker removes the key from devices that already adopted it, not only from
+/// devices set up after deletion.
 fn forgetting_a_note_takes_its_key_out_of_the_account<D: NoteDoc>() {
     let mut phone = in_memory::<D>();
     let phrase = phone.create_account().unwrap();
@@ -309,8 +304,7 @@ fn forgetting_a_note_takes_its_key_out_of_the_account<D: NoteDoc>() {
     phone.set_trashed(note, true).unwrap();
     phone.forget_note(note).unwrap();
 
-    // A device adopted after the fact: the whole log replays into it, the
-    // `SetNoteKey` and the deletion that followed included.
+    // A device adopted after the fact sees the marker before key adoption.
     let mut laptop = in_memory::<D>();
     laptop.adopt_account(&phrase).unwrap();
     deliver_account(&phone, &mut laptop);
@@ -323,16 +317,12 @@ fn forgetting_a_note_takes_its_key_out_of_the_account<D: NoteDoc>() {
         laptop.keyring().note_key(note).unwrap().is_none(),
         "so a device that only ever saw the finished document never had it"
     );
-    // Including across the replay: the `SetNoteKey` envelope is still in the log
-    // the laptop just applied. Taking keys once the batch settles rather than
-    // per envelope is what makes that not matter.
+    // The historical key envelope is still in the replay, but the marker takes
+    // precedence over it.
 }
 
-/// The other half of the paragraph above, held as a test so that nobody has to
-/// take the comment's word for it: a device that took the key *before* the
-/// forget still has it. This is the gap, named, so that the day somebody builds
-/// delete propagation this test is the thing that tells them it changed.
-fn a_device_that_already_had_the_key_keeps_it_after_a_forget<D: NoteDoc>() {
+/// A device that adopted a key before deletion purges it when the marker arrives.
+fn a_device_that_already_had_the_key_purges_it_after_account_deletion<D: NoteDoc>() {
     let mut phone = in_memory::<D>();
     let phrase = phone.create_account().unwrap();
     let note = phone.create_note(NoteKind::Checklist).unwrap();
@@ -347,8 +337,8 @@ fn a_device_that_already_had_the_key_keeps_it_after_a_forget<D: NoteDoc>() {
     deliver_account(&phone, &mut laptop);
 
     assert!(
-        laptop.keyring().note_key(note).unwrap().is_some(),
-        "not propagated — see forgetting_a_note_takes_its_key_out_of_the_account"
+        laptop.keyring().note_key(note).unwrap().is_none(),
+        "the account deletion marker removes previously adopted keys too"
     );
 }
 
@@ -618,8 +608,8 @@ macro_rules! backend_suite {
                 super::forgetting_a_note_takes_its_key_out_of_the_account::<$backend>()
             }
             #[test]
-            fn a_device_that_already_had_the_key_keeps_it_after_a_forget() {
-                super::a_device_that_already_had_the_key_keeps_it_after_a_forget::<$backend>()
+            fn a_device_that_already_had_the_key_purges_it_after_account_deletion() {
+                super::a_device_that_already_had_the_key_purges_it_after_account_deletion::<$backend>()
             }
             #[test]
             fn the_reserved_id_is_still_refused_on_a_device_with_an_account() {

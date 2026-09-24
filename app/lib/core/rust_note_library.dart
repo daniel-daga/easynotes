@@ -350,10 +350,19 @@ class RustNoteLibrary implements NoteLibrary {
       _library.setTrashed(id: noteId, trashed: trashed);
 
   @override
-  Future<void> forgetNote(String noteId) => _library.forgetNote(id: noteId);
+  Future<void> forgetNote(String noteId) async {
+    await _library.forgetNote(id: noteId);
+    await flush();
+    if (_storageError != null) throw StateError(_storageError!);
+  }
 
   @override
-  Future<int> emptyTrash() => _library.emptyTrash();
+  Future<int> emptyTrash() async {
+    final count = await _library.emptyTrash();
+    await flush();
+    if (_storageError != null) throw StateError(_storageError!);
+    return count;
+  }
 
   /// Read straight through to Rust, like [notes]: the account document is the
   /// only copy of this, and a cached one would be stale the moment another

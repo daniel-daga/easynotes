@@ -55,9 +55,10 @@ that means gone: the log, the snapshot, the search entry that held its text, the
 key that opened it and this person's placement of it. [ADR
 0010](docs/adr/0010-forgetting-a-note.md) says in what order, and why a `DELETE`
 alone was not enough — it leaves the bytes in the file, which a test now reads
-the file to check. What it cannot do is reach the relay's copy or a guest's: the
-dialog that deletes a list says so, because that is the promise the button would
-otherwise be making.
+the file to check. The deletion marker syncs through this person's encrypted
+account document, so their other devices purge their copies when they sync. It
+cannot erase relay history, backups or a guest's copy; the confirmation says
+that clearly.
 
 A browser is a device like any other now: it keeps its notes and it syncs them,
 over the WebSocket the tab lends it rather than a TCP socket it cannot open. The
@@ -221,6 +222,7 @@ reading the whole database at open.
 | [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
 | [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
 | [ADR 0021](docs/adr/0021-stateless-relay-tokens.md) | Stateless relay tokens: signed expiry and shared one-use challenges |
+| [ADR 0022](docs/adr/0022-account-wide-deletion.md) | Permanent deletion across one person's devices |
 
 ## Security, in one paragraph
 
@@ -256,8 +258,9 @@ bytes of both databases; in a browser it is one range delete over the rows a
 note has, and what a browser does with the freed space is the browser's, which
 [ADR 0011](docs/adr/0011-the-web-store.md) says along with the rest of what the
 web is weaker at —  the master key there is obfuscation over `localStorage` and
-is not claimed to be more; it is this device's copy and no other, and a note that
-was shared remains readable to someone who already copied or decrypted it, but
+is not claimed to be more; account devices purge their copies when the deletion
+marker syncs, and a note shared with someone else remains readable to them if
+they already copied or decrypted it, but
 future access can be revoked by rotating the note key and replacing the history
 with an owner-authorized snapshot. The sync engine that moves those envelopes
 holds no keys and cannot read one: it hands every arrival to the core, which

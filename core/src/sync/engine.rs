@@ -84,6 +84,17 @@ impl Default for Pacing {
 /// engine must not know or care. It also keeps the engine testable against a
 /// core that does nothing.
 pub trait SyncPeer: DeviceSigner + Send + 'static {
+    /// The private account stream, when this device has one. It must settle
+    /// before note outboxes are published on a reconnect.
+    fn account_topic(&self) -> Result<Option<NoteId>> {
+        Ok(None)
+    }
+
+    fn is_deleted(&self, note: NoteId) -> Result<bool> {
+        let _ = note;
+        Ok(false)
+    }
+
     /// Verify, decrypt and apply an envelope from the relay.
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> Result<()>;
 
@@ -160,6 +171,15 @@ where
     S: OpStore + Send + 'static,
     K: Keyring + Send + 'static,
 {
+    fn account_topic(&self) -> Result<Option<NoteId>> {
+        Ok(self.lock().map_err(|_| poisoned())?.account_id())
+    }
+
+    fn is_deleted(&self, note: NoteId) -> Result<bool> {
+        let core = self.lock().map_err(|_| poisoned())?;
+        Ok(core.is_deleted_note(note))
+    }
+
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> Result<()> {
         let mut core = self.lock().map_err(|_| poisoned())?;
         // The account document arrives through a socket like a note and is not
@@ -649,11 +669,50 @@ async fn session<P: SyncPeer>(
         Err(e) => return Ended::Failed(e.to_string()),
     };
 
+    // Catch up the account first. Its deletion markers decide which note
+    // outboxes still exist, so publishing those before this barrier could send
+    // edits for a note another device already deleted.
+    let account_topic = match peer.account_topic() {
+        Ok(topic) => topic.filter(|id| device.notes.contains_key(id)),
+        Err(e) => return Ended::Failed(e.to_string()),
+    };
+    if let Some(account) = account_topic {
+        if let Err(e) = device.start(peer, account, &mut sync).await {
+            return Ended::Failed(e);
+        }
+        loop {
+            match sync.next().await {
+                Ok(Some(Routed::Note(id, incoming))) if id == account => {
+                    match device.receive(peer, &me, id, incoming) {
+                        Ok(Received::Caught) => break,
+                        Ok(Received::Reset) => {
+                            let _ = sync.close().await;
+                            return Ended::Connected {
+                                caught: true,
+                                reason: "the relay was restored; rebuilding its copy".into(),
+                            };
+                        }
+                        Ok(Received::Continue) => {}
+                        Err(e) => return Ended::Failed(e),
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => return Ended::Failed("the relay closed the connection".into()),
+                Err(e) => return Ended::Failed(e.to_string()),
+            }
+        }
+    }
+
     let mut caught = false;
     let lost = |caught: bool, reason: String| Ended::Connected { caught, reason };
 
     // Every note from its own cursor, each with its own outbox folded.
-    let ids: Vec<NoteId> = device.notes.keys().copied().collect();
+    let ids: Vec<NoteId> = device
+        .notes
+        .keys()
+        .copied()
+        .filter(|id| Some(*id) != account_topic)
+        .collect();
     for id in ids {
         if let Err(e) = device.start(peer, id, &mut sync).await {
             return lost(caught, e);
@@ -858,6 +917,12 @@ impl Device {
         id: NoteId,
         sync: &mut DeviceSync,
     ) -> std::result::Result<(), String> {
+        if peer.is_deleted(id).map_err(|e| e.to_string())? {
+            if let Some(mut live) = self.notes.remove(&id) {
+                live.set_state(SyncState::Offline);
+            }
+            return Ok(());
+        }
         let Some(live) = self.notes.get_mut(&id) else {
             return Ok(());
         };

@@ -457,8 +457,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
         // deleting a shared shopping list may well think they are deleting it
         // for the household, and they are not.
         content: const Text(
-          'Deleted from this device, and there is no undo. '
-          'Anything you shared stays with whoever you shared it with.',
+          'Deleted from your account. Your other devices will delete their '
+          'copies when they sync. There is no undo. People you shared this '
+          'note with keep their copies.',
         ),
         actions: [
           TextButton(

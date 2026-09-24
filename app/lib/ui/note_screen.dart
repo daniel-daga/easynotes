@@ -75,6 +75,7 @@ class _NoteScreenState extends State<NoteScreen> {
   bool _allowPop = false;
   bool _waitingToPop = false;
   bool _crossedOffExpanded = false;
+  bool _deletionPopScheduled = false;
   late final Stream<List<NoteSummary>>? _noteSummaries =
       widget.library?.watchNotes();
 
@@ -335,6 +336,25 @@ class _NoteScreenState extends State<NoteScreen> {
             final summary = summaries.data
                 ?.where((summary) => summary.id == widget.noteId)
                 .firstOrNull;
+            if (summaries.hasData && summary == null) {
+              if (!_deletionPopScheduled) {
+                _deletionPopScheduled = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                    const SnackBar(
+                      content: Text('This note was deleted from your account.'),
+                    ),
+                  );
+                  Navigator.of(context).maybePop();
+                });
+              }
+              return const Scaffold(
+                body: Center(
+                  child: Text('This note was deleted from your account.'),
+                ),
+              );
+            }
             return _screen(note, summary);
           },
         );

@@ -29,6 +29,7 @@
 //! "m:<note id>:<label id>"  -> bool     that note carries that label
 //! "s:<name>"                -> string   a setting
 //! "k:<note id>"             -> string   that note's key, base64url
+//! "deleted:<note id>"       -> bool     this note is permanently deleted
 //!
 //! "t:<note id>:<name>"      -> bool     a label, as it used to be stored
 //! ```
@@ -114,6 +115,7 @@ const SETTING: &str = "s:";
 /// A note's key, so that this person's other devices can open the note and not
 /// merely store it. See the module docs.
 const NOTE_KEY: &str = "k:";
+const DELETED_NOTE: &str = "deleted:";
 /// A reminder's scalar fields. Reminders deliberately have no container: two
 /// devices may create or amend them at once, so they follow the account
 /// document's flat-register rule.
@@ -596,6 +598,12 @@ pub enum AccountEdit {
         /// The variable-size reminder set associated with this note.
         reminders: Vec<ReminderId>,
     },
+    DeleteNote {
+        note: NoteId,
+        tags: Vec<LabelId>,
+        legacy_tags: Vec<String>,
+        reminders: Vec<ReminderId>,
+    },
 }
 
 fn placement_key(note: NoteId, field: &str) -> String {
@@ -608,6 +616,73 @@ fn member_key(note: NoteId, label: LabelId) -> String {
 
 fn note_key_key(note: NoteId) -> String {
     format!("{NOTE_KEY}{}", note.encode())
+}
+
+fn deleted_note_key(note: NoteId) -> String {
+    format!("{DELETED_NOTE}{}", note.encode())
+}
+
+pub fn deleted_notes_of(entries: impl IntoIterator<Item = (String, Value)>) -> BTreeSet<NoteId> {
+    entries
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let encoded = key.strip_prefix(DELETED_NOTE)?;
+            (value == Value::Bool(true))
+                .then(|| NoteId::decode(encoded).ok())
+                .flatten()
+        })
+        .collect()
+}
+
+pub fn is_deleted(entries: impl IntoIterator<Item = (String, Value)>, note: NoteId) -> bool {
+    deleted_notes_of(entries).contains(&note)
+}
+
+/// Build a cleanup edit from every currently known variable field for a note.
+/// This also sweeps memberships or reminders that arrived concurrently with its
+/// permanent marker.
+pub fn deletion_edit(
+    entries: impl IntoIterator<Item = (String, Value)>,
+    note: NoteId,
+) -> AccountEdit {
+    let entries: Vec<_> = entries.into_iter().collect();
+    let mut tags = BTreeSet::new();
+    let mut legacy_tags = BTreeSet::new();
+    let mut reminders = BTreeSet::new();
+    for (key, value) in &entries {
+        if let Some(rest) = key.strip_prefix(MEMBER) {
+            if let Some((raw_note, raw_label)) = rest.split_once(':') {
+                if NoteId::decode(raw_note).ok() == Some(note) && *value == Value::Bool(true) {
+                    if let Ok(label) = LabelId::decode(raw_label) {
+                        tags.insert(label);
+                    }
+                }
+            }
+        } else if let Some(rest) = key.strip_prefix(LEGACY_TAG) {
+            if let Some((raw_note, tag)) = rest.split_once(':') {
+                if NoteId::decode(raw_note).ok() == Some(note)
+                    && *value == Value::Bool(true)
+                    && !tag.is_empty()
+                {
+                    legacy_tags.insert(tag.to_string());
+                }
+            }
+        } else if let Some(rest) = key.strip_prefix(REMINDER) {
+            if let Some((raw_reminder, field)) = rest.split_once(':') {
+                if field == REMINDER_NOTE && *value == Value::Str(note.encode()) {
+                    if let Ok(reminder) = ReminderId::decode(raw_reminder) {
+                        reminders.insert(reminder);
+                    }
+                }
+            }
+        }
+    }
+    AccountEdit::DeleteNote {
+        note,
+        tags: tags.into_iter().collect(),
+        legacy_tags: legacy_tags.into_iter().collect(),
+        reminders: reminders.into_iter().collect(),
+    }
 }
 
 fn reminder_key(reminder: ReminderId, field: &str) -> String {
@@ -739,6 +814,22 @@ impl AccountEdit {
                     .map(move |field| (reminder_key(*reminder, field), None))
                 }))
                 .collect(),
+            AccountEdit::DeleteNote {
+                note,
+                tags,
+                legacy_tags,
+                reminders,
+            } => {
+                let mut writes = AccountEdit::ForgetNote {
+                    note: *note,
+                    tags: tags.clone(),
+                    legacy_tags: legacy_tags.clone(),
+                    reminders: reminders.clone(),
+                }
+                .writes();
+                writes.push((deleted_note_key(*note), Some(Value::Bool(true))));
+                writes
+            }
         }
     }
 }
@@ -784,6 +875,8 @@ pub fn note_access_of(
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
+    let entries: Vec<_> = entries.into_iter().collect();
+    let deleted = deleted_notes_of(entries.clone());
     let mut keys = BTreeMap::new();
     for (key, value) in entries {
         let (Some(id), Value::Str(encoded)) = (key.strip_prefix(NOTE_KEY), value) else {
@@ -830,7 +923,9 @@ pub fn note_access_of(
         } else {
             continue;
         };
-        keys.insert(note, access);
+        if !deleted.contains(&note) {
+            keys.insert(note, access);
+        }
     }
     keys
 }
@@ -884,6 +979,8 @@ pub fn encode_note_access(
 /// bottom and are ignored, which is what keeps note keys out of this structure.
 /// See [`note_keys_of`].
 pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountView {
+    let entries: Vec<_> = entries.into_iter().collect();
+    let deleted = deleted_notes_of(entries.clone());
     let mut view = AccountView::default();
     let mut reminder_fields: BTreeMap<ReminderId, BTreeMap<String, String>> = BTreeMap::new();
     for (key, value) in entries {
@@ -1008,6 +1105,9 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
             },
         );
     }
+    view.placements.retain(|note, _| !deleted.contains(note));
+    view.reminders
+        .retain(|_, reminder| !deleted.contains(&reminder.note));
     view
 }
 
