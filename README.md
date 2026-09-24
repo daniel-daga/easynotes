@@ -121,6 +121,12 @@ flow still needs a successful Pixel check, and iOS needs a Mac. See the current
 hardware notes in [`docs/pixel-demo-2026-09-23.md`](docs/pixel-demo-2026-09-23.md)
 and the remaining work in [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
 
+The next planned content feature is portable text sharing: text notes as plain
+text, checklists as Markdown task lists, and paste-to-checklist conversion that
+keeps checked items. The plan is in
+[`docs/plan-text-interchange.md`](docs/plan-text-interchange.md); the
+Google Keep Takeout importer is deferred.
+
 ## Layout
 
 ```
