@@ -191,7 +191,7 @@ impl NoteDoc for YrsNote {
                     for item in new {
                         let obj = items.insert(&mut txn, item.id.encode(), MapPrelim::default());
                         obj.insert(&mut txn, TEXT, item.text.as_str());
-                        obj.insert(&mut txn, CHECKED, false);
+                        obj.insert(&mut txn, CHECKED, item.checked);
                         obj.insert(&mut txn, ORDER, item.order.as_str());
                     }
                 }

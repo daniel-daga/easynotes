@@ -28,6 +28,26 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "eu.fraisl.easynotes/content_sharing",
+        ).setMethodCallHandler { call, result ->
+            if (call.method == "share") {
+                val text = call.argument<String>("text")
+                if (text == null) {
+                    result.error("invalid_text", "Missing share text", null)
+                } else {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                    }
+                    startActivity(Intent.createChooser(intent, null))
+                    result.success(true)
+                }
+            } else {
+                result.notImplemented()
+            }
+        }
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, eventChannel)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {

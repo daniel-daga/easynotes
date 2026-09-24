@@ -175,12 +175,12 @@ pub enum Edit {
     },
 }
 
-/// An item as [`Edit::ToChecklist`] adds it: unchecked, with its order key
-/// already worked out.
+/// An item as [`Edit::ToChecklist`] adds, with its order key already worked out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewItem {
     pub id: ItemId,
     pub text: String,
+    pub checked: bool,
     pub order: String,
 }
 

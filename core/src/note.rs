@@ -26,6 +26,36 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::watch;
 
+/// Read the deliberately small Markdown task-list form supported by paste to
+/// checklist. Lines outside that form retain the existing plain-text behavior.
+fn parse_task_line(line: &str) -> (String, bool) {
+    let bytes = line.as_bytes();
+    if bytes.len() >= 4
+        && matches!(bytes[0], b'-' | b'*' | b'+')
+        && bytes[1].is_ascii_whitespace()
+    {
+        let mut marker = 1;
+        while marker < bytes.len() && bytes[marker].is_ascii_whitespace() {
+            marker += 1;
+        }
+        let supported = bytes.get(marker) == Some(&b'[')
+            && bytes.get(marker + 2) == Some(&b']')
+            && matches!(bytes.get(marker + 1), Some(b' ' | b'x' | b'X'))
+            && bytes
+                .get(marker + 3)
+                .map_or(true, |byte| byte.is_ascii_whitespace());
+        if supported {
+            let checked = matches!(bytes[marker + 1], b'x' | b'X');
+            let mut text_at = marker + 3;
+            while text_at < bytes.len() && bytes[text_at].is_ascii_whitespace() {
+                text_at += 1;
+            }
+            return (line[text_at..].trim().to_owned(), checked);
+        }
+    }
+    (line.to_owned(), false)
+}
+
 /// Where the sync cursor is kept in the store's per-note metadata.
 ///
 /// Public because moving a device from one store to another has to carry it:
@@ -2347,8 +2377,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Switch a note between text and checklist, carrying its content across —
     /// the button Keep calls "show checkboxes". `None` if it is that kind already.
     ///
-    /// To a checklist, every line of the body that has anything on it becomes an
-    /// unchecked item, after whatever items the note already had. To text, every
+    /// To a checklist, every non-blank line of the body becomes an item after
+    /// whatever items the note already had. Markdown task markers preserve their
+    /// checked state; other lines become unchecked items. To text, every
     /// item becomes a line, checked or not, after whatever the body already said —
     /// ticks are the one thing that does not survive the trip, as in Keep.
     /// "Already had" is not hypothetical: a merge can leave content on the side
@@ -2368,11 +2399,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 let mut keys = view.order_keys();
                 let mut items = Vec::new();
                 for line in view.body.lines().filter(|l| !l.trim().is_empty()) {
+                    let (text, checked) = parse_task_line(line);
                     let order = order::key_for_index(&keys, keys.len());
                     keys.push(order.clone());
                     items.push(NewItem {
                         id: ItemId::random(),
-                        text: line.to_owned(),
+                        text,
+                        checked,
                         order,
                     });
                 }

@@ -15,7 +15,10 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../core/content_interchange.dart';
+import '../core/content_sharing.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
@@ -138,6 +141,14 @@ class _NoteScreenState extends State<NoteScreen> {
     context: context,
     builder: (context) =>
         ShareDialog(invites: widget.invites, noteId: widget.noteId),
+  );
+
+  Future<void> _shareContent(NoteView note) => showDialog<void>(
+    context: context,
+    builder: (context) => _ContentShareDialog(
+      text: contentForSharing(note),
+      format: note.kind == NoteKind.text ? 'text' : 'Markdown',
+    ),
   );
 
   _ItemRow _row(
@@ -348,9 +359,15 @@ class _NoteScreenState extends State<NoteScreen> {
           title: null,
           actions: [
             IconButton(
+              key: const Key('share-content-button'),
+              icon: const Icon(Icons.text_snippet_outlined),
+              tooltip: 'Share note content',
+              onPressed: () => _shareContent(note),
+            ),
+            IconButton(
               key: const Key('share-button'),
               icon: const Icon(Icons.ios_share),
-              tooltip: 'Share this note',
+              tooltip: 'Invite a collaborator',
               onPressed: _share,
             ),
           ],
@@ -1028,4 +1045,85 @@ class _ItemRowState extends State<_ItemRow> {
           : null,
     );
   }
+}
+
+class _ContentShareDialog extends StatefulWidget {
+  const _ContentShareDialog({required this.text, required this.format});
+
+  final String text;
+  final String format;
+
+  @override
+  State<_ContentShareDialog> createState() => _ContentShareDialogState();
+}
+
+class _ContentShareDialogState extends State<_ContentShareDialog> {
+  bool _fallback = false;
+
+  Future<void> _share() async {
+    final shared = await shareContent(widget.text);
+    if (!mounted) return;
+    if (shared) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _fallback = true);
+    }
+  }
+
+  Future<void> _copy() async {
+    try {
+      await Clipboard.setData(ClipboardData(text: widget.text));
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      Navigator.of(context).pop();
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Content copied')),
+      );
+    } catch (_) {
+      if (mounted) setState(() => _fallback = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('Share as ${widget.format}'),
+    content: SizedBox(
+      width: 440,
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_fallback)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Sharing or clipboard access is unavailable. Select and copy the content below.',
+                ),
+              ),
+            SelectableText(
+              widget.text.isEmpty ? 'This note has no content.' : widget.text,
+              key: const Key('share-content-preview'),
+            ),
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        key: const Key('share-content-native'),
+        onPressed: widget.text.isEmpty ? null : _share,
+        child: const Text('Share'),
+      ),
+      TextButton(
+        key: const Key('copy-note-content'),
+        onPressed: widget.text.isEmpty ? null : _copy,
+        child: const Text('Copy'),
+      ),
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Done'),
+      ),
+    ],
+  );
 }

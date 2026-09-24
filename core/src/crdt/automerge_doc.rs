@@ -161,7 +161,7 @@ impl NoteDoc for AutomergeNote {
                         for item in items {
                             let obj = tx.put_object(ROOT, item.id.encode(), ObjType::Map)?;
                             tx.put(&obj, TEXT, item.text.as_str())?;
-                            tx.put(&obj, CHECKED, false)?;
+                            tx.put(&obj, CHECKED, item.checked)?;
                             tx.put(&obj, ORDER, item.order.as_str())?;
                         }
                     }

@@ -83,7 +83,13 @@ class FakeNoteCore implements NoteCore {
       case NoteKind.checklist:
         for (final line in _body.split('\n')) {
           if (line.trim().isEmpty) continue;
-          _items.add(_Item(id: _nextId(), text: line, order: _appendKey()));
+          final task = _parseTaskLine(line);
+          final item = _Item(
+            id: _nextId(),
+            text: task.$1,
+            order: _appendKey(),
+          )..checked = task.$2;
+          _items.add(item);
         }
         _body = '';
       case NoteKind.text:
@@ -199,6 +205,12 @@ class FakeNoteCore implements NoteCore {
   /// Zero-padded so string comparison matches numeric order, as the real
   /// fractional index keys do.
   String _key(int i) => i.toString().padLeft(4, '0');
+}
+
+(String, bool) _parseTaskLine(String line) {
+  final match = RegExp(r'^[-*+]\s+\[([ xX])\]\s?(.*)$').firstMatch(line);
+  if (match == null) return (line, false);
+  return (match.group(2)!.trim(), match.group(1)!.toLowerCase() == 'x');
 }
 
 class _Item {

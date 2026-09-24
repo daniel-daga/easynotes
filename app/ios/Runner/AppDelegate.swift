@@ -26,6 +26,28 @@ import UIKit
           result(FlutterMethodNotImplemented)
         }
       }
+      let sharing = FlutterMethodChannel(
+        name: "eu.fraisl.easynotes/content_sharing",
+        binaryMessenger: controller.binaryMessenger
+      )
+      sharing.setMethodCallHandler { [weak controller] call, result in
+        guard call.method == "share" else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        guard let arguments = call.arguments as? [String: Any],
+              let text = arguments["text"] as? String else {
+          result(FlutterError(code: "invalid_text", message: "Missing share text", details: nil))
+          return
+        }
+        let sheet = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        if let popover = sheet.popoverPresentationController, let view = controller?.view {
+          popover.sourceView = view
+          popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        }
+        controller?.present(sheet, animated: true)
+        result(true)
+      }
       let events = FlutterEventChannel(
         name: "eu.fraisl.easynotes/deep_links/events",
         binaryMessenger: controller.binaryMessenger
