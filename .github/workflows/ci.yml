@@ -201,6 +201,15 @@ jobs:
           until curl -sfo /dev/null http://127.0.0.1:8098/; do sleep 0.2; done
           node sync.mjs http://127.0.0.1:8098/
 
+      # And whether two of them agree. Two browser contexts, as far apart as two
+      # people's phones, share a list through an invite link and the real
+      # screens, then edit it online and offline. Every other convergence test
+      # has a headless core on one side. Reuses the relay and the server the
+      # step above left running.
+      - name: Two tabs edit one list and converge
+        working-directory: tools/web-smoke
+        run: node converge.mjs http://127.0.0.1:8098/
+
       # A size that grows quietly is a size nobody notices until launch.
       - name: Report the bundle size
         working-directory: app

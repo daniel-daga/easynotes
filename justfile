@@ -120,6 +120,26 @@ web-sync-smoke port="8099":
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
     node sync.mjs http://127.0.0.1:{{port}}/
 
+# Do two tabs, sharing one list through the real screens, converge?
+#
+# Two browser contexts — two devices, two accounts — share a list by invite
+# link, edit it online, then both offline, and must end up with the same list.
+# Needs `just build-web` first, and starts a relay like `web-sync-smoke`.
+web-converge port="8099":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p easynotes-relay
+    cd '{{justfile_directory()}}/tools/web-smoke'
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    '{{relay_bin}}' &
+    relay=$!
+    python3 serve.py '{{justfile_directory()}}/app/build/web' {{port}} &
+    server=$!
+    trap 'kill $relay $server 2>/dev/null || true' EXIT
+    until curl -sfo /dev/null http://127.0.0.1:8080/v1/health; do sleep 0.2; done
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node converge.mjs http://127.0.0.1:{{port}}/
+
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
