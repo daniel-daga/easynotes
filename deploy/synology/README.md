@@ -20,6 +20,11 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   `https://notes.example.net`. Use a comma-separated list if the app is served
   from more than one origin. Native apps do not send browser origins; if you
   only use native apps, set it to the relay's own HTTPS origin.
+- Set `RELAY_TOKEN_SIGNING_KEY` to a stable random 32-byte key encoded as
+  base64url. Generate it once with `openssl rand -base64 32 | tr '+/' '-_' |
+  tr -d '=\n'`, store it in `.env`, and keep a protected backup. Every relay
+  instance must use the same key. Changing it immediately invalidates active
+  device tokens; retaining it lets them remain usable until expiry.
 - Set `NAS_DATA_DIR` to a persistent shared-folder path, for example
   `/volume1/docker/easynotes-data`.
 

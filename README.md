@@ -166,6 +166,12 @@ The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
 run without it is a run that skipped the tests that matter there.
 
+Production relays should set `RELAY_TOKEN_SIGNING_KEY` to a stable base64url
+encoding of 32 random bytes. The same value must be shared by every relay
+instance and kept across restarts so signed device tokens remain valid; the
+Synology setup documents key generation and storage. Without it, the relay uses
+a temporary process key intended only for local development.
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy
@@ -208,6 +214,7 @@ reading the whole database at open.
 | [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers |
 | [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
 | [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
+| [ADR 0021](docs/adr/0021-stateless-relay-tokens.md) | Stateless relay tokens: signed expiry and shared one-use challenges |
 
 ## Security, in one paragraph
 

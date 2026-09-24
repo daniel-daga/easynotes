@@ -41,7 +41,7 @@ impl Relay {
         addr: SocketAddr,
         config: RelayConfig,
     ) -> anyhow::Result<Self> {
-        let state = AppState::new(store);
+        let state = AppState::new(store, config.token_signing_key);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let app = router_with(state.clone(), config);

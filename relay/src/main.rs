@@ -11,7 +11,11 @@
 //! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked. Unset means
 //!   the defaults in [`RelayConfig::public`], because a process listening on a
 //!   socket should not need an environment variable set to refuse a flood.
+//! * `RELAY_TOKEN_SIGNING_KEY` — a stable base64url Ed25519 seed for tokens
+//!   shared across restarts and instances. Unset generates a temporary key.
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use easynotes_relay::{MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -47,6 +51,20 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => RelayConfig::public(),
     };
+    match std::env::var("RELAY_TOKEN_SIGNING_KEY") {
+        Ok(raw) => {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(&raw)
+                .map_err(|_| anyhow::anyhow!("RELAY_TOKEN_SIGNING_KEY must be base64url"))?;
+            config.token_signing_key = bytes.try_into().map_err(|_| {
+                anyhow::anyhow!("RELAY_TOKEN_SIGNING_KEY must decode to exactly 32 bytes")
+            })?;
+            tracing::info!("using configured relay token signing key");
+        }
+        Err(_) => tracing::warn!(
+            "RELAY_TOKEN_SIGNING_KEY is unset: device tokens will not survive a restart and instances will not share tokens"
+        ),
+    }
     match std::env::var("RELAY_ALLOWED_ORIGINS") {
         Ok(raw) => {
             // A typo here fails to start rather than falling back to "any": an

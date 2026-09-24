@@ -60,10 +60,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(store: Arc<dyn RelayStore>) -> Arc<Self> {
+    pub fn new(store: Arc<dyn RelayStore>, token_signing_key: [u8; 32]) -> Arc<Self> {
         Arc::new(Self {
             store,
-            auth: Auth::new(),
+            auth: Auth::new(token_signing_key),
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
         })
@@ -164,6 +164,9 @@ impl Origins {
 /// relay nobody runs in development.
 pub struct RelayConfig {
     pub origins: Origins,
+    /// Ed25519 seed used to sign stateless device tokens. Every instance in a
+    /// deployment must use the same value.
+    pub token_signing_key: [u8; 32],
     /// `/v1/challenge` and `/v1/token`, per address.
     pub handshake: RateLimit,
     /// Opening a socket, per address: a device's one socket at `/v1/sync`, or
@@ -179,6 +182,11 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             origins: Origins::Any,
+            token_signing_key: {
+                let mut key = [0; 32];
+                easynotes_core::crypto::random_bytes(&mut key);
+                key
+            },
             handshake: RateLimit::unlimited(),
             sockets: RateLimit::unlimited(),
             invites: RateLimit::unlimited(),
@@ -201,6 +209,11 @@ impl RelayConfig {
     pub fn public() -> Self {
         Self {
             origins: Origins::Any,
+            token_signing_key: {
+                let mut key = [0; 32];
+                easynotes_core::crypto::random_bytes(&mut key);
+                key
+            },
             handshake: RateLimit::new(120, 60),
             sockets: RateLimit::new(240, 120),
             // A guest and an owner each poll every few seconds while a screen
@@ -289,9 +302,18 @@ async fn challenge(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>> {
-    let nonce = state
-        .auth
-        .challenge(&req.device, Duration::from_secs(CHALLENGE_TTL_SECS))?;
+    let (nonce, device) = state.auth.issue_challenge(&req.device)?;
+    let raw_nonce = URL_SAFE_NO_PAD
+        .decode(&nonce)
+        .expect("the auth layer returned base64url");
+    state
+        .store
+        .save_auth_challenge(
+            &raw_nonce,
+            &device,
+            crate::auth::unix_now() as i64 + CHALLENGE_TTL_SECS as i64,
+        )
+        .await?;
     Ok(Json(ChallengeResponse {
         nonce,
         expires_in: CHALLENGE_TTL_SECS,
@@ -302,12 +324,16 @@ async fn token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<TokenResponse>> {
-    let token = state.auth.redeem(
-        &req.device,
-        &req.nonce,
-        &req.signature,
-        Duration::from_secs(TOKEN_TTL_SECS),
-    )?;
+    let token = state
+        .auth
+        .redeem(
+            state.store.as_ref(),
+            &req.device,
+            &req.nonce,
+            &req.signature,
+            Duration::from_secs(TOKEN_TTL_SECS),
+        )
+        .await?;
     Ok(Json(TokenResponse {
         token,
         expires_in: TOKEN_TTL_SECS,

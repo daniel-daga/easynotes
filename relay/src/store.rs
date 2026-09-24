@@ -38,6 +38,18 @@ pub trait RelayStore: Send + Sync + 'static {
     /// The highest sequence number for a note, or 0 if it has none.
     async fn head(&self, note: &str) -> Result<i64>;
 
+    /// Save a one-use auth nonce so any relay sharing this store can redeem it.
+    async fn save_auth_challenge(
+        &self,
+        nonce: &[u8],
+        device: &[u8; 32],
+        expires_at: i64,
+    ) -> Result<()>;
+
+    /// Atomically consume an unexpired challenge. A replay or an expired nonce
+    /// returns `None`.
+    async fn consume_auth_challenge(&self, nonce: &[u8], now: i64) -> Result<Option<[u8; 32]>>;
+
     // -- invites ------------------------------------------------------------
     //
     // The store keeps invites and answers questions about them atomically; it
@@ -142,6 +154,7 @@ fn swept(expires_at: i64, now: i64) -> bool {
 pub struct MemoryStore {
     notes: Arc<Mutex<HashMap<String, Vec<Stored>>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
+    auth_challenges: Arc<Mutex<HashMap<Vec<u8>, ([u8; 32], i64)>>>,
 }
 
 impl MemoryStore {
@@ -220,6 +233,25 @@ impl RelayStore for MemoryStore {
     async fn head(&self, note: &str) -> Result<i64> {
         let notes = self.notes.lock().unwrap();
         Ok(notes.get(note).and_then(|l| l.last()).map_or(0, |s| s.seq))
+    }
+
+    async fn save_auth_challenge(
+        &self,
+        nonce: &[u8],
+        device: &[u8; 32],
+        expires_at: i64,
+    ) -> Result<()> {
+        let mut challenges = self.auth_challenges.lock().unwrap();
+        challenges.retain(|_, (_, expiry)| *expiry > crate::auth::unix_now() as i64);
+        challenges.insert(nonce.to_vec(), (*device, expires_at));
+        Ok(())
+    }
+
+    async fn consume_auth_challenge(&self, nonce: &[u8], now: i64) -> Result<Option<[u8; 32]>> {
+        let mut challenges = self.auth_challenges.lock().unwrap();
+        Ok(challenges
+            .remove(nonce)
+            .and_then(|(device, expires_at)| (expires_at > now).then_some(device)))
     }
 
     async fn create_invite(&self, invite: NewInvite<'_>, now: i64) -> Result<bool> {
@@ -396,6 +428,17 @@ impl PostgresStore {
             )
             .execute(&mut *conn)
             .await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS auth_challenges (
+                    nonce      BYTEA PRIMARY KEY,
+                    device     BYTEA NOT NULL,
+                    expires_at BIGINT NOT NULL
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
             // Invites. `expires_at` is Unix seconds, the same number the memory
             // store keeps, so the two cannot round differently. `grant_blob`
             // because `grant` is a keyword.
@@ -519,6 +562,45 @@ impl RelayStore for PostgresStore {
             .await
             .map_err(|e| RelayError::Storage(e.to_string()))?;
         Ok(row.map_or(0, |r| r.0))
+    }
+
+    async fn save_auth_challenge(
+        &self,
+        nonce: &[u8],
+        device: &[u8; 32],
+        expires_at: i64,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM auth_challenges WHERE expires_at <= $1")
+            .bind(crate::auth::unix_now() as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RelayError::Storage(e.to_string()))?;
+        sqlx::query("INSERT INTO auth_challenges (nonce, device, expires_at) VALUES ($1, $2, $3)")
+            .bind(nonce)
+            .bind(device.as_slice())
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RelayError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn consume_auth_challenge(&self, nonce: &[u8], now: i64) -> Result<Option<[u8; 32]>> {
+        let device: Option<Vec<u8>> = sqlx::query_scalar(
+            "DELETE FROM auth_challenges WHERE nonce = $1 AND expires_at > $2 RETURNING device",
+        )
+        .bind(nonce)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| RelayError::Storage(e.to_string()))?;
+        device
+            .map(|bytes| {
+                bytes.try_into().map_err(|_| {
+                    RelayError::Storage("stored auth device key is not 32 bytes".into())
+                })
+            })
+            .transpose()
     }
 
     async fn create_invite(&self, invite: NewInvite<'_>, now: i64) -> Result<bool> {

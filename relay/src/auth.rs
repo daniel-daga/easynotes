@@ -4,34 +4,24 @@
 //! relay-authentication transcript. There is no registration, no username, no
 //! password and no email — the relay learns a public key and nothing else.
 //!
-//! Tokens are opaque random strings held in memory. That is fine for one relay
-//! process and is what Slice 1 needs; running more than one instance means moving
-//! to a signed token (the device key is already in hand to bind it to), and that
-//! is a Slice 3 problem, not a design change.
+//! Access tokens are signed by the relay and carry the device key and expiry.
+//! They can be checked by every relay instance configured with the same signing
+//! key, without keeping a long-lived device session row. One-use challenges are
+//! transiently stored so replicas can redeem them atomically.
 
 use crate::error::{RelayError, Result};
+use crate::store::RelayStore;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub struct Issued {
-    pub device: [u8; 32],
-    expires_at: Instant,
-}
-
-struct Challenge {
-    device: [u8; 32],
-    expires_at: Instant,
-}
-
-#[derive(Default)]
 pub struct Auth {
-    challenges: Mutex<HashMap<Vec<u8>, Challenge>>,
-    tokens: Mutex<HashMap<String, Issued>>,
+    signing_key: SigningKey,
 }
+
+const TOKEN_DOMAIN: &[u8] = b"easynotes-relay-token/v1\0";
+const TOKEN_PAYLOAD_LEN: usize = 1 + 8 + 32 + 16;
 
 fn b64(s: &str, what: &'static str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
@@ -46,12 +36,14 @@ fn device_key(s: &str) -> Result<[u8; 32]> {
 }
 
 impl Auth {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(signing_key: [u8; 32]) -> Self {
+        Self {
+            signing_key: SigningKey::from_bytes(&signing_key),
+        }
     }
 
     /// Hand out a fresh fixed-size nonce bound to the claimed device key.
-    pub fn challenge(&self, device: &str, ttl: Duration) -> Result<String> {
+    pub fn issue_challenge(&self, device: &str) -> Result<(String, [u8; 32])> {
         let device = device_key(device)?;
         // Reject a key that is not a valid Ed25519 point now, rather than
         // discovering it when the signature check fails.
@@ -62,21 +54,13 @@ impl Auth {
         let mut nonce = [0u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN];
         easynotes_core::crypto::random_bytes(&mut nonce);
 
-        let mut challenges = self.challenges.lock().unwrap();
-        Self::expire_challenges(&mut challenges);
-        challenges.insert(
-            nonce.to_vec(),
-            Challenge {
-                device,
-                expires_at: Instant::now() + ttl,
-            },
-        );
-        Ok(URL_SAFE_NO_PAD.encode(nonce))
+        Ok((URL_SAFE_NO_PAD.encode(nonce), device))
     }
 
     /// Redeem a domain-separated authentication signature for a token.
-    pub fn redeem(
+    pub async fn redeem(
         &self,
+        store: &dyn RelayStore,
         device: &str,
         nonce: &str,
         signature: &str,
@@ -90,16 +74,13 @@ impl Auth {
             .try_into()
             .map_err(|_| RelayError::BadRequest("signature is not 64 bytes".into()))?;
 
-        // Single-use: taking it out is what stops a captured challenge being
-        // redeemed twice.
-        let challenge = {
-            let mut challenges = self.challenges.lock().unwrap();
-            Self::expire_challenges(&mut challenges);
-            challenges
-                .remove(nonce.as_slice())
-                .ok_or(RelayError::Unauthorized)?
-        };
-        if challenge.expires_at < Instant::now() || challenge.device != device {
+        // The shared store makes a challenge redeemable through any instance,
+        // and the atomic delete preserves the single-use property.
+        let challenged_device = store
+            .consume_auth_challenge(&nonce, unix_now() as i64)
+            .await?
+            .ok_or(RelayError::Unauthorized)?;
+        if challenged_device != device {
             return Err(RelayError::Unauthorized);
         }
 
@@ -108,33 +89,46 @@ impl Auth {
         key.verify(&transcript, &Signature::from_bytes(&signature))
             .map_err(|_| RelayError::Unauthorized)?;
 
-        let mut raw = [0u8; 32];
-        easynotes_core::crypto::random_bytes(&mut raw);
-        let token = URL_SAFE_NO_PAD.encode(raw);
-
-        let mut tokens = self.tokens.lock().unwrap();
-        tokens.retain(|_, t| t.expires_at > Instant::now());
-        tokens.insert(
-            token.clone(),
-            Issued {
-                device,
-                expires_at: Instant::now() + ttl,
-            },
-        );
-        Ok(token)
+        let expires_at = unix_now().saturating_add(ttl.as_secs());
+        let mut nonce = [0u8; 16];
+        easynotes_core::crypto::random_bytes(&mut nonce);
+        let mut payload = Vec::with_capacity(TOKEN_PAYLOAD_LEN);
+        payload.push(1);
+        payload.extend_from_slice(&expires_at.to_be_bytes());
+        payload.extend_from_slice(&device);
+        payload.extend_from_slice(&nonce);
+        let mut transcript = TOKEN_DOMAIN.to_vec();
+        transcript.extend_from_slice(&payload);
+        let signature = self.signing_key.sign(&transcript);
+        payload.extend_from_slice(&signature.to_bytes());
+        Ok(URL_SAFE_NO_PAD.encode(payload))
     }
 
     /// The device behind a token, if it is still valid.
     pub fn device_for(&self, token: &str) -> Option<[u8; 32]> {
-        let tokens = self.tokens.lock().unwrap();
-        tokens
-            .get(token)
-            .filter(|t| t.expires_at > Instant::now())
-            .map(|t| t.device)
+        let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
+        if bytes.len() != TOKEN_PAYLOAD_LEN + 64 || bytes[0] != 1 {
+            return None;
+        }
+        let (payload, signature) = bytes.split_at(TOKEN_PAYLOAD_LEN);
+        let signature: [u8; 64] = signature.try_into().ok()?;
+        let mut transcript = TOKEN_DOMAIN.to_vec();
+        transcript.extend_from_slice(payload);
+        self.signing_key
+            .verifying_key()
+            .verify(&transcript, &Signature::from_bytes(&signature))
+            .ok()?;
+        let expires_at = u64::from_be_bytes(payload[1..9].try_into().ok()?);
+        if expires_at <= unix_now() {
+            return None;
+        }
+        payload[9..41].try_into().ok()
     }
+}
 
-    fn expire_challenges(challenges: &mut HashMap<Vec<u8>, Challenge>) {
-        let now = Instant::now();
-        challenges.retain(|_, c| c.expires_at > now);
-    }
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
