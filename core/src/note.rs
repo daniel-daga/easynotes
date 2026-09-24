@@ -1723,6 +1723,20 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             // can have been handed by the note list.
             return Err(CoreError::UnknownNote(id.encode()));
         }
+        // Already deleted: this is a retry, and all that can be left is local.
+        // A second marker would be a second envelope saying the same thing.
+        if self.is_deleted_note(id) {
+            return self.purge_note_local(id);
+        }
+        // A note this person never had is not theirs to delete. A marker for it
+        // would be kept for ever, on every device, for an ID somebody made up.
+        let known = self.placements.placements.contains_key(&id)
+            || self.record(id).is_some()
+            || self.keyring.note_key(id)?.is_some()
+            || self.store.notes()?.contains(&id);
+        if !known {
+            return self.purge_note_local(id);
+        }
         // Record the account-wide deletion first. It is the recovery record if
         // local storage cleanup fails or the process stops halfway through.
         let placement = self.placement(id);
@@ -1780,7 +1794,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let entries = self.account.doc.entries();
         let deleted = account::deleted_notes_of(entries.clone());
         for id in deleted {
-            let cleanup = account::deletion_edit(entries.clone(), id);
+            let cleanup = account::cleanup_edit(entries.clone(), id);
             self.apply_account(cleanup)?;
             self.purge_note_local(id)?;
         }
@@ -1921,10 +1935,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             | AccountEdit::SetTag { note, .. }
             | AccountEdit::DropLegacyTag { note, .. }
             | AccountEdit::SetNoteRecord { note, .. }
-            | AccountEdit::MarkRemoved { note, .. }
-            | AccountEdit::ForgetNote { note, .. } => Some(*note),
+            | AccountEdit::MarkRemoved { note, .. } => Some(*note),
             AccountEdit::SetReminder { reminder } => Some(reminder.note),
-            AccountEdit::DeleteNote { .. }
+            // Removals only, so they cannot bring a deleted note back, and
+            // they are how its marker's leftovers are swept.
+            AccountEdit::ForgetNote { .. }
+            | AccountEdit::DeleteNote { .. }
             | AccountEdit::SetLabelName { .. }
             | AccountEdit::ForgetLabel { .. }
             | AccountEdit::ForgetReminder { .. }

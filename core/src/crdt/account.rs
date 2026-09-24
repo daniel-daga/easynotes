@@ -676,10 +676,16 @@ pub fn is_deleted(entries: impl IntoIterator<Item = (String, Value)>, note: Note
     deleted_notes_of(entries).contains(&note)
 }
 
-/// Build a cleanup edit from every currently known variable field for a note.
-/// This also sweeps memberships or reminders that arrived concurrently with its
-/// permanent marker.
-pub fn deletion_edit(
+/// The removals that finish a deletion: every field this document still holds
+/// for a note, including memberships and reminders that arrived concurrently
+/// with its marker.
+///
+/// Removals only, and never the marker again. A removal of a field that is
+/// already gone is no update at all, so a device that enforces a marker it has
+/// already enforced writes nothing. Re-setting the marker instead would be a
+/// fresh op in Yrs every time, and every device that received it would answer
+/// with one of its own — for ever.
+pub fn cleanup_edit(
     entries: impl IntoIterator<Item = (String, Value)>,
     note: NoteId,
 ) -> AccountEdit {
@@ -715,7 +721,7 @@ pub fn deletion_edit(
             }
         }
     }
-    AccountEdit::DeleteNote {
+    AccountEdit::ForgetNote {
         note,
         tags: tags.into_iter().collect(),
         legacy_tags: legacy_tags.into_iter().collect(),

@@ -312,6 +312,70 @@ void main() {
       );
     });
 
+    test('a note deleted for good on one device leaves the other, and the '
+        'rest keep syncing', () async {
+      // ADR 0022 from the app's own API. `relay/tests/deletion.rs` holds it
+      // over cores and engines; this adds the bridge's half — the account
+      // settling in `Peer::settled`, and the deleted note's connection being
+      // retired rather than left retrying for ever.
+      final a = await device();
+      final phrase = await a.createAccount();
+      final goneId = await a.createNote();
+      final gone = a.openNote(goneId);
+      addTearDown(gone.dispose);
+      await gone.addItem('milk');
+      final keptId = await a.createNote();
+      final kept = a.openNote(keptId);
+      addTearDown(kept.dispose);
+      await kept.addItem('drill bits');
+
+      final b = await device();
+      await b.adoptAccount(phrase.join(' '));
+      await _untilNotes(
+        b.watchNotes(),
+        (notes) =>
+            notes.any((note) => note.id == goneId) &&
+            notes.any((note) => note.id == keptId),
+        "B never received A's notes",
+      );
+      // Open on B, as it would be on a phone left on the list.
+      final bGone = b.openNote(goneId);
+      addTearDown(bGone.dispose);
+      await _until(
+        bGone.watch(),
+        (view) => view.items.any((item) => item.text == 'milk'),
+        'B never received the note contents',
+      );
+
+      await a.setTrashed(goneId, true);
+      await a.forgetNote(goneId);
+
+      await _untilNotes(
+        b.watchNotes(),
+        (notes) =>
+            notes.every((note) => note.id != goneId) &&
+            notes.any((note) => note.id == keptId),
+        'B never let go of the deleted note',
+      );
+      expect(await b.search('milk'), isEmpty);
+      await _untilStatus(
+        b.watchSync(),
+        () => b.syncStatus,
+        (status) => status.state == SyncState.synced && status.pending == 0,
+        'B never settled after the deletion',
+      );
+
+      // The note that was kept still syncs, both ways, on the same socket.
+      final bKept = b.openNote(keptId);
+      addTearDown(bKept.dispose);
+      await bKept.addItem('screws');
+      await _until(
+        kept.watch(),
+        (view) => view.items.any((item) => item.text == 'screws'),
+        "A never received B's edit to the kept note",
+      );
+    });
+
     test(
       'a phrase that is not a phrase is refused with something to say',
       () async {
