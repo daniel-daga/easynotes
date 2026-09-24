@@ -17,6 +17,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/invite_links.dart';
 import '../core/invites.dart';
 
 /// How often a screen that is waiting asks the relay. Short, because somebody
@@ -273,6 +274,10 @@ class _ShareDialogState extends State<ShareDialog> {
       ];
     }
     final pending = _requests?.pending ?? const <JoinRequest>[];
+    final shareLink = inviteLinkForSharing(
+      invite.link,
+      webOrigin: Uri.base.replace(query: '', fragment: '').toString(),
+    );
     return [
       const Text('Send this link to the person you are inviting:'),
       const SizedBox(height: 8),
@@ -280,7 +285,7 @@ class _ShareDialogState extends State<ShareDialog> {
         children: [
           Expanded(
             child: SelectableText(
-              invite.link,
+              shareLink,
               key: const Key('invite-link'),
               style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             ),
@@ -290,7 +295,7 @@ class _ShareDialogState extends State<ShareDialog> {
             icon: const Icon(Icons.copy),
             tooltip: 'Copy the link',
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: invite.link));
+              await Clipboard.setData(ClipboardData(text: shareLink));
               if (!mounted) return;
               ScaffoldMessenger.maybeOf(
                 context,
@@ -369,16 +374,17 @@ class _ShareDialogState extends State<ShareDialog> {
 
 /// Asks for an invite link and a name, and pops with the request it made.
 class JoinDialog extends StatefulWidget {
-  const JoinDialog({super.key, required this.invites});
+  const JoinDialog({super.key, required this.invites, this.initialLink});
 
   final Invites invites;
+  final String? initialLink;
 
   @override
   State<JoinDialog> createState() => _JoinDialogState();
 }
 
 class _JoinDialogState extends State<JoinDialog> {
-  final _link = TextEditingController();
+  late final _link = TextEditingController(text: widget.initialLink);
   final _name = TextEditingController();
   String? _error;
   bool _busy = false;

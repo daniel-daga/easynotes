@@ -114,9 +114,16 @@ class _Where {
 }
 
 class NoteListScreen extends StatefulWidget {
-  const NoteListScreen({super.key, required this.library});
+  const NoteListScreen({
+    super.key,
+    required this.library,
+    this.initialInviteLink,
+    this.inviteLinks,
+  });
 
   final NoteLibrary library;
+  final String? initialInviteLink;
+  final Stream<String>? inviteLinks;
 
   @override
   State<NoteListScreen> createState() => _NoteListScreenState();
@@ -133,6 +140,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// device was adopted, and then stayed wrong until a restart.
   NoteLayout get _layout => widget.library.layout;
   _Where _where = const _Where.shelf(_Shelf.notes);
+  StreamSubscription<String>? _inviteSubscription;
 
   /// The search box, when it is open, and what is in it.
   ///
@@ -157,7 +165,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
           : 'Search notes and archive');
 
   @override
+  void initState() {
+    super.initState();
+    _inviteSubscription = widget.inviteLinks?.listen(_showJoinForLink);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final link = widget.initialInviteLink;
+      if (link != null) _showJoinForLink(link);
+    });
+  }
+
+  @override
   void dispose() {
+    _inviteSubscription?.cancel();
     _search.dispose();
     super.dispose();
   }
@@ -323,10 +342,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// The wait is a dialog because somebody who has just pasted a link is
   /// usually on the phone to the person who sent it; closing it keeps the
   /// request, and [InviteBanners] keeps waiting where the dialog left off.
-  Future<void> _join() async {
+  Future<void> _join({String? initialLink}) async {
     final join = await showDialog<PendingJoin>(
       context: context,
-      builder: (context) => JoinDialog(invites: widget.library),
+      builder: (context) => JoinDialog(
+        invites: widget.library,
+        initialLink: initialLink,
+      ),
     );
     if (join == null || !mounted) return;
     final id = await showDialog<String>(
@@ -336,6 +358,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
     if (id == null || !mounted) return;
     await _openNote(id);
+  }
+
+  void _showJoinForLink(String link) {
+    if (!mounted) return;
+    unawaited(_join(initialLink: link));
   }
 
   /// Answer whoever asked to join one of this device's lists.

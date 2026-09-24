@@ -3,11 +3,14 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/browser_store.dart';
+import 'core/deep_links.dart';
+import 'core/invite_links.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/reminder_scheduler.dart';
@@ -73,9 +76,24 @@ const relayUrl = String.fromEnvironment(
   defaultValue: 'http://127.0.0.1:8080',
 );
 
+bool get _hasNativeDeepLinks =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(EasyNotesApp(library: await openLibrary()));
+  final initialInvite = kIsWeb
+      ? inviteLinkFrom(Uri.base.toString())
+      : _hasNativeDeepLinks
+      ? await DeepLinks.initialInvite()
+      : null;
+  runApp(
+    EasyNotesApp(
+      library: await openLibrary(),
+      initialInviteLink: initialInvite,
+    ),
+  );
 }
 
 /// Open this device's notes, and start syncing them.
@@ -134,9 +152,14 @@ Future<NoteLibrary> openInBrowser() async {
 const browserDatabase = 'easynotes';
 
 class EasyNotesApp extends StatefulWidget {
-  const EasyNotesApp({super.key, required this.library});
+  const EasyNotesApp({
+    super.key,
+    required this.library,
+    this.initialInviteLink,
+  });
 
   final NoteLibrary library;
+  final String? initialInviteLink;
 
   @override
   State<EasyNotesApp> createState() => _EasyNotesAppState();
@@ -181,7 +204,11 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       // has a use for.
       theme: _easyNotesTheme(Brightness.light),
       darkTheme: _easyNotesTheme(Brightness.dark),
-      home: NoteListScreen(library: library),
+      home: NoteListScreen(
+        library: library,
+        initialInviteLink: widget.initialInviteLink,
+        inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
+      ),
     );
   }
 }
