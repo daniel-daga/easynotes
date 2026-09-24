@@ -332,13 +332,6 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// disappointing.
   bool get canJoin;
 
-  /// Add the note a share blob describes. Returns its ID.
-  ///
-  /// What the tests and the two-emulator walkthroughs use to put one note on
-  /// two devices in a line. The app does not offer it any more: a blob is the
-  /// note key, forever, and [Invites] is how a person shares a list.
-  Future<String> join(String blob);
-
   /// Every note whose text contains all of the query's words.
   ///
   /// Local, and local in the strong sense: it reads a sealed index this device
@@ -439,6 +432,13 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   NoteLayout get layout;
 
   Future<void> setLayout(NoteLayout layout);
+
+  /// Whether a checklist shows its ticked items or folds them under their
+  /// header. One setting for the person, kept in the account document, so a
+  /// list unfolded on the phone is unfolded on the tablet too.
+  bool get tickedShown;
+
+  Future<void> setTickedShown(bool shown);
 
   // The account — twelve words and a name — is declared on [Accounts], which
   // [Invites] implements: sharing is where a device first needs one.

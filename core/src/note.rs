@@ -3,7 +3,8 @@
 //!
 //! The shape is the one the Slice 1 plan names:
 //! `create_note`, `open_note`, `apply_local`, `apply_remote`, `export_share_blob`,
-//! `import_share_blob`, `watch`.
+//! `import_share_blob`, `watch`. The share-blob pair has since become test
+//! scaffolding behind the `test-support` feature; invites replaced it.
 //!
 //! The rule the whole app follows, established here: **the UI never mutates state
 //! it then renders.** An edit goes in, an update comes out, and the new view
@@ -125,6 +126,11 @@ const ACCESS_INTENTS: &str = "access-intents";
 
 /// The setting that says whether the note list is a grid or one column.
 pub const LAYOUT: &str = "layout";
+
+/// The setting that says whether a checklist's ticked items are shown or
+/// folded away under their header. One for the person rather than one per
+/// note, like [`LAYOUT`]: it is how they like lists, not a fact about a list.
+pub const TICKED: &str = "ticked";
 
 /// Where the invites this device has opened are kept, and the join requests
 /// it is waiting on: two metadata rows filed under [`ACCOUNT_DOC`].
@@ -1864,7 +1870,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.apply_account(AccountEdit::SetOrder { note: id, order })
     }
 
-    /// A view setting, by name. [`LAYOUT`] is the only one so far.
+    /// A view setting, by name: [`LAYOUT`] or [`TICKED`].
     pub fn setting(&self, name: &str) -> Option<&str> {
         self.placements.setting(name)
     }
@@ -1884,6 +1890,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     pub fn set_layout(&mut self, layout: Layout) -> Result<()> {
         self.set_setting(LAYOUT, layout.name())
+    }
+
+    /// Whether a checklist shows its ticked items. Folded unless this person
+    /// has unfolded them; a value this build does not know reads as folded.
+    pub fn ticked_shown(&self) -> bool {
+        self.setting(TICKED) == Some("shown")
+    }
+
+    pub fn set_ticked_shown(&mut self, shown: bool) -> Result<()> {
+        self.set_setting(TICKED, if shown { "shown" } else { "hidden" })
     }
 
     /// Apply one change to the account document: seal it, log it, and tell the
@@ -2422,15 +2438,18 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     // -- sharing ------------------------------------------------------------
 
-    /// The blob device B scans or pastes. Slice 3 moves this into an invite link's
-    /// fragment without changing the bytes.
+    /// A note's ID and key as one string, for a test that wants the note on a
+    /// second device without a relay. Behind `test-support`: the app shares
+    /// through invites, and never hands out a key.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn export_share_blob(&self, id: NoteId) -> Result<String> {
         let note = self.note(id)?;
         Ok(crate::crypto::export_share_blob(&id, &note.key))
     }
 
     /// Accept a share blob and open an empty document for it. The content arrives
-    /// as updates from the relay.
+    /// as updates from the relay. Test scaffolding, like [`Self::export_share_blob`].
+    #[cfg(any(test, feature = "test-support"))]
     pub fn import_share_blob(&mut self, blob: &str) -> Result<NoteId> {
         let (id, key) = crate::crypto::import_share_blob(blob)?;
         self.add_shared_note(id, key)
@@ -2600,6 +2619,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Add a note somebody else holds the key to, by its ID and key — the
     /// share-blob path, which has no owner and so no access packages.
+    #[cfg(any(test, feature = "test-support"))]
     fn add_shared_note(&mut self, id: NoteId, key: NoteKey) -> Result<NoteId> {
         if self.is_account(id) {
             // Nobody shares the account document, and a blob that claims to would

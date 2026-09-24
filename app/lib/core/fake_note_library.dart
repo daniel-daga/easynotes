@@ -70,6 +70,7 @@ class FakeNoteLibrary implements NoteLibrary {
   final Map<String, String> _labels = {};
   int _nextLabel = 1;
   NoteLayout _layout = NoteLayout.grid;
+  bool _tickedShown = false;
   int _counter = 0;
   int _nextReminder = 1;
 
@@ -155,15 +156,6 @@ class FakeNoteLibrary implements NoteLibrary {
     );
     final id = 'note-${_counter++}';
     _add(id, FakeNoteCore(kind: kind));
-    _emit();
-    return id;
-  }
-
-  @override
-  Future<String> join(String blob) async {
-    calls.add('join($blob)');
-    final id = 'joined-${_counter++}';
-    _add(id, FakeNoteCore(title: 'Shared list'));
     _emit();
     return id;
   }
@@ -655,6 +647,15 @@ class FakeNoteLibrary implements NoteLibrary {
   Future<void> setLayout(NoteLayout layout) async {
     calls.add('setLayout(${layout.name})');
     _layout = layout;
+  }
+
+  @override
+  bool get tickedShown => _tickedShown;
+
+  @override
+  Future<void> setTickedShown(bool shown) async {
+    calls.add('setTickedShown($shown)');
+    _tickedShown = shown;
   }
 
   /// The twelve words this fake hands out, so a test can assert on what a

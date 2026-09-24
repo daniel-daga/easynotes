@@ -199,9 +199,6 @@ class RustNoteLibrary implements NoteLibrary {
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) =>
       _library.createNote(kind: RustNoteCore.toRustKind(kind));
 
-  @override
-  Future<String> join(String blob) => _library.join(blob: blob);
-
   // -- invites --------------------------------------------------------------
 
   @override
@@ -420,6 +417,13 @@ class RustNoteLibrary implements NoteLibrary {
       NoteLayout.list => rust.NoteLayout.list,
     },
   );
+
+  @override
+  bool get tickedShown => _library.tickedShown();
+
+  @override
+  Future<void> setTickedShown(bool shown) =>
+      _library.setTickedShown(shown: shown);
 
   @override
   bool get hasAccount => _library.hasAccount();

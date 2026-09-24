@@ -48,10 +48,6 @@ abstract class NoteCore {
 
   Future<void> removeItem(String itemId);
 
-  /// The blob another device scans or pastes to join this note. In Slice 3 this
-  /// becomes the fragment of an invite link, with the same bytes.
-  Future<String> exportShareBlob();
-
   /// The sync status of this note now, and every change to it.
   ///
   /// Connecting is not here: what to sync with is a decision for the device,

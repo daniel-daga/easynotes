@@ -1653,23 +1653,6 @@ impl Library {
         Ok(id.encode())
     }
 
-    /// Accept a share blob and add the note it describes to this device.
-    ///
-    /// An addition, not a replacement — which is the whole difference between
-    /// this and Slice 1's one-note join. A blob for a note this device already
-    /// has is not an error and does not make a second copy.
-    pub fn join(&self, blob: String) -> Result<String, String> {
-        let id = {
-            let mut core = self.shared.locked()?;
-            // Replays whatever this device already holds for the note under the
-            // key the blob just supplied, so a second join finds the log that is
-            // there rather than putting an empty card over it.
-            core.import_share_blob(&blob).map_err(|e| e.to_string())?
-        };
-        self.shared.connect_note(id)?;
-        Ok(id.encode())
-    }
-
     /// A handle to one note, for a screen that is showing it.
     ///
     /// Cheap, and there may be several: they share the library's core, so two
@@ -2050,6 +2033,19 @@ impl Library {
         self.shared
             .locked()?
             .set_layout(layout.into())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether a checklist shows its ticked items, as this person last left it.
+    #[frb(sync)]
+    pub fn ticked_shown(&self) -> Result<bool, String> {
+        Ok(self.shared.locked()?.ticked_shown())
+    }
+
+    pub fn set_ticked_shown(&self, shown: bool) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_ticked_shown(shown)
             .map_err(|e| e.to_string())
     }
 
@@ -2770,14 +2766,6 @@ impl Note {
             },
             Err(_) => Ok(()),
         }
-    }
-
-    /// The blob another device pastes to join. Slice 3 turns it into an invite
-    /// link's fragment without changing the bytes.
-    #[frb(sync)]
-    pub fn share_blob(&self) -> Result<String, String> {
-        let core = self.shared.locked()?;
-        core.export_share_blob(self.id).map_err(|e| e.to_string())
     }
 
     // -- edits --------------------------------------------------------------

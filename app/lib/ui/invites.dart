@@ -32,10 +32,19 @@ Duration invitePollInterval = const Duration(seconds: 3);
 /// How often the list screen asks, with nobody necessarily looking.
 Duration inviteBannerPollInterval = const Duration(seconds: 15);
 
+/// Rounded to the nearest unit, not down: a link made a second ago has
+/// 6 d 23 h 59 m left, and the dialog that just said "seven days" should not
+/// follow it with "6 days".
 String _days(Duration left) {
-  if (left.inDays >= 2) return '${left.inDays} days';
-  if (left.inHours >= 2) return '${left.inHours} hours';
-  if (left.inMinutes >= 2) return '${left.inMinutes} minutes';
+  if (left >= const Duration(hours: 36)) {
+    return '${(left.inMinutes / Duration.minutesPerDay).round()} days';
+  }
+  if (left >= const Duration(minutes: 90)) {
+    return '${(left.inMinutes / Duration.minutesPerHour).round()} hours';
+  }
+  if (left >= const Duration(seconds: 90)) {
+    return '${(left.inSeconds / Duration.secondsPerMinute).round()} minutes';
+  }
   return 'a moment';
 }
 

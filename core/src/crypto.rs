@@ -639,13 +639,14 @@ impl Envelope {
 // Share blob
 // ---------------------------------------------------------------------------
 
-/// `version | note_id | note_key`, base64url. 66 characters, which QR-encodes at
-/// low error correction.
+/// `version | note_id | note_key`, base64url. 66 characters.
 ///
-/// This is deliberately the exact payload a Slice 3 invite link will carry after
-/// its `#`, so that slice replaces the transport and not the format.
+/// Test scaffolding only (the `test-support` feature): a string that is the key
+/// is exactly what invites replaced, so no shipped build can make or read one.
+#[cfg(any(test, feature = "test-support"))]
 pub const SHARE_BLOB_VERSION: u8 = 1;
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn export_share_blob(note_id: &NoteId, key: &NoteKey) -> String {
     let mut raw = Vec::with_capacity(1 + 16 + NOTE_KEY_LEN);
     raw.push(SHARE_BLOB_VERSION);
@@ -656,6 +657,7 @@ pub fn export_share_blob(note_id: &NoteId, key: &NoteKey) -> String {
     blob
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn import_share_blob(blob: &str) -> Result<(NoteId, NoteKey)> {
     let mut raw = URL_SAFE_NO_PAD
         .decode(blob.trim())

@@ -178,13 +178,6 @@ abstract class Library implements RustOpaqueInterface {
   /// until [`Library::invite_requests`] finds out.
   List<InviteView> invites({required String note});
 
-  /// Accept a share blob and add the note it describes to this device.
-  ///
-  /// An addition, not a replacement — which is the whole difference between
-  /// this and Slice 1's one-note join. A blob for a note this device already
-  /// has is not an error and does not make a second copy.
-  Future<String> join({required String blob});
-
   /// Whether the grid is a masonry or one column, as this person last left it.
   NoteLayout layout();
 
@@ -350,6 +343,8 @@ abstract class Library implements RustOpaqueInterface {
     required String timezone,
   });
 
+  Future<void> setTickedShown({required bool shown});
+
   /// Throw a note away, or take it back out of the trash.
   ///
   /// Reversible, and nothing is destroyed: the note is still on the disk and
@@ -400,6 +395,9 @@ abstract class Library implements RustOpaqueInterface {
   /// say so rather than ask for it again.
   List<StorageBatch> takeStorageBatches();
 
+  /// Whether a checklist shows its ticked items, as this person last left it.
+  bool tickedShown();
+
   /// How many batches are waiting. Zero on a device with a disk, always.
   int unwrittenBatches();
 
@@ -444,10 +442,6 @@ abstract class Note implements RustOpaqueInterface {
   Future<void> setKind({required NoteKindView kind});
 
   Future<void> setTitle({required String title});
-
-  /// The blob another device pastes to join. Slice 3 turns it into an invite
-  /// link's fragment without changing the bytes.
-  String shareBlob();
 
   /// End this handle's watchers and let their tasks finish. The note stays
   /// open in the library, because another screen may be showing it.

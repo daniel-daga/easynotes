@@ -74,7 +74,10 @@ class _NoteScreenState extends State<NoteScreen> {
   Completer<void>? _itemWritesDone;
   bool _allowPop = false;
   bool _waitingToPop = false;
-  bool _crossedOffExpanded = false;
+
+  /// Read once from the person's setting, then written back on every tap, so
+  /// the next note (on any of their devices) opens the way this one was left.
+  late bool _crossedOffExpanded = widget.library?.tickedShown ?? false;
   bool _deletionPopScheduled = false;
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
@@ -85,6 +88,15 @@ class _NoteScreenState extends State<NoteScreen> {
       focus.dispose();
     }
     super.dispose();
+  }
+
+  void _toggleCrossedOff() {
+    setState(() => _crossedOffExpanded = !_crossedOffExpanded);
+    // A setting that failed to save costs nothing but the next note opening
+    // folded; not worth interrupting someone ticking off their shopping.
+    unawaited(
+      widget.library?.setTickedShown(_crossedOffExpanded).catchError((_) {}),
+    );
   }
 
   FocusNode _focusForItem(String id) =>
@@ -315,8 +327,7 @@ class _NoteScreenState extends State<NoteScreen> {
             trailing: Icon(
               _crossedOffExpanded ? Icons.expand_less : Icons.expand_more,
             ),
-            onTap: () =>
-                setState(() => _crossedOffExpanded = !_crossedOffExpanded),
+            onTap: _toggleCrossedOff,
           );
         }
         final item = crossedOff[index - checkedStartIndex];

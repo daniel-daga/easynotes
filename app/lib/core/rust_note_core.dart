@@ -111,9 +111,6 @@ class RustNoteCore implements NoteCore {
   Future<void> removeItem(String itemId) => _note.removeItem(item: itemId);
 
   @override
-  Future<String> exportShareBlob() async => _note.shareBlob();
-
-  @override
   SyncStatus get syncStatus => toStatus(_note.syncStatus());
 
   @override

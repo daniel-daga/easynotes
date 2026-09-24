@@ -57,6 +57,42 @@ Future<void> showCrossedOff(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('crossed-off items stay as this person last left them', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary();
+    Future<void> open() async {
+      // A note the library has: the screen closes itself on one it does not,
+      // since that is what a note deleted on another device looks like.
+      final id = await library.createNote();
+      final core = library.core(id);
+      await core.addItem('milk');
+      await core.setChecked(await core.addItem('bread'), true);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NoteScreen(
+            key: UniqueKey(),
+            core: core,
+            storage: FakeStorageHealth(),
+            noteId: id,
+            invites: library,
+            library: library,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await open();
+    expect(visibleItems(tester), ['milk']);
+    await showCrossedOff(tester);
+    expect(library.calls, contains('setTickedShown(true)'));
+
+    // The next note opens unfolded, because the setting is the person's.
+    await open();
+    expect(visibleItems(tester), ['milk', 'bread']);
+  });
+
   testWidgets('the list is people, not phones, and a guest cannot manage it', (
     tester,
   ) async {
@@ -285,8 +321,6 @@ void main() {
       expect(invites.calls, contains('createInvite(this-note)'));
       expect(find.byKey(const Key('invite-link')), findsOneWidget);
       expect(find.byKey(const Key('invite-waiting')), findsOneWidget);
-      // The old blob is the note key; the screen must not reach for it.
-      expect(core.edits, isNot(contains('exportShareBlob()')));
     });
 
     testWidgets('someone who asks is shown with their code and can be let in', (

@@ -84,11 +84,8 @@ class FakeNoteCore implements NoteCore {
         for (final line in _body.split('\n')) {
           if (line.trim().isEmpty) continue;
           final task = _parseTaskLine(line);
-          final item = _Item(
-            id: _nextId(),
-            text: task.$1,
-            order: _appendKey(),
-          )..checked = task.$2;
+          final item = _Item(id: _nextId(), text: task.$1, order: _appendKey())
+            ..checked = task.$2;
           _items.add(item);
         }
         _body = '';
@@ -146,12 +143,6 @@ class FakeNoteCore implements NoteCore {
     edits.add('removeItem($itemId)');
     _items.removeWhere((i) => i.id == itemId);
     _emit();
-  }
-
-  @override
-  Future<String> exportShareBlob() async {
-    edits.add('exportShareBlob()');
-    return 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCk';
   }
 
   @override

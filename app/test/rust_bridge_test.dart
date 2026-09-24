@@ -24,7 +24,6 @@ import 'package:easynotes/src/rust/api/notes.dart'
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-
 /// Label names, as a person would read them off a card.
 List<String> names(List<Label> labels) => [for (final l in labels) l.name];
 
@@ -181,13 +180,6 @@ void main() {
         expect(core.current.items.map((i) => i.text), ['three', 'one', 'two']);
       });
 
-      test('the share blob is short enough for a QR code', () async {
-        final core = await openInTempDir();
-        final blob = await core.exportShareBlob();
-        expect(blob.length, lessThanOrEqualTo(120));
-        expect(blob, matches(RegExp(r'^[A-Za-z0-9_-]+$')));
-      });
-
       test('a relaunch restores the list from disk', () async {
         // Demo step 6, through the bridge: same directory, new library, same
         // notes — and the note IDs it had, because a grid that renamed everything
@@ -254,24 +246,6 @@ void main() {
         await note.setTitle('Groceries');
 
         await arrived;
-      });
-
-      test('joining adds a note rather than replacing one', () async {
-        final owner = await openLibraryInTempDir();
-        final shared = owner.openNote(await owner.createNote());
-        addTearDown(shared.dispose);
-        await shared.setTitle('Shared');
-        final blob = await shared.exportShareBlob();
-
-        final guest = await openLibraryInTempDir();
-        final own = guest.openNote(await guest.createNote());
-        addTearDown(own.dispose);
-        await own.setTitle('Mine');
-        final joined = await guest.join(blob);
-
-        expect(guest.notes, hasLength(2));
-        expect(guest.notes.map((n) => n.id), contains(joined));
-        expect(guest.notes.map((n) => n.title), contains('Mine'));
       });
 
       // -- search ------------------------------------------------------------
@@ -520,20 +494,14 @@ void main() {
         expect(names(notes[shopping]!.tags), ['errands', 'weekly shop']);
         expect(names(notes[chores]!.tags), ['errands']);
         // A label is counted by the notes that carry it, and sorted for a menu.
-        expect(counted(after.tags), [
-          ('errands', 2),
-          ('weekly shop', 1),
-        ]);
+        expect(counted(after.tags), [('errands', 2), ('weekly shop', 1)]);
 
         // Taking it off the last note leaves the label, carried by nobody. That
         // is what a label having an identity of its own buys, and it is why
         // renaming one is possible at all.
         final weekly = after.tags.firstWhere((t) => t.name == 'weekly shop');
         await after.removeTag(shopping, weekly.id);
-        expect(counted(after.tags), [
-          ('errands', 2),
-          ('weekly shop', 0),
-        ]);
+        expect(counted(after.tags), [('errands', 2), ('weekly shop', 0)]);
       });
 
       test('a label can be renamed and every note keeps it', () async {
@@ -641,32 +609,6 @@ void main() {
         expect(library.tags.single.name.length, maxLabelLength);
       });
 
-      test('a label is not written into the note it is about', () async {
-        // The same property a colour has, and the reason labels are in the
-        // account document: a household sharing a list does not share one
-        // person's filing.
-        final library = await openLibraryInTempDir();
-        final id = await library.createNote();
-        final core = library.openNote(id);
-        addTearDown(core.dispose);
-        await core.setTitle('Groceries');
-        final blob = await core.exportShareBlob();
-        await library.addTag(id, 'errands');
-
-        final guestDir = await Directory.systemTemp.createTemp(
-          'easynotes-guest-labels',
-        );
-        addTearDown(() => guestDir.delete(recursive: true));
-        final guest = await openLibraryInTempDir(guestDir);
-        final joined = await guest.join(blob);
-        expect(
-          guest.notes.singleWhere((note) => note.id == joined).tags,
-          isEmpty,
-          reason: "one person's label reached another person's device",
-        );
-        expect(guest.tags, isEmpty);
-      });
-
       test('a note deleted for good takes its labels with it', () async {
         final library = await openLibraryInTempDir();
         final gone = await library.createNote();
@@ -745,36 +687,6 @@ void main() {
           await keptNote.dispose();
         },
       );
-
-      test('a placement is not written into the note it is about', () async {
-        // The property the account document exists for. A colour is this
-        // person's, so it must not reach the note — which is the thing everyone
-        // else on the list has a key to.
-        final dir = await Directory.systemTemp.createTemp('easynotes-private');
-        addTearDown(() => dir.delete(recursive: true));
-
-        final library = await openLibraryInTempDir(dir);
-        final id = await library.createNote();
-        final core = library.openNote(id);
-        addTearDown(core.dispose);
-        await core.setTitle('Groceries');
-        final blob = await core.exportShareBlob();
-        await library.setColour(id, NoteColour.pink);
-
-        // A guest joining with that blob gets the note's key and nothing else.
-        // What it opens is the note's log, and the colour is not in it.
-        final guestDir = await Directory.systemTemp.createTemp(
-          'easynotes-guest',
-        );
-        addTearDown(() => guestDir.delete(recursive: true));
-        final guest = await openLibraryInTempDir(guestDir);
-        final joined = await guest.join(blob);
-        expect(
-          guest.notes.singleWhere((note) => note.id == joined).colour,
-          isNull,
-          reason: "one person's colour reached another person's device",
-        );
-      });
 
       test('nothing readable is written to disk', () async {
         final dir = await Directory.systemTemp.createTemp('easynotes-secrets');

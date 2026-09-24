@@ -88,26 +88,76 @@ void main() {
     return (library, core);
   }
 
-  Future<(RustNoteLibrary, NoteCore)> join(String blob) async {
-    final library = await device();
-    final core = library.openNote(await library.join(blob));
+  /// Approve, and keep asking until the package is out and the answer sent
+  /// — which is what the invite dialog's poll does.
+  Future<void> letIn(
+    RustNoteLibrary owner,
+    String noteId,
+    Invite invite,
+    JoinRequest request,
+  ) async {
+    var approval = await owner.approveRequest(invite.id, request.id);
+    final deadline = DateTime.now().add(patience);
+    while (approval == Approval.pending &&
+        owner.invitesFor(noteId).isNotEmpty) {
+      if (DateTime.now().isAfter(deadline)) fail('the approval never went');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      try {
+        await owner.inviteRequests(invite.id);
+      } catch (_) {}
+    }
+  }
+
+  /// Ask until the note has opened, which is a moment after being let in.
+  Future<JoinCheck> joined(RustNoteLibrary guest, String inviteId) async {
+    final deadline = DateTime.now().add(patience);
+    while (true) {
+      final check = await guest.checkJoin(inviteId);
+      if (check.state != JoinState.opening &&
+          check.state != JoinState.waiting) {
+        return check;
+      }
+      if (DateTime.now().isAfter(deadline)) fail('the note never opened');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// A second person on `noteId`, let in the way the app lets one in: a link,
+  /// a request and an approval. The owner is given an account and a name first
+  /// if it has none, since sharing needs both.
+  Future<(RustNoteLibrary, NoteCore)> share(
+    RustNoteLibrary owner,
+    String noteId,
+  ) async {
+    if (!owner.hasAccount) await owner.createAccount();
+    if (owner.profileName == null) await owner.setProfileName('Olga');
+    final invite = await owner.createInvite(noteId);
+    final guest = await device();
+    await guest.createAccount();
+    await guest.setProfileName('Anna');
+    final waiting = await guest.requestJoin(invite.link);
+    final request = (await owner.inviteRequests(invite.id)).pending.single;
+    await letIn(owner, noteId, invite, request);
+    final check = await joined(guest, waiting.inviteId);
+    expect(check.state, JoinState.joined);
+    final core = guest.openNote(check.noteId!);
     addTearDown(core.dispose);
-    return (library, core);
+    return (guest, core);
   }
 
   group('two devices through a relay', () {
     test(
       'a device that joins sees the list, and edits flow both ways',
       () async {
-        final (_, a) = await open();
+        final (aLibrary, a) = await open();
         await a.setTitle('Groceries');
         for (final item in ['milk', 'bread', 'eggs']) {
           await a.addItem(item);
         }
 
-        // Demo step 2: B joins from the share blob, having never been connected
-        // when the edits were made.
-        final (_, b) = await join(await a.exportShareBlob());
+        // Demo step 2: B joins by invite, having never been connected when the
+        // edits were made.
+        final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
         await _until(
           b.watch(),
           (view) =>
@@ -132,7 +182,7 @@ void main() {
       'a title typed a letter at a time arrives whole, and a flush sends it',
       () async {
         final (aLibrary, a) = await open();
-        final (_, b) = await join(await a.exportShareBlob());
+        final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
 
         // Typing is held back until it pauses (ADR 0016), so each of these
         // is logged at once and sent later, as one.
@@ -189,7 +239,8 @@ void main() {
       // them.
       final (library, groceries) = await open();
       await groceries.setTitle('Groceries');
-      final hardware = library.openNote(await library.createNote());
+      final hardwareId = await library.createNote();
+      final hardware = library.openNote(hardwareId);
       addTearDown(hardware.dispose);
       await hardware.addItem('screws');
 
@@ -202,7 +253,7 @@ void main() {
 
       // Both notes really are on the relay: a second device joining each one
       // gets its content, and the first knows nothing about the second.
-      final (_, joinedHardware) = await join(await hardware.exportShareBlob());
+      final (_, joinedHardware) = await share(library, hardwareId);
       await _until(
         joinedHardware.watch(),
         (view) => view.items.any((i) => i.text == 'screws'),
@@ -289,40 +340,6 @@ void main() {
       await owner.createAccount();
       await owner.setProfileName('Olga');
       return (owner, a, owner.notes.single.id);
-    }
-
-    /// Approve, and keep asking until the package is out and the answer sent
-    /// — which is what the invite dialog's poll does.
-    Future<void> letIn(
-      RustNoteLibrary owner,
-      String noteId,
-      Invite invite,
-      JoinRequest request,
-    ) async {
-      var approval = await owner.approveRequest(invite.id, request.id);
-      final deadline = DateTime.now().add(patience);
-      while (approval == Approval.pending &&
-          owner.invitesFor(noteId).isNotEmpty) {
-        if (DateTime.now().isAfter(deadline)) fail('the approval never went');
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        try {
-          await owner.inviteRequests(invite.id);
-        } catch (_) {}
-      }
-    }
-
-    /// Ask until the note has opened, which is a moment after being let in.
-    Future<JoinCheck> joined(RustNoteLibrary guest, String inviteId) async {
-      final deadline = DateTime.now().add(patience);
-      while (true) {
-        final check = await guest.checkJoin(inviteId);
-        if (check.state != JoinState.opening &&
-            check.state != JoinState.waiting) {
-          return check;
-        }
-        if (DateTime.now().isAfter(deadline)) fail('the note never opened');
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
     }
 
     test(
@@ -415,6 +432,51 @@ void main() {
         );
       },
     );
+
+    test("joining adds a note, and not the owner's colour or labels", () async {
+      // A colour and a label are one person's filing, kept in their account
+      // document; the note everyone shares is not where they go. And a guest
+      // who already has notes keeps them: a join adds, it does not replace.
+      final (owner, a, noteId) = await owned();
+      await a.setTitle('Groceries');
+      await owner.setColour(noteId, NoteColour.pink);
+      await owner.addTag(noteId, 'errands');
+
+      final guest = await person('Anna');
+      final mine = guest.openNote(await guest.createNote());
+      addTearDown(mine.dispose);
+      await mine.setTitle('Mine');
+
+      final invite = await owner.createInvite(noteId);
+      final waiting = await guest.requestJoin(invite.link);
+      final request = (await owner.inviteRequests(invite.id)).pending.single;
+      await letIn(owner, noteId, invite, request);
+      expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
+
+      final b = guest.openNote(noteId);
+      addTearDown(b.dispose);
+      await _until(
+        b.watch(),
+        (view) => view.title == 'Groceries',
+        'the guest never received the note',
+      );
+      expect(
+        guest.notes.map((n) => n.title),
+        containsAll(['Mine', 'Groceries']),
+      );
+      final shared = guest.notes.singleWhere((n) => n.id == noteId);
+      expect(
+        shared.colour,
+        isNull,
+        reason: "one person's colour reached another person's device",
+      );
+      expect(
+        shared.tags,
+        isEmpty,
+        reason: "one person's label reached another person's device",
+      );
+      expect(guest.tags, isEmpty);
+    });
 
     test('a spent link says so to the next person', () async {
       final (owner, _, noteId) = await owned();
