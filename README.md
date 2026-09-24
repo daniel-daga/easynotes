@@ -107,6 +107,18 @@ owner's device has to be reachable to let anyone in, both sides poll rather than
 being woken, and the link is pasted rather than tapped until the platforms
 register it.
 
+**A note is shared with people, not phones.** A collaborator is an account under
+the name its owner chose, so Anna on two phones is one entry, and a phone she
+restores from her twelve words gets back every note shared with her without
+asking anyone. The owner can remove one person, and everyone else keeps the note
+and does nothing. Every change to who can read a note is an *access package*: one
+envelope, signed by the note's owner key, with the whole list, a key for each
+person on it and, when anyone leaves, a fresh key with the note sealed under it.
+Every device works out which package is current from the packages alone, so the
+relay still checks nothing and learns no names, member IDs or head count. [ADR
+0023](docs/adr/0023-access-packages.md) has the format and what Remove can and
+cannot promise; [the plan](docs/plan-account-collaboration.md) has the flows.
+
 What is built is the core of it, with the property the whole item exists for held
 against both CRDT backends: two devices adopted from one phrase agree about a
 note's contents *and* about its placement. What is not built yet is the wiring —
