@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `rekey`, `reminder_id`, `reminder_time`, `report`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `send`, `settle`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `Statuses`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
@@ -50,9 +50,13 @@ abstract class Library implements RustOpaqueInterface {
   /// Every invite this device has open, to any note.
   List<InviteView> allInvites();
 
-  /// Let the person who made `request` in: seal the note to them and close
-  /// the invite. Every other request on it is declined by the relay.
-  Future<void> approveRequest({
+  /// Let the person who made `request` in (ADR 0023 §3): save the approval,
+  /// publish the package that adds them, and — once the relay has it —
+  /// answer the invite. Every other request on it is declined by the relay.
+  ///
+  /// `Pending` when the package is still on its way; the invite's next poll
+  /// finishes the job, and so does a relaunch.
+  Future<ApprovalView> approveRequest({
     required String invite,
     required String request,
   });
@@ -63,8 +67,9 @@ abstract class Library implements RustOpaqueInterface {
   Future<void> cancelJoin({required String invite});
 
   /// Ask the relay how a join request went, and act on the answer: an
-  /// approved one adds the note and starts syncing it; a declined, expired
-  /// or withdrawn one stops being waited on.
+  /// approved one records the note in this person's account and follows it
+  /// until its key arrives; a declined, expired or withdrawn one stops being
+  /// waited on.
   Future<JoinCheckView> checkJoin({required String invite});
 
   /// Shut the store. The library is unusable afterwards, and every method on
@@ -87,8 +92,6 @@ abstract class Library implements RustOpaqueInterface {
   /// `dispose()` does — closing does not wait for an engine mid-flight, it
   /// only makes sure the engine finds nothing to write to.
   Future<void> close();
-
-  CollaboratorsView collaborators({required String id});
 
   /// Start syncing every note with the relay at `relay` (`http://host:port`
   /// or `wss://host`), and every note made or joined after this.
@@ -162,9 +165,12 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Who has asked to join through an invite, as the owner is shown them.
   ///
-  /// An invite the relay no longer has, or that has closed, is forgotten
-  /// here on the way: there is nothing more it can be used for, and a list of
-  /// open invites that included it would be a list of things to wonder about.
+  /// Also where an approval that was interrupted — the app closed while its
+  /// package was on the way — is finished: the invite's screen polls this,
+  /// and so does the note list.
+  ///
+  /// An invite the relay no longer has, or that has closed with nothing of
+  /// this device's left to finish, is forgotten here on the way.
   Future<InviteRequestsView> inviteRequests({required String invite});
 
   /// The invites this device has open to `note`, oldest first. Local: it asks
@@ -264,10 +270,27 @@ abstract class Library implements RustOpaqueInterface {
   /// The join requests this device is waiting on.
   List<PendingJoinView> pendingJoins();
 
+  /// Everybody with access to a note, owner first. What the share screen
+  /// lists; it shows no devices.
+  PeopleView people({required String id});
+
+  /// The name this person shares under, once chosen. Asked once, as part of
+  /// setting up sharing, and the same on every device of the account.
+  String? profileName();
+
   /// Every reminder this device has decrypted from its account document.
   /// `watch_notes` is also its invalidation stream for local and remote
   /// account edits, so a scheduler does not need a second Rust watcher.
   List<ReminderView> reminders();
+
+  /// Remove one person. Saved at once, and made as soon as this device is
+  /// caught up with the note: offline, the row says “Removing…” until then.
+  /// Everyone else keeps the note and does nothing.
+  Future<void> removePerson({
+    required String id,
+    required String member,
+    required String invite,
+  });
 
   /// Take a label off a note. Not an error if it was never on it.
   ///
@@ -285,20 +308,11 @@ abstract class Library implements RustOpaqueInterface {
   /// is not a name, or a label this device does not have.
   Future<String?> renameTag({required String label, required String name});
 
-  /// Ask to join through a link, calling yourself `name` to the owner.
+  /// Ask to join through a link, under the name this account shares with.
   ///
   /// Returns what to show while waiting, including the six digits the owner
   /// will see beside the request.
-  Future<PendingJoinView> requestJoin({
-    required String link,
-    required String name,
-  });
-
-  /// Rotate a note's key and remove every collaborator while retaining the
-  /// creator's own account devices. This cannot erase a copy somebody already
-  /// decrypted; it prevents them from opening the rotated snapshot and every
-  /// later edit.
-  Future<void> revokeCollaborators({required String id});
+  Future<PendingJoinView> requestJoin({required String link});
 
   /// Every note whose text contains all of the query's words.
   ///
@@ -325,6 +339,8 @@ abstract class Library implements RustOpaqueInterface {
 
   Future<void> setPinned({required String id, required bool pinned});
 
+  Future<void> setProfileName({required String name});
+
   /// Update an existing reminder.
   Future<void> setReminder({
     required String reminder,
@@ -340,6 +356,12 @@ abstract class Library implements RustOpaqueInterface {
   /// still syncing, and what has changed is that this person does not see it.
   /// [`Library::forget_note`] is the irreversible one.
   Future<void> setTrashed({required String id, required bool trashed});
+
+  /// Remove everyone but the owner, and cancel every open invite to the
+  /// note. The invites need the relay; a withdrawal that cannot reach it
+  /// leaves an invite that expires on its own and can no longer let anyone
+  /// in, because this device will not answer it.
+  Future<void> stopSharing({required String id});
 
   /// End the watchers started above and let their tasks finish.
   ///
@@ -357,6 +379,10 @@ abstract class Library implements RustOpaqueInterface {
   /// Sorted the way a menu wants them, which the core decides: a label is read
   /// by a person, so the order ignores case.
   List<TagView> tags();
+
+  /// The notes this device was just removed from, each once, for the
+  /// message “You no longer have access to ‘Groceries’”.
+  List<RemovalView> takeRemovals();
 
   /// Every write the store has made since this was last called, oldest first,
   /// and forget them.
@@ -442,6 +468,19 @@ abstract class Note implements RustOpaqueInterface {
   Stream<SyncStatus> watchSync();
 }
 
+/// Where an approval got to.
+enum ApprovalView {
+  /// They are in: the answer is with the relay.
+  done,
+
+  /// Saved, and the package is on its way. The invite's next poll finishes
+  /// it.
+  pending,
+
+  /// They already had access; nothing changed.
+  alreadyMember,
+}
+
 class CollaboratorView {
   final String id;
   final String name;
@@ -460,46 +499,29 @@ class CollaboratorView {
           name == other.name;
 }
 
-class CollaboratorsView {
-  final List<CollaboratorView> people;
-  final bool canManage;
-  final String currentDevice;
-
-  const CollaboratorsView({
-    required this.people,
-    required this.canManage,
-    required this.currentDevice,
-  });
-
-  @override
-  int get hashCode =>
-      people.hashCode ^ canManage.hashCode ^ currentDevice.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is CollaboratorsView &&
-          runtimeType == other.runtimeType &&
-          people == other.people &&
-          canManage == other.canManage &&
-          currentDevice == other.currentDevice;
-}
-
 class InviteRequestsView {
   /// False once somebody has been let in, or the invite has expired.
   final bool open;
   final int expiresInSecs;
   final List<JoinRequestView> requests;
 
+  /// An approval is on its way: the package that lets them in is being
+  /// published, and the answer goes once the relay has it.
+  final String? lettingIn;
+
   const InviteRequestsView({
     required this.open,
     required this.expiresInSecs,
     required this.requests,
+    this.lettingIn,
   });
 
   @override
   int get hashCode =>
-      open.hashCode ^ expiresInSecs.hashCode ^ requests.hashCode;
+      open.hashCode ^
+      expiresInSecs.hashCode ^
+      requests.hashCode ^
+      lettingIn.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -508,7 +530,8 @@ class InviteRequestsView {
           runtimeType == other.runtimeType &&
           open == other.open &&
           expiresInSecs == other.expiresInSecs &&
-          requests == other.requests;
+          requests == other.requests &&
+          lettingIn == other.lettingIn;
 }
 
 /// An invite this device has open.
@@ -611,12 +634,17 @@ class JoinRequestView {
   /// not made by anyone holding the link, and cannot be approved.
   final bool readable;
 
+  /// This person already has access, under another invite. Approving
+  /// changes nothing, and the screen says so.
+  final bool alreadyMember;
+
   const JoinRequestView({
     required this.id,
     required this.name,
     required this.code,
     required this.state,
     required this.readable,
+    required this.alreadyMember,
   });
 
   @override
@@ -625,7 +653,8 @@ class JoinRequestView {
       name.hashCode ^
       code.hashCode ^
       state.hashCode ^
-      readable.hashCode;
+      readable.hashCode ^
+      alreadyMember.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -636,7 +665,8 @@ class JoinRequestView {
           name == other.name &&
           code == other.code &&
           state == other.state &&
-          readable == other.readable;
+          readable == other.readable &&
+          alreadyMember == other.alreadyMember;
 }
 
 enum JoinStateView {
@@ -645,6 +675,9 @@ enum JoinStateView {
 
   /// Let in: the note is on this device and syncing.
   joined,
+
+  /// Let in, and the note's key is still on its way.
+  opening,
 
   /// Turned away.
   declined,
@@ -840,6 +873,90 @@ class PendingJoinView {
           code == other.code;
 }
 
+/// Everybody with access to a note, and what is on its way.
+class PeopleView {
+  /// Whether anyone but the owner has been let in.
+  final bool shared;
+
+  /// Only the owner adds and removes people.
+  final bool canManage;
+  final List<PersonView> people;
+
+  /// People approved whose package has not yet taken effect.
+  final List<String> adding;
+
+  const PeopleView({
+    required this.shared,
+    required this.canManage,
+    required this.people,
+    required this.adding,
+  });
+
+  @override
+  int get hashCode =>
+      shared.hashCode ^ canManage.hashCode ^ people.hashCode ^ adding.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PeopleView &&
+          runtimeType == other.runtimeType &&
+          shared == other.shared &&
+          canManage == other.canManage &&
+          people == other.people &&
+          adding == other.adding;
+}
+
+/// One person with access to a note, as the share screen lists them.
+class PersonView {
+  /// The member ID: one per person, however many phones.
+  final String member;
+
+  /// The invite that let them in. Empty for the owner.
+  final String invite;
+
+  /// Chosen by the person. A label, not a verified identity.
+  final String name;
+  final bool owner;
+
+  /// The person looking at the screen.
+  final bool me;
+
+  /// Asked to be removed, and not yet: “Removing… finishes when you're
+  /// online”.
+  final bool removing;
+
+  const PersonView({
+    required this.member,
+    required this.invite,
+    required this.name,
+    required this.owner,
+    required this.me,
+    required this.removing,
+  });
+
+  @override
+  int get hashCode =>
+      member.hashCode ^
+      invite.hashCode ^
+      name.hashCode ^
+      owner.hashCode ^
+      me.hashCode ^
+      removing.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PersonView &&
+          runtimeType == other.runtimeType &&
+          member == other.member &&
+          invite == other.invite &&
+          name == other.name &&
+          owner == other.owner &&
+          me == other.me &&
+          removing == other.removing;
+}
+
 /// How a reminder repeats, mirrored for Flutter rather than exposing a core
 /// type to the bridge.
 enum ReminderRepeat { never, daily, weekly, monthly, yearly }
@@ -879,6 +996,25 @@ class ReminderView {
           fireAt == other.fireAt &&
           repeat == other.repeat &&
           timezone == other.timezone;
+}
+
+/// A note this device was removed from, for the one message it shows.
+class RemovalView {
+  final String note;
+  final String title;
+
+  const RemovalView({required this.note, required this.title});
+
+  @override
+  int get hashCode => note.hashCode ^ title.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RemovalView &&
+          runtimeType == other.runtimeType &&
+          note == other.note &&
+          title == other.title;
 }
 
 enum RequestStateView { pending, approved, declined }

@@ -205,14 +205,23 @@ class RustNoteLibrary implements NoteLibrary {
   // -- invites --------------------------------------------------------------
 
   @override
-  Collaborators collaborators(String noteId) {
-    final view = _library.collaborators(id: noteId);
-    return Collaborators(
-      people: [
-        for (final p in view.people) Collaborator(id: p.id, name: p.name),
-      ],
+  People people(String noteId) {
+    final view = _library.people(id: noteId);
+    return People(
+      shared: view.shared,
       canManage: view.canManage,
-      currentDevice: view.currentDevice,
+      people: [
+        for (final p in view.people)
+          Person(
+            member: p.member,
+            invite: p.invite,
+            name: p.name,
+            owner: p.owner,
+            me: p.me,
+            removing: p.removing,
+          ),
+      ],
+      adding: view.adding,
     );
   }
 
@@ -240,6 +249,7 @@ class RustNoteLibrary implements NoteLibrary {
     return InviteRequests(
       open: listing.open,
       expiresIn: Duration(seconds: listing.expiresInSecs),
+      lettingIn: listing.lettingIn,
       requests: [
         for (final r in listing.requests)
           JoinRequest(
@@ -247,6 +257,7 @@ class RustNoteLibrary implements NoteLibrary {
             name: r.name,
             code: r.code,
             readable: r.readable,
+            alreadyMember: r.alreadyMember,
             state: switch (r.state) {
               rust.RequestStateView.pending => JoinRequestState.pending,
               rust.RequestStateView.approved => JoinRequestState.approved,
@@ -258,8 +269,15 @@ class RustNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Future<void> approveRequest(String inviteId, String requestId) =>
-      _library.approveRequest(invite: inviteId, request: requestId);
+  Future<Approval> approveRequest(String inviteId, String requestId) async =>
+      switch (await _library.approveRequest(
+        invite: inviteId,
+        request: requestId,
+      )) {
+        rust.ApprovalView.done => Approval.done,
+        rust.ApprovalView.pending => Approval.pending,
+        rust.ApprovalView.alreadyMember => Approval.alreadyMember,
+      };
 
   @override
   Future<void> declineRequest(String inviteId, String requestId) =>
@@ -270,15 +288,24 @@ class RustNoteLibrary implements NoteLibrary {
       _library.withdrawInvite(invite: inviteId);
 
   @override
-  Future<void> revokeCollaborators(String noteId) =>
-      _library.revokeCollaborators(id: noteId);
+  Future<void> removePerson(String noteId, Person person) => _library
+      .removePerson(id: noteId, member: person.member, invite: person.invite);
+
+  @override
+  Future<void> stopSharing(String noteId) => _library.stopSharing(id: noteId);
+
+  @override
+  List<Removal> takeRemovals() => [
+    for (final r in _library.takeRemovals())
+      Removal(noteId: r.note, title: r.title),
+  ];
 
   static PendingJoin _toJoin(rust.PendingJoinView join) =>
       PendingJoin(inviteId: join.invite, name: join.name, code: join.code);
 
   @override
-  Future<PendingJoin> requestJoin(String link, {String name = ''}) async =>
-      _toJoin(await _library.requestJoin(link: link, name: name));
+  Future<PendingJoin> requestJoin(String link) async =>
+      _toJoin(await _library.requestJoin(link: link));
 
   @override
   List<PendingJoin> get pendingJoins =>
@@ -290,6 +317,7 @@ class RustNoteLibrary implements NoteLibrary {
     return JoinCheck(
       switch (check.state) {
         rust.JoinStateView.waiting => JoinState.waiting,
+        rust.JoinStateView.opening => JoinState.opening,
         rust.JoinStateView.joined => JoinState.joined,
         rust.JoinStateView.declined => JoinState.declined,
         rust.JoinStateView.gone => JoinState.gone,
@@ -402,6 +430,13 @@ class RustNoteLibrary implements NoteLibrary {
   @override
   Future<void> adoptAccount(String phrase) =>
       _library.adoptAccount(phrase: phrase);
+
+  @override
+  String? get profileName => _library.profileName();
+
+  @override
+  Future<void> setProfileName(String name) =>
+      _library.setProfileName(name: name);
 
   @override
   Future<void> connect(String url) => _library.connect(relay: url);

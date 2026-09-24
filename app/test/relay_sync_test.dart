@@ -275,13 +275,62 @@ void main() {
   }, skip: skip);
 
   group('sharing with another person by invite', () {
+    /// A device that can share: an account, and a name.
+    Future<RustNoteLibrary> person(String name) async {
+      final library = await device();
+      await library.createAccount();
+      await library.setProfileName(name);
+      return library;
+    }
+
+    /// An owner with a titled list, set up to share.
+    Future<(RustNoteLibrary, NoteCore, String)> owned() async {
+      final (owner, a) = await open();
+      await owner.createAccount();
+      await owner.setProfileName('Olga');
+      return (owner, a, owner.notes.single.id);
+    }
+
+    /// Approve, and keep asking until the package is out and the answer sent
+    /// — which is what the invite dialog's poll does.
+    Future<void> letIn(
+      RustNoteLibrary owner,
+      String noteId,
+      Invite invite,
+      JoinRequest request,
+    ) async {
+      var approval = await owner.approveRequest(invite.id, request.id);
+      final deadline = DateTime.now().add(patience);
+      while (approval == Approval.pending &&
+          owner.invitesFor(noteId).isNotEmpty) {
+        if (DateTime.now().isAfter(deadline)) fail('the approval never went');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        try {
+          await owner.inviteRequests(invite.id);
+        } catch (_) {}
+      }
+    }
+
+    /// Ask until the note has opened, which is a moment after being let in.
+    Future<JoinCheck> joined(RustNoteLibrary guest, String inviteId) async {
+      final deadline = DateTime.now().add(patience);
+      while (true) {
+        final check = await guest.checkJoin(inviteId);
+        if (check.state != JoinState.opening &&
+            check.state != JoinState.waiting) {
+          return check;
+        }
+        if (DateTime.now().isAfter(deadline)) fail('the note never opened');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
     test(
       'a guest asks with a link, the owner lets them in, and the list arrives',
       () async {
-        final (owner, a) = await open();
+        final (owner, a, noteId) = await owned();
         await a.setTitle('Groceries');
         await a.addItem('oat milk');
-        final noteId = owner.notes.single.id;
 
         final invite = await owner.createInvite(noteId);
         expect(invite.link, startsWith('easynotes://join#'));
@@ -289,8 +338,9 @@ void main() {
 
         // Only the link crosses. It carries no key: the guest's library has
         // nothing to open until the owner says so.
-        final guest = await device();
-        final waiting = await guest.requestJoin(invite.link, name: 'Anna');
+        final guest = await person('Anna');
+        final waiting = await guest.requestJoin(invite.link);
+        expect(waiting.name, 'Anna');
         expect(guest.pendingJoins.single.inviteId, waiting.inviteId);
         expect(
           (await guest.checkJoin(waiting.inviteId)).state,
@@ -304,36 +354,39 @@ void main() {
         expect(request.name, 'Anna');
         expect(request.code, waiting.code, reason: 'the two screens disagree');
 
-        await owner.approveRequest(invite.id, request.id);
+        await letIn(owner, noteId, invite, request);
         expect(owner.invitesFor(noteId), isEmpty);
-        expect(owner.collaborators(noteId).people.single.name, 'Anna');
-        expect(owner.collaborators(noteId).canManage, isTrue);
+        expect(owner.people(noteId).people.map((p) => p.name), [
+          'Olga',
+          'Anna',
+        ]);
+        expect(owner.people(noteId).canManage, isTrue);
 
-        final joined = await guest.checkJoin(waiting.inviteId);
-        expect(joined.state, JoinState.joined);
-        expect(joined.noteId, noteId);
+        final check = await joined(guest, waiting.inviteId);
+        expect(check.state, JoinState.joined);
+        expect(check.noteId, noteId);
         expect(guest.pendingJoins, isEmpty);
 
-        final b = guest.openNote(joined.noteId!);
+        final b = guest.openNote(check.noteId!);
         addTearDown(b.dispose);
-        await guest
-            .watchNotes()
-            .firstWhere(
-              (notes) => notes.any(
-                (n) => n.id == noteId && n.collaborators.length == 1,
-              ),
-            )
-            .timeout(patience);
-        final directory = guest.collaborators(noteId);
-        expect(directory.canManage, isFalse);
-        expect(directory.people.single.id, directory.currentDevice);
-        expect(directory.people.single.name, 'Anna');
         await _until(
           b.watch(),
           (view) =>
               view.title == 'Groceries' &&
               view.items.map((i) => i.text).join(',') == 'oat milk',
           'the guest was let in and never received the list',
+        );
+        final people = guest.people(noteId);
+        expect(people.canManage, isFalse);
+        expect(people.people.where((p) => p.me).single.name, 'Anna');
+        await _untilNotes(
+          guest.watchNotes(),
+          (notes) => notes.any(
+            (n) =>
+                n.id == noteId &&
+                n.collaborators.map((c) => c.name).contains('Olga'),
+          ),
+          'the guest cannot find the note by the person who shared it',
         );
 
         // And it is a membership, not a copy: an edit goes back.
@@ -343,30 +396,46 @@ void main() {
           (view) => view.items.single.checked,
           'the owner never saw the guest tick an item',
         );
+
+        // Removed: the note leaves the guest's device, with one message, and
+        // the owner carries on.
+        final anna = owner.people(noteId).people.firstWhere((p) => !p.owner);
+        await owner.removePerson(noteId, anna);
+        await _untilNotes(
+          guest.watchNotes(),
+          (notes) => notes.every((n) => n.id != noteId),
+          'the removed guest kept the note',
+        );
+        expect(guest.takeRemovals().single.title, 'Groceries');
+        await a.setTitle('Groceries, just us');
+        await _until(
+          a.watch(),
+          (view) => view.title == 'Groceries, just us',
+          'the owner could not carry on',
+        );
       },
     );
 
     test('a spent link says so to the next person', () async {
-      final (owner, _) = await open();
-      final noteId = owner.notes.single.id;
+      final (owner, _, noteId) = await owned();
       final invite = await owner.createInvite(noteId);
-      final first = await device();
-      final waiting = await first.requestJoin(invite.link, name: 'Anna');
+      final first = await person('Anna');
+      final waiting = await first.requestJoin(invite.link);
       final request = (await owner.inviteRequests(invite.id)).pending.single;
-      await owner.approveRequest(invite.id, request.id);
-      expect((await first.checkJoin(waiting.inviteId)).state, JoinState.joined);
+      await letIn(owner, noteId, invite, request);
+      expect((await joined(first, waiting.inviteId)).state, JoinState.joined);
 
-      final late = await device();
+      final late = await person('Late');
       await expectLater(
-        late.requestJoin(invite.link, name: 'Late'),
+        late.requestJoin(invite.link),
         throwsA(contains('already been used')),
       );
     });
 
     test('a withdrawn link is gone for the guest waiting on it', () async {
-      final (owner, _) = await open();
-      final invite = await owner.createInvite(owner.notes.single.id);
-      final guest = await device();
+      final (owner, _, noteId) = await owned();
+      final invite = await owner.createInvite(noteId);
+      final guest = await person('Anna');
       final waiting = await guest.requestJoin(invite.link);
 
       await owner.withdrawInvite(invite.id);
@@ -378,10 +447,10 @@ void main() {
     });
 
     test('a turned-away guest is told, and the link still works', () async {
-      final (owner, _) = await open();
-      final invite = await owner.createInvite(owner.notes.single.id);
-      final stranger = await device();
-      final waiting = await stranger.requestJoin(invite.link, name: 'Stranger');
+      final (owner, _, noteId) = await owned();
+      final invite = await owner.createInvite(noteId);
+      final stranger = await person('Stranger');
+      final waiting = await stranger.requestJoin(invite.link);
       final request = (await owner.inviteRequests(invite.id)).pending.single;
 
       await owner.declineRequest(invite.id, request.id);
@@ -390,10 +459,23 @@ void main() {
         (await stranger.checkJoin(waiting.inviteId)).state,
         JoinState.declined,
       );
-      final anna = await device();
-      await anna.requestJoin(invite.link, name: 'Anna');
+      final anna = await person('Anna');
+      await anna.requestJoin(invite.link);
       final asked = await owner.inviteRequests(invite.id);
       expect(asked.pending.single.name, 'Anna');
+    });
+
+    test('sharing asks for an account and a name first', () async {
+      final (owner, _) = await open();
+      await expectLater(
+        owner.createInvite(owner.notes.single.id),
+        throwsA(contains('no account')),
+      );
+      await owner.createAccount();
+      await expectLater(
+        owner.createInvite(owner.notes.single.id),
+        throwsA(contains('name')),
+      );
     });
   }, skip: skip);
 }

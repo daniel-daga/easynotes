@@ -34,37 +34,46 @@ FakeNoteLibrary twoLists() => FakeNoteLibrary(
 );
 
 void main() {
-  testWidgets(
-    'People filters use device identity and update after revocation',
-    (tester) async {
-      final library = twoLists();
-      library.setCollaborators(
-        'groceries',
-        const Collaborators(
-          canManage: true,
-          people: [Collaborator(id: 'anna', name: 'Anna')],
-        ),
-      );
-      library.setCollaborators(
-        'hardware',
-        const Collaborators(
-          canManage: true,
-          people: [Collaborator(id: 'another-anna', name: 'Anna')],
-        ),
-      );
-      await pumpList(tester, library);
-      await tester.tap(find.byKey(const Key('search-button')));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('filter-person-anna')));
-      await tester.tap(find.byKey(const Key('filter-person-anna')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('note:groceries')), findsOneWidget);
-      expect(find.byKey(const Key('note:hardware')), findsNothing);
-      await library.revokeCollaborators('groceries');
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('note:groceries')), findsNothing);
-    },
-  );
+  testWidgets('People filters are one per person and update after a removal', (
+    tester,
+  ) async {
+    final library = twoLists()..setUpSharing();
+    const anna = Person(member: 'anna', invite: 'i1', name: 'Anna');
+    library.setPeople(
+      'groceries',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          Person(member: 'me', invite: '', name: 'Olga', owner: true, me: true),
+          anna,
+        ],
+      ),
+    );
+    // Another account that also chose "Anna": another person.
+    library.setPeople(
+      'hardware',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          Person(member: 'me', invite: '', name: 'Olga', owner: true, me: true),
+          Person(member: 'another-anna', invite: 'i2', name: 'Anna'),
+        ],
+      ),
+    );
+    await pumpList(tester, library);
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('filter-person-anna')));
+    await tester.tap(find.byKey(const Key('filter-person-anna')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    await library.removePerson('groceries', anna);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note:groceries')), findsNothing);
+  });
   testWidgets('shows a card per note, newest first', (tester) async {
     await pumpList(tester, twoLists());
 
@@ -183,15 +192,12 @@ void main() {
       inviteBannerPollInterval = const Duration(milliseconds: 200);
     });
 
-    Future<void> ask(
-      WidgetTester tester,
-      String link, {
-      String name = '',
-    }) async {
+    Future<void> ask(WidgetTester tester, String link) async {
       await tester.tap(find.byKey(const Key('join-button')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('join-link-field')), link);
-      await tester.enterText(find.byKey(const Key('join-name-field')), name);
+      // The name is the account's: the button says it, and nothing asks.
+      expect(find.text('Ask to join as Anna'), findsOneWidget);
       await tester.tap(find.byKey(const Key('join-confirm')));
       // Not `pumpAndSettle`: the waiting dialog's progress bar never settles,
       // which is the point of it.
@@ -201,15 +207,12 @@ void main() {
     testWidgets('a link asks to join, waits, and opens the list once let in', (
       tester,
     ) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await pumpList(tester, library);
 
-      await ask(tester, '  easynotes://join#abc  ', name: 'Anna');
+      await ask(tester, '  easynotes://join#abc  ');
 
-      expect(
-        library.calls,
-        contains('requestJoin(easynotes://join#abc, Anna)'),
-      );
+      expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
       expect(find.byKey(const Key('join-code')), findsOneWidget);
       expect(find.text('123 456'), findsOneWidget);
 
@@ -225,7 +228,7 @@ void main() {
     });
 
     testWidgets('an empty link asks nothing', (tester) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await pumpList(tester, library);
 
       await ask(tester, '   ');
@@ -236,7 +239,7 @@ void main() {
     testWidgets('a link that is not one says why and stays open to fix', (
       tester,
     ) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await pumpList(tester, library);
 
       await ask(tester, 'AQIDBAUGBwgJCgsMDQ4PEBES');
@@ -247,7 +250,7 @@ void main() {
     });
 
     testWidgets('being turned away says so', (tester) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await pumpList(tester, library);
       await ask(tester, 'easynotes://join#abc');
 
@@ -260,7 +263,7 @@ void main() {
     });
 
     testWidgets('stopping the wait cancels the request', (tester) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await pumpList(tester, library);
       await ask(tester, 'easynotes://join#abc');
 
@@ -274,7 +277,7 @@ void main() {
     testWidgets('a request left waiting is let in from the banner', (
       tester,
     ) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       await library.requestJoin('easynotes://join#abc');
       await pumpList(tester, library);
 
@@ -292,7 +295,7 @@ void main() {
     testWidgets('someone asking on an invite is shown above the grid', (
       tester,
     ) async {
-      final library = twoLists();
+      final library = twoLists()..setUpSharing('Anna');
       final invite = await library.createInvite('groceries');
       library.fakeRequest(invite.id, name: 'Anna');
       await pumpList(tester, library);

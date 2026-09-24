@@ -78,6 +78,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  ApprovalView dco_decode_approval_view(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -85,9 +88,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CollaboratorView dco_decode_collaborator_view(dynamic raw);
-
-  @protected
-  CollaboratorsView dco_decode_collaborators_view(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -141,6 +141,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<PendingJoinView> dco_decode_list_pending_join_view(dynamic raw);
 
   @protected
+  List<PersonView> dco_decode_list_person_view(dynamic raw);
+
+  @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
   @protected
@@ -148,6 +151,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ReminderView> dco_decode_list_reminder_view(dynamic raw);
+
+  @protected
+  List<RemovalView> dco_decode_list_removal_view(dynamic raw);
 
   @protected
   List<SearchHitView> dco_decode_list_search_hit_view(dynamic raw);
@@ -192,10 +198,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PendingJoinView dco_decode_pending_join_view(dynamic raw);
 
   @protected
+  PeopleView dco_decode_people_view(dynamic raw);
+
+  @protected
+  PersonView dco_decode_person_view(dynamic raw);
+
+  @protected
   ReminderRepeat dco_decode_reminder_repeat(dynamic raw);
 
   @protected
   ReminderView dco_decode_reminder_view(dynamic raw);
+
+  @protected
+  RemovalView dco_decode_removal_view(dynamic raw);
 
   @protected
   RequestStateView dco_decode_request_state_view(dynamic raw);
@@ -298,6 +313,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  ApprovalView sse_decode_approval_view(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -305,9 +323,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   CollaboratorView sse_decode_collaborator_view(SseDeserializer deserializer);
-
-  @protected
-  CollaboratorsView sse_decode_collaborators_view(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -371,6 +386,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<PersonView> sse_decode_list_person_view(SseDeserializer deserializer);
+
+  @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
   @protected
@@ -380,6 +398,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ReminderView> sse_decode_list_reminder_view(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<RemovalView> sse_decode_list_removal_view(SseDeserializer deserializer);
 
   @protected
   List<SearchHitView> sse_decode_list_search_hit_view(
@@ -432,10 +453,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PendingJoinView sse_decode_pending_join_view(SseDeserializer deserializer);
 
   @protected
+  PeopleView sse_decode_people_view(SseDeserializer deserializer);
+
+  @protected
+  PersonView sse_decode_person_view(SseDeserializer deserializer);
+
+  @protected
   ReminderRepeat sse_decode_reminder_repeat(SseDeserializer deserializer);
 
   @protected
   ReminderView sse_decode_reminder_view(SseDeserializer deserializer);
+
+  @protected
+  RemovalView sse_decode_removal_view(SseDeserializer deserializer);
 
   @protected
   RequestStateView sse_decode_request_state_view(SseDeserializer deserializer);
@@ -549,6 +579,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_approval_view(ApprovalView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -560,12 +593,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_collaborator_view(
     CollaboratorView self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_collaborators_view(
-    CollaboratorsView self,
     SseSerializer serializer,
   );
 
@@ -645,6 +672,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_person_view(
+    List<PersonView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
@@ -656,6 +689,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_reminder_view(
     List<ReminderView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_removal_view(
+    List<RemovalView> self,
     SseSerializer serializer,
   );
 
@@ -726,6 +765,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_people_view(PeopleView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_person_view(PersonView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_reminder_repeat(
     ReminderRepeat self,
     SseSerializer serializer,
@@ -733,6 +778,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_reminder_view(ReminderView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_removal_view(RemovalView self, SseSerializer serializer);
 
   @protected
   void sse_encode_request_state_view(

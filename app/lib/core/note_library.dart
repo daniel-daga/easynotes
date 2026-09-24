@@ -440,30 +440,8 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   Future<void> setLayout(NoteLayout layout);
 
-  /// Whether this device belongs to an account, and so whether it has any way
-  /// of reaching this person's other devices.
-  bool get hasAccount;
-
-  /// Mint an account for this device and return its recovery phrase, word by
-  /// word, once.
-  ///
-  /// The twelve words are the whole of what makes two devices one person's.
-  /// They are not stored anywhere — not here, not on a relay, nowhere — so this
-  /// is the only moment they exist, and **a screen calling this owes the person
-  /// a backup check before the moment passes**. A phrase nobody wrote down is
-  /// the one state this design cannot recover from.
-  Future<List<String>> createAccount();
-
-  /// Adopt the account twelve words name, keeping what this device already has.
-  ///
-  /// Nothing appears at once. This makes the device able to open that person's
-  /// account document; the notes, their keys and their placements arrive over
-  /// the relay afterwards, and on a device with no relay named they wait.
-  ///
-  /// Throws with a message worth showing if the words are not a phrase — a
-  /// swapped pair or a typo is caught rather than silently opening an account
-  /// that has nothing in it.
-  Future<void> adoptAccount(String phrase);
+  // The account — twelve words and a name — is declared on [Accounts], which
+  // [Invites] implements: sharing is where a device first needs one.
 
   /// Start syncing every note with the relay at [url], and every note made or
   /// joined after this.

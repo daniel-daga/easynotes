@@ -125,7 +125,7 @@ impl Device {
         self.pump().await;
     }
 
-    async fn send(&mut self, envelope: &[u8]) {
+    pub async fn send(&mut self, envelope: &[u8]) {
         match self.sync.as_mut() {
             Some(sync) => sync.append(envelope).await.unwrap(),
             None => self.outbox.push(envelope.to_vec()),
@@ -133,22 +133,29 @@ impl Device {
     }
 
     /// Apply everything the relay has for us, then wait `QUIET` for more.
+    ///
+    /// Settles the note on `Caught`, as the engine does, and sends what
+    /// settling says to: a device joining a shared note gets its key there.
     pub async fn pump(&mut self) {
-        let Some(sync) = self.sync.as_mut() else {
-            return;
-        };
         loop {
+            let Some(sync) = self.sync.as_mut() else {
+                return;
+            };
             let next = tokio::time::timeout(QUIET, sync.next()).await;
-            let Ok(next) = next else { return }; // quiet: nothing more coming
+            let Ok(next) = next else {
+                // Quiet: nothing more coming. Every envelope after `Caught` is
+                // a settled batch of its own, so settle once more for them.
+                self.settle().await;
+                return;
+            };
             match next.unwrap() {
                 Some(Incoming::Envelope { envelope, .. }) => {
-                    self.core
-                        .apply_remote(self.note, &envelope)
-                        .unwrap_or_else(|e| {
-                            panic!("{} rejected an envelope from the relay: {e}", self.name)
-                        });
+                    match self.core.apply_remote(self.note, &envelope) {
+                        Ok(_) | Err(easynotes_core::CoreError::AccessPending) => {}
+                        Err(e) => panic!("{} rejected an envelope from the relay: {e}", self.name),
+                    }
                 }
-                Some(Incoming::Caught { .. }) => {}
+                Some(Incoming::Caught { .. }) => self.settle().await,
                 Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
                 None => {
@@ -156,6 +163,15 @@ impl Device {
                     return;
                 }
             }
+        }
+    }
+
+    /// What the engine does once the note is caught up: act on its access
+    /// packages, and send what that says to.
+    pub async fn settle(&mut self) {
+        let out = self.core.settle_note(self.note).unwrap();
+        for envelope in out.envelopes {
+            self.send(&envelope).await;
         }
     }
 

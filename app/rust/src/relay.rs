@@ -179,8 +179,9 @@ impl Connection {
         self.handle.publish_soon(envelope);
     }
 
-    pub fn rekey(&self, envelope: Vec<u8>) {
-        self.handle.rekey(envelope);
+    /// Act on the note's access packages now, if it is caught up.
+    pub fn settle(&self) {
+        self.handle.settle();
     }
 
     pub fn flush(&self) {

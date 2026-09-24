@@ -142,6 +142,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
   _Where _where = const _Where.shelf(_Shelf.notes);
   StreamSubscription<String>? _inviteSubscription;
 
+  /// Watches the list for notes this device was just removed from, to say so
+  /// once: “You no longer have access to ‘Groceries’.”
+  StreamSubscription<List<NoteSummary>>? _removalSubscription;
+
   /// The search box, when it is open, and what is in it.
   ///
   /// Not remembered the way the layout is: a colour is a decision about a note
@@ -168,15 +172,34 @@ class _NoteListScreenState extends State<NoteListScreen> {
   void initState() {
     super.initState();
     _inviteSubscription = widget.inviteLinks?.listen(_showJoinForLink);
+    _removalSubscription = widget.library.watchNotes().listen(
+      (_) => _sayRemovals(),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final link = widget.initialInviteLink;
       if (link != null) _showJoinForLink(link);
+      _sayRemovals();
     });
+  }
+
+  /// The one message a removed person sees. The note has already left every
+  /// device of theirs by the time it shows.
+  void _sayRemovals() {
+    if (!mounted) return;
+    for (final removal in widget.library.takeRemovals()) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          key: Key('removed-${removal.noteId}'),
+          content: Text(removal.message),
+        ),
+      );
+    }
   }
 
   @override
   void dispose() {
     _inviteSubscription?.cancel();
+    _removalSubscription?.cancel();
     _search.dispose();
     super.dispose();
   }
@@ -343,6 +366,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// usually on the phone to the person who sent it; closing it keeps the
   /// request, and [InviteBanners] keeps waiting where the dialog left off.
   Future<void> _join({String? initialLink}) async {
+    // Joining needs an account and a name; the first time, this asks for them
+    // and carries straight on.
+    if (!await ensureSharingSetUp(context, widget.library) || !mounted) return;
     final join = await showDialog<PendingJoin>(
       context: context,
       builder: (context) =>
@@ -366,8 +392,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// Answer whoever asked to join one of this device's lists.
   Future<void> _review(String noteId) => showDialog<void>(
     context: context,
-    builder: (context) =>
-        CollaboratorsDialog(invites: widget.library, noteId: noteId),
+    builder: (context) => ShareDialog(invites: widget.library, noteId: noteId),
   );
 
   /// A request that was waiting in the background was let in.

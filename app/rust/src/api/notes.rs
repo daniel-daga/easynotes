@@ -19,7 +19,7 @@ use crate::relay::{on_network, Connection, Device};
 use crate::storage::{Pending, Queue};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout, RepeatRule};
 use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId, ReminderId};
-use easynotes_core::invite::{GuestKey, InviteSecret};
+use easynotes_core::invite::InviteSecret;
 use easynotes_core::note::{NoteCore, NoteKind, OutgoingInvite, PendingJoin};
 use easynotes_core::store::{Keyring, MemoryKeyring, MemoryStore, OpStore};
 use easynotes_core::sync::invite::{self, Answer};
@@ -203,10 +203,37 @@ impl From<easynotes_core::collaborators::Collaborator> for CollaboratorView {
     }
 }
 
-pub struct CollaboratorsView {
-    pub people: Vec<CollaboratorView>,
+/// One person with access to a note, as the share screen lists them.
+pub struct PersonView {
+    /// The member ID: one per person, however many phones.
+    pub member: String,
+    /// The invite that let them in. Empty for the owner.
+    pub invite: String,
+    /// Chosen by the person. A label, not a verified identity.
+    pub name: String,
+    pub owner: bool,
+    /// The person looking at the screen.
+    pub me: bool,
+    /// Asked to be removed, and not yet: “Removing… finishes when you're
+    /// online”.
+    pub removing: bool,
+}
+
+/// Everybody with access to a note, and what is on its way.
+pub struct PeopleView {
+    /// Whether anyone but the owner has been let in.
+    pub shared: bool,
+    /// Only the owner adds and removes people.
     pub can_manage: bool,
-    pub current_device: String,
+    pub people: Vec<PersonView>,
+    /// People approved whose package has not yet taken effect.
+    pub adding: Vec<String>,
+}
+
+/// A note this device was removed from, for the one message it shows.
+pub struct RemovalView {
+    pub note: String,
+    pub title: String,
 }
 
 /// How a reminder repeats, mirrored for Flutter rather than exposing a core
@@ -755,20 +782,34 @@ impl easynotes_core::sync::SyncPeer for Peer {
     /// adopted this way has a key and nothing else — no log, no index entry, no
     /// card — so nothing else on this device would ever notice it, and its
     /// contents arrive only over a connection it does not yet have.
-    fn settled(&self, note: NoteId) -> easynotes_core::error::Result<()> {
-        {
+    ///
+    /// A note settling is when its access packages are acted on: a new key
+    /// switched to, an owner's change published, or this device's copy
+    /// deleted because the person was removed — after which the note has no
+    /// business keeping a connection, and the same retirement lets it go.
+    fn settled(
+        &self,
+        note: NoteId,
+    ) -> easynotes_core::error::Result<easynotes_core::note::Outgoing> {
+        let (out, reconnect) = {
             let mut core = self.open()?;
-            if core.account_id() != Some(note) {
-                return Ok(());
+            if core.account_id() == Some(note) {
+                core.adopt_note_keys()?;
+                (Default::default(), true)
+            } else {
+                let out = core.settle_note(note)?;
+                let removed = out.removed;
+                (out, removed)
             }
-            core.adopt_note_keys()?;
+        };
+        if reconnect {
+            if let Some(device) = self.device.upgrade() {
+                device
+                    .connect_new_documents()
+                    .map_err(easynotes_core::error::CoreError::Storage)?;
+            }
         }
-        if let Some(device) = self.device.upgrade() {
-            device
-                .connect_new_documents()
-                .map_err(easynotes_core::error::CoreError::Storage)?;
-        }
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -944,8 +985,10 @@ impl Shared {
         self.with_connection(note, |c| c.publish_soon(envelope));
     }
 
-    fn rekey(&self, note: NoteId, envelope: Vec<u8>) {
-        self.with_connection(note, |c| c.rekey(envelope));
+    /// Ask the engine to act on a note's access packages now, rather than at
+    /// the next arrival: an owner's change was just saved.
+    fn settle(&self, note: NoteId) {
+        self.with_connection(note, Connection::settle);
     }
 
     fn with_connection(&self, note: NoteId, then: impl FnOnce(&Connection)) {
@@ -1214,6 +1257,9 @@ pub struct JoinRequestView {
     /// False for a request that does not open under the invite's key: it was
     /// not made by anyone holding the link, and cannot be approved.
     pub readable: bool,
+    /// This person already has access, under another invite. Approving
+    /// changes nothing, and the screen says so.
+    pub already_member: bool,
 }
 
 pub struct InviteRequestsView {
@@ -1221,6 +1267,20 @@ pub struct InviteRequestsView {
     pub open: bool,
     pub expires_in_secs: u32,
     pub requests: Vec<JoinRequestView>,
+    /// An approval is on its way: the package that lets them in is being
+    /// published, and the answer goes once the relay has it.
+    pub letting_in: Option<String>,
+}
+
+/// Where an approval got to.
+pub enum ApprovalView {
+    /// They are in: the answer is with the relay.
+    Done,
+    /// Saved, and the package is on its way. The invite's next poll finishes
+    /// it.
+    Pending,
+    /// They already had access; nothing changed.
+    AlreadyMember,
 }
 
 /// A join request this device is waiting on.
@@ -1246,6 +1306,8 @@ pub enum JoinStateView {
     Waiting,
     /// Let in: the note is on this device and syncing.
     Joined,
+    /// Let in, and the note's key is still on its way.
+    Opening,
     /// Turned away.
     Declined,
     /// Expired, used by someone else, or withdrawn. `message` says which, as
@@ -1851,36 +1913,91 @@ impl Library {
         self.forget(id)
     }
 
-    /// Rotate a note's key and remove every collaborator while retaining the
-    /// creator's own account devices. This cannot erase a copy somebody already
-    /// decrypted; it prevents them from opening the rotated snapshot and every
-    /// later edit.
-    pub fn revoke_collaborators(&self, id: String) -> Result<(), String> {
+    /// Everybody with access to a note, owner first. What the share screen
+    /// lists; it shows no devices.
+    #[frb(sync)]
+    pub fn people(&self, id: String) -> Result<PeopleView, String> {
         let id = note_id(&id)?;
-        let envelope = self
-            .shared
+        let core = self.shared.locked()?;
+        let people = core.people(id).map_err(|e| e.to_string())?;
+        Ok(PeopleView {
+            shared: people.shared,
+            can_manage: people.can_manage,
+            people: people
+                .people
+                .into_iter()
+                .map(|p| PersonView {
+                    member: p.member,
+                    invite: p.invite,
+                    name: p.name,
+                    owner: p.owner,
+                    me: p.me,
+                    removing: p.removing,
+                })
+                .collect(),
+            adding: people.adding,
+        })
+    }
+
+    /// Remove one person. Saved at once, and made as soon as this device is
+    /// caught up with the note: offline, the row says “Removing…” until then.
+    /// Everyone else keeps the note and does nothing.
+    pub fn remove_person(&self, id: String, member: String, invite: String) -> Result<(), String> {
+        let id = note_id(&id)?;
+        self.shared
             .locked()?
-            .revoke_collaborators(id)
+            .remove_person(id, &member, &invite)
             .map_err(|e| e.to_string())?;
-        self.shared.rekey(id, envelope);
+        self.shared.settle(id);
         Ok(())
     }
 
-    #[frb(sync)]
-    pub fn collaborators(&self, id: String) -> Result<CollaboratorsView, String> {
-        let id = note_id(&id)?;
-        let mut core = self.shared.locked()?;
-        core.open_note(id).map_err(|e| e.to_string())?;
-        Ok(CollaboratorsView {
-            people: core
-                .collaborators(id)
+    /// Remove everyone but the owner, and cancel every open invite to the
+    /// note. The invites need the relay; a withdrawal that cannot reach it
+    /// leaves an invite that expires on its own and can no longer let anyone
+    /// in, because this device will not answer it.
+    pub async fn stop_sharing(&self, id: String) -> Result<(), String> {
+        let note = note_id(&id)?;
+        let invites = {
+            let mut core = self.shared.locked()?;
+            core.stop_sharing(note).map_err(|e| e.to_string())?;
+            core.invites()
                 .map_err(|e| e.to_string())?
                 .into_iter()
-                .map(Into::into)
-                .collect(),
-            can_manage: core.can_manage_collaborators(id),
-            current_device: core.device_key().encode(),
-        })
+                .filter(|i| i.note == note)
+                .collect::<Vec<_>>()
+        };
+        self.shared.settle(note);
+        let http = self.shared.http_base().ok();
+        for outgoing in invites {
+            if let Some(http) = http.clone() {
+                let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+                let _ = on_network(async move {
+                    invite::withdraw(&http, &secret, &owner)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            }
+            self.shared.forget_invite(&outgoing)?;
+        }
+        Ok(())
+    }
+
+    /// The notes this device was just removed from, each once, for the
+    /// message “You no longer have access to ‘Groceries’”.
+    #[frb(sync)]
+    pub fn take_removals(&self) -> Result<Vec<RemovalView>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .take_removals()
+            .into_iter()
+            .map(|(note, title)| RemovalView {
+                note: note.encode(),
+                title,
+            })
+            .collect())
     }
 
     /// Forget every note in the trash. Returns how many there were.
@@ -1972,6 +2089,20 @@ impl Library {
         Ok(words)
     }
 
+    /// The name this person shares under, once chosen. Asked once, as part of
+    /// setting up sharing, and the same on every device of the account.
+    #[frb(sync)]
+    pub fn profile_name(&self) -> Result<Option<String>, String> {
+        Ok(self.shared.locked()?.profile_name())
+    }
+
+    pub fn set_profile_name(&self, name: String) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_profile_name(&name)
+            .map_err(|e| e.to_string())
+    }
+
     /// Adopt the account twelve words name, keeping what this device already
     /// has.
     ///
@@ -2059,11 +2190,21 @@ impl Library {
 
     /// Who has asked to join through an invite, as the owner is shown them.
     ///
-    /// An invite the relay no longer has, or that has closed, is forgotten
-    /// here on the way: there is nothing more it can be used for, and a list of
-    /// open invites that included it would be a list of things to wonder about.
+    /// Also where an approval that was interrupted — the app closed while its
+    /// package was on the way — is finished: the invite's screen polls this,
+    /// and so does the note list.
+    ///
+    /// An invite the relay no longer has, or that has closed with nothing of
+    /// this device's left to finish, is forgotten here on the way.
     pub async fn invite_requests(&self, invite: String) -> Result<InviteRequestsView, String> {
         let outgoing = self.shared.outgoing(&invite)?;
+        let letting_in = outgoing
+            .approval
+            .as_ref()
+            .map(|(_, join)| join.name.clone());
+        if outgoing.approval.is_some() {
+            self.finish_approval(&outgoing).await?;
+        }
         let http = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
         // The relay saying no is an answer and a network failing is not, and
@@ -2083,26 +2224,26 @@ impl Library {
                 return Err(message);
             }
         };
-        if !listing.open {
-            for request in &listing.requests {
-                if matches!(request.state, RequestState::Approved) {
-                    if let Some(join) = &request.join {
-                        let envelope = self
-                            .shared
-                            .locked()?
-                            .record_collaborator(&outgoing, join)
-                            .map_err(|e| e.to_string())?;
-                        if let Some(envelope) = envelope {
-                            self.shared.publish(outgoing.note, envelope);
-                        }
-                    }
-                }
-            }
+        let still_ours = self
+            .shared
+            .locked()?
+            .invites()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|i| i.secret.id() == outgoing.secret.id() && i.approval.is_some());
+        if !listing.open && !still_ours {
             self.shared.forget_invite(&outgoing)?;
         }
+        let members: Vec<String> = self
+            .shared
+            .locked()?
+            .people(outgoing.note)
+            .map(|p| p.people.into_iter().map(|p| p.member).collect())
+            .unwrap_or_default();
         Ok(InviteRequestsView {
             open: listing.open,
             expires_in_secs: clamp_secs(listing.expires_in),
+            letting_in: if still_ours { letting_in } else { None },
             requests: listing
                 .requests
                 .iter()
@@ -2116,26 +2257,34 @@ impl Library {
                         .unwrap_or_default(),
                     state: r.state.into(),
                     readable: r.join.is_some(),
+                    already_member: r
+                        .join
+                        .as_ref()
+                        .is_some_and(|j| members.contains(&j.member.encode())),
                 })
                 .collect(),
         })
     }
 
-    /// Let the person who made `request` in: seal the note to them and close
-    /// the invite. Every other request on it is declined by the relay.
-    pub async fn approve_request(&self, invite: String, request: String) -> Result<(), String> {
+    /// Let the person who made `request` in (ADR 0023 §3): save the approval,
+    /// publish the package that adds them, and — once the relay has it —
+    /// answer the invite. Every other request on it is declined by the relay.
+    ///
+    /// `Pending` when the package is still on its way; the invite's next poll
+    /// finishes the job, and so does a relaunch.
+    pub async fn approve_request(
+        &self,
+        invite: String,
+        request: String,
+    ) -> Result<ApprovalView, String> {
         let outgoing = self.shared.outgoing(&invite)?;
         let http = self.shared.http_base()?;
 
         // The request is fetched again rather than taken from the screen, so
-        // what is sealed to is exactly what the relay holds under that name.
-        let (secret, owner, base) = (
-            outgoing.secret.clone(),
-            outgoing.owner.clone(),
-            http.clone(),
-        );
+        // what is saved is exactly what the relay holds under that name.
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
         let listing = on_network(async move {
-            invite::list(&base, &secret, &owner)
+            invite::list(&http, &secret, &owner)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2148,27 +2297,58 @@ impl Library {
             .join
             .ok_or("That request cannot be read, so it cannot be approved.")?;
 
-        let grant = {
-            let core = self.shared.locked()?;
-            core.seal_grant(&outgoing, &join)
-                .map_err(|e| e.to_string())?
-        };
-        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        on_network(async move {
-            invite::approve(&http, &secret, &owner, &request, &grant)
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await?;
-        let envelope = self
+        let approved = self
             .shared
             .locked()?
-            .record_collaborator(&outgoing, &join)
+            .approve(outgoing.secret.id(), &request, &join)
             .map_err(|e| e.to_string())?;
-        if let Some(envelope) = envelope {
-            self.shared.publish(outgoing.note, envelope);
+        self.shared.settle(outgoing.note);
+        let outgoing = self.shared.outgoing(&invite)?;
+        let done = self.finish_approval(&outgoing).await?;
+        Ok(match (approved, done) {
+            (easynotes_core::note::Approved::AlreadyHasAccess, _) => ApprovalView::AlreadyMember,
+            (_, true) => ApprovalView::Done,
+            (_, false) => ApprovalView::Pending,
+        })
+    }
+
+    /// Answer an approved request once the package letting them in is on the
+    /// relay, and forget the invite. `false` while the package is still on its
+    /// way.
+    async fn finish_approval(&self, outgoing: &OutgoingInvite) -> Result<bool, String> {
+        let Some((request, join)) = outgoing.approval.clone() else {
+            return Ok(false);
+        };
+        let answer = {
+            let mut core = self.shared.locked()?;
+            // Approving again is how an interrupted approval resumes: it puts
+            // back whatever of it a crash lost.
+            core.approve(outgoing.secret.id(), &request, &join)
+                .map_err(|e| e.to_string())?;
+            core.approval_answer(outgoing.secret.id())
+                .map_err(|e| e.to_string())?
+        };
+        let Some(answer) = answer else {
+            self.shared.settle(outgoing.note);
+            return Ok(false);
+        };
+        let http = self.shared.http_base()?;
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        let answered = on_network(async move {
+            Ok(invite::approve(&http, &secret, &owner, &request, &answer)
+                .await
+                .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
+        })
+        .await?;
+        match answered {
+            // Already answered is as good as answered: a crash after the relay
+            // took it and before this device forgot the row.
+            Ok(()) | Err((true, _)) => {
+                self.shared.forget_invite(outgoing)?;
+                Ok(true)
+            }
+            Err((false, message)) => Err(message),
         }
-        self.shared.forget_invite(&outgoing)
     }
 
     /// Turn a request away. The invite stays open for someone else.
@@ -2203,23 +2383,19 @@ impl Library {
         }
     }
 
-    /// Ask to join through a link, calling yourself `name` to the owner.
+    /// Ask to join through a link, under the name this account shares with.
     ///
     /// Returns what to show while waiting, including the six digits the owner
     /// will see beside the request.
-    pub async fn request_join(
-        &self,
-        link: String,
-        name: String,
-    ) -> Result<PendingJoinView, String> {
+    pub async fn request_join(&self, link: String) -> Result<PendingJoinView, String> {
         let secret = InviteSecret::from_link(&link).map_err(|e| e.to_string())?;
         let http = self.shared.http_base()?;
-        let guest = GuestKey::random();
-        let sealed_request = self
-            .shared
-            .locked()?
-            .seal_join_request(&secret, &guest, &name)
-            .map_err(|e| e.to_string())?;
+        let (sealed_request, member, name) = {
+            let core = self.shared.locked()?;
+            let sealed = core.seal_join_request(&secret).map_err(|e| e.to_string())?;
+            let member = core.member().map_err(|e| e.to_string())?.id();
+            (sealed, member, core.profile_name().unwrap_or_default())
+        };
         let (s, payload) = (secret.clone(), sealed_request);
         let request = on_network(async move {
             invite::request(&http, &s, &payload)
@@ -2230,8 +2406,8 @@ impl Library {
         let join = PendingJoin {
             secret,
             request,
-            guest,
-            name: name.trim().to_string(),
+            member,
+            name,
         };
         self.shared
             .locked()?
@@ -2253,25 +2429,24 @@ impl Library {
     }
 
     /// Ask the relay how a join request went, and act on the answer: an
-    /// approved one adds the note and starts syncing it; a declined, expired
-    /// or withdrawn one stops being waited on.
+    /// approved one records the note in this person's account and follows it
+    /// until its key arrives; a declined, expired or withdrawn one stops being
+    /// waited on.
     pub async fn check_join(&self, invite: String) -> Result<JoinCheckView, String> {
-        let join = {
+        let (join, member) = {
             let core = self.shared.locked()?;
-            core.joins()
+            let join = core
+                .joins()
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .find(|j| j.secret.id().encode() == invite)
-                .ok_or("This device is not waiting on that invite.")?
+                .ok_or("This device is not waiting on that invite.")?;
+            (join, core.member().map_err(|e| e.to_string())?)
         };
         let http = self.shared.http_base()?;
-        let (secret, guest, request) = (
-            join.secret.clone(),
-            join.guest.clone(),
-            join.request.clone(),
-        );
+        let (secret, request) = (join.secret.clone(), join.request.clone());
         let answer = on_network(async move {
-            match invite::poll(&http, &secret, &guest, &request).await {
+            match invite::poll(&http, &secret, &member, &request).await {
                 Ok(answer) => Ok(Ok(answer)),
                 Err(CoreError::Invite(message)) => Ok(Err(message)),
                 Err(other) => Err(other.to_string()),
@@ -2281,18 +2456,25 @@ impl Library {
         let id = join.secret.id();
         match answer {
             Ok(Answer::Pending { .. }) => Ok(JoinCheckView::waiting()),
-            Ok(Answer::Approved {
-                note,
-                key,
-                owner,
-                generation,
-            }) => {
-                let note = {
+            Ok(Answer::Approved { note, owner }) => {
+                let readable = {
                     let mut core = self.shared.locked()?;
-                    core.accept_owned_grant(id, note, key, owner, generation)
-                        .map_err(|e| e.to_string())?
+                    core.accept_answer(id, note, owner)
+                        .map_err(|e| e.to_string())?;
+                    core.can_open(note)
                 };
-                self.shared.connect_note(note)?;
+                self.shared.connect_new_documents()?;
+                if !readable {
+                    return Ok(JoinCheckView {
+                        state: JoinStateView::Opening,
+                        note: Some(note.encode()),
+                        message: None,
+                    });
+                }
+                self.shared
+                    .locked()?
+                    .forget_join(id)
+                    .map_err(|e| e.to_string())?;
                 Ok(JoinCheckView {
                     state: JoinStateView::Joined,
                     note: Some(note.encode()),
@@ -2579,8 +2761,13 @@ impl Note {
         self.status.send_replace(unchanged);
         // Closed: the note's channel went with the core, and its watcher with
         // that — as for [`Library::stop_watching`].
+        // A note that is gone — deleted, or this person was removed from it —
+        // took its channel with it, which ended the watcher already.
         match self.shared.locked() {
-            Ok(core) => core.touch(self.id).map_err(|e| e.to_string()),
+            Ok(core) => match core.touch(self.id) {
+                Err(CoreError::UnknownNote(_)) => Ok(()),
+                other => other.map_err(|e| e.to_string()),
+            },
             Err(_) => Ok(()),
         }
     }
@@ -2594,6 +2781,27 @@ impl Note {
     }
 
     // -- edits --------------------------------------------------------------
+
+    /// Hand an edit to the relay — unless a removal is waiting to be made, when
+    /// it stays in the log: it is under the key the person being removed holds,
+    /// and it reaches everyone else inside the removal's package instead
+    /// (ADR 0023 §6).
+    fn send(&self, envelope: Vec<u8>, soon: bool) {
+        let holding = self
+            .shared
+            .locked()
+            .ok()
+            .and_then(|core| core.holds_back(self.id).ok())
+            .unwrap_or(false);
+        if holding {
+            return;
+        }
+        if soon {
+            self.shared.publish_soon(self.id, envelope);
+        } else {
+            self.shared.publish(self.id, envelope);
+        }
+    }
     //
     // Each one applies the edit locally and hands the sealed envelope to the
     // relay. The local half is what the UI sees, and it never waits for the
@@ -2616,7 +2824,7 @@ impl Note {
             let mut core = self.shared.locked()?;
             core.set_title(self.id, title).map_err(|e| e.to_string())?
         };
-        self.shared.publish_soon(self.id, envelope);
+        self.send(envelope, true);
         Ok(())
     }
 
@@ -2630,7 +2838,7 @@ impl Note {
                 .map_err(|e| e.to_string())?
         };
         if let Some(envelope) = envelope {
-            self.shared.publish_soon(self.id, envelope);
+            self.send(envelope, true);
         }
         Ok(())
     }
@@ -2644,7 +2852,7 @@ impl Note {
                 .map_err(|e| e.to_string())?
         };
         if let Some(envelope) = envelope {
-            self.shared.publish(self.id, envelope);
+            self.send(envelope, false);
         }
         Ok(())
     }
@@ -2654,7 +2862,7 @@ impl Note {
             let mut core = self.shared.locked()?;
             core.add_item(self.id, text).map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.send(envelope, false);
         Ok(id.encode())
     }
 
@@ -2664,7 +2872,7 @@ impl Note {
             core.set_item_text(self.id, item_id(&item)?, text)
                 .map_err(|e| e.to_string())?
         };
-        self.shared.publish_soon(self.id, envelope);
+        self.send(envelope, true);
         Ok(())
     }
 
@@ -2674,7 +2882,7 @@ impl Note {
             core.set_checked(self.id, item_id(&item)?, checked)
                 .map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.send(envelope, false);
         Ok(())
     }
 
@@ -2684,7 +2892,7 @@ impl Note {
             core.move_item(self.id, item_id(&item)?, to_index as usize)
                 .map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.send(envelope, false);
         Ok(())
     }
 
@@ -2694,7 +2902,7 @@ impl Note {
             core.remove_item(self.id, item_id(&item)?)
                 .map_err(|e| e.to_string())?
         };
-        self.shared.publish(self.id, envelope);
+        self.send(envelope, false);
         Ok(())
     }
 }

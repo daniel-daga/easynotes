@@ -17,7 +17,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
-import '../core/note_library.dart';
+import '../core/invites.dart';
 
 /// How many words the backup check asks for.
 ///
@@ -31,7 +31,7 @@ const backupCheckWords = 3;
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key, required this.library, this.ask});
 
-  final NoteLibrary library;
+  final Accounts library;
 
   /// Which words the backup check asks for, 1-based. Random when null, which
   /// is always outside a test.
@@ -93,6 +93,23 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
+  /// The name people this person shares with see. Changing it here changes
+  /// what later requests carry; a note they already joined keeps the name it
+  /// was approved under.
+  Future<void> _changeName() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => NameDialog(initial: widget.library.profileName),
+    );
+    if (name == null || !mounted) return;
+    try {
+      await widget.library.setProfileName(name);
+    } catch (e) {
+      if (mounted) _say('$e');
+    }
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final has = widget.library.hasAccount;
@@ -117,6 +134,21 @@ class _AccountScreenState extends State<AccountScreen> {
                   'device you set up with your recovery phrase. The phrase is '
                   'not kept anywhere, so it cannot be shown again — the copy '
                   'you wrote down is the only one.',
+                ),
+                SizedBox(height: 16),
+                ListTile(
+                  key: const Key('profile-name'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.badge_outlined),
+                  title: Text(widget.library.profileName ?? 'No name yet'),
+                  subtitle: const Text('What people you share notes with see'),
+                  trailing: TextButton(
+                    key: const Key('change-name'),
+                    onPressed: _changeName,
+                    child: Text(
+                      widget.library.profileName == null ? 'Set' : 'Change',
+                    ),
+                  ),
                 ),
               ]
             : [
@@ -404,7 +436,7 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
 class AdoptAccountScreen extends StatefulWidget {
   const AdoptAccountScreen({super.key, required this.library});
 
-  final NoteLibrary library;
+  final Accounts library;
 
   @override
   State<AdoptAccountScreen> createState() => _AdoptAccountScreenState();
@@ -491,6 +523,66 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Asks for the name this person shares under, once, as part of setting up
+/// sharing. It is stored in the account, so every device of theirs asks to
+/// join under the same one.
+class NameDialog extends StatefulWidget {
+  const NameDialog({super.key, this.initial});
+
+  final String? initial;
+
+  @override
+  State<NameDialog> createState() => _NameDialogState();
+}
+
+class _NameDialogState extends State<NameDialog> {
+  late final _name = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final name = _name.text.trim();
+    if (name.isEmpty) return;
+    Navigator.of(context).pop(name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Your name'),
+      content: TextField(
+        key: const Key('profile-name-field'),
+        controller: _name,
+        autofocus: true,
+        maxLength: 32,
+        decoration: const InputDecoration(
+          labelText: 'Name',
+          helperText: 'Shown to the people you share notes with.',
+        ),
+        onSubmitted: (_) => _save(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ListenableBuilder(
+          listenable: _name,
+          builder: (context, _) => FilledButton(
+            key: const Key('profile-name-save'),
+            onPressed: _name.text.trim().isEmpty ? null : _save,
+            child: const Text('Continue'),
+          ),
+        ),
+      ],
     );
   }
 }

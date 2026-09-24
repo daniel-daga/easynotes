@@ -138,11 +138,16 @@ class _NoteScreenState extends State<NoteScreen> {
     _focusForItem(id).requestFocus();
   }
 
-  Future<void> _share() => showDialog<void>(
-    context: context,
-    builder: (context) =>
-        CollaboratorsDialog(invites: widget.invites, noteId: widget.noteId),
-  );
+  /// Share: the first time, set up an account and a name, then straight on
+  /// to the people on this note and the link that adds one more.
+  Future<void> _share() async {
+    if (!await ensureSharingSetUp(context, widget.invites) || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) =>
+          ShareDialog(invites: widget.invites, noteId: widget.noteId),
+    );
+  }
 
   Future<void> _shareContent(NoteView note) => showDialog<void>(
     context: context,
@@ -380,7 +385,7 @@ class _NoteScreenState extends State<NoteScreen> {
             IconButton(
               key: const Key('share-button'),
               icon: const Icon(Icons.person_add_outlined),
-              tooltip: 'Add collaborators',
+              tooltip: 'Share',
               onPressed: _share,
             ),
           ],

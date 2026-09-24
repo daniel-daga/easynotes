@@ -9,10 +9,10 @@ Future<bool> shareContent(String text) async {
     if (!navigator.canShare(data)) return false;
     await navigator.share(data).toDart;
     return true;
-  } on web.DOMException catch (error) {
-    if (error.name == 'AbortError') return true;
-    return false;
-  } catch (_) {
-    return false;
+  } catch (error) {
+    // A person closing the share sheet is not a failure. Read by name rather
+    // than by a type test, which cannot see a JS type the same way on every
+    // compiler.
+    return error.toString().contains('AbortError');
   }
 }

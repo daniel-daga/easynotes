@@ -1,15 +1,19 @@
-/// Sharing a note with another person, from both ends.
+/// Sharing a note with other people, from both ends.
 ///
-/// The owner's side is [CollaboratorsDialog]: make a link, send it however they like,
-/// and let in whoever asks — after checking the six digits, if they are
-/// careful. The guest's side is [JoinDialog] and [WaitingDialog]: paste the
-/// link, say who you are, and wait to be let in. [InviteBanners] is what sits
-/// above the grid while either side is waiting, so that closing a dialog does
-/// not mean missing the answer.
+/// The owner's side is [ShareDialog]: copy a link, send it however they like,
+/// approve whoever asks with one tap, and remove anyone later. The guest's
+/// side is [JoinDialog] and [WaitingDialog]: paste the link, ask to join under
+/// the name the account shares with, and wait to be let in. [InviteBanners] is
+/// what sits above the grid while either side is waiting, so that closing a
+/// dialog does not mean missing the answer.
 ///
-/// All of it polls. There is no push channel yet — push wake-ups are out of
-/// scope for this slice — and a person waiting on someone else is looking at
-/// the screen anyway. The polls stop when the widget goes.
+/// Sharing needs an account — shared notes belong to it, which is how they
+/// come back on a new phone — so the first time either side starts,
+/// [ensureSharingSetUp] asks for one, and a name, and carries straight on.
+///
+/// All of it polls. There is no push channel yet, and a person waiting on
+/// someone else is looking at the screen anyway. The polls stop when the
+/// widget goes.
 library;
 
 import 'dart:async';
@@ -19,6 +23,7 @@ import 'package:flutter/services.dart';
 
 import '../core/invite_links.dart';
 import '../core/invites.dart';
+import 'account_screen.dart';
 
 /// How often a screen that is waiting asks the relay. Short, because somebody
 /// is looking at it; a variable, so a widget test can make it shorter still.
@@ -34,121 +39,165 @@ String _days(Duration left) {
   return 'a moment';
 }
 
-/// Everything the owner of a note does about inviting someone to it.
-class CollaboratorsDialog extends StatefulWidget {
-  const CollaboratorsDialog({
-    super.key,
-    required this.invites,
-    required this.noteId,
-  });
+enum _Setup { create, restore }
+
+/// Make sure this device can share: an account, then a name. Asked once, and
+/// only when somebody taps Share or opens a link; `false` if they said not
+/// now.
+///
+/// [ask] picks the backup check's words, for a test.
+Future<bool> ensureSharingSetUp(
+  BuildContext context,
+  Accounts accounts, {
+  List<int>? ask,
+}) async {
+  if (!accounts.hasAccount) {
+    final choice = await showModalBottomSheet<_Setup>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => const SharingSetupSheet(),
+    );
+    if (choice == null || !context.mounted) return false;
+    switch (choice) {
+      case _Setup.create:
+        final List<String> words;
+        try {
+          words = await accounts.createAccount();
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.maybeOf(
+              context,
+            )?.showSnackBar(SnackBar(content: Text('$e')));
+          }
+          return false;
+        }
+        if (!context.mounted) return false;
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (context) => RecoveryPhraseScreen(words: words, ask: ask),
+          ),
+        );
+      case _Setup.restore:
+        final adopted = await Navigator.of(context).push<bool>(
+          MaterialPageRoute<bool>(
+            builder: (context) => AdoptAccountScreen(library: accounts),
+          ),
+        );
+        if (adopted != true) return false;
+    }
+    if (!context.mounted) return false;
+  }
+  if (accounts.profileName == null) {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => const NameDialog(),
+    );
+    if (name == null) return false;
+    await accounts.setProfileName(name);
+  }
+  return true;
+}
+
+/// The one sheet a device without an account sees before it shares or joins.
+class SharingSetupSheet extends StatelessWidget {
+  const SharingSetupSheet({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Set up sharing',
+              key: const Key('setup-sharing-title'),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Shared notes belong to your account, so they come back if you '
+              'get a new phone. Your account is twelve words you write down '
+              'once.',
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              key: const Key('setup-sharing'),
+              onPressed: () => Navigator.of(context).pop(_Setup.create),
+              child: const Text('Set up'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              key: const Key('setup-restore'),
+              onPressed: () => Navigator.of(context).pop(_Setup.restore),
+              child: const Text('I already have twelve words'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              key: const Key('setup-not-now'),
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Not now'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Everybody on a note, and everything its owner does about who is.
+class ShareDialog extends StatefulWidget {
+  const ShareDialog({super.key, required this.invites, required this.noteId});
 
   final Invites invites;
   final String noteId;
 
   @override
-  State<CollaboratorsDialog> createState() => _CollaboratorsDialogState();
+  State<ShareDialog> createState() => _ShareDialogState();
 }
 
-class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
-  Collaborators? _directory;
-  String? _directoryError;
-  Timer? _directoryPoll;
+class _ShareDialogState extends State<ShareDialog> {
+  People? _people;
   Invite? _invite;
   InviteRequests? _requests;
   String? _error;
 
-  /// Who was let in, for the line that says so once the invite has closed.
-  String? _admitted;
-  bool _revoked = false;
+  /// What the last gesture came to: “Anna can open this note now.”
+  String? _notice;
   bool _busy = false;
   Timer? _poll;
 
   @override
   void initState() {
     super.initState();
-    _loadDirectory();
-    _directoryPoll = Timer.periodic(invitePollInterval, (_) {
-      if (mounted) setState(_loadDirectory);
-    });
+    _loadPeople();
     // The newest open invite, if this note has one: a person who closed the
     // dialog and came back should find the link they sent, not a new one.
     final open = widget.invites.invitesFor(widget.noteId);
-    if (open.isNotEmpty) _watch(open.last);
+    if (open.isNotEmpty) _invite = open.last;
+    _poll = Timer.periodic(invitePollInterval, (_) => _tick());
+    _refresh();
   }
 
   @override
   void dispose() {
-    _directoryPoll?.cancel();
     _poll?.cancel();
     super.dispose();
   }
 
-  void _loadDirectory() {
+  void _loadPeople() {
     try {
-      _directory = widget.invites.collaborators(widget.noteId);
-      _directoryError = null;
-    } catch (_) {
-      _directory = null;
-      _directoryError = 'Could not load collaborators. Retrying…';
+      _people = widget.invites.people(widget.noteId);
+    } catch (e) {
+      _error = '$e';
     }
   }
 
-  List<Widget> _people() {
-    final directory = _directory;
-    if (directory == null) {
-      return [Text(_directoryError ?? 'Loading collaborators…')];
-    }
-    return [
-      Text('Who has access', style: Theme.of(context).textTheme.titleSmall),
-      ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-        title: Text(directory.canManage ? 'You' : 'Note owner'),
-        subtitle: const Text('Owner · manages access'),
-      ),
-      for (final person in directory.people)
-        ListTile(
-          key: Key('collaborator-${person.id}'),
-          contentPadding: EdgeInsets.zero,
-          leading: CircleAvatar(child: Text(person.initials)),
-          title: Text(
-            '${person.displayName}${person.id == directory.currentDevice ? ' (you)' : ''}',
-          ),
-          subtitle: Text(
-            'Can edit · Device ${person.id.length > 8 ? person.id.substring(0, 8) : person.id}',
-          ),
-        ),
-      if (!directory.canManage &&
-          !directory.people.any((p) => p.id == directory.currentDevice))
-        const ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: CircleAvatar(child: Icon(Icons.person_outline)),
-          title: Text('You'),
-          subtitle: Text('Can edit'),
-        ),
-      if (directory.people.isEmpty)
-        const Text(
-          'No collaborators recorded yet.',
-          key: Key('collaborators-empty'),
-        ),
-      const SizedBox(height: 8),
-      Text(
-        'Names are chosen by collaborators. Each entry is one device. Older shares may not appear in this list.',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      if (_directoryError != null) Text(_directoryError!),
-      if (!directory.canManage) ...[
-        const SizedBox(height: 12),
-        const Text('Only the owner can add collaborators or remove access.'),
-      ],
-      const Divider(height: 28),
-    ];
-  }
-
-  void _watch(Invite invite) {
-    _invite = invite;
-    _poll?.cancel();
-    _poll = Timer.periodic(invitePollInterval, (_) => _refresh());
+  void _tick() {
+    if (!mounted) return;
+    setState(_loadPeople);
     _refresh();
   }
 
@@ -160,33 +209,25 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
       if (!mounted || _invite != invite) return;
       setState(() {
         _requests = requests;
-        _error = null;
-        if (!requests.open) {
-          _poll?.cancel();
-          if (_admitted == null) {
-            final approved = requests.requests
-                .where((r) => r.state == JoinRequestState.approved)
-                .firstOrNull;
-            if (approved == null) {
-              _error = 'This invite has expired.';
-            } else {
-              _admitted = approved.name;
-            }
-          }
+        _loadPeople();
+        if (!requests.open && requests.lettingIn == null) {
           _invite = null;
+          _requests = null;
         }
       });
     } catch (e) {
       if (!mounted || _invite != invite) return;
       // Offline is the ordinary case and the next tick will try again; an
       // invite the relay has lost is not, and the core has forgotten it.
-      setState(() => _error = '$e');
-      if (widget.invites
-          .invitesFor(widget.noteId)
-          .every((i) => i.id != invite.id)) {
-        _poll?.cancel();
-        setState(() => _invite = null);
-      }
+      setState(() {
+        _error = '$e';
+        if (widget.invites
+            .invitesFor(widget.noteId)
+            .every((i) => i.id != invite.id)) {
+          _invite = null;
+          _requests = null;
+        }
+      });
     }
   }
 
@@ -203,32 +244,56 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
       if (mounted) {
         setState(() {
           _busy = false;
-          _loadDirectory();
+          _loadPeople();
         });
       }
     }
   }
 
-  Future<void> _create() => _act(() async {
-    final invite = await widget.invites.createInvite(widget.noteId);
+  String _link(Invite invite) => inviteLinkForSharing(
+    invite.link,
+    webOrigin: Uri.base.replace(query: '', fragment: '').toString(),
+  );
+
+  /// Copy the link, making it first if there is none open.
+  Future<void> _copyLink() => _act(() async {
+    final invite = _invite ?? await widget.invites.createInvite(widget.noteId);
     if (!mounted) return;
     setState(() {
-      _admitted = null;
-      _revoked = false;
-      _requests = null;
-      _error = null;
+      _invite = invite;
+      _notice = null;
     });
-    _watch(invite);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    // The link is on screen whatever the clipboard does: a platform without
+    // one still lets it be copied by hand.
+    unawaited(
+      Clipboard.setData(ClipboardData(text: _link(invite))).then(
+        (_) => messenger?.showSnackBar(
+          const SnackBar(content: Text('Link copied')),
+        ),
+        onError: (_) => null,
+      ),
+    );
+    await _refresh();
   });
 
   Future<void> _approve(JoinRequest request) => _act(() async {
-    await widget.invites.approveRequest(_invite!.id, request.id);
+    final approval = await widget.invites.approveRequest(
+      _invite!.id,
+      request.id,
+    );
     if (!mounted) return;
-    _poll?.cancel();
+    final name = request.name.isEmpty ? 'They' : request.name;
     setState(() {
-      _admitted = request.name;
-      _invite = null;
-      _requests = null;
+      _notice = switch (approval) {
+        Approval.done => '$name can open this note now.',
+        Approval.pending => 'Letting $name in… finishes when you\'re online.',
+        Approval.alreadyMember => '$name already has access. Nothing changed.',
+      };
+      if (approval != Approval.pending) {
+        _invite = null;
+        _requests = null;
+      }
     });
   });
 
@@ -240,50 +305,99 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
   Future<void> _withdraw() => _act(() async {
     await widget.invites.withdrawInvite(_invite!.id);
     if (!mounted) return;
-    _poll?.cancel();
     setState(() {
       _invite = null;
       _requests = null;
     });
   });
 
-  Future<void> _revoke() async {
+  Future<bool> _confirm({
+    required String title,
+    required String body,
+    required String action,
+    required String keyName,
+  }) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Remove everyone else?'),
-        content: const Text(
-          'They will lose this note and cannot read new changes. This cannot '
-          'erase anything they already copied or decrypted.',
-        ),
+        title: Text(title),
+        content: Text(body),
         actions: [
           TextButton(
-            key: const Key('cancel-revoke'),
+            key: Key('cancel-$keyName'),
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Keep sharing'),
+            child: const Text('Cancel'),
           ),
           FilledButton(
-            key: const Key('confirm-revoke'),
+            key: Key('confirm-$keyName'),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Remove everyone'),
+            child: Text(action),
           ),
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    return confirmed == true && mounted;
+  }
+
+  Future<void> _remove(Person person) async {
+    final name = person.displayName;
+    if (!await _confirm(
+      title: 'Remove $name?',
+      body:
+          '$name will lose this note on every device. Anything $name already '
+          'saved or copied can\'t be taken back.',
+      action: 'Remove',
+      keyName: 'remove',
+    )) {
+      return;
+    }
+    await _act(() => widget.invites.removePerson(widget.noteId, person));
+  }
+
+  Future<void> _stopSharing() async {
+    if (!await _confirm(
+      title: 'Stop sharing?',
+      body:
+          'Everyone else will lose this note on every device. Anything they '
+          'already saved or copied can\'t be taken back.',
+      action: 'Stop sharing',
+      keyName: 'stop-sharing',
+    )) {
+      return;
+    }
     await _act(() async {
-      final invite = _invite;
-      if (invite != null) await widget.invites.withdrawInvite(invite.id);
-      await widget.invites.revokeCollaborators(widget.noteId);
+      await widget.invites.stopSharing(widget.noteId);
       if (!mounted) return;
-      _poll?.cancel();
       setState(() {
         _invite = null;
         _requests = null;
-        _admitted = null;
-        _revoked = true;
+        _notice = null;
       });
     });
+  }
+
+  Widget _person(Person person, bool canManage) {
+    final subtitle = person.removing
+        ? 'Removing… finishes when you\'re online'
+        : person.owner
+        ? 'Owner'
+        : null;
+    return ListTile(
+      key: Key('person-${person.member}'),
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(child: Text(person.initials)),
+      title: Text('${person.displayName}${person.me ? ' (you)' : ''}'),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle, key: Key('person-status-${person.member}')),
+      trailing: canManage && !person.owner && !person.removing
+          ? TextButton(
+              key: Key('remove-${person.member}'),
+              onPressed: _busy ? null : () => _remove(person),
+              child: const Text('Remove'),
+            )
+          : null,
+    );
   }
 
   Widget _request(JoinRequest request) {
@@ -297,18 +411,21 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '$name wants to join',
+              request.alreadyMember
+                  ? '$name already has access'
+                  : '$name wants to join',
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 4),
-            if (request.readable)
-              Text(
-                'Their screen shows ${request.code}. If you are not sure it is '
-                'them, ask what theirs says.',
-                key: Key('join-code-${request.id}'),
-              )
+            if (!request.readable)
+              const Text('This request was not made with your link.')
+            else if (request.alreadyMember)
+              const Text('Approving changes nothing.')
             else
-              const Text('This request was not made with your link.'),
+              Text(
+                'Their screen shows ${request.code}.',
+                key: Key('join-code-${request.id}'),
+              ),
             const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -334,75 +451,15 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
     );
   }
 
-  List<Widget> _content() {
-    final invite = _invite;
-    if (invite == null) {
-      return [
-        if (_revoked)
-          const Text(
-            'Everyone else has been removed. New changes use a new key.',
-            key: Key('sharing-revoked'),
-          )
-        else if (_admitted != null)
-          Text(
-            '${_admitted!.isEmpty ? 'They' : _admitted} can open this note now.',
-            key: const Key('invite-admitted'),
-          )
-        else
-          const Text(
-            'Make a link and send it to one person. When they open it, you '
-            'will see them here and decide whether to let them in. The link '
-            'works once and stops after seven days.',
-          ),
-      ];
-    }
-    final pending = _requests?.pending ?? const <JoinRequest>[];
-    final shareLink = inviteLinkForSharing(
-      invite.link,
-      webOrigin: Uri.base.replace(query: '', fragment: '').toString(),
-    );
-    return [
-      const Text('Send this link to the person you are inviting:'),
-      const SizedBox(height: 8),
-      Row(
-        children: [
-          Expanded(
-            child: SelectableText(
-              shareLink,
-              key: const Key('invite-link'),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            ),
-          ),
-          IconButton(
-            key: const Key('copy-invite-link'),
-            icon: const Icon(Icons.copy),
-            tooltip: 'Copy the link',
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: shareLink));
-              if (!mounted) return;
-              ScaffoldMessenger.maybeOf(
-                context,
-              )?.showSnackBar(const SnackBar(content: Text('Link copied')));
-            },
-          ),
-        ],
-      ),
-      const SizedBox(height: 4),
-      Text(
-        'It works once and stops in ${_days(_requests?.expiresIn ?? invite.expiresIn)}. '
-        'It does not contain the note, only a way to ask for it.',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      const SizedBox(height: 12),
-      if (pending.isEmpty)
-        const Text('Nobody has asked to join yet.', key: Key('invite-waiting')),
-    ];
-  }
-
   @override
   Widget build(BuildContext context) {
+    final people = _people;
+    final canManage = people?.canManage ?? false;
+    final invite = _invite;
+    final pending = _requests?.pending ?? const <JoinRequest>[];
+    final lettingIn = _requests?.lettingIn;
     return AlertDialog(
-      title: const Text('Add collaborators'),
+      title: const Text('Share'),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -410,17 +467,75 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (_directory?.canManage == true &&
-                  (_requests?.pending.isNotEmpty ?? false)) ...[
-                Text(
-                  'Requests to join',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                for (final request in _requests!.pending) _request(request),
+              if (canManage && pending.isNotEmpty) ...[
+                for (final request in pending) _request(request),
                 const Divider(height: 28),
               ],
-              ..._people(),
-              if (_directory?.canManage == true) ..._content(),
+              if (people == null)
+                const Text('Loading…')
+              else ...[
+                for (final person in people.people) _person(person, canManage),
+                for (final name in {...people.adding, ?lettingIn})
+                  ListTile(
+                    key: Key('adding-$name'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const CircleAvatar(
+                      child: Icon(Icons.hourglass_top),
+                    ),
+                    title: Text(name),
+                    subtitle: const Text(
+                      'Letting them in… finishes when you\'re online',
+                    ),
+                  ),
+                const SizedBox(height: 4),
+                Text(
+                  'Names are chosen by each person.',
+                  key: const Key('people-footer'),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (!canManage) ...[
+                  const SizedBox(height: 12),
+                  const Text('Only the owner can add or remove people.'),
+                ],
+              ],
+              if (canManage) ...[
+                const Divider(height: 28),
+                if (invite == null)
+                  const Text(
+                    'Copy a link and send it to one person, any way you like. '
+                    'When they open it you will see them here, and approve '
+                    'them with one tap. The link works once and stops after '
+                    'seven days.',
+                  )
+                else ...[
+                  SelectableText(
+                    _link(invite),
+                    key: const Key('invite-link'),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'It works once and stops in '
+                    '${_days(_requests?.expiresIn ?? invite.expiresIn)}. It '
+                    'does not contain the note, only a way to ask for it.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (pending.isEmpty && lettingIn == null) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Nobody has asked to join yet.',
+                      key: Key('invite-waiting'),
+                    ),
+                  ],
+                ],
+              ],
+              if (_notice != null) ...[
+                const SizedBox(height: 12),
+                Text(_notice!, key: const Key('share-notice')),
+              ],
               if (_error != null) ...[
                 const SizedBox(height: 12),
                 Text(
@@ -434,24 +549,24 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
         ),
       ),
       actions: [
-        if (_directory?.canManage == true)
+        if (canManage && (people?.shared ?? false))
           TextButton(
-            key: const Key('revoke-collaborators'),
-            onPressed: _busy ? null : _revoke,
-            child: const Text('Remove everyone'),
+            key: const Key('stop-sharing'),
+            onPressed: _busy ? null : _stopSharing,
+            child: const Text('Stop sharing'),
           ),
-        if (_directory?.canManage == true && _invite != null)
+        if (canManage && invite != null)
           TextButton(
             key: const Key('withdraw-invite'),
             onPressed: _busy ? null : _withdraw,
             child: const Text('Cancel the link'),
-          )
-        else if (_directory?.canManage == true)
+          ),
+        if (canManage)
           FilledButton.icon(
-            key: const Key('create-invite'),
-            onPressed: _busy ? null : _create,
-            icon: const Icon(Icons.person_add_outlined),
-            label: const Text('Invite by link'),
+            key: const Key('copy-invite-link'),
+            onPressed: _busy ? null : _copyLink,
+            icon: const Icon(Icons.link),
+            label: const Text('Copy link'),
           ),
         TextButton(
           key: const Key('share-done'),
@@ -463,7 +578,8 @@ class _CollaboratorsDialogState extends State<CollaboratorsDialog> {
   }
 }
 
-/// Asks for an invite link and a name, and pops with the request it made.
+/// Asks for an invite link, and pops with the request it made. The name is
+/// the account's: the button says it, and there is no field for it.
 class JoinDialog extends StatefulWidget {
   const JoinDialog({super.key, required this.invites, this.initialLink});
 
@@ -476,14 +592,12 @@ class JoinDialog extends StatefulWidget {
 
 class _JoinDialogState extends State<JoinDialog> {
   late final _link = TextEditingController(text: widget.initialLink);
-  final _name = TextEditingController();
   String? _error;
   bool _busy = false;
 
   @override
   void dispose() {
     _link.dispose();
-    _name.dispose();
     super.dispose();
   }
 
@@ -495,7 +609,7 @@ class _JoinDialogState extends State<JoinDialog> {
       _error = null;
     });
     try {
-      final join = await widget.invites.requestJoin(link, name: _name.text);
+      final join = await widget.invites.requestJoin(link);
       if (mounted) Navigator.of(context).pop(join);
     } catch (e) {
       // A link is pasted by hand, so a bad one is ordinary. Its own words,
@@ -508,6 +622,7 @@ class _JoinDialogState extends State<JoinDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final name = widget.invites.profileName ?? '';
     return AlertDialog(
       title: const Text('Join a note'),
       content: Column(
@@ -516,20 +631,10 @@ class _JoinDialogState extends State<JoinDialog> {
           TextField(
             key: const Key('join-link-field'),
             controller: _link,
-            autofocus: true,
+            autofocus: widget.initialLink == null,
             decoration: const InputDecoration(
               labelText: 'Invite link',
               hintText: 'easynotes://join#…',
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            key: const Key('join-name-field'),
-            controller: _name,
-            maxLength: 32,
-            decoration: const InputDecoration(
-              labelText: 'Your name',
-              helperText: 'Shown to whoever sent the link.',
             ),
             onSubmitted: (_) => _ask(),
           ),
@@ -552,14 +657,14 @@ class _JoinDialogState extends State<JoinDialog> {
         FilledButton(
           key: const Key('join-confirm'),
           onPressed: _busy ? null : _ask,
-          child: const Text('Ask to join'),
+          child: Text(name.isEmpty ? 'Ask to join' : 'Ask to join as $name'),
         ),
       ],
     );
   }
 }
 
-/// Waits to be let in, and pops with the note once it is.
+/// Waits to be let in, and pops with the note once it opens.
 ///
 /// Closing it does not cancel the request — the banner on the list keeps
 /// waiting — and "Stop waiting" does.
@@ -576,6 +681,7 @@ class WaitingDialog extends StatefulWidget {
 class _WaitingDialogState extends State<WaitingDialog> {
   Timer? _poll;
   JoinCheck? _ended;
+  bool _opening = false;
   bool _checking = false;
 
   @override
@@ -600,6 +706,8 @@ class _WaitingDialogState extends State<WaitingDialog> {
       switch (check.state) {
         case JoinState.waiting:
           break;
+        case JoinState.opening:
+          setState(() => _opening = true);
         case JoinState.joined:
           _poll?.cancel();
           Navigator.of(context).pop(check.noteId);
@@ -636,36 +744,44 @@ class _WaitingDialogState extends State<WaitingDialog> {
       );
     }
     return AlertDialog(
-      title: const Text('Waiting for approval'),
+      title: Text(_opening ? 'Opening the note' : 'Waiting for approval'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'The person who sent the link will see your request. If they ask, '
-            'tell them this code:',
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: Text(
-              widget.join.code,
-              key: const Key('join-code'),
-              style: Theme.of(context).textTheme.headlineMedium,
+          if (_opening)
+            const Text(
+              'You are in. The note is on its way to this device.',
+              key: Key('join-opening'),
+            )
+          else ...[
+            const Text(
+              'The person who sent the link will see your request. If they '
+              'ask, tell them this code:',
             ),
-          ),
+            const SizedBox(height: 12),
+            Center(
+              child: Text(
+                widget.join.code,
+                key: const Key('join-code'),
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           const LinearProgressIndicator(),
         ],
       ),
       actions: [
-        TextButton(
-          key: const Key('join-stop-waiting'),
-          onPressed: () async {
-            await widget.invites.cancelJoin(widget.join.inviteId);
-            if (context.mounted) Navigator.of(context).pop();
-          },
-          child: const Text('Stop waiting'),
-        ),
+        if (!_opening)
+          TextButton(
+            key: const Key('join-stop-waiting'),
+            onPressed: () async {
+              await widget.invites.cancelJoin(widget.join.inviteId);
+              if (context.mounted) Navigator.of(context).pop();
+            },
+            child: const Text('Stop waiting'),
+          ),
         TextButton(
           key: const Key('join-hide'),
           onPressed: () => Navigator.of(context).pop(),
@@ -688,7 +804,8 @@ class _Asking {
 /// One line per person asking to join one of this device's notes, with a way
 /// to go and answer; one line per note this device has asked to join, with the
 /// code and a way to stop. It polls on its own timer, so a person who shared
-/// a link and closed the dialog still finds out that someone opened it.
+/// a link and closed the dialog still finds out that someone opened it — and
+/// an approval interrupted by the app closing finishes here.
 class InviteBanners extends StatefulWidget {
   const InviteBanners({
     super.key,
@@ -706,7 +823,7 @@ class InviteBanners extends StatefulWidget {
   /// Open the share dialog for a note.
   final void Function(String noteId) onReview;
 
-  /// A request of this device's was let in.
+  /// A request of this device's was let in and its note has opened.
   final void Function(String noteId) onJoined;
 
   @override
@@ -763,6 +880,7 @@ class _InviteBannersState extends State<InviteBanners> {
                   check.message ??
                   'An invite you were waiting on stopped working.';
             case JoinState.waiting:
+            case JoinState.opening:
               break;
           }
         } catch (_) {}

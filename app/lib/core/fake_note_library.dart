@@ -184,20 +184,54 @@ class FakeNoteLibrary implements NoteLibrary {
   /// with no relay.
   String? relayError;
 
-  final Map<String, Collaborators> directories = {};
+  final Map<String, People> _people = {};
+
+  /// Whether a removal takes effect at once, as it does online, or waits and
+  /// shows as “Removing…”, as it does offline.
+  bool online = true;
+
+  final List<Removal> _removals = [];
+
+  Person get _me => Person(
+    member: 'me',
+    invite: '',
+    name: profileName ?? '',
+    owner: true,
+    me: true,
+  );
 
   @override
-  Collaborators collaborators(String noteId) =>
-      directories[noteId] ?? const Collaborators(canManage: true);
+  People people(String noteId) =>
+      _people[noteId] ?? People(canManage: true, people: [_me]);
 
-  void setCollaborators(String noteId, Collaborators value) {
-    directories[noteId] = value;
+  /// Stand a note's list up as a test needs it.
+  void setPeople(String noteId, People value) {
+    _people[noteId] = value;
     _emit();
+  }
+
+  void _setList(String noteId, List<Person> list, {List<String>? adding}) {
+    final before = people(noteId);
+    setPeople(
+      noteId,
+      People(
+        shared: list.any((p) => !p.owner),
+        canManage: before.canManage,
+        people: list,
+        adding: adding ?? before.adding,
+      ),
+    );
+  }
+
+  void _requireSharing() {
+    if (!hasAccount) throw 'this device has no account yet';
+    if (profileName == null) throw 'sharing needs a name: set one up first';
   }
 
   @override
   Future<Invite> createInvite(String noteId) async {
     calls.add('createInvite($noteId)');
+    _requireSharing();
     if (relayError != null) throw relayError!;
     final id = 'invite-${_counter++}';
     final invite = Invite(
@@ -254,23 +288,19 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Future<void> approveRequest(String inviteId, String requestId) async {
+  Future<Approval> approveRequest(String inviteId, String requestId) async {
     calls.add('approveRequest($inviteId, $requestId)');
     final noteId = _invites[inviteId]!.noteId;
     final request = _requests[inviteId]!.firstWhere((r) => r.id == requestId);
-    setCollaborators(
-      noteId,
-      Collaborators(
-        canManage: true,
-        people: [
-          ...collaborators(noteId).people,
-          Collaborator(id: '$inviteId-$requestId', name: request.name),
-        ],
-      ),
-    );
     _answer(inviteId, requestId, JoinRequestState.approved);
     _closed.add(inviteId);
     _invites.remove(inviteId);
+    if (request.alreadyMember) return Approval.alreadyMember;
+    _setList(noteId, [
+      ...people(noteId).people,
+      Person(member: 'member-$requestId', invite: inviteId, name: request.name),
+    ]);
+    return Approval.done;
   }
 
   @override
@@ -287,18 +317,71 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Future<void> revokeCollaborators(String noteId) async {
-    calls.add('revokeCollaborators($noteId)');
-    setCollaborators(noteId, const Collaborators(canManage: true));
+  Future<void> removePerson(String noteId, Person person) async {
+    calls.add('removePerson($noteId, ${person.member})');
+    final list = people(noteId).people;
+    _setList(noteId, [
+      for (final p in list)
+        if (p.member != person.member)
+          p
+        else if (!online)
+          Person(
+            member: p.member,
+            invite: p.invite,
+            name: p.name,
+            owner: p.owner,
+            me: p.me,
+            removing: true,
+          ),
+    ]);
+  }
+
+  /// This device reached the relay: every removal waiting is made.
+  void finishRemovals() {
+    for (final noteId in _people.keys.toList()) {
+      _setList(noteId, [
+        for (final p in people(noteId).people)
+          if (!p.removing) p,
+      ]);
+    }
   }
 
   @override
-  Future<PendingJoin> requestJoin(String link, {String name = ''}) async {
-    calls.add('requestJoin($link, $name)');
+  Future<void> stopSharing(String noteId) async {
+    calls.add('stopSharing($noteId)');
+    for (final invite in invitesFor(noteId)) {
+      await withdrawInvite(invite.id);
+    }
+    for (final person in people(noteId).people.where((p) => !p.owner)) {
+      await removePerson(noteId, person);
+    }
+  }
+
+  @override
+  List<Removal> takeRemovals() {
+    final taken = List.of(_removals);
+    _removals.clear();
+    return taken;
+  }
+
+  /// The owner removed this person: the note leaves this device, with one
+  /// message.
+  void fakeRemoved(String noteId) {
+    final title = _cores[noteId]?.current.title ?? '';
+    _forget(noteId);
+    _people.remove(noteId);
+    _removals.add(Removal(noteId: noteId, title: title));
+    _emit();
+  }
+
+  @override
+  Future<PendingJoin> requestJoin(String link) async {
+    calls.add('requestJoin($link)');
+    _requireSharing();
     if (relayError != null) throw relayError!;
     if (!link.contains('#')) throw 'that is not an invite link: not base64url';
     final id = link.split('#').last;
-    final join = PendingJoin(inviteId: id, name: name.trim(), code: '123 456');
+    final join = PendingJoin(inviteId: id, name: profileName!, code: '123 456');
     _joins[id] = join;
     return join;
   }
@@ -322,7 +405,12 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   /// Somebody opened this device's invite and asked to join.
-  void fakeRequest(String inviteId, {required String name, String? code}) {
+  void fakeRequest(
+    String inviteId, {
+    required String name,
+    String? code,
+    bool alreadyMember = false,
+  }) {
     final requests = _requests[inviteId]!;
     requests.add(
       JoinRequest(
@@ -330,6 +418,7 @@ class FakeNoteLibrary implements NoteLibrary {
         name: name,
         code: code ?? '${100 + requests.length}${' 000'}',
         state: JoinRequestState.pending,
+        alreadyMember: alreadyMember,
       ),
     );
   }
@@ -586,9 +675,27 @@ class FakeNoteLibrary implements NoteLibrary {
   ];
 
   bool _hasAccount = false;
+  String? _profileName;
 
   @override
   bool get hasAccount => _hasAccount;
+
+  @override
+  String? get profileName => _profileName;
+
+  @override
+  Future<void> setProfileName(String name) async {
+    calls.add('setProfileName($name)');
+    if (!_hasAccount) throw 'this device has no account yet';
+    if (name.trim().isEmpty) throw 'sharing needs a name: set one up first';
+    _profileName = name.trim();
+  }
+
+  /// A device that has already set sharing up, as most tests want.
+  void setUpSharing([String name = 'Olga']) {
+    _hasAccount = true;
+    _profileName = name;
+  }
 
   @override
   Future<List<String>> createAccount() async {
@@ -614,7 +721,18 @@ class FakeNoteLibrary implements NoteLibrary {
       throw ArgumentError('a recovery phrase is twelve words');
     }
     _hasAccount = true;
+    // What the account's other devices had, arriving as the real one's do
+    // once it reaches the relay: shared notes included, with nobody asked.
+    for (final MapEntry(key: id, value: core) in restoredWithAccount.entries) {
+      _add(id, core);
+    }
+    restoredWithAccount.clear();
+    _emit();
   }
+
+  /// Notes this person has on their other devices, which appear once this
+  /// device adopts their account.
+  final Map<String, FakeNoteCore> restoredWithAccount = {};
 
   @override
   Future<void> connect(String url) async {
@@ -708,7 +826,10 @@ class FakeNoteLibrary implements NoteLibrary {
     final summaries = [
       for (final id in _order)
         NoteSummary(
-          collaborators: collaborators(id).people,
+          collaborators: [
+            for (final p in people(id).people)
+              if (!p.me) Collaborator(id: p.member, name: p.name),
+          ],
           id: id,
           kind: _cores[id]!.current.kind,
           title: _cores[id]!.current.title,

@@ -150,11 +150,15 @@ fn swept(expires_at: i64, now: i64) -> bool {
 // Memory
 // ---------------------------------------------------------------------------
 
+/// Outstanding handshake nonces: the device each was issued to, and when it
+/// stops being accepted.
+type Challenges = HashMap<Vec<u8>, ([u8; 32], i64)>;
+
 #[derive(Default, Clone)]
 pub struct MemoryStore {
     notes: Arc<Mutex<HashMap<String, Vec<Stored>>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
-    auth_challenges: Arc<Mutex<HashMap<Vec<u8>, ([u8; 32], i64)>>>,
+    auth_challenges: Arc<Mutex<Challenges>>,
 }
 
 impl MemoryStore {

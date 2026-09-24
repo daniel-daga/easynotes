@@ -39,6 +39,15 @@ impl App {
         Self::wrap(name, core, note)
     }
 
+    /// An owner who can share: an account and a name.
+    fn sharing_owner(name: &'static str) -> Self {
+        let mut core: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();
+        core.create_account().unwrap();
+        core.set_profile_name(name).unwrap();
+        let note = core.create_note(NoteKind::Checklist).unwrap();
+        Self::wrap(name, core, note)
+    }
+
     fn guest(name: &'static str, blob: &str) -> Self {
         let mut core: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();
         let note = core.import_share_blob(blob).unwrap();
@@ -197,14 +206,23 @@ impl App {
         self.handle.as_ref().expect("not connected").flush();
     }
 
-    fn revoke_collaborators(&self) {
-        let envelope = self
-            .core
-            .lock()
-            .unwrap()
-            .revoke_collaborators(self.note)
-            .unwrap();
-        self.handle.as_ref().expect("not connected").rekey(envelope);
+    /// Let a person in without the invite endpoints: the request is opened
+    /// and approved in the core, and the engine publishes the package.
+    fn let_in(&self, guest: &mut Core) {
+        let mut core = self.core.lock().unwrap();
+        let outgoing = core.new_invite(self.note).unwrap();
+        core.remember_invite(&outgoing).unwrap();
+        let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
+        let request = easynotes_core::invite::open_request(&outgoing.secret, &sealed).unwrap();
+        core.approve(outgoing.secret.id(), "req", &request).unwrap();
+        drop(core);
+        self.handle.as_ref().expect("not connected").settle();
+    }
+
+    /// Remove everybody but the owner, and let the engine make it so.
+    fn stop_sharing(&self) {
+        self.core.lock().unwrap().stop_sharing(self.note).unwrap();
+        self.handle.as_ref().expect("not connected").settle();
     }
 
     /// Hand the envelope to the engine if there is one. With no engine the edit
@@ -761,26 +779,35 @@ async fn a_flush_sends_what_is_held() {
     wait_for_head(&log, a.note, 2).await;
 }
 
-/// The rotated snapshot already contains held typing. Sending those old-key
-/// envelopes after it would both leak superseded ciphertext and make peers
-/// reject a stale generation after the cutover.
+/// A removal's package already contains held typing. Sending those old-key
+/// envelopes after it would hand the removed person what was typed while
+/// they were being removed (ADR 0023 §6).
 #[tokio::test]
-async fn a_rotation_supersedes_typing_held_under_the_old_key() {
+async fn a_removal_supersedes_typing_held_under_the_old_key() {
     let (_relay, log, endpoint) = relay().await;
 
-    let mut a = App::owner("A");
+    let mut a = App::sharing_owner("A");
     a.connect_paced(&endpoint, never());
     a.add_item("m");
     a.wait_until_synced().await;
     let milk = a.item_called("m");
+    let mut anna: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();
+    anna.create_account().unwrap();
+    anna.set_profile_name("Anna").unwrap();
+    a.let_in(&mut anna);
+    wait_for_head(&log, a.note, 2).await;
+    a.wait_until_synced().await;
 
     a.type_word(milk, "ilk");
     a.wait_until("the typing held back", || a.pending() == 3)
         .await;
-    a.revoke_collaborators();
+    a.stop_sharing();
+    wait_for_head(&log, a.note, 3).await;
     a.wait_until_synced().await;
 
-    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 2);
+    // The item, the package adding Anna, and the one removing her — and none
+    // of the three keystrokes under the key she holds.
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 3);
     assert_eq!(a.text_of(milk), "milk");
 }
 
