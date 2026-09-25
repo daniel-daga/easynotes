@@ -68,6 +68,11 @@ macro_rules! frb_generated_moi_arc_def {
 
         impl<T: ?Sized + MoiArcValue> Drop for MoiArc<T> {
             fn drop(&mut self) {
+                // Release the cached Arc before publishing a smaller pool count.
+                // Otherwise another owner can observe ref_count == 1 in
+                // try_unwrap while this Arc still exists, making into_inner fail.
+                // The pool still owns an Arc, so this cannot drop T under its lock.
+                drop(self.value.take());
                 if let Some(object_id) = self.object_id {
                     Self::decrement_strong_count(object_id);
                 }

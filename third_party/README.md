@@ -2,7 +2,7 @@
 
 ## `flutter_rust_bridge` 2.13.0
 
-The published crate, byte for byte, with one change in
+The published crate, byte for byte, with two changes in
 `src/generalized_arc/moi_arc.rs`. [`flutter_rust_bridge.patch`](flutter_rust_bridge.patch)
 is that change and nothing else. The root `Cargo.toml` puts this copy in place of the
 registry's with `[patch.crates-io]`, and keeps it out of the workspace with `exclude`,
@@ -21,7 +21,15 @@ call throws `Atomics.wait cannot be called in this context`. The patch takes the
 pool's lock the way [`app/rust/src/lock.rs`](../app/rust/src/lock.rs) takes the
 app's own locks: on wasm, by asking until it is free. Nothing that holds the lock
 waits for anything while it does, so the spin is as short as a map operation.
-Native builds are unchanged.
+This lock change leaves native builds unchanged.
+
+The second change releases a dropping `MoiArc`'s cached `Arc` before decrementing
+the pool count. Previously, another thread could observe a pool count of one in
+`try_unwrap` while the dropping handle still held its cached `Arc`, causing
+`Arc::into_inner(...).unwrap()` to panic. This ordering fix applies to all targets.
+`cargo test -p rust_lib_easynotes moi_arc_tests` exercises the vendored macro and
+checks this ordering with the pool lock held, plus raw-handle ownership transfer.
+It does not establish the cause of ADR 0002's missing-ID/double-release panic.
 
 [ADR 0002](../docs/adr/0002-web-core.md) ("Not done, and honest about it") has the
 stack that showed it, and why the pool was patched rather than swapped for the
@@ -29,7 +37,8 @@ stack that showed it, and why the pool was patched rather than swapped for the
 failure, a double release, from a logged panic into a use-after-free.
 
 **On an upgrade.** Check the new release's `moi_arc.rs` first. If it no longer
-takes a blocking lock on the web, delete this directory, the `[patch.crates-io]`
+takes a blocking lock on the web **and** releases cached Arcs before decrementing
+the pool count, delete this directory, the `[patch.crates-io]`
 entry and the `exclude`, and you are done. Otherwise:
 
 ```sh
