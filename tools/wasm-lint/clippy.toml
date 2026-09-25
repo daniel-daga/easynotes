@@ -1,0 +1,17 @@
+# What `just lint-wasm` forbids in code compiled for the browser.
+#
+# Every one of these compiles for `wasm32-unknown-unknown` and then panics the
+# first time a browser runs it — `operation not supported on this platform`,
+# or `time not implemented on this platform`. That is how the web app died on
+# its first frame in Slice 1 (ADR 0002), from a note watcher that worked on
+# Linux. The lint runs with this file only for the wasm target, so a native
+# `#[cfg]` branch that uses them is not flagged and a shared one is.
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "panics on wasm32-unknown-unknown; use an async task" },
+    { path = "std::thread::Builder::spawn", reason = "panics on wasm32-unknown-unknown; use an async task" },
+    { path = "std::thread::Builder::spawn_scoped", reason = "panics on wasm32-unknown-unknown; use an async task" },
+    { path = "std::thread::scope", reason = "its spawns panic on wasm32-unknown-unknown" },
+    { path = "std::thread::sleep", reason = "panics on wasm32-unknown-unknown; await a timer" },
+    { path = "std::time::SystemTime::now", reason = "panics on wasm32-unknown-unknown; use js_sys::Date::now()" },
+    { path = "std::time::Instant::now", reason = "panics on wasm32-unknown-unknown; use the page's clock" },
+]

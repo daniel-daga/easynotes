@@ -3,12 +3,6 @@
 # Every command here is one CI runs too, so "works on my machine" and "passes in
 # CI" are the same claim. `just --list` shows them all.
 
-# The threading flags WebAssembly needs, plus the one telling `getrandom` where
-# browser randomness comes from. Keep them together: dropping the threading half
-# produces a build that links and then fails at runtime with
-# "WebAssembly.Memory could not be cloned".
-wasm_rustflags := "-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-args=--shared-memory -C link-args=--max-memory=1073741824 -C link-args=--import-memory -C link-args=--export=__heap_base -C link-args=--export=__wasm_init_tls -C link-args=--export=__tls_size -C link-args=--export=__tls_align -C link-args=--export=__tls_base --cfg getrandom_backend=\"wasm_js\""
-
 # The two binaries the bridge and relay-sync tests load. Both test files *skip*
 # when they are missing rather than failing, so a wrong name here reads as a
 # smaller green run instead of a broken one — name them per platform.
@@ -46,9 +40,26 @@ build-linux: bridge
 
 # The web app. Needs `wasm-pack` and a nightly toolchain with `rust-src`, because
 # flutter_rust_bridge builds threaded WebAssembly with `-Z build-std`.
+#
+# No `--wasm-pack-rustflags`: the bridge's own threading flags are right, and an
+# override replaces them rather than adding to them. Dropping them builds a core
+# that links and then fails in the browser with "WebAssembly.Memory could not be
+# cloned" (ADR 0002), so the build checks for the shared memory itself.
 build-web: bridge
-    cd app && flutter_rust_bridge_codegen build-web --release --wasm-pack-rustflags '{{wasm_rustflags}}'
+    cd app && flutter_rust_bridge_codegen build-web --release
+    @just check-threaded-wasm
     cd app && flutter build web --release
+
+# Did the web core come out threaded? A worker can only be handed the core's
+# memory if it is shared; without it the build succeeds and the page dies.
+check-threaded-wasm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    glue='{{justfile_directory()}}/app/web/pkg/rust_lib_easynotes.js'
+    if ! grep -q 'shared:true' "$glue"; then
+        echo "error: $glue creates unshared memory: the threaded-WebAssembly RUSTFLAGS were lost (ADR 0002)" >&2
+        exit 1
+    fi
 
 # Regenerate the Dart bindings. Run this after changing anything in app/rust/src/api.
 bridge:
@@ -89,9 +100,9 @@ test-app:
 web-smoke port="8099":
     #!/usr/bin/env bash
     set -euo pipefail
-    cd {{justfile_directory()}}/tools/web-smoke
+    cd '{{justfile_directory()}}/tools/web-smoke'
     [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
-    python3 serve.py {{justfile_directory()}}/app/build/web {{port}} &
+    python3 serve.py '{{justfile_directory()}}/app/build/web' {{port}} &
     server=$!
     trap 'kill $server 2>/dev/null || true' EXIT
     # The server is a socket away, not a build away.
@@ -109,11 +120,11 @@ web-sync-smoke port="8099":
     # The debug binary, which is the one `relay_bin` names and the one
     # `test-app` builds; `build-relay` makes a release one for a different job.
     cargo build -p easynotes-relay
-    cd {{justfile_directory()}}/tools/web-smoke
+    cd '{{justfile_directory()}}/tools/web-smoke'
     [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
     '{{relay_bin}}' &
     relay=$!
-    python3 serve.py {{justfile_directory()}}/app/build/web {{port}} &
+    python3 serve.py '{{justfile_directory()}}/app/build/web' {{port}} &
     server=$!
     trap 'kill $relay $server 2>/dev/null || true' EXIT
     until curl -sfo /dev/null http://127.0.0.1:8080/v1/health; do sleep 0.2; done
@@ -156,10 +167,20 @@ web-storage-failure port="8099":
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
     node storage-failure.mjs http://127.0.0.1:{{port}}/
 
-lint:
+lint: lint-wasm
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cd app && flutter analyze
+
+# The code a browser runs, linted as a browser gets it: for wasm32, and with
+# `tools/wasm-lint/clippy.toml` forbidding the std calls that compile there and
+# then panic — `thread::spawn`, `SystemTime::now` and the like. A native `#[cfg]`
+# branch is not compiled for this target, so it may still use them. Adding the
+# target is a no-op once it is there, and a fresh container does not have it.
+lint-wasm:
+    rustup target add wasm32-unknown-unknown
+    CLIPPY_CONF_DIR='{{justfile_directory()}}/tools/wasm-lint' cargo clippy --target wasm32-unknown-unknown -p easynotes-core --lib --no-default-features --features automerge-backend,yrs-backend,web-store,sync-web -- -D warnings
+    CLIPPY_CONF_DIR='{{justfile_directory()}}/tools/wasm-lint' cargo clippy --target wasm32-unknown-unknown -p rust_lib_easynotes --lib -- -D warnings
 
 fmt:
     cargo fmt --all
@@ -209,18 +230,18 @@ bench-library:
 bench-web port="8100":
     #!/usr/bin/env bash
     set -euo pipefail
-    out={{justfile_directory()}}/target/web-bench
+    out='{{justfile_directory()}}/target/web-bench'
     cargo build --release -p easynotes-web-bench --target wasm32-unknown-unknown
     # `--target web`, so the page loads it as a module with no bundler in the
     # way. No `wasm-opt`: it is a size pass, the build is already `--release`,
     # and reaching for it would drag in the binaryen download that CLAUDE.md
     # has to work around.
     wasm-bindgen --target web --no-typescript --out-dir "$out" \
-        {{justfile_directory()}}/target/wasm32-unknown-unknown/release/easynotes_web_bench.wasm
-    cp {{justfile_directory()}}/tools/web-bench/index.html "$out/"
-    cd {{justfile_directory()}}/tools/web-bench
+        '{{justfile_directory()}}/target/wasm32-unknown-unknown/release/easynotes_web_bench.wasm'
+    cp '{{justfile_directory()}}/tools/web-bench/index.html' "$out/"
+    cd '{{justfile_directory()}}/tools/web-bench'
     [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
-    python3 {{justfile_directory()}}/tools/web-smoke/serve.py "$out" {{port}} &
+    python3 '{{justfile_directory()}}/tools/web-smoke/serve.py' "$out" {{port}} &
     server=$!
     trap 'kill $server 2>/dev/null || true' EXIT
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done

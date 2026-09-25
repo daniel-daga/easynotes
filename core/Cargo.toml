@@ -87,10 +87,12 @@ tempfile = "3.27.0"
 
 # WebAssembly needs to be told where randomness comes from. Two versions of
 # `getrandom` are in the tree — 0.3 directly, and 0.2 via RustCrypto's `rand_core`
-# — and each needs its own opt-in for the browser. The `--cfg getrandom_backend`
-# that 0.3 also requires lives in `.cargo/config.toml`.
+# — and each needs its own opt-in for the browser. The feature is the whole of
+# it: 0.3.4 is the first 0.3 that no longer also wants a `--cfg getrandom_backend`
+# in RUSTFLAGS, and that flag was the only reason the web build overrode
+# flutter_rust_bridge's own, which is how it lost the threading ones (ADR 0002).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 # The web transport (`sync-web`). Pinned to the versions flutter_rust_bridge
 # already brings, so enabling this adds no crate to the tree that the web build

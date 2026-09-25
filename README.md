@@ -152,7 +152,7 @@ core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform p
 relay/   Rust (axum): WebSocket relay over Postgres. Ciphertext only.
 app/     Flutter app, plus the thin bridge crate in app/rust.
 docs/    Design, plans, and the decision records.
-tools/   Measurement helpers that are not part of the product.
+tools/   Measurement helpers and build checks that are not part of the product.
 ```
 
 `core` stays callable from a plain `cargo test` with no Flutter in the loop.

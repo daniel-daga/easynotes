@@ -51,6 +51,18 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The code a browser runs, linted for the browser's target with the std
+      # calls that compile there and then panic forbidden — the note watcher's
+      # `thread::spawn` took the web app down on its first frame (ADR 0002).
+      # Here it fails in a minute instead of in the web job's browser.
+      - name: Clippy for WebAssembly
+        run: |
+          rustup target add wasm32-unknown-unknown
+          export CLIPPY_CONF_DIR="$GITHUB_WORKSPACE/tools/wasm-lint"
+          cargo clippy --target wasm32-unknown-unknown -p easynotes-core --lib \
+            --no-default-features --features automerge-backend,yrs-backend,web-store,sync-web -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown -p rust_lib_easynotes --lib -- -D warnings
+
       # With DATABASE_URL set, the Postgres tests run instead of skipping. They
       # are the only cover for the concurrency in the relay's sequence
       # allocation, which an in-memory store cannot exercise.
@@ -159,11 +171,20 @@ jobs:
       - run: flutter pub get
         working-directory: app
 
+      # No `--wasm-pack-rustflags`: an override replaces the bridge's threading
+      # flags rather than adding to them, and the core that comes out links and
+      # then fails in the browser (ADR 0002). The step after this one is the
+      # build-time half of that failure.
       - name: Build the core for the web
         working-directory: app
+        run: flutter_rust_bridge_codegen build-web --release
+
+      - name: Check the core came out threaded
         run: |
-          flutter_rust_bridge_codegen build-web --release --wasm-pack-rustflags \
-            '-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-args=--shared-memory -C link-args=--max-memory=1073741824 -C link-args=--import-memory -C link-args=--export=__heap_base -C link-args=--export=__wasm_init_tls -C link-args=--export=__tls_size -C link-args=--export=__tls_align -C link-args=--export=__tls_base --cfg getrandom_backend="wasm_js"'
+          if ! grep -q 'shared:true' app/web/pkg/rust_lib_easynotes.js; then
+            echo "::error::the web core creates unshared memory: the threaded-WebAssembly RUSTFLAGS were lost (ADR 0002)"
+            exit 1
+          fi
 
       - name: Build the web app
         working-directory: app
@@ -171,8 +192,9 @@ jobs:
 
       # The two failures the web build has produced so far — a thread panic and
       # a memory-cloning error — both compiled cleanly and only appeared when a
-      # browser ran the code (ADR 0002). Since the web store landed there is a
-      # third thing only a browser can answer: whether IndexedDB was opened and
+      # browser ran the code (ADR 0002). Each has a build-time check above now,
+      # and this stays as the backstop for the next one. Since the web store
+      # landed there is a third thing only a browser can answer: whether IndexedDB was opened and
       # whether a reloaded tab reads back what the first one wrote.
       - name: Run the web build in a browser
         working-directory: tools/web-smoke
