@@ -2,9 +2,9 @@
 
 ## `flutter_rust_bridge` 2.13.0
 
-The published crate, byte for byte, with two changes in
+The published crate, byte for byte, with two fixes and opt-in lifetime tracing in
 `src/generalized_arc/moi_arc.rs`. [`flutter_rust_bridge.patch`](flutter_rust_bridge.patch)
-is that change and nothing else. The root `Cargo.toml` puts this copy in place of the
+contains those changes and nothing else. The root `Cargo.toml` puts this copy in place of the
 registry's with `[patch.crates-io]`, and keeps it out of the workspace with `exclude`,
 so `cargo clippy --workspace`, `cargo fmt --all` and `cargo test --workspace` leave
 it alone. Cargo does not cap a path dependency's lints the way it caps a registry
@@ -30,6 +30,15 @@ the pool count. Previously, another thread could observe a pool count of one in
 `cargo test -p rust_lib_easynotes moi_arc_tests` exercises the vendored macro and
 checks this ordering with the pool lock held, plus raw-handle ownership transfer.
 It does not establish the cause of ADR 0002's missing-ID/double-release panic.
+
+For that investigation, a missing-ID release now panics with its type and ID,
+rather than an ambiguous `Option::unwrap`. It still fails loudly. The storage
+smoke test recognizes only this specific diagnostic, so unrelated generated-code
+unwraps are no longer mistaken for the known failure.
+Building with `EASYNOTES_TRACE_MOI=1` logs pool operations
+and stacks on WASM. It does not change counts or suppress invalid releases, and
+the calls optimize away when the variable is absent. The browser harness and
+capture instructions are in [the smoke-test README](../tools/web-smoke/README.md).
 
 [ADR 0002](../docs/adr/0002-web-core.md) ("Not done, and honest about it") has the
 stack that showed it, and why the pool was patched rather than swapped for the

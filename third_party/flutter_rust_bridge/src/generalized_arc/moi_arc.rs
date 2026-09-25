@@ -103,6 +103,7 @@ macro_rules! frb_generated_moi_arc_def {
                     },
                 );
                 assert!(old_value.is_none());
+                Self::trace(object_id, "new", 1);
 
                 Self {
                     object_id: Some(object_id),
@@ -136,6 +137,7 @@ macro_rules! frb_generated_moi_arc_def {
             }
 
             fn into_raw(mut self) -> usize {
+                Self::trace(self.object_id.unwrap(), "into_raw", -1);
                 // `take`, such that the `drop` will not decrease ref count
                 self.object_id.take().unwrap()
             }
@@ -159,6 +161,7 @@ macro_rules! frb_generated_moi_arc_def {
                 T: Sized,
             {
                 let map = &moi_arc_pool_read(T::get_pool()).unwrap().map;
+                Self::trace(raw, "from_raw", map.get(&raw).map_or(0, |v| v.ref_count));
 
                 Self {
                     object_id: Some(raw),
@@ -169,6 +172,7 @@ macro_rules! frb_generated_moi_arc_def {
 
             pub fn increment_strong_count(raw: usize) {
                 let map = &mut moi_arc_pool_write(T::get_pool()).unwrap().map;
+                Self::trace(raw, "increment", map.get(&raw).map_or(0, |v| v.ref_count));
                 map.get_mut(&raw).unwrap().ref_count += 1;
             }
 
@@ -183,13 +187,46 @@ macro_rules! frb_generated_moi_arc_def {
                 raw: usize,
                 pool: &mut MoiArcPoolInner<T>,
             ) -> Option<MoiArcPoolValue<T>> {
-                let value = pool.map.get_mut(&raw).unwrap();
+                Self::trace(
+                    raw,
+                    "decrement",
+                    pool.map.get(&raw).map_or(0, |v| v.ref_count),
+                );
+                let value = pool.map.get_mut(&raw).unwrap_or_else(|| {
+                    panic!(
+                        "MOI missing handle on release: type={} id={raw}",
+                        std::any::type_name::<T>(),
+                    )
+                });
                 value.ref_count -= 1;
                 if value.ref_count == 0 {
                     pool.map.remove(&raw)
                 } else {
                     None
                 }
+            }
+
+            // Opt-in diagnostics: absent from normal builds after optimization.
+            fn trace(raw: usize, operation: &str, count: i32) {
+                #[cfg(target_family = "wasm")]
+                if option_env!("EASYNOTES_TRACE_MOI") == Some("1") {
+                    use $crate::for_generated::{js_sys, wasm_bindgen::JsValue};
+                    static SEQUENCE: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let stack = js_sys::Reflect::get(
+                        &js_sys::Error::new("MOI lifetime"),
+                        &JsValue::from_str("stack"),
+                    )
+                    .ok()
+                    .and_then(|s| s.as_string())
+                    .unwrap_or_default();
+                    $crate::for_generated::web_utils::js_console_log(&format!(
+                        "FRB_MOI {sequence} {} {raw} {operation} {count}\n{stack}",
+                        std::any::type_name::<T>(),
+                    ));
+                }
+                let _ = (raw, operation, count);
             }
         }
 

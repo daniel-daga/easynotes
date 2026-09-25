@@ -49,3 +49,25 @@ fn raw_handle_keeps_value_alive_until_last_owner() {
     drop(MoiArc::<Value>::from_raw(raw));
     assert!(owner.try_unwrap().is_ok());
 }
+
+#[test]
+fn invalid_release_identifies_the_handle_and_still_panics() {
+    // Separate pool: the deliberately invalid release poisons its lock.
+    struct InvalidReleaseValue;
+    impl MoiArcValue for InvalidReleaseValue {
+        fn get_pool() -> &'static MoiArcPool<Self> {
+            static POOL: OnceLock<MoiArcPool<InvalidReleaseValue>> = OnceLock::new();
+            POOL.get_or_init(Default::default)
+        }
+    }
+    let raw = MoiArc::new(InvalidReleaseValue).into_raw();
+    MoiArc::<InvalidReleaseValue>::decrement_strong_count(raw);
+    let error = std::panic::catch_unwind(|| {
+        MoiArc::<InvalidReleaseValue>::decrement_strong_count(raw);
+    })
+    .expect_err("invalid releases must not be silently ignored");
+    let message = error.downcast_ref::<String>().unwrap();
+    assert!(message.contains("MOI missing handle on release:"));
+    assert!(message.contains("InvalidReleaseValue"));
+    assert!(message.contains(&format!("id={raw}")));
+}

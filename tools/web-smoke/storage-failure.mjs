@@ -26,6 +26,21 @@
 //     node tools/web-smoke/storage-failure.mjs <app url>
 import { chromium } from 'playwright-core';
 import { find, load, tap, texts } from './semantics.mjs';
+import { mkdirSync, createWriteStream } from 'node:fs';
+import { createGzip } from 'node:zlib';
+import { finished } from 'node:stream/promises';
+
+// In diagnostic mode keep complete worker/page stacks and fail the known panic
+// too. The Rust build must have EASYNOTES_TRACE_MOI=1 for per-ID pool events.
+let trace;
+let traceOutput;
+let tracePage = 0;
+if (process.env.BRIDGE_TRACE_DIR) {
+  mkdirSync(process.env.BRIDGE_TRACE_DIR, { recursive: true });
+  traceOutput = createWriteStream(`${process.env.BRIDGE_TRACE_DIR}/storage-${Date.now()}.jsonl.gz`);
+  trace = createGzip();
+  trace.pipe(traceOutput);
+}
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
 const executablePath = process.env.CHROME_EXECUTABLE;
@@ -99,9 +114,15 @@ const idb = d => d.page.evaluate(() => ({ ...window.__idb }));
 async function device(name) {
   const context = await browser.newContext({ viewport: { width: 1000, height: 1200 } });
   await context.addInitScript(refuseAWrite);
+  if (trace) await context.addInitScript(() => { Error.stackTraceLimit = 50; });
   // What the round was doing, so that an error says when it happened.
   const d = { name, context, crashes: [], errors: [], doing: 'loading' };
   context.on('page', page => {
+    const pageId = tracePage++;
+    if (trace) {
+      page.on('console', m => trace.write(JSON.stringify({ page: pageId, phase: d.doing, type: m.type(), message: m.text() }) + '\n'));
+      page.on('pageerror', e => trace.write(JSON.stringify({ page: pageId, phase: d.doing, type: 'pageerror', message: e.stack }) + '\n'));
+    }
     page.on('pageerror', e => d.crashes.push(`${d.doing}: ${e.message}`));
     page.on('console', m => m.type() === 'error' && d.errors.push(`${d.doing}: ${m.text()}`));
   });
@@ -136,90 +157,96 @@ async function emptyTrash(d) {
   await d.page.waitForTimeout(3000);
 }
 
-for (let n = 0; ; n++) {
-  console.log(`--    refusing write ${n} of the deletion`);
-  const d = await device(`round ${n}`);
+try {
+  for (let n = 0; ; n++) {
+    console.log(`--    refusing write ${n} of the deletion`);
+    const d = await device(`round ${n}`);
 
-  d.doing = 'making notes';
-  await makeNote(d, 'keep me');
-  await tap(d, /^Back$/);
-  await find(d, n => n.text.includes('keep me'));
-  const [kept] = await noteIds(d);
-  await makeNote(d, 'old one');
-  await trashOpenNote(d);
-  await makeNote(d, 'old two');
-  await trashOpenNote(d);
-  await d.page.waitForTimeout(500);
-  const thrown = (await noteIds(d)).filter(id => id !== kept);
-  check(!!kept && thrown.length === 2, `two notes in the trash and one kept (${thrown.length})`);
+    d.doing = 'making notes';
+    await makeNote(d, 'keep me');
+    await tap(d, /^Back$/);
+    await find(d, n => n.text.includes('keep me'));
+    const [kept] = await noteIds(d);
+    await makeNote(d, 'old one');
+    await trashOpenNote(d);
+    await makeNote(d, 'old two');
+    await trashOpenNote(d);
+    await d.page.waitForTimeout(500);
+    const thrown = (await noteIds(d)).filter(id => id !== kept);
+    check(!!kept && thrown.length === 2, `two notes in the trash and one kept (${thrown.length})`);
 
-  d.doing = 'emptying the trash';
-  await openTrash(d);
-  await find(d, n => n.text.includes('old one'));
-  const before = await idb(d);
-  await d.page.evaluate(n => { window.__idb.failAt = window.__idb.writes + n; }, n);
-  await emptyTrash(d);
-  const after = await idb(d);
-  const refused = after.refused > 0;
-
-  if (refused) {
-    check(
-      !!(await find(d, n => n.text.includes('This browser would not keep an edit'), { timeout: 5000 })),
-      'the refusal is on the screen',
-    );
-    check(
-      after.writes === after.failAt + 1,
-      `nothing was written after it (${after.writes - after.failAt - 1} writes)`,
-    );
-  } else {
-    check(after.writes > before.writes, `the deletion took ${after.writes - before.writes} writes`);
-  }
-
-  // The tab closed and another opened, over whatever the browser kept.
-  d.doing = 'reopening';
-  await d.page.close();
-  d.page = await d.context.newPage();
-  await load(d, url);
-  d.doing = 'emptying it again';
-  const left = (await noteIds(d)).filter(id => thrown.includes(id));
-  check((await noteIds(d)).includes(kept), 'the kept note is still there');
-  if (!refused) check(left.length === 0, 'an uninterrupted deletion left nothing');
-  await openTrash(d);
-  const shown = (await texts(d)).filter(t => /old (one|two)/.test(t)).length;
-  check(shown === left.length, `the trash shows the ${left.length} note(s) with rows left (${shown})`);
-  if (left.length > 0) {
+    d.doing = 'emptying the trash';
+    await openTrash(d);
+    await find(d, n => n.text.includes('old one'));
+    const before = await idb(d);
+    await d.page.evaluate(n => { window.__idb.failAt = window.__idb.writes + n; }, n);
     await emptyTrash(d);
-    await find(d, n => n.text.trim() === 'The trash is empty.');
-  }
-  const remaining = await noteIds(d);
-  check(
-    thrown.every(id => !remaining.includes(id)) && remaining.includes(kept),
-    'emptying it again took the rest and only the rest',
-  );
-  check(d.crashes.length === 0, `the page threw nothing: ${d.crashes.slice(0, 2).join(' | ')}`);
-  // One logged panic is known and is not this app's: now and then, as a tab
-  // goes and another comes, flutter_rust_bridge releases a `Note` handle whose
-  // ID is already gone from its pool (`MoiArc::decrement_strong`). The rows are
-  // right when it happens, and nothing is thrown. It is reported here rather
-  // than failed, so it stays visible without making this flaky;
-  // ADR 0002 ("Not done, and honest about it") has the stack and how to look.
-  // Any other error, anywhere, fails.
-  const known = e => e.startsWith('reopening: ')
-    && e.includes('panicked at app/rust/src/frb_generated.rs')
-    && e.includes('called `Option::unwrap()` on a `None` value');
-  for (const e of d.errors.filter(known)) console.log(`note  known bridge panic at launch: ${e.split('\n')[0]}`);
-  const errors = d.errors.filter(e => !known(e));
-  check(errors.length === 0, `and logged no errors: ${errors.slice(0, 2).join(' | ').slice(0, 300)}`);
-  await d.context.close();
+    const after = await idb(d);
+    const refused = after.refused > 0;
 
-  if (!refused) break;
-  if (n > 30) {
-    check(false, 'a deletion of two notes should not need thirty writes');
-    break;
+    if (refused) {
+      check(
+        !!(await find(d, n => n.text.includes('This browser would not keep an edit'), { timeout: 5000 })),
+        'the refusal is on the screen',
+      );
+      check(
+        after.writes === after.failAt + 1,
+        `nothing was written after it (${after.writes - after.failAt - 1} writes)`,
+      );
+    } else {
+      check(after.writes > before.writes, `the deletion took ${after.writes - before.writes} writes`);
+    }
+
+    // The tab closed and another opened, over whatever the browser kept.
+    d.doing = 'reopening';
+    await d.page.close();
+    d.page = await d.context.newPage();
+    await load(d, url);
+    d.doing = 'emptying it again';
+    const left = (await noteIds(d)).filter(id => thrown.includes(id));
+    check((await noteIds(d)).includes(kept), 'the kept note is still there');
+    if (!refused) check(left.length === 0, 'an uninterrupted deletion left nothing');
+    await openTrash(d);
+    const shown = (await texts(d)).filter(t => /old (one|two)/.test(t)).length;
+    check(shown === left.length, `the trash shows the ${left.length} note(s) with rows left (${shown})`);
+    if (left.length > 0) {
+      await emptyTrash(d);
+      await find(d, n => n.text.trim() === 'The trash is empty.');
+    }
+    const remaining = await noteIds(d);
+    check(
+      thrown.every(id => !remaining.includes(id)) && remaining.includes(kept),
+      'emptying it again took the rest and only the rest',
+    );
+    check(d.crashes.length === 0, `the page threw nothing: ${d.crashes.slice(0, 2).join(' | ')}`);
+    // One logged panic is known and is not this app's: now and then, as a tab
+    // goes and another comes, flutter_rust_bridge releases a `Note` handle whose
+    // ID is already gone from its pool (`MoiArc::decrement_strong`). The rows are
+    // right when it happens, and nothing is thrown. It is reported here rather
+    // than failed, so it stays visible without making this flaky;
+    // ADR 0002 ("Not done, and honest about it") has the stack and how to look.
+    // Any other error, anywhere, fails.
+    const known = e => !trace && e.startsWith('reopening: ')
+      && e.includes('frb_generated.rs')
+      && e.includes('MOI missing handle on release:');
+    for (const e of d.errors.filter(known)) console.log(`note  known bridge panic at launch: ${e.split('\n')[0]}`);
+    const errors = d.errors.filter(e => !known(e));
+    check(errors.length === 0, `and logged no errors: ${errors.slice(0, 2).join(' | ').slice(0, 300)}`);
+    await d.context.close();
+
+    if (!refused) break;
+    if (n > 30) {
+      check(false, 'a deletion of two notes should not need thirty writes');
+      break;
+    }
+  }
+} finally {
+  await browser.close();
+  if (trace) {
+    trace.end();
+    await finished(traceOutput);
   }
 }
-
-await browser.close();
 if (failures.length) {
   console.error(`\n${failures.length} check(s) failed`);
   process.exit(1);
