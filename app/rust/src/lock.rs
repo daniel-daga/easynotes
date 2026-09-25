@@ -13,6 +13,11 @@
 //! What holds one is never waiting on the main thread — the store's writes
 //! queue for Dart rather than calling it — so the wait is as short as the
 //! holder's work. Natively a lock is a lock.
+//!
+//! This covers the locks in this crate and no others. flutter_rust_bridge's
+//! own pool of the objects Dart holds is behind a `std::sync::RwLock` that
+//! this cannot reach, and it is the likely source of a rare `Atomics.wait`
+//! error that is still open: see ADR 0002, "Not done, and honest about it".
 
 use std::sync::{LockResult, Mutex, MutexGuard};
 

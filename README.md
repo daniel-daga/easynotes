@@ -210,17 +210,19 @@ container, runs Postgres with persistent storage, and uses DSM's reverse proxy
 for HTTPS and WebSockets.
 
 The web build needs a nightly toolchain and a few extras; `just setup-web`
-installs them, then `just build-web`. Three recipes then run the result in a
+installs them, then `just build-web`. Four recipes then run the result in a
 headless browser: `just web-smoke` checks that what a tab writes to IndexedDB is
 there when it is reloaded, `just web-sync-smoke` starts a relay and checks
 that a tab reaches it, publishes, and is acknowledged, and `just web-converge`
 has two tabs share a list through an invite link and edit it, online and
-offline, until they agree. Whatever serves the result must send
+offline, until they agree, then switch it to text and back. `just
+web-storage-failure` makes IndexedDB itself refuse each write of a deletion in
+turn and checks that no note is ever left half deleted. Whatever serves the result must send
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
 threaded and will not start without cross-origin isolation.
 
-`just bench-web` is the fourth, and it needs none of that build: it compiles the
+`just bench-web` is the fifth, and it needs none of that build: it compiles the
 core alone for WebAssembly and measures what opening a device costs a tab —
 reading the database, replaying the account document, and unsealing one index
 entry a note. Two hundred notes is about 148 ms, five sixths of it IndexedDB.

@@ -202,8 +202,8 @@ for (let n = 0; ; n++) {
   // ID is already gone from its pool (`MoiArc::decrement_strong`). The rows are
   // right when it happens, and nothing is thrown. It is reported here rather
   // than failed, so it stays visible without making this flaky;
-  // `docs/plan-permanent-deletion.md` has it under "Still open". Any other
-  // error, anywhere, fails.
+  // ADR 0002 ("Not done, and honest about it") has the stack and how to look.
+  // Any other error, anywhere, fails.
   const known = e => e.startsWith('reopening: ')
     && e.includes('panicked at app/rust/src/frb_generated.rs')
     && e.includes('called `Option::unwrap()` on a `None` value');
