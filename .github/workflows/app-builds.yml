@@ -1,0 +1,240 @@
+name: App builds
+
+# The app itself, built for each platform — by hand only. These jobs are most of
+# an hour of runners between them, so they stay out of `ci.yml`, which runs on
+# every push to `main` and is kept to lint and tests. Run this from the Actions
+# tab (or `gh workflow run app-builds.yml`) before a release, or when a change
+# touches a platform build: Gradle, Cargokit, the bridge, the web toolchain.
+on:
+  workflow_dispatch:
+    inputs:
+      android:
+        description: Debug APK
+        type: boolean
+        default: true
+      linux:
+        description: Linux desktop
+        type: boolean
+        default: true
+      web:
+        description: Web build and its browser checks
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux desktop
+    if: inputs.linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install the Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          # libsecret is what flutter_secure_storage keeps the master key in on
+          # Linux; without the headers the desktop build does not link.
+          sudo apt-get install -y libgtk-3-dev clang cmake ninja-build pkg-config \
+            liblzma-dev libsecret-1-dev
+
+      - run: flutter pub get
+        working-directory: app
+
+      - name: Build for Linux desktop
+        working-directory: app
+        run: flutter build linux --release
+
+  # A debug APK, the build docs/android-on-windows.md makes by hand, so that one
+  # can be installed without that machine and so a change that breaks the
+  # Android build is found here rather than there. Only builds: there is no
+  # emulator on the runner, and the tests that matter already run in `ci.yml`'s `flutter` job.
+  android:
+    name: Android
+    if: inputs.android
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A debug build of the core per ABI, with its debug info, plus Gradle's
+      # transform cache, does not fit in what the runner image leaves free: the
+      # build died in `mergeDebugNativeLibs` with "No space left on device".
+      # None of these is used here. The Android SDK is, so it stays.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # AGP 9 and Gradle 9 need at least JDK 17; named here rather than left to
+      # whatever the runner image defaults to this month.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # Cargokit would add these itself through rustup, but here a missing
+      # target fails in this step, by name, instead of inside a Gradle task.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      # Caches the registry only: Cargokit builds into Gradle's build directory,
+      # not `target/`, so the compiled crates are rebuilt every run.
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+        working-directory: app
+
+      # arm64 for the Pixel and x64 for the emulator — the only two ABIs anyone
+      # installs this on. The other two would double the Rust build and put
+      # a 209 MB APK back on an emulator whose `/data` cannot take it. Cargokit
+      # used to add x86 to every debug build regardless; its plugin.gradle now
+      # honours the list when one is given (a local change to the vendored file).
+      #
+      # No EASYNOTES_RELAY: the default, 127.0.0.1:8080, is what an emulator
+      # reaches through `adb reverse`. Build locally with the define for 10.0.2.2
+      # or a real relay.
+      - name: Build the debug APK
+        working-directory: app
+        run: flutter build apk --debug --target-platform android-arm64,android-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easynotes-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # The web build, a job of its own because it needs a nightly toolchain and
+  # `-Z build-std` and so is both slower and more fragile than the rest.
+  # ADR 0002 records why it is worth having in CI anyway.
+  web:
+    name: Web
+    if: inputs.web
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install the web toolchain
+        run: |
+          cargo install wasm-pack --locked
+          # Pre-installed so that wasm-pack does not build it itself with the
+          # WebAssembly RUSTFLAGS still set, which cannot link for the host.
+          cargo install wasm-bindgen-cli --version 0.2.128 --locked
+          cargo install flutter_rust_bridge_codegen --version ^2 --locked
+
+      - run: flutter pub get
+        working-directory: app
+
+      # No `--wasm-pack-rustflags`: an override replaces the bridge's threading
+      # flags rather than adding to them, and the core that comes out links and
+      # then fails in the browser (ADR 0002). The step after this one is the
+      # build-time half of that failure.
+      - name: Build the core for the web
+        working-directory: app
+        run: flutter_rust_bridge_codegen build-web --release
+
+      - name: Check the core came out threaded
+        run: |
+          if ! grep -q 'shared:true' app/web/pkg/rust_lib_easynotes.js; then
+            echo "::error::the web core creates unshared memory: the threaded-WebAssembly RUSTFLAGS were lost (ADR 0002)"
+            exit 1
+          fi
+
+      - name: Build the web app
+        working-directory: app
+        run: flutter build web --release
+
+      # The two failures the web build has produced so far — a thread panic and
+      # a memory-cloning error — both compiled cleanly and only appeared when a
+      # browser ran the code (ADR 0002). Each has a build-time check above now,
+      # and this stays as the backstop for the next one. Since the web store
+      # landed there is a third thing only a browser can answer: whether IndexedDB was opened and
+      # whether a reloaded tab reads back what the first one wrote.
+      - name: Run the web build in a browser
+        working-directory: tools/web-smoke
+        run: |
+          # No browser download: the runner has Chrome, and `playwright-core`
+          # uses it rather than fetching a hundred megabytes for six assertions.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+          python3 serve.py "$GITHUB_WORKSPACE/app/build/web" 8099 &
+          until curl -sfo /dev/null http://127.0.0.1:8099/; do sleep 0.2; done
+          node smoke.mjs http://127.0.0.1:8099/
+
+      # And whether it can reach a relay. The browser transport is the one part
+      # of syncing no `cargo test` can run — it is the tab's own WebSocket and
+      # `fetch` — so this is the only thing that covers the join between the
+      # engine and the browser.
+      - name: Sync from a browser to a real relay
+        working-directory: tools/web-smoke
+        run: |
+          cargo build -p easynotes-relay
+          "$GITHUB_WORKSPACE/target/debug/easynotes-relay" &
+          # A port of its own: the step above leaves its server running, and a
+          # second one on 8099 would fail to bind and then quietly be served by
+          # the first, which is a test passing for the wrong reason.
+          python3 serve.py "$GITHUB_WORKSPACE/app/build/web" 8098 &
+          until curl -sfo /dev/null http://127.0.0.1:8080/v1/health; do sleep 0.2; done
+          until curl -sfo /dev/null http://127.0.0.1:8098/; do sleep 0.2; done
+          node sync.mjs http://127.0.0.1:8098/
+
+      # And whether two of them agree. Two browser contexts, as far apart as two
+      # people's phones, share a list through an invite link and the real
+      # screens, then edit it online and offline. Every other convergence test
+      # has a headless core on one side. Reuses the relay and the server the
+      # step above left running.
+      - name: Two tabs edit one list and converge
+        working-directory: tools/web-smoke
+        run: node converge.mjs http://127.0.0.1:8098/
+
+      # And what a deletion leaves when the browser refuses a write partway
+      # through it. The refusal is IndexedDB's own, a failed request that aborts
+      # the transaction, which no `flutter test` can make. No relay is needed;
+      # the server from the first browser step is still on 8099.
+      - name: A deletion survives a refused write
+        working-directory: tools/web-smoke
+        run: node storage-failure.mjs http://127.0.0.1:8099/
+
+      # A size that grows quietly is a size nobody notices until launch.
+      - name: Report the bundle size
+        working-directory: app
+        run: |
+          wasm=web/pkg/rust_lib_easynotes_bg.wasm
+          echo "### Web bundle" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| File | Raw | Gzipped |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Rust core (wasm) | $(numfmt --to=iec < <(stat -c%s $wasm)) | $(gzip -9 -c $wasm | wc -c | numfmt --to=iec) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| main.dart.js | $(numfmt --to=iec < <(stat -c%s build/web/main.dart.js)) | $(gzip -9 -c build/web/main.dart.js | wc -c | numfmt --to=iec) |" >> "$GITHUB_STEP_SUMMARY"
