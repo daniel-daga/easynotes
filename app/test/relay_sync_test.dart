@@ -554,6 +554,41 @@ void main() {
       );
     });
 
+    test(
+      'the dialog and the grid both see who joined, at once or after',
+      () async {
+        // The share dialog and the banners above the grid poll the same
+        // invite on timers of their own. The check that lets someone in also
+        // forgets the invite, so two at once used to answer the relay twice,
+        // and one of them said there was no such invite instead of who joined.
+        final (owner, _, noteId) = await owned();
+        final invite = await owner.createInvite(noteId);
+        final guest = await person('Anna');
+        await guest.requestJoin(invite.link);
+        final deadline = DateTime.now().add(patience);
+        while (true) {
+          final both = await Future.wait([
+            owner.checkInvite(invite.id),
+            owner.checkInvite(invite.id),
+          ]);
+          expect(both.last.joined, both.first.joined);
+          if (both.first.joined != null) {
+            expect(both.first.joined, 'Anna');
+            break;
+          }
+          if (DateTime.now().isAfter(deadline)) fail('nobody was let in');
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        // And whichever asks after the join is done hears the same, rather
+        // than that the invite it was showing does not exist.
+        expect((await owner.checkInvite(invite.id)).joined, 'Anna');
+        expect(owner.people(noteId).people.map((p) => p.name), [
+          'Olga',
+          'Anna',
+        ]);
+      },
+    );
+
     test('a withdrawn link is gone for the guest waiting on it', () async {
       final (owner, _, noteId) = await owned();
       final invite = await owner.createInvite(noteId);
