@@ -848,3 +848,18 @@ class _Placement {
   /// Label IDs, not names — the same separation the account document makes.
   final Set<String> tags = {};
 }
+
+/// Notifications that write down what they would have said.
+class RecordingJoinAlerts implements JoinAlerts {
+  final List<String> calls = [];
+
+  @override
+  Future<void> requestPermission() async => calls.add('requestPermission()');
+
+  @override
+  Future<void> joined({
+    required String inviteId,
+    required String noteId,
+    required String name,
+  }) async => calls.add('joined($inviteId, $noteId, $name)');
+}

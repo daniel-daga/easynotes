@@ -265,3 +265,33 @@ abstract class Invites implements Accounts {
   /// The notes this device was just removed from, each once.
   List<Removal> takeRemovals();
 }
+
+/// How the owner hears that somebody joined one of their notes when they are
+/// not looking at its share dialog: a notification from the system, on the
+/// device that let them in.
+abstract class JoinAlerts {
+  /// Ask to be allowed to notify. Called when the owner sends a link, which
+  /// is the moment the question makes sense, and never before.
+  Future<void> requestPermission();
+
+  /// [name] was just let into [noteId] through [inviteId]. Called once per
+  /// person.
+  Future<void> joined({
+    required String inviteId,
+    required String noteId,
+    required String name,
+  });
+}
+
+/// The words of that notification.
+({String title, String body}) joinedNotificationText(
+  String name,
+  String noteTitle,
+) {
+  final who = name.trim().isEmpty ? 'Someone' : name.trim();
+  final what = noteTitle.trim();
+  return (
+    title: what.isEmpty ? '$who joined a shared note' : '$who joined $what',
+    body: 'They opened your link and can see and edit the note now.',
+  );
+}

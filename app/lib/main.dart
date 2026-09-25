@@ -14,12 +14,14 @@ import 'core/address_bar_stub.dart'
 import 'core/browser_store.dart';
 import 'core/deep_links.dart';
 import 'core/invite_links.dart';
+import 'core/local_notifications.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/reminder_scheduler.dart';
 import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
+import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
 
 ThemeData _easyNotesTheme(Brightness brightness) {
@@ -197,6 +199,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     super.initState();
     _reminders = ReminderScheduler(widget.library);
     unawaited(_reminders.start());
+    joinAlerts = SystemJoinAlerts(widget.library);
     _lifecycle = AppLifecycleListener(
       onHide: widget.library.sendHeldEdits,
       onResume: () => unawaited(_reminders.reconcile()),

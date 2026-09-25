@@ -14,6 +14,7 @@ import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
+import 'local_notifications.dart';
 import 'note_library.dart';
 
 class ReminderScheduler {
@@ -41,27 +42,7 @@ class ReminderScheduler {
     } on ArgumentError {
       tz.setLocalLocation(tz.UTC);
     }
-    await _notifications.initialize(
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-        iOS: DarwinInitializationSettings(
-          requestAlertPermission: false,
-          requestBadgePermission: false,
-          requestSoundPermission: false,
-        ),
-        macOS: DarwinInitializationSettings(
-          requestAlertPermission: false,
-          requestBadgePermission: false,
-          requestSoundPermission: false,
-        ),
-        linux: LinuxInitializationSettings(defaultActionName: 'Open'),
-        windows: WindowsInitializationSettings(
-          appName: 'EasyNotes',
-          appUserModelId: 'EasyNotes.EasyNotes.Desktop',
-          guid: '45b9c55e-998e-4aca-9e37-a09f52545141',
-        ),
-      ),
-    );
+    await initializeLocalNotifications();
     _updates = _library.watchReminders().listen((_) => unawaited(reconcile()));
     await reconcile();
   }

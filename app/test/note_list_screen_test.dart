@@ -195,6 +195,7 @@ void main() {
       invitePollInterval = const Duration(milliseconds: 100);
       inviteBannerPollInterval = const Duration(milliseconds: 200);
     });
+    tearDown(() => joinAlerts = null);
 
     Future<void> ask(WidgetTester tester, String link) async {
       await tester.tap(find.byTooltip('Open navigation menu'));
@@ -334,13 +335,17 @@ void main() {
     testWidgets(
       'someone who opened a link is let in and shown above the grid',
       (tester) async {
+        final alerts = joinAlerts = RecordingJoinAlerts();
         final library = twoLists()..setUpSharing('Olga');
         final invite = await library.createInvite('groceries');
         library.fakeOpened(invite.id, name: 'Anna');
         await pumpList(tester, library);
 
-        // Nobody was asked: the grid's own poll let her in.
+        // Nobody was asked: the grid's own poll let her in, and told the
+        // owner — once, however many polls follow.
         expect(find.text('Anna joined "Groceries"'), findsOneWidget);
+        await tester.pump(inviteBannerPollInterval * 3);
+        expect(alerts.calls, ['joined(${invite.id}, groceries, Anna)']);
         expect(
           library.people('groceries').people.map((p) => p.name),
           contains('Anna'),

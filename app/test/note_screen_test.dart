@@ -373,6 +373,22 @@ void main() {
 
   group('sharing', () {
     setUp(() => invitePollInterval = const Duration(milliseconds: 100));
+    tearDown(() => joinAlerts = null);
+
+    testWidgets('sending a link asks once to notify when someone joins', (
+      tester,
+    ) async {
+      final alerts = joinAlerts = RecordingJoinAlerts();
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      await makeLink(tester, invites);
+      // Sending the same link again is not a new question.
+      await tester.tap(find.byKey(const Key('send-invite-link')));
+      await tester.pumpAndSettle();
+      expect(alerts.calls, ['requestPermission()']);
+      await tester.tap(find.byKey(const Key('share-done')));
+      await tester.pumpAndSettle();
+    });
 
     testWidgets('share makes a link that carries no key', (tester) async {
       final core = FakeNoteCore(items: const ['milk']);
@@ -438,10 +454,13 @@ void main() {
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
       final id = await makeLink(tester, invites);
 
+      final alerts = joinAlerts = RecordingJoinAlerts();
       invites.fakeOpened(id, name: 'Anna');
       await tester.pump(invitePollInterval);
       await tester.pumpAndSettle();
 
+      // Said in the dialog the owner is looking at, so not notified too.
+      expect(alerts.calls.where((c) => c.startsWith('joined')), isEmpty);
       // No request to answer, no code to compare: she is in.
       expect(find.textContaining('wants to join'), findsNothing);
       expect(invites.calls, contains('checkInvite($id)'));

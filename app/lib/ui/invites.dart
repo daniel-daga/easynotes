@@ -36,6 +36,12 @@ Duration invitePollInterval = const Duration(seconds: 3);
 /// How often the list screen asks, with nobody necessarily looking.
 Duration inviteBannerPollInterval = const Duration(seconds: 15);
 
+/// How the owner is told somebody joined when they are not looking at the
+/// share dialog. The app sets it to system notifications; unset, nobody is
+/// told beyond the line above the grid. A variable, like the intervals, so a
+/// widget test can listen.
+JoinAlerts? joinAlerts;
+
 /// Rounded to the nearest unit, not down: a link made a second ago has
 /// 6 d 23 h 59 m left, and the dialog that just said "seven days" should not
 /// follow it with "6 days".
@@ -292,6 +298,12 @@ class _ShareDialogState extends State<ShareDialog> {
   });
 
   Future<Invite?> _openInvite() async {
+    if (_invite == null) {
+      // A new link is when to ask about notifications: the owner is about to
+      // wait for somebody, and will want to hear when they arrive. Not
+      // awaited, so the link goes whatever the answer.
+      unawaited(joinAlerts?.requestPermission().catchError((_) {}));
+    }
     final invite = _invite ?? await widget.invites.createInvite(widget.noteId);
     if (!mounted) return null;
     setState(() {
@@ -783,8 +795,9 @@ class _Joined {
 /// It checks this device's open invites on its own timer, which is what lets
 /// a person in when the owner shared a link and closed the dialog — and
 /// finishes letting someone in when the app closed half-way. One line per
-/// person who got in that way, with a way to see everyone on the note; one
-/// line per note this device is waiting to join, with a way to stop.
+/// person who got in that way, with a way to see everyone on the note, and a
+/// system notification through [joinAlerts] for an owner who is not looking;
+/// one line per note this device is waiting to join, with a way to stop.
 class InviteBanners extends StatefulWidget {
   const InviteBanners({
     super.key,
@@ -840,6 +853,17 @@ class _InviteBannersState extends State<InviteBanners> {
           final status = await widget.invites.checkInvite(invite.id);
           if (status.joined != null) {
             joined[invite.id] = _Joined(invite.noteId, status.joined!);
+            // Once: the invite is forgotten as it reports who joined. The
+            // share dialog, if it caught the join first, says so itself.
+            unawaited(
+              joinAlerts
+                  ?.joined(
+                    inviteId: invite.id,
+                    noteId: invite.noteId,
+                    name: status.joined!,
+                  )
+                  .catchError((_) {}),
+            );
           }
         } catch (_) {
           // Offline, or gone; either way nobody to show.
