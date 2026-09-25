@@ -64,7 +64,7 @@ mod socket;
     feature = "sync-native",
     all(feature = "sync-web", target_arch = "wasm32")
 ))]
-pub use socket::{DeviceSync, NoteSync};
+pub use socket::DeviceSync;
 
 /// The invite calls. Plain HTTP over the same transport, with no socket and
 /// no device key — see the module for why not the latter.

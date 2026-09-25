@@ -3,10 +3,13 @@
 
 use easynotes_core::crypto::{DeviceIdentity, Envelope, NoteKey};
 use easynotes_core::ids::NoteId;
-use easynotes_core::sync::{Incoming, NoteSync};
+use easynotes_core::sync::Incoming;
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{MemoryStore, Origins, Relay, RelayConfig, RelayStore};
 use std::sync::Arc;
+use support::NoteSocket;
+
+mod support;
 
 async fn relay() -> (Relay, MemoryStore) {
     let store = MemoryStore::new();
@@ -41,7 +44,7 @@ fn envelope(
 }
 
 /// Read until `Caught`, collecting envelopes.
-async fn drain(sync: &mut NoteSync) -> Vec<Vec<u8>> {
+async fn drain(sync: &mut NoteSocket) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     loop {
         match sync.next().await.unwrap() {
@@ -49,7 +52,7 @@ async fn drain(sync: &mut NoteSync) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => return out,
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
-            // Only the device socket says these.
+            // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => return out,
         }
@@ -57,7 +60,7 @@ async fn drain(sync: &mut NoteSync) -> Vec<Vec<u8>> {
 }
 
 /// Read exactly `n` envelopes, failing rather than hanging forever.
-async fn take(sync: &mut NoteSync, n: usize) -> Vec<Vec<u8>> {
+async fn take(sync: &mut NoteSocket, n: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     while out.len() < n {
         let next = tokio::time::timeout(std::time::Duration::from_secs(5), sync.next())
@@ -69,7 +72,7 @@ async fn take(sync: &mut NoteSync, n: usize) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => {}
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
-            // Only the device socket says these.
+            // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
         }
@@ -119,10 +122,10 @@ async fn a_subscriber_receives_another_devices_append() {
         .await
         .unwrap();
 
-    let mut sync_a = NoteSync::connect(&relay.ws_base(), &token_a, note, 0)
+    let mut sync_a = NoteSocket::connect(&relay.ws_base(), &token_a, note, 0)
         .await
         .unwrap();
-    let mut sync_b = NoteSync::connect(&relay.ws_base(), &token_b, note, 0)
+    let mut sync_b = NoteSocket::connect(&relay.ws_base(), &token_b, note, 0)
         .await
         .unwrap();
     assert!(drain(&mut sync_a).await.is_empty());
@@ -150,7 +153,7 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
         .await
         .unwrap();
 
-    let mut sync = NoteSync::connect(&relay.ws_base(), &token, note, 0)
+    let mut sync = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
         .await
         .unwrap();
     drain(&mut sync).await;
@@ -164,7 +167,7 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
     sync.close().await.unwrap();
 
     // Something happens while we are away.
-    let mut other = NoteSync::connect(&relay.ws_base(), &token, note, cursor)
+    let mut other = NoteSocket::connect(&relay.ws_base(), &token, note, cursor)
         .await
         .unwrap();
     assert!(drain(&mut other).await.is_empty(), "nothing new yet");
@@ -176,7 +179,7 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
     other.close().await.unwrap();
 
     // Reconnecting from the cursor yields exactly the one missed update.
-    let mut back = NoteSync::connect(&relay.ws_base(), &token, note, cursor)
+    let mut back = NoteSocket::connect(&relay.ws_base(), &token, note, cursor)
         .await
         .unwrap();
     let missed = drain(&mut back).await;
@@ -184,43 +187,6 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
     assert_eq!(
         Envelope::decode(&missed[0]).unwrap().open(&key).unwrap(),
         b"while away"
-    );
-}
-
-/// A relay restored behind a persisted cursor says `reset` rather than
-/// pretending that its empty backlog is caught up.
-#[tokio::test]
-async fn a_restored_relay_resets_an_ahead_per_note_client() {
-    let (relay, store) = relay().await;
-    let identity = DeviceIdentity::generate();
-    let note = NoteId::random();
-    let key = NoteKey::random();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &identity)
-        .await
-        .unwrap();
-    let stored = envelope(&identity, note, &key, 0, b"restored");
-    store.append(&note.encode(), &stored).await.unwrap();
-
-    let mut ahead = NoteSync::connect(&relay.ws_base(), &token, note, 3)
-        .await
-        .unwrap();
-    assert!(matches!(ahead.next().await, Ok(Some(Incoming::Reset))));
-
-    let mut recovered = NoteSync::connect(&relay.ws_base(), &token, note, 0)
-        .await
-        .unwrap();
-    assert_eq!(drain(&mut recovered).await, [stored]);
-}
-
-#[tokio::test]
-async fn refuses_a_connection_without_a_valid_token() {
-    let (relay, _store) = relay().await;
-    let note = NoteId::random();
-    assert!(
-        NoteSync::connect(&relay.ws_base(), "not-a-token", note, 0)
-            .await
-            .is_err(),
-        "a made-up token was accepted"
     );
 }
 
@@ -365,13 +331,30 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
 
 #[tokio::test]
 async fn refuses_a_malformed_note_id() {
+    // A note ID that cannot exist is refused before anything is subscribed, so
+    // a typo cannot create a log for it. The socket stays open.
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
     let (relay, _store) = relay().await;
     let device = DeviceIdentity::generate();
     let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
         .await
         .unwrap();
-    let url = format!("{}/v1/notes/not-a-note-id?token={token}", relay.ws_base());
-    assert!(tokio_tungstenite::connect_async(&url).await.is_err());
+    let url = format!("{}/v1/sync?token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    socket
+        .send(Message::text(
+            r#"{"type":"subscribe","note":"not-a-note-id","since":0}"#,
+        ))
+        .await
+        .unwrap();
+    let reply = loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(text) => break text.to_string(),
+            _ => continue,
+        }
+    };
+    assert!(reply.contains("malformed note id"), "got: {reply}");
 }
 
 #[tokio::test]
@@ -386,7 +369,7 @@ async fn refuses_an_envelope_addressed_to_another_note() {
     let note = NoteId::random();
     let elsewhere = NoteId::random();
 
-    let mut sync = NoteSync::connect(&relay.ws_base(), &token, note, 0)
+    let mut sync = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
         .await
         .unwrap();
     drain(&mut sync).await;
@@ -413,7 +396,7 @@ async fn refuses_an_oversized_envelope() {
         .unwrap();
     let note = NoteId::random();
 
-    let mut sync = NoteSync::connect(&relay.ws_base(), &token, note, 0)
+    let mut sync = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
         .await
         .unwrap();
     drain(&mut sync).await;
@@ -440,7 +423,7 @@ async fn refuses_a_blob_that_is_not_an_envelope() {
         .unwrap();
     let note = NoteId::random();
 
-    let mut sync = NoteSync::connect(&relay.ws_base(), &token, note, 0)
+    let mut sync = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
         .await
         .unwrap();
     drain(&mut sync).await;
@@ -630,13 +613,8 @@ async fn the_two_limits_are_kept_apart() {
     // `WebSocketUpgrade` extractor refuses before the token is ever looked at.
     // The assertion is only that it is not a 429, because that is the whole
     // question — anything else means the request got through the limiter.
-    let note = NoteId::random();
     let socket = http
-        .get(format!(
-            "{}/v1/notes/{}?token=nonsense",
-            relay.http_base(),
-            note.encode()
-        ))
+        .get(format!("{}/v1/sync?token=nonsense", relay.http_base()))
         .send()
         .await
         .unwrap();

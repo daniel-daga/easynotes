@@ -44,46 +44,14 @@ pub struct TokenResponse {
     pub expires_in: u64,
 }
 
-/// Client to server, over the note's WebSocket.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ClientMessage {
-    /// Ask for everything after `since`, then stream. `since: 0` means "from the
-    /// beginning"; sequence numbers start at 1.
-    Subscribe { since: i64 },
-    /// Hand the relay an envelope to append and fan out.
-    Append {
-        /// The encoded envelope, base64url.
-        envelope: String,
-    },
-}
-
-/// Server to client.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerMessage {
-    /// One stored envelope. Sent for the backlog on subscribe and for every
-    /// subsequent append, including the subscriber's own — clients deduplicate by
-    /// `(author, counter)` regardless, and it keeps `seq` tracking uniform.
-    Update { seq: i64, envelope: String },
-    /// The backlog is drained; everything after this is live.
-    Caught { seq: i64 },
-    /// The client cursor is beyond this relay's log. This happens when the
-    /// relay has been restored from an earlier backup; the client must reset
-    /// its local cursor and resubscribe from the beginning.
-    Reset,
-    /// The append was rejected. The connection stays open.
-    Error { message: String },
-}
-
 // ---------------------------------------------------------------------------
-// One socket per device
+// The device socket
 // ---------------------------------------------------------------------------
 //
 // `/v1/sync` carries every note a device syncs over one socket, authenticated
-// once. The messages are the per-note ones above with the note named in each,
-// because the path no longer says which note a message is about. A note can be
-// subscribed at any point in the socket's life, not only first.
+// once, so every message names its note. A note can be subscribed at any point
+// in the socket's life. Sequence numbers are per note and start at 1, so
+// `since: 0` means from the beginning.
 
 /// What an append is refused with when the note's live log is at its cap.
 pub const NOTE_FULL: &str = "note_full";
@@ -131,6 +99,9 @@ pub enum SyncClientMessage {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SyncServerMessage {
+    /// One stored envelope. Sent for the backlog on subscribe and for every
+    /// later append, the subscriber's own included: clients deduplicate by
+    /// `(author, counter)` regardless, and it keeps `seq` tracking uniform.
     Update {
         note: String,
         seq: i64,
@@ -139,7 +110,8 @@ pub enum SyncServerMessage {
     /// This note's backlog is drained. Per note, so a client can tell which
     /// notes are live while another is still catching up.
     Caught { note: String, seq: i64 },
-    /// This note's cursor is beyond the relay's current log. The client must
+    /// This note's cursor is beyond the relay's current log, which happens when
+    /// the relay has been restored from an earlier backup. The client must
     /// reset its local cursor and resubscribe from the beginning.
     Reset { note: String },
     /// This note's log has grown enough to be worth compacting. Said to the

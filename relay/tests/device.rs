@@ -4,9 +4,8 @@
 //! and passes unchanged over the device socket. This proves what the device
 //! socket adds: however many notes a device has, it opens one socket and does
 //! one token handshake; a note can join the socket at any point; one note's
-//! long backlog does not hold up another's; a socket that stops reading loses
-//! nothing; and an app from before all this still edits a note with one from
-//! after it (ADR 0017).
+//! long backlog does not hold up another's; and a socket that stops reading
+//! loses nothing (ADR 0017).
 
 mod support;
 
@@ -23,7 +22,7 @@ use easynotes_relay::{MemoryStore as RelayLog, Relay, RelayStore};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{Device, Tap};
+use support::Tap;
 
 type Core = NoteCore<DefaultNoteDoc, MemoryStore, MemoryKeyring>;
 
@@ -153,11 +152,6 @@ async fn twenty_notes_are_one_socket_and_one_handshake() {
 
     assert_eq!(requests(&tap, "GET /v1/sync"), 1, "one socket");
     assert_eq!(requests(&tap, "POST /v1/token"), 1, "one token handshake");
-    assert_eq!(
-        requests(&tap, "GET /v1/notes/"),
-        0,
-        "and no socket per note"
-    );
 }
 
 /// A note made, joined or adopted while the device is connected goes onto the
@@ -233,31 +227,6 @@ async fn letting_one_note_go_leaves_the_rest_syncing() {
     b.wait_until("the kept note's edit", |b| b.texts(kept) == ["still here"])
         .await;
     assert_eq!(requests(&tap, "GET /v1/sync"), 1);
-}
-
-/// An app from before `/v1/sync` and an app from after it, editing one note
-/// together through one relay.
-#[tokio::test]
-async fn an_old_app_and_a_new_one_edit_one_note_together() {
-    let (relay, _log) = relay().await;
-
-    let mut old = Device::owner("old", &relay.http_base(), &relay.ws_base()).await;
-    old.add_item("from the old app").await;
-
-    let mut guest = blank_core();
-    let note = guest.import_share_blob(&old.share_blob()).unwrap();
-    let mut new = Phone::new(guest, endpoint(&relay.http_base()));
-    new.connect(note);
-    new.wait_until("the old app's item", |p| {
-        p.texts(note) == ["from the old app"]
-    })
-    .await;
-
-    new.add_item(note, "from the new app");
-    new.wait_until("its own edit acknowledged", |p| p.synced(note))
-        .await;
-    old.pump().await;
-    assert_eq!(old.texts(), ["from the old app", "from the new app"]);
 }
 
 /// A sealed envelope for `note`, the relay accepts as many copies of as it is
@@ -458,7 +427,7 @@ async fn the_relay_refuses_what_it_should_and_keeps_the_socket() {
     ));
 }
 
-/// A device socket needs a token, like a note's.
+/// A device socket needs a token.
 #[tokio::test]
 async fn a_device_socket_needs_a_token() {
     let (relay, _log) = relay().await;

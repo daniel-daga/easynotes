@@ -1,13 +1,12 @@
-//! The relay itself: the handshake, a socket per note and a fan-out table, and
-//! the invite mailboxes in [`crate::invite`]. The socket a current app opens —
-//! one per device, carrying every note — is [`crate::sync`], over the same
-//! fan-out table and the same [`append`].
+//! The relay itself: the handshake, a fan-out table, and the invite mailboxes
+//! in [`crate::invite`]. The socket a device opens — one, carrying every note it
+//! syncs — is [`crate::sync`], over that fan-out table and [`append`].
 //!
 //! What the relay is allowed to check, in full:
 //!   * the token is valid and unexpired;
-//!   * the note ID in the path is well-formed;
+//!   * the note ID a message names is well-formed;
 //!   * the envelope is under the size cap and parses as a header;
-//!   * the envelope's note ID matches the path.
+//!   * the envelope's note ID matches the note the message names.
 //!
 //! It cannot check anything else, because it cannot decrypt anything, and it must
 //! not try. It does not verify signatures either — only members hold the keys to
@@ -21,8 +20,7 @@ use crate::limit::RateLimit;
 use crate::protocol::*;
 use crate::quota::{Limits, Proposal, Refusal};
 use crate::store::{Appended, RelayStore};
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -30,8 +28,6 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::crypto::Envelope;
-use easynotes_core::ids::NoteId;
-use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,9 +41,6 @@ pub(crate) const FANOUT_BUFFER: usize = 256;
 
 /// `(seq, envelope)` — what one note's subscribers receive.
 type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
-
-/// The write half of an upgraded WebSocket.
-type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
 
 pub struct AppState {
     pub store: Arc<dyn RelayStore>,
@@ -181,8 +174,7 @@ pub struct RelayConfig {
     pub token_signing_key: [u8; 32],
     /// `/v1/challenge` and `/v1/token`, per address.
     pub handshake: RateLimit,
-    /// Opening a socket, per address: a device's one socket at `/v1/sync`, or
-    /// a note's own at `/v1/notes/{id}` from an app that predates it.
+    /// Opening a device's one socket at `/v1/sync`, per address.
     pub sockets: RateLimit,
     /// Every invite call, per address. Its own bucket, because a guest waiting
     /// on an answer polls, and that must not spend the budget its device needs
@@ -214,14 +206,14 @@ impl RelayConfig {
     /// The defaults a public relay should start from, and what `main` uses
     /// unless the environment says otherwise.
     ///
-    /// The numbers are deliberately loose. A current device does one handshake
-    /// and opens one socket per connection, whatever it syncs; an app from
-    /// before `/v1/sync` does one of each per note, so twenty notes coming back
-    /// after a network drop is twenty handshakes in a few seconds — which is
-    /// why the burst is larger than the sustained rate, and why it stays so
-    /// while the per-note route does. They can come down once it goes. They are meant to
-    /// stop a flood, not to shape traffic, and anything that starts refusing
-    /// real clients is set too low rather than defended.
+    /// The numbers are deliberately loose. A device does one handshake — a
+    /// challenge and a token, two requests — and opens one socket per
+    /// connection, whatever it syncs, and asks again only when its token
+    /// expires or its network drops. The bursts let twenty devices behind one
+    /// address, a household or an office behind one router, all come back at
+    /// once after an outage. They are meant to stop a flood, not to shape
+    /// traffic, and anything that starts refusing real clients is set too low
+    /// rather than defended.
     pub fn public() -> Self {
         Self {
             origins: Origins::Any,
@@ -230,8 +222,8 @@ impl RelayConfig {
                 easynotes_core::crypto::random_bytes(&mut key);
                 key
             },
-            handshake: RateLimit::new(120, 60),
-            sockets: RateLimit::new(240, 120),
+            handshake: RateLimit::new(60, 40),
+            sockets: RateLimit::new(60, 20),
             // A guest and an owner each poll every few seconds while a screen
             // is waiting; this is several of those at once from one address.
             invites: RateLimit::new(120, 60),
@@ -259,10 +251,8 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
-        // One socket per device, every note on it. The per-note route below
-        // stays for a release, so that an app from before it keeps working.
+        // One socket per device, every note on it.
         .route("/v1/sync", get(crate::sync::sync_ws))
-        .route("/v1/notes/{note_id}", get(notes_ws))
         .route("/v1/invites", post(invite::create))
         .route("/v1/invites/{invite}/requests", post(invite::join))
         .route(
@@ -301,7 +291,6 @@ async fn enforce_limits(
     let limit = match req.uri().path() {
         "/v1/challenge" | "/v1/token" => &config.handshake,
         "/v1/sync" => &config.sockets,
-        path if path.starts_with("/v1/notes/") => &config.sockets,
         path if path.starts_with("/v1/invites") => &config.invites,
         _ => return next.run(req).await,
     };
@@ -369,127 +358,6 @@ async fn token(
 #[derive(Deserialize)]
 pub struct WsQuery {
     pub(crate) token: String,
-}
-
-async fn notes_ws(
-    State(state): State<Arc<AppState>>,
-    Path(note_id): Path<String>,
-    Query(q): Query<WsQuery>,
-    ws: WebSocketUpgrade,
-) -> Result<Response> {
-    // A malformed note ID is rejected before a socket is opened, so a typo cannot
-    // create a log entry for a note that can never exist.
-    NoteId::decode(&note_id).map_err(|_| RelayError::BadRequest("malformed note id".into()))?;
-    if state.auth.device_for(&q.token).is_none() {
-        return Err(RelayError::Unauthorized);
-    }
-    Ok(ws.on_upgrade(move |socket| session(socket, state, note_id)))
-}
-
-async fn session(socket: WebSocket, state: Arc<AppState>, note: String) {
-    if let Err(e) = run_session(socket, state, &note).await {
-        tracing::debug!(note = %note, error = %e, "session ended");
-    }
-}
-
-async fn run_session(socket: WebSocket, state: Arc<AppState>, note: &str) -> anyhow::Result<()> {
-    let (mut tx, mut rx) = socket.split();
-
-    // The first message must be `subscribe`; it carries the cursor to replay from.
-    let since = loop {
-        match rx.next().await {
-            Some(Ok(Message::Text(t))) => match serde_json::from_str::<ClientMessage>(&t) {
-                Ok(ClientMessage::Subscribe { since }) => break since.max(0),
-                Ok(_) => {
-                    send_error(&mut tx, "expected subscribe first").await?;
-                }
-                Err(e) => send_error(&mut tx, &format!("malformed message: {e}")).await?,
-            },
-            Some(Ok(Message::Close(_))) | None => return Ok(()),
-            Some(Ok(_)) => {}
-            Some(Err(e)) => return Err(e.into()),
-        }
-    };
-
-    let head = state.store.head(note).await?;
-    if since > head {
-        tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
-        send(&mut tx, &ServerMessage::Reset).await?;
-        return Ok(());
-    }
-
-    // Subscribe to the fan-out before reading the backlog. The head check above
-    // establishes the lower edge of that backlog, so an append between the two
-    // is either in the store when it is read or in this receiver.
-    let mut live = state.channel(note).subscribe();
-
-    let mut last_sent = since;
-    for stored in state.store.since(note, since).await? {
-        send(
-            &mut tx,
-            &ServerMessage::Update {
-                seq: stored.seq,
-                envelope: URL_SAFE_NO_PAD.encode(&stored.envelope),
-            },
-        )
-        .await?;
-        last_sent = last_sent.max(stored.seq);
-    }
-    send(&mut tx, &ServerMessage::Caught { seq: last_sent }).await?;
-
-    loop {
-        tokio::select! {
-            // Fan-out from other sessions on this note.
-            broadcast = live.recv() => match broadcast {
-                Ok((seq, envelope)) => {
-                    if seq > last_sent {
-                        send(&mut tx, &ServerMessage::Update {
-                            seq,
-                            envelope: URL_SAFE_NO_PAD.encode(&envelope),
-                        }).await?;
-                        last_sent = seq;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    // This subscriber fell too far behind to buffer. Replay from
-                    // the store rather than dropping it — the same path a
-                    // reconnecting client takes.
-                    tracing::debug!(note = %note, skipped = n, "subscriber lagged; replaying");
-                    for stored in state.store.since(note, last_sent).await? {
-                        send(&mut tx, &ServerMessage::Update {
-                            seq: stored.seq,
-                            envelope: URL_SAFE_NO_PAD.encode(&stored.envelope),
-                        }).await?;
-                        last_sent = last_sent.max(stored.seq);
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => return Ok(()),
-            },
-
-            incoming = rx.next() => match incoming {
-                Some(Ok(Message::Text(t))) => {
-                    match serde_json::from_str::<ClientMessage>(&t) {
-                        Ok(ClientMessage::Append { envelope }) => {
-                            match append(&state, note, &envelope).await {
-                                // The sender gets its own append back through
-                                // the broadcast, like everyone else. There is
-                                // no compaction on this route.
-                                Ok(_) => {}
-                                Err(e) => send_error(&mut tx, &e.to_string()).await?,
-                            }
-                        }
-                        Ok(ClientMessage::Subscribe { .. }) => {
-                            send_error(&mut tx, "already subscribed").await?;
-                        }
-                        Err(e) => send_error(&mut tx, &format!("malformed message: {e}")).await?,
-                    }
-                }
-                Some(Ok(Message::Close(_))) | None => return Ok(()),
-                Some(Ok(_)) => {}
-                Some(Err(e)) => return Err(e.into()),
-            },
-        }
-    }
 }
 
 /// An append that was stored.
@@ -579,20 +447,4 @@ pub(crate) async fn compact(
         Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),
         Err(e) => Err(e.to_string()),
     }
-}
-
-async fn send(tx: &mut Sink, msg: &ServerMessage) -> anyhow::Result<()> {
-    tx.send(Message::Text(serde_json::to_string(msg)?.into()))
-        .await?;
-    Ok(())
-}
-
-async fn send_error(tx: &mut Sink, message: &str) -> anyhow::Result<()> {
-    send(
-        tx,
-        &ServerMessage::Error {
-            message: message.to_string(),
-        },
-    )
-    .await
 }

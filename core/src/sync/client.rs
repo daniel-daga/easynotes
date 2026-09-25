@@ -90,9 +90,8 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
 
 /// A WebSocket that carries text, and nothing that knows what the text means.
 ///
-/// What is said over it — to one note at `/v1/notes/{id}` or to all of a
-/// device's at `/v1/sync` — is [`super::socket`], written once for both
-/// transports.
+/// What is said over it — every note a device syncs, at `/v1/sync` — is
+/// [`super::socket`], written once for both transports.
 pub(crate) struct Socket {
     inner: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }

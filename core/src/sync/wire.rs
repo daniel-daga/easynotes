@@ -69,22 +69,6 @@ mod challenge_tests {
     }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
-    Subscribe { since: i64 },
-    Append { envelope: String },
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMessage {
-    Update { seq: i64, envelope: String },
-    Caught { seq: i64 },
-    Reset,
-    Error { message: String },
-}
-
 /// What arrived from the relay.
 pub enum Incoming {
     /// An envelope to hand to `NoteCore::apply_remote`.
@@ -122,57 +106,10 @@ pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("relay: {e}"))
 }
 
-/// The first thing a connection says: replay everything after `since`.
-pub(crate) fn subscribe(since: i64) -> String {
-    serde_json::to_string(&ClientMessage::Subscribe { since })
-        .expect("the subscribe message always serializes")
-}
-
-pub(crate) fn append(envelope: &[u8]) -> String {
-    serde_json::to_string(&ClientMessage::Append {
-        envelope: URL_SAFE_NO_PAD.encode(envelope),
-    })
-    .expect("the append message always serializes")
-}
-
-/// Read one message from the relay, advancing `last_seq`.
-///
-/// `last_seq` only ever moves forward — `max` rather than assignment — because
-/// it is what the next `subscribe` replays from, and a relay that sent an older
-/// sequence number, by confusion or on purpose, would otherwise make this
-/// device ask for a backlog it has already applied.
-pub(crate) fn parse(text: &str, last_seq: &mut i64) -> Result<Incoming> {
-    let parsed: ServerMessage = serde_json::from_str(text)
-        .map_err(|e| CoreError::Storage(format!("relay sent nonsense: {e}")))?;
-    Ok(match parsed {
-        ServerMessage::Update { seq, envelope } => {
-            let raw = URL_SAFE_NO_PAD
-                .decode(&envelope)
-                .map_err(|_| CoreError::Storage("relay sent a malformed envelope".into()))?;
-            *last_seq = (*last_seq).max(seq);
-            Incoming::Envelope { seq, envelope: raw }
-        }
-        ServerMessage::Caught { seq } => {
-            *last_seq = (*last_seq).max(seq);
-            Incoming::Caught { seq }
-        }
-        ServerMessage::Reset => {
-            *last_seq = 0;
-            Incoming::Reset
-        }
-        ServerMessage::Error { message } => Incoming::Rejected(said(message)),
-    })
-}
-
-/// The URL one note's socket is opened at.
-pub(crate) fn note_url(ws_base: &str, note: crate::ids::NoteId, token: &str) -> String {
-    format!("{ws_base}/v1/notes/{}?token={token}", note.encode())
-}
-
-// -- one socket per device ---------------------------------------------------
+// -- the device socket -------------------------------------------------------
 //
-// `/v1/sync`: the messages above with the note named in each, because the path
-// no longer says which note a message is about (ADR 0017).
+// `/v1/sync`: one socket for every note a device syncs, so every message names
+// its note (ADR 0017).
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -451,63 +388,24 @@ mod tests {
     }
 
     #[test]
-    fn an_update_comes_back_decoded_and_moves_the_cursor() {
-        let mut seq = 0;
-        let text = r#"{"type":"update","seq":7,"envelope":"aGk"}"#;
-        match parse(text, &mut seq).unwrap() {
-            Incoming::Envelope { seq, envelope } => {
-                assert_eq!(seq, 7);
-                assert_eq!(envelope, b"hi");
-            }
-            _ => panic!("expected an envelope"),
-        }
-        assert_eq!(seq, 7);
-    }
-
-    #[test]
-    fn the_cursor_never_goes_backwards() {
-        // A relay that replayed an older sequence number would otherwise make
-        // the next `subscribe` ask for a backlog this device already has.
-        let mut seq = 9;
-        parse(r#"{"type":"update","seq":3,"envelope":"aGk"}"#, &mut seq).unwrap();
-        assert_eq!(seq, 9);
-        parse(r#"{"type":"caught","seq":4}"#, &mut seq).unwrap();
-        assert_eq!(seq, 9);
-    }
-
-    #[test]
-    fn a_reset_rewinds_the_cursor_on_purpose() {
-        let mut seq = 9;
-        assert!(matches!(
-            parse(r#"{"type":"reset"}"#, &mut seq).unwrap(),
-            Incoming::Reset
-        ));
-        assert_eq!(seq, 0);
-    }
-
-    #[test]
     fn a_rejection_is_not_an_error() {
-        // The relay refused one envelope; the connection is fine and the rest of
+        // The relay refused one envelope; the socket is fine and the rest of
         // the outbox still goes.
-        let mut seq = 0;
-        match parse(r#"{"type":"error","message":"too big"}"#, &mut seq).unwrap() {
-            Incoming::Rejected(m) => assert_eq!(m, "too big"),
+        let text = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"too big"}"#;
+        match parse_routed(text).unwrap() {
+            Routed::Note(_, Incoming::Rejected(m)) => assert_eq!(m, "too big"),
             _ => panic!("expected a rejection"),
         }
     }
 
     #[test]
     fn nonsense_is_an_error_rather_than_a_guess() {
-        let mut seq = 0;
-        assert!(parse("{}", &mut seq).is_err());
-        assert!(parse("not json at all", &mut seq).is_err());
-        assert!(parse(r#"{"type":"update","seq":1,"envelope":"!!!"}"#, &mut seq).is_err());
-    }
-
-    #[test]
-    fn what_we_send_is_what_the_relay_reads() {
-        assert_eq!(subscribe(4), r#"{"type":"subscribe","since":4}"#);
-        assert_eq!(append(b"hi"), r#"{"type":"append","envelope":"aGk"}"#);
+        assert!(parse_routed("{}").is_err());
+        assert!(parse_routed("not json at all").is_err());
+        assert!(parse_routed(
+            r#"{"type":"update","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":1,"envelope":"!!!"}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -605,15 +503,6 @@ mod tests {
         assert_eq!(
             value["signature"],
             URL_SAFE_NO_PAD.encode(request.signature)
-        );
-    }
-
-    #[test]
-    fn a_notes_url_carries_the_token() {
-        let note = crate::ids::NoteId::from_bytes([0u8; 16]);
-        assert_eq!(
-            note_url("ws://r", note, "t0k"),
-            "ws://r/v1/notes/AAAAAAAAAAAAAAAAAAAAAA?token=t0k"
         );
     }
 }

@@ -1,10 +1,9 @@
 //! One socket per device: `/v1/sync`.
 //!
-//! The per-note socket at `/v1/notes/{id}` costs a device one connection and
-//! one token handshake per note, so twenty notes are twenty of each. This is
-//! the same protocol carried for every note over one socket, authenticated once
-//! — see [ADR 0017](../../docs/adr/0017-one-socket-per-device.md). The rules a
-//! note's stream follows are the per-note socket's, unchanged:
+//! A device opens one connection and does one token handshake, however many
+//! notes it syncs, and every note is carried over it — see [ADR
+//! 0017](../../docs/adr/0017-one-socket-per-device.md). Each note's stream
+//! keeps three rules:
 //!
 //!   * subscribe to the fan-out *before* reading the backlog, so that nothing
 //!     appended in between is lost;
@@ -12,23 +11,22 @@
 //!     once;
 //!   * replay from the store when a subscriber lags, rather than dropping it.
 //!
-//! What is new is that one note's backlog must not hold up the others. A socket
-//! is one ordered stream, so a backlog is sent [`BACKLOG_CHUNK`] envelopes at a
-//! time, with the socket's other work — live updates to other notes, appends,
-//! new subscriptions — taken between chunks.
+//! And one note's backlog must not hold up the others. A socket is one ordered
+//! stream, so a backlog is sent [`BACKLOG_CHUNK`] envelopes at a time, with the
+//! socket's other work — live updates to other notes, appends, new
+//! subscriptions — taken between chunks.
 //!
 //! And reading never waits for writing. Messages to the client go through a
 //! bounded queue drained by a task of its own; when it is full, a live update is
 //! left in the store and sent later as backlog, and a chunk waits for room. So
 //! a client that is slow to read slows only what it is sent, never what it
-//! sends — which matters more on one socket than on twenty, because a device
-//! subscribing its notes on connecting writes a great deal before it reads.
+//! sends — which matters because a device subscribing its notes on connecting
+//! writes a great deal before it reads.
 //!
-//! **What the relay learns: nothing it did not.** Every per-note socket a
-//! device opened authenticated with the same device key, so the relay already
-//! knew which notes one device syncs; this says it once instead of twenty
-//! times. It still cannot tell two of one person's devices from two
-//! collaborators ([ADR 0014](../../docs/adr/0014-what-the-relay-learns.md)).
+//! **What the relay learns:** which notes one device key syncs, which it would
+//! learn anyway from that key appending to them. It still cannot tell two of
+//! one person's devices from two collaborators ([ADR
+//! 0014](../../docs/adr/0014-what-the-relay-learns.md)).
 
 use crate::app::{self, AppState};
 use crate::error::{RelayError, Result};
@@ -83,8 +81,8 @@ struct Subscription {
     /// of the backlog would move the client's cursor past envelopes it has not
     /// got.
     catching_up: bool,
-    /// Whether `caught` has been said. Once, as on the per-note socket: a
-    /// replay after a lag is the relay's business and not a new backlog.
+    /// Whether `caught` has been said. Once: a replay after a lag is the
+    /// relay's business and not a new backlog.
     caught: bool,
     /// Forwards the note's fan-out into the session. Aborted on unsubscribe.
     forwarder: JoinHandle<()>,
@@ -299,8 +297,7 @@ async fn handle(
             }
         }
         SyncClientMessage::Append { note, envelope } => {
-            // As on the per-note socket, where the only note a socket can
-            // write to is the one it subscribed to.
+            // A socket writes only to notes it has subscribed to.
             if !subs.0.contains_key(&note) {
                 return refuse(out, Some(note), "not subscribed to that note");
             }
@@ -349,7 +346,7 @@ fn refuse(out: &mpsc::Sender<SyncServerMessage>, note: Option<String>, message: 
 /// task of its own.
 ///
 /// The subscription is taken here, before the caller queues the backlog, which
-/// is the ordering the per-note socket relies on: an append landing between
+/// is the ordering the stream relies on: an append landing between
 /// the two is in the store by the time the backlog is read, and anything seen
 /// both ways is dropped by `seq`.
 fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) -> JoinHandle<()> {

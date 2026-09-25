@@ -7,7 +7,7 @@ use easynotes_core::crdt::{DefaultNoteDoc, NoteView};
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
-use easynotes_core::sync::{authenticate, Incoming, NoteSync};
+use easynotes_core::sync::{authenticate, DeviceSync, Incoming, Routed};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,7 +26,7 @@ pub struct Device {
     pub name: &'static str,
     pub core: Core,
     pub note: NoteId,
-    sync: Option<NoteSync>,
+    sync: Option<NoteSocket>,
     outbox: Vec<Vec<u8>>,
     last_seq: i64,
     http_base: String,
@@ -113,7 +113,7 @@ impl Device {
 
     /// Reconnect, replay from the cursor, and flush anything edited while away.
     pub async fn go_online(&mut self) {
-        let sync = NoteSync::connect(&self.ws_base, &self.token, self.note, self.last_seq)
+        let sync = NoteSocket::connect(&self.ws_base, &self.token, self.note, self.last_seq)
             .await
             .unwrap_or_else(|e| panic!("{} could not reach the relay: {e}", self.name));
         self.sync = Some(sync);
@@ -158,7 +158,7 @@ impl Device {
                 Some(Incoming::Caught { .. }) => self.settle().await,
                 Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
-                // Only the device socket says these.
+                // Compaction is the engine's business, not this scaffolding's.
                 Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
                 None => {
                     self.sync = None;
@@ -224,6 +224,69 @@ impl Device {
                 )
             })
             .id
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One note on the device socket
+// ---------------------------------------------------------------------------
+
+/// A device socket subscribed to one note, and read as though that note were
+/// all it carried: what a test about one note wants to hold.
+pub struct NoteSocket {
+    sync: DeviceSync,
+    note: NoteId,
+    /// The highest sequence number seen, which a reconnect resumes from.
+    pub last_seq: i64,
+}
+
+impl NoteSocket {
+    /// Connect and subscribe from `since`: 0 for the whole log.
+    pub async fn connect(
+        ws_base: &str,
+        token: &str,
+        note: NoteId,
+        since: i64,
+    ) -> easynotes_core::Result<Self> {
+        let mut sync = DeviceSync::connect(ws_base, token).await?;
+        sync.subscribe(note, since).await?;
+        Ok(Self {
+            sync,
+            note,
+            last_seq: since,
+        })
+    }
+
+    /// Hand an envelope to the relay. It comes back through `next`.
+    pub async fn append(&mut self, envelope: &[u8]) -> easynotes_core::Result<()> {
+        self.sync.append(self.note, envelope).await
+    }
+
+    /// The next thing the relay says about this note, or `None` when it
+    /// closes. A refusal it could not pin on a note is this one's, since it is
+    /// the only one here. Cancel-safe, as `DeviceSync::next` is.
+    pub async fn next(&mut self) -> easynotes_core::Result<Option<Incoming>> {
+        loop {
+            match self.sync.next().await? {
+                None => return Ok(None),
+                Some(Routed::Note(note, incoming)) if note == self.note => {
+                    match &incoming {
+                        Incoming::Envelope { seq, .. } | Incoming::Caught { seq } => {
+                            self.last_seq = self.last_seq.max(*seq);
+                        }
+                        Incoming::Reset => self.last_seq = 0,
+                        _ => {}
+                    }
+                    return Ok(Some(incoming));
+                }
+                Some(Routed::Note(..)) => {}
+                Some(Routed::Unrouted(message)) => return Ok(Some(Incoming::Rejected(message))),
+            }
+        }
+    }
+
+    pub async fn close(self) -> easynotes_core::Result<()> {
+        self.sync.close().await
     }
 }
 
