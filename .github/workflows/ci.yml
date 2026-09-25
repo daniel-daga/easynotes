@@ -1,7 +1,7 @@
 name: CI
 
-# Only on `main`, and by hand. A pull request does not run this: the three jobs
-# below are half an hour of runners between them, and the justfile recipes they
+# Only on `main`, and by hand. A pull request does not run this: the four jobs
+# below are most of an hour of runners between them, and the justfile recipes they
 # wrap are the ones a contributor runs locally before pushing, so the pull
 # request was paying for a second opinion on a claim it had already made.
 # `workflow_dispatch` is the escape hatch for asking anyway, on any branch.
@@ -134,6 +134,60 @@ jobs:
       - name: Build for Linux desktop
         working-directory: app
         run: flutter build linux --release
+
+  # A debug APK, the build docs/android-on-windows.md makes by hand, so that one
+  # can be installed without that machine and so a change that breaks the
+  # Android build is found here rather than there. Only builds: there is no
+  # emulator on the runner, and the tests that matter already run in `flutter`.
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 9 and Gradle 9 need at least JDK 17; named here rather than left to
+      # whatever the runner image defaults to this month.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # Cargokit would add these itself through rustup, but here a missing
+      # target fails in this step, by name, instead of inside a Gradle task.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      # Caches the registry only: Cargokit builds into Gradle's build directory,
+      # not `target/`, so the compiled crates are rebuilt every run.
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+        working-directory: app
+
+      # arm64 for the Pixel and x64 for the emulator — the only two ABIs anyone
+      # installs this on. The other two would double the Rust build and put
+      # a 209 MB APK back on an emulator whose `/data` cannot take it.
+      #
+      # No EASYNOTES_RELAY: the default, 127.0.0.1:8080, is what an emulator
+      # reaches through `adb reverse`. Build locally with the define for 10.0.2.2
+      # or a real relay.
+      - name: Build the debug APK
+        working-directory: app
+        run: flutter build apk --debug --target-platform android-arm64,android-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easynotes-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
 
   # The web build, kept separate because it needs a nightly toolchain and
   # `-Z build-std` and so is both slower and more fragile than the rest.
