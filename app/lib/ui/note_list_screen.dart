@@ -483,7 +483,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
       action: 'Delete',
     );
     if (!confirmed || !mounted) return;
-    await widget.library.forgetNote(note.id);
+    try {
+      await widget.library.forgetNote(note.id);
+    } catch (error) {
+      _deletionFailed('Could not finish deleting it: $error.');
+    }
   }
 
   /// The same, for everything in the trash at once.
@@ -495,7 +499,30 @@ class _NoteListScreenState extends State<NoteListScreen> {
       action: 'Delete all',
     );
     if (!confirmed || !mounted) return;
-    await widget.library.emptyTrash();
+    try {
+      await widget.library.emptyTrash();
+    } catch (error) {
+      _deletionFailed('Could not finish emptying the trash: $error.');
+    }
+  }
+
+  /// A deletion that did not finish, said where the person is looking.
+  ///
+  /// Not an error thrown out of a button: that reaches nobody. Each note's
+  /// deletion is recorded before anything of it is removed, so whatever is
+  /// gone stays gone and whatever is still in the trash is whole. Deleting
+  /// again is therefore always safe, and the message says so.
+  void _deletionFailed(String what) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        key: const Key('deletion-failed'),
+        content: Text(
+          '$what Anything still in the trash is whole and can be deleted '
+          'again.',
+        ),
+      ),
+    );
   }
 
   Future<bool> _confirmDelete({

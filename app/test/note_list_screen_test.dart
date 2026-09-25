@@ -836,6 +836,42 @@ void main() {
     expect(find.byKey(const Key('note:old')), findsNothing);
   });
 
+  testWidgets('a deletion that fails says so and leaves the trash', (
+    tester,
+  ) async {
+    // The error has to reach the person rather than escape the button, where
+    // on the web it was an uncaught page error and nothing on the screen.
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+      },
+    )..refuseDeletion = StateError('out of space');
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'action-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('emptyTrash()'));
+    expect(find.byKey(const Key('deletion-failed')), findsOneWidget);
+    expect(find.textContaining('out of space'), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+
+    ScaffoldMessenger.of(
+      tester.element(find.byKey(const Key('note:hardware'))),
+    ).removeCurrentSnackBar();
+    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'hardware', 'action-delete-forever');
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('forgetNote(hardware)'));
+    expect(find.byKey(const Key('deletion-failed')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
   testWidgets('each shelf says how many notes are on it', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);

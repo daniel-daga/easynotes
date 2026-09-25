@@ -120,9 +120,21 @@ Future<void> _done(web.IDBTransaction transaction) {
   transaction.oncomplete = ((web.Event _) => done.complete()).toJS;
   // An abort is a failed write and not a quiet one: the caller has already been
   // handed these writes and will not be handed them again, so it has to hear.
-  transaction.onerror = ((web.Event _) =>
-      done.completeError(StateError('${transaction.error?.message}'))).toJS;
-  transaction.onabort = ((web.Event _) =>
-      done.completeError(StateError('the browser abandoned the write'))).toJS;
+  //
+  // A refused request fires both of these, `error` and then `abort`, and the
+  // first one wins. Completing twice would throw inside the browser's event
+  // handler, where nobody is listening.
+  void failed(String message) {
+    if (!done.isCompleted) done.completeError(StateError(message));
+  }
+
+  // The request that failed is what knows why; the transaction is only told
+  // once it aborts, which is after this.
+  transaction.onerror = ((web.Event event) => failed(
+    '${(event.target as web.IDBRequest?)?.error?.message}',
+  )).toJS;
+  transaction.onabort = ((web.Event _) => failed(
+    transaction.error?.message ?? 'the browser abandoned the write',
+  )).toJS;
   return done.future;
 }

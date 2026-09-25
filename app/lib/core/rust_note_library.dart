@@ -486,6 +486,14 @@ class RustNoteLibrary implements NoteLibrary {
     _writing = _writing
         .then((_) async {
           for (final batch in batches) {
+            // Nothing after a refusal, in this tick or any later one. What the
+            // database holds then stays a prefix of what the core wrote, which
+            // is the only crash the core is written to recover from: a later
+            // batch on top of a lost one is a hole. A deletion is where that
+            // bites. Its marker and its purge are separate batches, and a tick
+            // can fall between them. Writing the purge after a refused marker
+            // would destroy the note with nothing left to say it was deleted.
+            if (_storageError != null) return;
             await db.apply(batch);
           }
         })
@@ -497,7 +505,8 @@ class RustNoteLibrary implements NoteLibrary {
   /// The first one is the one reported, for the reason [storageError] latches:
   /// a database that has started refusing writes will refuse the next one too,
   /// and the tenth message says nothing the first did not. Nothing here retries
-  /// — there is nothing left to retry, the batch was handed over and dropped.
+  /// — there is nothing left to retry, the batch was handed over and dropped —
+  /// and nothing is written after it either: see [_writeOut].
   void _writeFailed(Object error) {
     if (_storageError != null) return;
     _storageError = '$error';

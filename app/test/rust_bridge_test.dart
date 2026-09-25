@@ -725,8 +725,9 @@ void main() {
       // the Rust core is that a map is enough to hold them to what they promise.
       //
       // What is *not* covered here is IndexedDB itself: whether a browser
-      // applies a batch in one transaction, and in the order it was handed them.
-      // That needs a browser, and `docs/plan-slice-02.md` says so.
+      // applies a batch in one transaction, in the order it was handed them,
+      // and how it says no. That needs a browser: `just web-smoke` and
+      // `just web-storage-failure`.
 
       /// Open a library over [db], as a tab would, and tear it down.
       Future<RustNoteLibrary> openTab(
@@ -862,6 +863,174 @@ void main() {
         expect(library.storageError, contains('out of space'));
       });
 
+      test('nothing is written after a write the browser refused', () async {
+        // A browser that refuses one batch and takes the next would leave a
+        // hole: a later write on top of an earlier one that is gone. What is
+        // kept has to be a prefix of what the core wrote, because that is the
+        // only crash the core knows how to come back from.
+        final db = _RefusingStore(MemoryBrowserStore());
+        final library = await openTab(db, MasterKeyStore.newKey());
+        final id = await library.createNote();
+        final note = library.openNote(id);
+        addTearDown(note.dispose);
+        await library.flush();
+
+        db
+          ..refuse = true
+          ..once = true;
+        await note.addItem('asparagus');
+        await library.flush();
+        expect(db.refused, isTrue);
+        await note.addItem('bread');
+        await library.setTrashed(id, true);
+        await library.flush();
+
+        expect(library.storageError, contains('out of space'));
+        expect(db.keptSinceRefusal, 0);
+      });
+
+      /// A tab over [db] with [notes] notes in its trash and one note that is
+      /// not, each with an item, all of it written. Returns the trashed IDs and
+      /// the kept one.
+      Future<(RustNoteLibrary, List<String>, String)> aTrashOf(
+        BrowserStore db,
+        Uint8List key,
+        int notes,
+      ) async {
+        final library = await openTab(db, key);
+        Future<String> make(String title) async {
+          final id = await library.createNote();
+          final note = library.openNote(id);
+          await note.setTitle(title);
+          await note.addItem('milk');
+          await note.dispose();
+          return id;
+        }
+
+        final thrown = [for (var i = 0; i < notes; i++) await make('Old $i')];
+        final kept = await make('Kept');
+        for (final id in thrown) {
+          await library.setTrashed(id, true);
+        }
+        await library.flush();
+        return (library, thrown, kept);
+      }
+
+      /// No row of either area names [id].
+      Future<void> noRowsOf(BrowserStore db, String id) async {
+        for (final area in StorageArea.values) {
+          for (final row in await db.rows(area)) {
+            expect(row.key.contains(id), isFalse, reason: row.key);
+          }
+        }
+      }
+
+      /// A reopened tab holds [id] whole and in the trash, or holds nothing
+      /// of it at all. Returns whether it is still there.
+      Future<bool> wholeOrGone(
+        RustNoteLibrary tab,
+        BrowserStore db,
+        String id,
+      ) async {
+        final summary = tab.notes.where((n) => n.id == id).firstOrNull;
+        if (summary == null) {
+          await tab.flush();
+          await noRowsOf(db, id);
+          return false;
+        }
+        expect(summary.trashed, isTrue, reason: 'still in the trash');
+        final note = tab.openNote(id);
+        expect(note.current.items.map((i) => i.text), ['milk']);
+        await note.dispose();
+        return true;
+      }
+
+      test(
+        'a deletion the browser refuses anywhere never happened or finishes',
+        () async {
+          // The web half of the core's crash test: the tab stops being able to
+          // write at every batch a deletion makes, and is opened again over
+          // what the browser kept. Either the deletion was never accepted, and
+          // the note is all there, or its marker was kept and the next launch
+          // finishes it. Never a note half gone.
+          for (var batches = 0; ; batches++) {
+            final db = _RefusingStore(MemoryBrowserStore());
+            final key = MasterKeyStore.newKey();
+            final (tab, thrown, _) = await aTrashOf(db, key, 1);
+            final id = thrown.single;
+
+            db.refuseAfter(batches);
+            Object? failed;
+            try {
+              await tab.forgetNote(id);
+            } catch (e) {
+              failed = e;
+            }
+            await tab.dispose();
+            db.refuseAfter(1 << 30);
+            db.refuse = false;
+
+            final again = await openTab(db, key);
+            final there = await wholeOrGone(again, db, id);
+            if (failed == null) {
+              expect(there, isFalse, reason: 'batches=$batches');
+              break;
+            }
+            expect(db.refused, isTrue);
+            // And whatever was left, deleting it again finishes.
+            if (there) await again.forgetNote(id);
+            await again.flush();
+            await noRowsOf(db, id);
+            expect(again.notes.map((n) => n.id), isNot(contains(id)));
+            expect(batches, lessThan(50));
+          }
+        },
+      );
+
+      test(
+        'emptying a trash the browser refuses partway loses nothing',
+        () async {
+          // Each note in the trash is its own marker. A refusal partway leaves
+          // the notes already marked gone and the rest still whole in the
+          // trash, and emptying it again takes exactly those. The note that
+          // was never in the trash is never touched.
+          for (var batches = 0; ; batches++) {
+            final db = _RefusingStore(MemoryBrowserStore());
+            final key = MasterKeyStore.newKey();
+            final (tab, thrown, kept) = await aTrashOf(db, key, 3);
+
+            db.refuseAfter(batches);
+            Object? failed;
+            try {
+              expect(await tab.emptyTrash(), 3);
+            } catch (e) {
+              failed = e;
+            }
+            await tab.dispose();
+            db.refuseAfter(1 << 30);
+            db.refuse = false;
+
+            final again = await openTab(db, key);
+            var left = 0;
+            for (final id in thrown) {
+              if (await wholeOrGone(again, db, id)) left++;
+            }
+            if (failed == null) expect(left, 0, reason: 'batches=$batches');
+            expect(await again.emptyTrash(), left, reason: 'batches=$batches');
+            for (final id in thrown) {
+              await noRowsOf(db, id);
+            }
+            final survivor = again.notes.singleWhere((n) => n.id == kept);
+            expect(survivor.trashed, isFalse);
+            final note = again.openNote(kept);
+            expect(note.current.items.map((i) => i.text), ['milk']);
+            await note.dispose();
+            if (failed == null) break;
+            expect(batches, lessThan(100));
+          }
+        },
+      );
+
       test('the wrong key does not quietly open an empty tab', () async {
         final db = MemoryBrowserStore();
         final library = await openTab(db, MasterKeyStore.newKey());
@@ -885,7 +1054,8 @@ void main() {
 /// What a browser out of quota, or one whose database has been cleared under
 /// the tab, looks like from here: reads still work, and `apply` throws. It
 /// wraps a real map rather than replacing one so that everything before the
-/// refusal is stored exactly as it would have been.
+/// refusal is stored exactly as it would have been — which is also what makes
+/// it a crash: open another tab over the same map and it reads what was kept.
 class _RefusingStore implements BrowserStore {
   _RefusingStore(this._inner);
 
@@ -893,13 +1063,40 @@ class _RefusingStore implements BrowserStore {
   bool refuse = false;
   String message = 'out of space';
 
+  /// Accept this many more batches, then refuse; null means no countdown.
+  int? _left;
+
+  /// Refuse only the next refusal, and accept whatever comes after it, as a
+  /// browser that recovered would.
+  bool once = false;
+
+  /// Batches kept since the last refusal.
+  int keptSinceRefusal = 0;
+
+  /// Accept [batches] more, and refuse every one after that.
+  void refuseAfter(int batches) => _left = batches;
+
+  bool get refused => _refused;
+  bool _refused = false;
+
   @override
   Future<List<StorageRow>> rows(StorageArea area) => _inner.rows(area);
 
   @override
   Future<void> apply(StorageBatch batch) async {
-    if (refuse) throw StateError(message);
+    final left = _left;
+    if (left != null) {
+      if (left == 0) refuse = true;
+      _left = left - 1;
+    }
+    if (refuse) {
+      _refused = true;
+      keptSinceRefusal = 0;
+      if (once) refuse = false;
+      throw StateError(message);
+    }
     await _inner.apply(batch);
+    keptSinceRefusal++;
   }
 
   @override

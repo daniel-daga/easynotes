@@ -580,9 +580,14 @@ class FakeNoteLibrary implements NoteLibrary {
     _emit();
   }
 
+  /// When set, [forgetNote] and [emptyTrash] throw it, having done nothing,
+  /// as a store that refused the deletion's first write would.
+  Object? refuseDeletion;
+
   @override
   Future<void> forgetNote(String noteId) async {
     calls.add('forgetNote($noteId)');
+    if (refuseDeletion case final error?) throw error;
     _reminders.removeWhere((_, reminder) => reminder.noteId == noteId);
     _forget(noteId);
     _emit();
@@ -591,6 +596,7 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   Future<int> emptyTrash() async {
     calls.add('emptyTrash()');
+    if (refuseDeletion case final error?) throw error;
     final trashed = [
       for (final id in _order)
         if (_placements[id]?.trashed ?? false) id,
