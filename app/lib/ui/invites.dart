@@ -1,12 +1,14 @@
 /// Sharing a note with other people, from both ends.
 ///
 /// The owner's side is [ShareDialog]: send a link through the share sheet,
-/// approve whoever asks with one tap, and remove anyone later. The guest's
-/// side is [JoinDialog] and [WaitingDialog]: tap the link (or, from the
-/// drawer, paste it), ask to join under the name the account shares with, and
-/// wait to be let in. [InviteBanners] is
+/// see who opened it, and remove anyone later. The guest's side is
+/// [JoinDialog] and [WaitingDialog]: tap the link (or, from the drawer, paste
+/// it), join under the name the account shares with, and wait the moment it
+/// takes the owner's device to let them in. Nobody approves anything: the
+/// link works once, for the first account that opens it. [InviteBanners] is
 /// what sits above the grid while either side is waiting, so that closing a
-/// dialog does not mean missing the answer.
+/// dialog does not mean missing the answer — and it is what lets a person in
+/// while the owner's share dialog is closed.
 ///
 /// Sharing needs an account — shared notes belong to it, which is how they
 /// come back on a new phone — so the first time either side starts,
@@ -172,7 +174,7 @@ class ShareDialog extends StatefulWidget {
 class _ShareDialogState extends State<ShareDialog> {
   People? _people;
   Invite? _invite;
-  InviteRequests? _requests;
+  InviteStatus? _status;
   String? _error;
 
   /// What the last gesture came to: “Anna can open this note now.”
@@ -216,14 +218,17 @@ class _ShareDialogState extends State<ShareDialog> {
     final invite = _invite;
     if (invite == null) return;
     try {
-      final requests = await widget.invites.inviteRequests(invite.id);
+      final status = await widget.invites.checkInvite(invite.id);
       if (!mounted || _invite != invite) return;
       setState(() {
-        _requests = requests;
+        _status = status;
         _loadPeople();
-        if (!requests.open && requests.lettingIn == null) {
+        if (status.joined != null) {
+          _notice = '${status.joined} joined. They can open this note now.';
+        }
+        if (!status.open && status.lettingIn == null) {
           _invite = null;
-          _requests = null;
+          _status = null;
         }
       });
     } catch (e) {
@@ -236,7 +241,7 @@ class _ShareDialogState extends State<ShareDialog> {
             .invitesFor(widget.noteId)
             .every((i) => i.id != invite.id)) {
           _invite = null;
-          _requests = null;
+          _status = null;
         }
       });
     }
@@ -310,37 +315,12 @@ class _ShareDialogState extends State<ShareDialog> {
     );
   }
 
-  Future<void> _approve(JoinRequest request) => _act(() async {
-    final approval = await widget.invites.approveRequest(
-      _invite!.id,
-      request.id,
-    );
-    if (!mounted) return;
-    final name = request.name.isEmpty ? 'They' : request.name;
-    setState(() {
-      _notice = switch (approval) {
-        Approval.done => '$name can open this note now.',
-        Approval.pending => 'Letting $name in… finishes when you\'re online.',
-        Approval.alreadyMember => '$name already has access. Nothing changed.',
-      };
-      if (approval != Approval.pending) {
-        _invite = null;
-        _requests = null;
-      }
-    });
-  });
-
-  Future<void> _decline(JoinRequest request) => _act(() async {
-    await widget.invites.declineRequest(_invite!.id, request.id);
-    await _refresh();
-  });
-
   Future<void> _withdraw() => _act(() async {
     await widget.invites.withdrawInvite(_invite!.id);
     if (!mounted) return;
     setState(() {
       _invite = null;
-      _requests = null;
+      _status = null;
     });
   });
 
@@ -403,7 +383,7 @@ class _ShareDialogState extends State<ShareDialog> {
       if (!mounted) return;
       setState(() {
         _invite = null;
-        _requests = null;
+        _status = null;
         _notice = null;
       });
     });
@@ -433,64 +413,12 @@ class _ShareDialogState extends State<ShareDialog> {
     );
   }
 
-  Widget _request(JoinRequest request) {
-    final name = request.name.isEmpty ? 'Someone' : request.name;
-    return Card(
-      key: Key('join-request-${request.id}'),
-      margin: const EdgeInsets.only(top: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              request.alreadyMember
-                  ? '$name already has access'
-                  : '$name wants to join',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 4),
-            if (!request.readable)
-              const Text('This request was not made with your link.')
-            else if (request.alreadyMember)
-              const Text('Approving changes nothing.')
-            else
-              Text(
-                'Their screen shows ${request.code}.',
-                key: Key('join-code-${request.id}'),
-              ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  key: Key('decline-${request.id}'),
-                  onPressed: _busy ? null : () => _decline(request),
-                  child: const Text('Decline'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  key: Key('approve-${request.id}'),
-                  onPressed: _busy || !request.readable
-                      ? null
-                      : () => _approve(request),
-                  child: const Text('Approve'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final people = _people;
     final canManage = people?.canManage ?? false;
     final invite = _invite;
-    final pending = _requests?.pending ?? const <JoinRequest>[];
-    final lettingIn = _requests?.lettingIn;
+    final lettingIn = _status?.lettingIn;
     return AlertDialog(
       title: const Text('Share'),
       content: SizedBox(
@@ -500,10 +428,6 @@ class _ShareDialogState extends State<ShareDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (canManage && pending.isNotEmpty) ...[
-                for (final request in pending) _request(request),
-                const Divider(height: 28),
-              ],
               if (people == null)
                 const Text('Loading…')
               else ...[
@@ -535,9 +459,9 @@ class _ShareDialogState extends State<ShareDialog> {
                 const Divider(height: 28),
                 if (invite == null)
                   const Text(
-                    'Send a link to one person, any way you like. When they '
-                    'open it you will see them here, and approve them with '
-                    'one tap. The link works once and stops after seven days.',
+                    'Send a link to one person, any way you like. Whoever '
+                    'opens it first joins the note, and you will see them '
+                    'here. The link works once and stops after seven days.',
                   )
                 else ...[
                   Row(
@@ -562,15 +486,15 @@ class _ShareDialogState extends State<ShareDialog> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'It works once and stops in '
-                    '${_days(_requests?.expiresIn ?? invite.expiresIn)}. It '
-                    'does not contain the note, only a way to ask for it.',
+                    'It works once, for whoever opens it first, and stops in '
+                    '${_days(_status?.expiresIn ?? invite.expiresIn)}. It '
+                    'does not contain the note, only a way in.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  if (pending.isEmpty && lettingIn == null) ...[
+                  if (lettingIn == null) ...[
                     const SizedBox(height: 8),
                     const Text(
-                      'Nobody has asked to join yet.',
+                      'Nobody has opened it yet.',
                       key: Key('invite-waiting'),
                     ),
                   ],
@@ -622,8 +546,8 @@ class _ShareDialogState extends State<ShareDialog> {
   }
 }
 
-/// Asks to join by an invite link, and pops with the request it made. A link
-/// that was tapped is only confirmed; the drawer's way in asks for one to be
+/// Joins by an invite link, and pops with the request it made. A link that
+/// was tapped is only confirmed; the drawer's way in asks for one to be
 /// pasted. The name is the account's: the button says it, and there is no
 /// field for it.
 class JoinDialog extends StatefulWidget {
@@ -680,8 +604,8 @@ class _JoinDialogState extends State<JoinDialog> {
         children: [
           if (tapped)
             const Text(
-              'Whoever sent you this link will see your request and let you '
-              'in.',
+              'You will be added to the note, and the person who sent the '
+              'link will see you there. The link works for one person only.',
               key: Key('join-explainer'),
             )
           else
@@ -714,14 +638,15 @@ class _JoinDialogState extends State<JoinDialog> {
         FilledButton(
           key: const Key('join-confirm'),
           onPressed: _busy ? null : _ask,
-          child: Text(name.isEmpty ? 'Ask to join' : 'Ask to join as $name'),
+          child: Text(name.isEmpty ? 'Join' : 'Join as $name'),
         ),
       ],
     );
   }
 }
 
-/// Waits to be let in, and pops with the note once it opens.
+/// Waits for the owner's device to let this person in, and pops with the note
+/// once it opens.
 ///
 /// Closing it does not cancel the request — the banner on the list keeps
 /// waiting — and "Stop waiting" does.
@@ -787,12 +712,13 @@ class _WaitingDialogState extends State<WaitingDialog> {
       return AlertDialog(
         title: Text(
           ended.state == JoinState.declined
-              ? 'Request declined'
+              ? 'Could not join'
               : 'This link stopped working',
         ),
         content: Text(
           ended.state == JoinState.declined
-              ? 'The owner turned this request away.'
+              ? 'The owner\'s device could not read this request. Ask them '
+                    'for a new link.'
               : ended.message ?? 'This invite no longer works.',
           key: const Key('join-ended'),
         ),
@@ -805,7 +731,7 @@ class _WaitingDialogState extends State<WaitingDialog> {
       );
     }
     return AlertDialog(
-      title: Text(_opening ? 'Opening the note' : 'Waiting for approval'),
+      title: Text(_opening ? 'Opening the note' : 'Joining'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -815,20 +741,12 @@ class _WaitingDialogState extends State<WaitingDialog> {
               'You are in. The note is on its way to this device.',
               key: Key('join-opening'),
             )
-          else ...[
+          else
             const Text(
-              'The person who sent the link will see your request. If they '
-              'ask, tell them this code:',
+              'You will be let in as soon as the person who sent the link '
+              'has EasyNotes open.',
+              key: Key('join-waiting'),
             ),
-            const SizedBox(height: 12),
-            Center(
-              child: Text(
-                widget.join.code,
-                key: const Key('join-code'),
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-            ),
-          ],
           const SizedBox(height: 12),
           const LinearProgressIndicator(),
         ],
@@ -853,20 +771,20 @@ class _WaitingDialogState extends State<WaitingDialog> {
   }
 }
 
-/// A request somebody made on one of this device's invites.
-class _Asking {
-  const _Asking(this.invite, this.request);
-  final Invite invite;
-  final JoinRequest request;
+/// Somebody who opened one of this device's links and is now in.
+class _Joined {
+  const _Joined(this.noteId, this.name);
+  final String noteId;
+  final String name;
 }
 
 /// What sits above the grid while an invite is waiting on either side.
 ///
-/// One line per person asking to join one of this device's notes, with a way
-/// to go and answer; one line per note this device has asked to join, with the
-/// code and a way to stop. It polls on its own timer, so a person who shared
-/// a link and closed the dialog still finds out that someone opened it — and
-/// an approval interrupted by the app closing finishes here.
+/// It checks this device's open invites on its own timer, which is what lets
+/// a person in when the owner shared a link and closed the dialog — and
+/// finishes letting someone in when the app closed half-way. One line per
+/// person who got in that way, with a way to see everyone on the note; one
+/// line per note this device is waiting to join, with a way to stop.
 class InviteBanners extends StatefulWidget {
   const InviteBanners({
     super.key,
@@ -878,7 +796,7 @@ class InviteBanners extends StatefulWidget {
 
   final Invites invites;
 
-  /// A note's title, for "Anna wants to join Groceries".
+  /// A note's title, for "Anna joined Groceries".
   final String Function(String noteId) titleOf;
 
   /// Open the share dialog for a note.
@@ -893,7 +811,7 @@ class InviteBanners extends StatefulWidget {
 
 class _InviteBannersState extends State<InviteBanners> {
   Timer? _poll;
-  List<_Asking> _asking = const [];
+  final Map<String, _Joined> _joined = {};
   List<PendingJoin> _waiting = const [];
   final Map<String, String> _ended = {};
   bool _checking = false;
@@ -916,12 +834,12 @@ class _InviteBannersState extends State<InviteBanners> {
     if (_checking) return;
     _checking = true;
     try {
-      final asking = <_Asking>[];
+      final joined = <String, _Joined>{};
       for (final invite in widget.invites.allInvites) {
         try {
-          final requests = await widget.invites.inviteRequests(invite.id);
-          for (final request in requests.pending) {
-            if (request.readable) asking.add(_Asking(invite, request));
+          final status = await widget.invites.checkInvite(invite.id);
+          if (status.joined != null) {
+            joined[invite.id] = _Joined(invite.noteId, status.joined!);
           }
         } catch (_) {
           // Offline, or gone; either way nobody to show.
@@ -935,7 +853,7 @@ class _InviteBannersState extends State<InviteBanners> {
               if (check.noteId != null) widget.onJoined(check.noteId!);
             case JoinState.declined:
               _ended[join.inviteId] =
-                  'Your request to join a note was declined.';
+                  'A link you opened could not be used. Ask for a new one.';
             case JoinState.gone:
               _ended[join.inviteId] =
                   check.message ??
@@ -948,7 +866,7 @@ class _InviteBannersState extends State<InviteBanners> {
       }
       if (!mounted) return;
       setState(() {
-        _asking = asking;
+        _joined.addAll(joined);
         _waiting = widget.invites.pendingJoins;
       });
     } finally {
@@ -960,23 +878,24 @@ class _InviteBannersState extends State<InviteBanners> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final lines = <Widget>[
-      for (final asking in _asking)
+      for (final entry in _joined.entries)
         _Line(
-          key: Key('invite-banner-${asking.request.id}'),
+          key: Key('invite-banner-${entry.key}'),
           colour: scheme.primaryContainer,
           text:
-              '${asking.request.name.isEmpty ? 'Someone' : asking.request.name} '
-              'wants to join ${widget.titleOf(asking.invite.noteId)}',
-          action: 'Review',
+              '${entry.value.name.isEmpty ? 'Someone' : entry.value.name} '
+              'joined ${widget.titleOf(entry.value.noteId)}',
+          action: 'View',
           onAction: () async {
-            widget.onReview(asking.invite.noteId);
+            setState(() => _joined.remove(entry.key));
+            widget.onReview(entry.value.noteId);
           },
         ),
       for (final join in _waiting)
         _Line(
           key: Key('join-banner-${join.inviteId}'),
           colour: scheme.secondaryContainer,
-          text: 'Waiting to join a note. Your code is ${join.code}.',
+          text: 'Joining a shared note…',
           action: 'Stop waiting',
           onAction: () async {
             await widget.invites.cancelJoin(join.inviteId);

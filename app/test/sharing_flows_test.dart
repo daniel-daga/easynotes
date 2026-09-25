@@ -115,46 +115,46 @@ void main() {
     inviteBannerPollInterval = const Duration(milliseconds: 200);
   });
 
-  testWidgets(
-    'Share a note: set up once, copy the link, approve when they ask',
-    (tester) async {
-      final library = FakeNoteLibrary();
-      await pumpNote(tester, library);
+  testWidgets('Share a note: set up once, send the link, and they are in', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary();
+    await pumpNote(tester, library);
 
-      await tapKey(tester, 'share-button');
-      // Once: the sheet, the words, and a name — then straight on.
-      expect(find.text('Set up sharing'), findsOneWidget);
-      expect(
-        find.textContaining('Shared notes belong to your account'),
-        findsOneWidget,
-      );
-      await tapKey(tester, 'setup-sharing');
-      await passBackupCheck(tester);
-      await giveName(tester, 'Olga');
-      expect(library.hasAccount, isTrue);
-      expect(library.profileName, 'Olga');
-      expect(find.text('Olga (you)'), findsOneWidget);
+    await tapKey(tester, 'share-button');
+    // Once: the sheet, the words, and a name — then straight on.
+    expect(find.text('Set up sharing'), findsOneWidget);
+    expect(
+      find.textContaining('Shared notes belong to your account'),
+      findsOneWidget,
+    );
+    await tapKey(tester, 'setup-sharing');
+    await passBackupCheck(tester);
+    await giveName(tester, 'Olga');
+    expect(library.hasAccount, isTrue);
+    expect(library.profileName, 'Olga');
+    expect(find.text('Olga (you)'), findsOneWidget);
 
-      await tapKey(tester, 'send-invite-link');
-      final invite = library.invitesFor('groceries').single;
-      expect(find.byKey(const Key('invite-link')), findsOneWidget);
+    await tapKey(tester, 'send-invite-link');
+    final invite = library.invitesFor('groceries').single;
+    expect(find.byKey(const Key('invite-link')), findsOneWidget);
 
-      library.fakeRequest(invite.id, name: 'Anna', code: '482 913');
-      await tester.pump(invitePollInterval);
-      await tester.pumpAndSettle();
-      expect(find.text('Anna wants to join'), findsOneWidget);
-      expect(find.textContaining('482 913'), findsOneWidget);
-      await tapKey(tester, 'approve-request-0');
-      expect(find.text('Anna can open this note now.'), findsOneWidget);
-      expect(find.text('Anna'), findsOneWidget);
-      await tapKey(tester, 'share-done');
+    // Anna opens the link, and is in: nothing to approve.
+    library.fakeOpened(invite.id, name: 'Anna');
+    await tester.pump(invitePollInterval);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Anna joined. They can open this note now.'),
+      findsOneWidget,
+    );
+    expect(find.text('Anna'), findsOneWidget);
+    await tapKey(tester, 'share-done');
 
-      // The second time, nothing is asked again.
-      await tapKey(tester, 'share-button');
-      expect(find.text('Set up sharing'), findsNothing);
-      await tapKey(tester, 'share-done');
-    },
-  );
+    // The second time, nothing is asked again.
+    await tapKey(tester, 'share-button');
+    expect(find.text('Set up sharing'), findsNothing);
+    await tapKey(tester, 'share-done');
+  });
 
   testWidgets('Not now leaves everything as it was', (tester) async {
     final library = FakeNoteLibrary();
@@ -166,7 +166,7 @@ void main() {
   });
 
   testWidgets(
-    'Join a note: open the link, restore once, ask as yourself, open it',
+    'Join a note: open the link, restore once, join as yourself, open it',
     (tester) async {
       final library = FakeNoteLibrary(
         notes: {'hardware': FakeNoteCore(title: 'Hardware')},
@@ -195,11 +195,11 @@ void main() {
       // whose name it uses and asks for a yes.
       expect(find.byKey(const Key('join-name-field')), findsNothing);
       expect(find.byKey(const Key('join-link-field')), findsNothing);
-      expect(find.text('Ask to join as Anna'), findsOneWidget);
+      expect(find.text('Join as Anna'), findsOneWidget);
       await tester.tap(find.byKey(const Key('join-confirm')));
       await waitAWhile(tester);
       expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
-      expect(find.text('123 456'), findsOneWidget);
+      expect(find.byKey(const Key('join-waiting')), findsOneWidget);
 
       library.fakeAnswer('abc', JoinState.joined);
       await tester.pump(invitePollInterval);

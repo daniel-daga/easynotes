@@ -163,10 +163,8 @@ pub struct OutgoingInvite {
 #[derive(Clone, Debug)]
 pub struct PendingJoin {
     pub secret: crate::invite::InviteSecret,
-    /// The relay's name for the request.
+    /// The request's name on the relay.
     pub request: String,
-    /// Who asked: this person's member ID, which the safety code is over.
-    pub member: AuthorKey,
     /// What this person called themselves, to show on the waiting screen.
     pub name: String,
 }
@@ -187,13 +185,6 @@ fn owner_record(key: NoteKey) -> account::NoteRecord {
     let mut owner_seed = [0u8; 32];
     crate::crypto::random_bytes(&mut owner_seed);
     account::NoteRecord::Owner { owner_seed, key }
-}
-
-impl PendingJoin {
-    /// The six digits the owner will be shown for this request.
-    pub fn code(&self) -> String {
-        crate::invite::safety_code(&self.secret, &self.member)
-    }
 }
 
 /// The stored shape of both, which is strings so a row stays readable JSON.
@@ -219,7 +210,6 @@ struct StoredApproval {
 struct StoredJoin {
     secret: String,
     request: String,
-    member: String,
     name: String,
 }
 
@@ -2589,7 +2579,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 Ok(PendingJoin {
                     secret: crate::invite::InviteSecret::from_link(&s.secret)?,
                     request: s.request,
-                    member: AuthorKey(decode_32(&s.member)?),
                     name: s.name,
                 })
             })
@@ -2602,7 +2591,6 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .map(|j| StoredJoin {
                 secret: j.secret.code(),
                 request: j.request.clone(),
-                member: j.member.encode(),
                 name: j.name.clone(),
             })
             .collect();
@@ -2612,7 +2600,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Keep a request the relay has accepted, replacing any earlier one on the
-    /// same invite: a person who asks twice is waiting on the second answer.
+    /// same invite. Asking twice names the same request, so the two are one.
     pub fn remember_join(&mut self, join: &PendingJoin) -> Result<()> {
         let id = join.secret.id();
         let mut all = self.joins()?;

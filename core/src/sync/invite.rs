@@ -65,10 +65,13 @@ pub async fn open(
     Ok(created.expires_in)
 }
 
-/// Leave a request on an invite. Returns the relay's name for it.
+/// Claim an invite with a request from `member`, and return the request's
+/// name. Asking again as the same person is safe: it names the same request,
+/// and the relay gives it back rather than finding the link used.
 pub async fn request(
     http_base: &str,
     secret: &InviteSecret,
+    member: &AuthorKey,
     sealed_request: &[u8],
 ) -> Result<String> {
     let payload = URL_SAFE_NO_PAD.encode(sealed_request);
@@ -76,6 +79,7 @@ pub async fn request(
         &invite_url(http_base, secret.id(), "/requests"),
         &wire::JoinInvite {
             token: &secret.token(),
+            request: &invite::request_name(secret, member),
             payload: &payload,
         },
     )
@@ -130,10 +134,10 @@ pub async fn poll(
 pub struct Listed {
     pub request: String,
     pub state: RequestState,
-    /// `None` when the request does not open under this invite's key: somebody
-    /// who reached the relay's endpoint without the link, or a corrupted row.
-    /// Shown as unreadable rather than dropped, so an owner is not left
-    /// wondering why an invite says it is full.
+    /// `None` when the request does not open under this invite's key, or is
+    /// not filed under the name its person would have given it: not made by
+    /// this app, or a corrupted row. Such a request is turned away rather than
+    /// let in.
     pub join: Option<JoinRequest>,
 }
 
@@ -161,7 +165,8 @@ pub async fn list(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -
             .map(|r| Listed {
                 join: unb64(&r.payload)
                     .ok()
-                    .and_then(|sealed| invite::open_request(secret, &sealed).ok()),
+                    .and_then(|sealed| invite::open_request(secret, &sealed).ok())
+                    .filter(|join| join.is_named(secret, &r.request)),
                 request: r.request,
                 state: r.state,
             })
@@ -169,7 +174,7 @@ pub async fn list(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -
     })
 }
 
-/// Approve a request with the answer sealed for it —
+/// Let a request's person in with the answer sealed for it —
 /// [`crate::note::NoteCore::approval_answer`] makes one once the package that
 /// lets the person in is on the relay.
 pub async fn approve(
@@ -183,6 +188,8 @@ pub async fn approve(
     answer(http_base, secret, owner, request, Some(&grant)).await
 }
 
+/// Turn a request away. Only a request that could not be read is: the
+/// invite has been claimed either way, and nobody else can ask on it.
 pub async fn decline(
     http_base: &str,
     secret: &InviteSecret,

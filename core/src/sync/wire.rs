@@ -339,6 +339,7 @@ pub(crate) struct CreatedInvite {
 #[derive(Serialize)]
 pub(crate) struct JoinInvite<'a> {
     pub token: &'a str,
+    pub request: &'a str,
     pub payload: &'a str,
 }
 

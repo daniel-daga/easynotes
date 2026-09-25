@@ -5,15 +5,18 @@
 //! 1. An owner opens an invite, naming it by an ID and handing over two hashes —
 //!    of the join token every guest will present, and of an owner secret only
 //!    the owner holds.
-//! 2. A guest presents the token and leaves a sealed request.
-//! 3. The owner, presenting its secret, reads the sealed requests and answers
-//!    one: with a sealed grant to approve it, or with nothing to decline it.
-//!    Approving closes the invite.
+//! 2. A guest presents the token and leaves a sealed request. The first one
+//!    to do so claims the invite: an invite holds one request, and anyone
+//!    after is told it has been used.
+//! 3. The owner's device, presenting its secret, reads the request and answers
+//!    it: with a sealed grant to let the person in, or with nothing to turn
+//!    away a request it cannot read. Nobody is asked; holding the link is
+//!    what lets a person in. Approving closes the invite.
 //! 4. The guest, presenting the token again, reads its answer.
 //!
 //! What the relay checks is the whole of what it can: that the hashes match,
-//! that the invite has not expired or admitted someone already, and that
-//! nothing is larger than it should be. What it cannot check is anything inside
+//! that the invite has not expired or been claimed already, and that nothing
+//! is larger than it should be. What it cannot check is anything inside
 //! a request or a grant, and it does not try — see `docs/adr/0015-invites.md`.
 //!
 //! **None of this is tied to a device key.** The note endpoints want a token
@@ -153,24 +156,22 @@ pub async fn join(
     if payload.len() > MAX_INVITE_PAYLOAD_BYTES {
         return Err(RelayError::TooLarge);
     }
+    // A request's name has the shape of a note ID, and is checked the same way.
+    NoteId::decode(&req.request)
+        .map_err(|_| RelayError::BadRequest("malformed request id".into()))?;
     as_guest(&state, &id, &req.token).await?;
-
-    let mut raw = [0u8; 16];
-    easynotes_core::crypto::random_bytes(&mut raw);
-    let request = URL_SAFE_NO_PAD.encode(raw);
 
     match state
         .store
-        .add_invite_request(&id, &request, &payload, now())
+        .add_invite_request(&id, &req.request, &payload, now())
         .await?
     {
-        AddRequest::Added => Ok(Json(JoinedInvite { request })),
+        AddRequest::Added | AddRequest::Again => Ok(Json(JoinedInvite {
+            request: req.request,
+        })),
         // Withdrawn between the check and the write.
         AddRequest::Missing => Err(RelayError::NotFound),
         AddRequest::Closed => Err(RelayError::Gone("this invite has expired or been used")),
-        AddRequest::Full => Err(RelayError::Conflict(
-            "this invite has as many requests as it will take",
-        )),
     }
 }
 

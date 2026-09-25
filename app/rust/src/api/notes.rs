@@ -1227,65 +1227,24 @@ impl From<&OutgoingInvite> for InviteView {
     }
 }
 
-pub enum RequestStateView {
-    Pending,
-    Approved,
-    Declined,
-}
-
-impl From<RequestState> for RequestStateView {
-    fn from(state: RequestState) -> Self {
-        match state {
-            RequestState::Pending => Self::Pending,
-            RequestState::Approved => Self::Approved,
-            RequestState::Declined => Self::Declined,
-        }
-    }
-}
-
-/// Somebody asking to join, as the owner is shown them.
-pub struct JoinRequestView {
-    pub id: String,
-    /// What they typed. Their word only.
-    pub name: String,
-    /// The six digits their screen shows too.
-    pub code: String,
-    pub state: RequestStateView,
-    /// False for a request that does not open under the invite's key: it was
-    /// not made by anyone holding the link, and cannot be approved.
-    pub readable: bool,
-    /// This person already has access, under another invite. Approving
-    /// changes nothing, and the screen says so.
-    pub already_member: bool,
-}
-
-pub struct InviteRequestsView {
-    /// False once somebody has been let in, or the invite has expired.
+/// Where an invite stands, as its owner is shown it.
+pub struct InviteStatusView {
+    /// False once somebody has opened the link, or it has expired.
     pub open: bool,
     pub expires_in_secs: u32,
-    pub requests: Vec<JoinRequestView>,
-    /// An approval is on its way: the package that lets them in is being
-    /// published, and the answer goes once the relay has it.
+    /// Somebody who opened the link, whose access is on its way: the package
+    /// that lets them in is being published, and the answer goes once the
+    /// relay has it.
     pub letting_in: Option<String>,
-}
-
-/// Where an approval got to.
-pub enum ApprovalView {
-    /// They are in: the answer is with the relay.
-    Done,
-    /// Saved, and the package is on its way. The invite's next poll finishes
-    /// it.
-    Pending,
-    /// They already had access; nothing changed.
-    AlreadyMember,
+    /// Somebody who opened the link and is now in. Said once: the invite is
+    /// forgotten on the way.
+    pub joined: Option<String>,
 }
 
 /// A join request this device is waiting on.
 pub struct PendingJoinView {
     pub invite: String,
     pub name: String,
-    /// What to read to the owner, if they ask.
-    pub code: String,
 }
 
 impl From<&PendingJoin> for PendingJoinView {
@@ -1293,19 +1252,18 @@ impl From<&PendingJoin> for PendingJoinView {
         Self {
             invite: join.secret.id().encode(),
             name: join.name.clone(),
-            code: join.code(),
         }
     }
 }
 
 pub enum JoinStateView {
-    /// Nobody has answered yet.
+    /// The owner's device has not seen the request yet.
     Waiting,
     /// Let in: the note is on this device and syncing.
     Joined,
     /// Let in, and the note's key is still on its way.
     Opening,
-    /// Turned away.
+    /// Turned away: the request could not be read.
     Declined,
     /// Expired, used by someone else, or withdrawn. `message` says which, as
     /// far as the relay would say.
@@ -2119,13 +2077,14 @@ impl Library {
 
     // -- invites ------------------------------------------------------------
     //
-    // How a note reaches another person: a link that carries no key, a request
-    // the owner sees, and a key handed over only when they say so. The core
+    // How a note reaches another person: a link that carries no key, which the
+    // first person to open it claims, and a key the owner's device hands over
+    // to that person — and nobody after them — without asking. The core
     // keeps what must survive a restart and does the cryptography; the calls
     // to the relay are `easynotes_core::sync::invite`; what is here is the
     // order they go in and the lock never being held across one of them.
     //
-    // See `docs/adr/0015-invites.md`.
+    // See `docs/adr/0015-invites.md` and `docs/adr/0025-links-that-let-people-in.md`.
 
     /// Open an invite to a note and return the link to send.
     ///
@@ -2154,7 +2113,7 @@ impl Library {
 
     /// The invites this device has open to `note`, oldest first. Local: it asks
     /// the relay nothing, so an invite that has quietly expired is still here
-    /// until [`Library::invite_requests`] finds out.
+    /// until [`Library::check_invite`] finds out.
     #[frb(sync)]
     pub fn invites(&self, note: String) -> Result<Vec<InviteView>, String> {
         let note = note_id(&note)?;
@@ -2180,133 +2139,117 @@ impl Library {
             .collect())
     }
 
-    /// Who has asked to join through an invite, as the owner is shown them.
+    /// Where an invite stands — and, if somebody has opened the link, let
+    /// them in. Nobody is asked: the link works once, for the first account
+    /// that opens it (ADR 0025). The invite's screen polls this, and so does
+    /// the note list, which is how a person gets in while the share dialog is
+    /// closed.
     ///
-    /// Also where an approval that was interrupted — the app closed while its
-    /// package was on the way — is finished: the invite's screen polls this,
-    /// and so does the note list.
+    /// Letting someone in is ADR 0023 §3's approval: save it, publish the
+    /// package that adds them, and answer the invite once the relay has the
+    /// package. A step that cannot finish yet — offline, or the package still
+    /// on its way — finishes on a later call, or after a relaunch.
     ///
     /// An invite the relay no longer has, or that has closed with nothing of
     /// this device's left to finish, is forgotten here on the way.
-    pub async fn invite_requests(&self, invite: String) -> Result<InviteRequestsView, String> {
-        let outgoing = self.shared.outgoing(&invite)?;
-        let letting_in = outgoing
+    pub async fn check_invite(&self, invite: String) -> Result<InviteStatusView, String> {
+        let mut outgoing = self.shared.outgoing(&invite)?;
+        let mut expires_in = (outgoing.expires_at - now()).max(0) as u64;
+        if outgoing.approval.is_none() {
+            let http = self.shared.http_base()?;
+            let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+            // The relay saying no is an answer and a network failing is not,
+            // and only the first means the invite is gone.
+            let listed = on_network(async move {
+                Ok(invite::list(&http, &secret, &owner)
+                    .await
+                    .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
+            })
+            .await?;
+            let listing = match listed {
+                Ok(listing) => listing,
+                Err((gone, message)) => {
+                    if gone {
+                        self.shared.forget_invite(&outgoing)?;
+                    }
+                    return Err(message);
+                }
+            };
+            expires_in = listing.expires_in;
+            let claimed = listing
+                .requests
+                .into_iter()
+                .find(|r| r.state == RequestState::Pending)
+                .filter(|_| listing.open);
+            let Some(claimed) = claimed else {
+                if !listing.open {
+                    self.shared.forget_invite(&outgoing)?;
+                }
+                return Ok(InviteStatusView {
+                    open: listing.open,
+                    expires_in_secs: clamp_secs(expires_in),
+                    letting_in: None,
+                    joined: None,
+                });
+            };
+            // Only a request that can never be let in is turned away: one
+            // that cannot be read, or one the note has no room for. Anything
+            // else — a disk that failed, say — is tried again on the next call
+            // rather than spending the link.
+            let refused = match &claimed.join {
+                Some(join) => match self.shared.locked()?.approve(
+                    outgoing.secret.id(),
+                    &claimed.request,
+                    join,
+                ) {
+                    Ok(_) => None,
+                    Err(CoreError::Invite(message)) => Some(message),
+                    Err(other) => return Err(other.to_string()),
+                },
+                None => Some(
+                    "Someone opened this link without EasyNotes, so nobody was let in. \
+                     Send a new link."
+                        .to_string(),
+                ),
+            };
+            if let Some(message) = refused {
+                // The link is spent either way: it takes one request. Say so
+                // to whoever made it, and stop keeping the invite.
+                self.turn_away(&outgoing, claimed.request).await?;
+                return Err(message);
+            }
+            self.shared.settle(outgoing.note);
+            outgoing = self.shared.outgoing(&invite)?;
+        }
+        let name = outgoing
             .approval
             .as_ref()
             .map(|(_, join)| join.name.clone());
-        if outgoing.approval.is_some() {
-            self.finish_approval(&outgoing).await?;
-        }
-        let http = self.shared.http_base()?;
-        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        // The relay saying no is an answer and a network failing is not, and
-        // only the first means the invite is gone.
-        let listed = on_network(async move {
-            Ok(invite::list(&http, &secret, &owner)
-                .await
-                .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
-        })
-        .await?;
-        let listing = match listed {
-            Ok(listing) => listing,
-            Err((gone, message)) => {
-                if gone {
-                    self.shared.forget_invite(&outgoing)?;
-                }
-                return Err(message);
-            }
-        };
-        let still_ours = self
-            .shared
-            .locked()?
-            .invites()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|i| i.secret.id() == outgoing.secret.id() && i.approval.is_some());
-        if !listing.open && !still_ours {
-            self.shared.forget_invite(&outgoing)?;
-        }
-        let members: Vec<String> = self
-            .shared
-            .locked()?
-            .people(outgoing.note)
-            .map(|p| p.people.into_iter().map(|p| p.member).collect())
-            .unwrap_or_default();
-        Ok(InviteRequestsView {
-            open: listing.open,
-            expires_in_secs: clamp_secs(listing.expires_in),
-            letting_in: if still_ours { letting_in } else { None },
-            requests: listing
-                .requests
-                .iter()
-                .map(|r| JoinRequestView {
-                    id: r.request.clone(),
-                    name: r.join.as_ref().map(|j| j.name.clone()).unwrap_or_default(),
-                    code: r
-                        .join
-                        .as_ref()
-                        .map(|j| j.code(&outgoing.secret))
-                        .unwrap_or_default(),
-                    state: r.state.into(),
-                    readable: r.join.is_some(),
-                    already_member: r
-                        .join
-                        .as_ref()
-                        .is_some_and(|j| members.contains(&j.member.encode())),
-                })
-                .collect(),
+        let done = self.finish_approval(&outgoing).await?;
+        Ok(InviteStatusView {
+            open: false,
+            expires_in_secs: clamp_secs(expires_in),
+            letting_in: if done { None } else { name.clone() },
+            joined: if done { name } else { None },
         })
     }
 
-    /// Let the person who made `request` in (ADR 0023 §3): save the approval,
-    /// publish the package that adds them, and — once the relay has it —
-    /// answer the invite. Every other request on it is declined by the relay.
-    ///
-    /// `Pending` when the package is still on its way; the invite's next poll
-    /// finishes the job, and so does a relaunch.
-    pub async fn approve_request(
-        &self,
-        invite: String,
-        request: String,
-    ) -> Result<ApprovalView, String> {
-        let outgoing = self.shared.outgoing(&invite)?;
+    /// Answer a request with nothing, and forget its invite.
+    async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let http = self.shared.http_base()?;
-
-        // The request is fetched again rather than taken from the screen, so
-        // what is saved is exactly what the relay holds under that name.
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        let listing = on_network(async move {
-            invite::list(&http, &secret, &owner)
+        on_network(async move {
+            invite::decline(&http, &secret, &owner, &request)
                 .await
                 .map_err(|e| e.to_string())
         })
         .await?;
-        let join = listing
-            .requests
-            .into_iter()
-            .find(|r| r.request == request)
-            .ok_or("That request is no longer there.")?
-            .join
-            .ok_or("That request cannot be read, so it cannot be approved.")?;
-
-        let approved = self
-            .shared
-            .locked()?
-            .approve(outgoing.secret.id(), &request, &join)
-            .map_err(|e| e.to_string())?;
-        self.shared.settle(outgoing.note);
-        let outgoing = self.shared.outgoing(&invite)?;
-        let done = self.finish_approval(&outgoing).await?;
-        Ok(match (approved, done) {
-            (easynotes_core::note::Approved::AlreadyHasAccess, _) => ApprovalView::AlreadyMember,
-            (_, true) => ApprovalView::Done,
-            (_, false) => ApprovalView::Pending,
-        })
+        self.shared.forget_invite(outgoing)
     }
 
-    /// Answer an approved request once the package letting them in is on the
-    /// relay, and forget the invite. `false` while the package is still on its
-    /// way.
+    /// Answer a request that has been let in, once the package letting them
+    /// in is on the relay, and forget the invite. `false` while the package
+    /// is still on its way.
     async fn finish_approval(&self, outgoing: &OutgoingInvite) -> Result<bool, String> {
         let Some((request, join)) = outgoing.approval.clone() else {
             return Ok(false);
@@ -2343,19 +2286,6 @@ impl Library {
         }
     }
 
-    /// Turn a request away. The invite stays open for someone else.
-    pub async fn decline_request(&self, invite: String, request: String) -> Result<(), String> {
-        let outgoing = self.shared.outgoing(&invite)?;
-        let http = self.shared.http_base()?;
-        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        on_network(async move {
-            invite::decline(&http, &secret, &owner, &request)
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await
-    }
-
     /// Take an invite down, on the relay and here. Anyone holding the link is
     /// told it does not exist.
     pub async fn withdraw_invite(&self, invite: String) -> Result<(), String> {
@@ -2375,10 +2305,10 @@ impl Library {
         }
     }
 
-    /// Ask to join through a link, under the name this account shares with.
-    ///
-    /// Returns what to show while waiting, including the six digits the owner
-    /// will see beside the request.
+    /// Claim a link, under the name this account shares with. The owner's
+    /// device lets this person in the next time it is online; nobody there is
+    /// asked. Asking again — a retry, or another device of this account — is
+    /// the same request.
     pub async fn request_join(&self, link: String) -> Result<PendingJoinView, String> {
         let secret = InviteSecret::from_link(&link).map_err(|e| e.to_string())?;
         let http = self.shared.http_base()?;
@@ -2390,7 +2320,7 @@ impl Library {
         };
         let (s, payload) = (secret.clone(), sealed_request);
         let request = on_network(async move {
-            invite::request(&http, &s, &payload)
+            invite::request(&http, &s, &member, &payload)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2398,7 +2328,6 @@ impl Library {
         let join = PendingJoin {
             secret,
             request,
-            member,
             name,
         };
         self.shared
@@ -2420,10 +2349,10 @@ impl Library {
             .collect())
     }
 
-    /// Ask the relay how a join request went, and act on the answer: an
-    /// approved one records the note in this person's account and follows it
-    /// until its key arrives; a declined, expired or withdrawn one stops being
-    /// waited on.
+    /// Ask the relay how a join request went, and act on the answer: one let
+    /// in records the note in this person's account and follows it until its
+    /// key arrives; a declined, expired or withdrawn one stops being waited
+    /// on.
     pub async fn check_join(&self, invite: String) -> Result<JoinCheckView, String> {
         let (join, member) = {
             let core = self.shared.locked()?;
@@ -2499,8 +2428,8 @@ impl Library {
     }
 
     /// Stop waiting on a join request. The relay keeps the request until the
-    /// invite expires; the owner may still approve it, and nothing here will
-    /// be listening.
+    /// invite expires; the owner's device may still let this person in, and
+    /// the note then arrives through the account like any other.
     pub fn cancel_join(&self, invite: String) -> Result<(), String> {
         let id = InviteId::decode(&invite).map_err(|e| e.to_string())?;
         self.shared

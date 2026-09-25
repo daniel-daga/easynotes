@@ -7,7 +7,7 @@
 //! approval are the same shape of rule as a dense sequence number, so they get
 //! the same treatment.
 
-use easynotes_relay::protocol::{RequestState, MAX_INVITE_REQUESTS};
+use easynotes_relay::protocol::RequestState;
 use easynotes_relay::store::{AddRequest, Answered, NewInvite};
 use easynotes_relay::{MemoryStore, PostgresStore, RelayStore};
 use std::sync::Arc;
@@ -88,25 +88,43 @@ async fn an_invite_id_cannot_be_opened_twice() {
 }
 
 #[tokio::test]
-async fn requests_are_kept_verbatim_and_in_order() {
+async fn an_invite_takes_one_request_and_the_same_one_again() {
     for (name, store) in stores().await {
         let id = open(&store, NOW + 60).await;
         let payload: Vec<u8> = (0..=255u8).collect();
-        for r in ["r1", "r2", "r3"] {
-            assert_eq!(
-                store
-                    .add_invite_request(&id, r, &payload, NOW)
-                    .await
-                    .unwrap(),
-                AddRequest::Added,
-                "{name}"
-            );
-        }
+        assert_eq!(
+            store
+                .add_invite_request(&id, "r1", &payload, NOW)
+                .await
+                .unwrap(),
+            AddRequest::Added,
+            "{name}"
+        );
+        // The same person again — a retry, or their other phone — is given
+        // back what they left, which is not overwritten.
+        assert_eq!(
+            store
+                .add_invite_request(&id, "r1", b"other", NOW)
+                .await
+                .unwrap(),
+            AddRequest::Again,
+            "{name}"
+        );
+        // Anybody else finds the link used.
+        assert_eq!(
+            store
+                .add_invite_request(&id, "r2", &payload, NOW)
+                .await
+                .unwrap(),
+            AddRequest::Closed,
+            "{name}"
+        );
         let invite = store.invite(&id).await.unwrap().unwrap();
         let ids: Vec<_> = invite.requests.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, ["r1", "r2", "r3"], "{name}");
+        assert_eq!(ids, ["r1"], "{name}");
         assert_eq!(invite.requests[0].payload, payload, "{name}");
         assert_eq!(invite.requests[0].state, RequestState::Pending, "{name}");
+        assert!(invite.open, "{name}: asking is not being let in");
     }
 }
 
@@ -127,24 +145,26 @@ async fn an_expired_invite_takes_no_requests() {
             AddRequest::Missing,
             "{name}"
         );
+        // A request made in time can still be found after it, so that its
+        // person learns how it went.
+        let id = open(&store, NOW + 10).await;
+        store.add_invite_request(&id, "r", b"x", NOW).await.unwrap();
+        assert_eq!(
+            store
+                .add_invite_request(&id, "r", b"x", NOW + 10)
+                .await
+                .unwrap(),
+            AddRequest::Again,
+            "{name}"
+        );
     }
 }
 
 #[tokio::test]
-async fn approving_closes_the_invite_and_declines_the_rest() {
+async fn approving_closes_the_invite() {
     for (name, store) in stores().await {
         let id = open(&store, NOW + 60).await;
-        for r in ["a", "b", "c"] {
-            store.add_invite_request(&id, r, b"x", NOW).await.unwrap();
-        }
-        assert_eq!(
-            store
-                .answer_invite_request(&id, "c", None, NOW)
-                .await
-                .unwrap(),
-            Answered::Done,
-            "{name}"
-        );
+        store.add_invite_request(&id, "a", b"x", NOW).await.unwrap();
         assert_eq!(
             store
                 .answer_invite_request(&id, "a", Some(b"grant"), NOW)
@@ -162,11 +182,7 @@ async fn approving_closes_the_invite_and_declines_the_rest() {
             .collect();
         assert_eq!(
             states,
-            [
-                ("a", RequestState::Approved, Some(b"grant".to_vec())),
-                ("b", RequestState::Declined, None),
-                ("c", RequestState::Declined, None),
-            ],
+            [("a", RequestState::Approved, Some(b"grant".to_vec()))],
             "{name}"
         );
         assert_eq!(
@@ -175,6 +191,11 @@ async fn approving_closes_the_invite_and_declines_the_rest() {
                 .await
                 .unwrap(),
             Answered::NotPending,
+            "{name}"
+        );
+        assert_eq!(
+            store.add_invite_request(&id, "a", b"x", NOW).await.unwrap(),
+            AddRequest::Again,
             "{name}"
         );
         assert_eq!(
@@ -194,11 +215,31 @@ async fn approving_closes_the_invite_and_declines_the_rest() {
 }
 
 #[tokio::test]
+async fn a_declined_request_still_spends_the_invite() {
+    for (name, store) in stores().await {
+        let id = open(&store, NOW + 60).await;
+        store.add_invite_request(&id, "a", b"x", NOW).await.unwrap();
+        assert_eq!(
+            store
+                .answer_invite_request(&id, "a", None, NOW)
+                .await
+                .unwrap(),
+            Answered::Done,
+            "{name}"
+        );
+        assert_eq!(
+            store.add_invite_request(&id, "b", b"x", NOW).await.unwrap(),
+            AddRequest::Closed,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_expired_invite_cannot_be_approved_but_can_be_declined() {
     for (name, store) in stores().await {
         let id = open(&store, NOW + 10).await;
         store.add_invite_request(&id, "a", b"x", NOW).await.unwrap();
-        store.add_invite_request(&id, "b", b"x", NOW).await.unwrap();
         let later = NOW + 10;
         assert_eq!(
             store
@@ -210,7 +251,7 @@ async fn an_expired_invite_cannot_be_approved_but_can_be_declined() {
         );
         assert_eq!(
             store
-                .answer_invite_request(&id, "b", None, later)
+                .answer_invite_request(&id, "a", None, later)
                 .await
                 .unwrap(),
             Answered::Done,
@@ -220,10 +261,10 @@ async fn an_expired_invite_cannot_be_approved_but_can_be_declined() {
 }
 
 #[tokio::test]
-async fn the_request_cap_holds_under_a_crowd() {
+async fn one_of_a_crowd_claims_the_invite() {
     for (name, store) in stores().await {
         let id = open(&store, NOW + 60).await;
-        let tasks: Vec<_> = (0..MAX_INVITE_REQUESTS * 2)
+        let tasks: Vec<_> = (0..32)
             .map(|n| {
                 let store = store.clone();
                 let id = id.clone();
@@ -239,13 +280,13 @@ async fn the_request_cap_holds_under_a_crowd() {
         for t in tasks {
             match t.await.unwrap() {
                 AddRequest::Added => added += 1,
-                AddRequest::Full => {}
+                AddRequest::Closed => {}
                 other => panic!("{name}: {other:?}"),
             }
         }
-        assert_eq!(added, MAX_INVITE_REQUESTS, "{name}: the cap did not hold");
+        assert_eq!(added, 1, "{name}: more than one person claimed the link");
         let kept = store.invite(&id).await.unwrap().unwrap().requests.len();
-        assert_eq!(kept, MAX_INVITE_REQUESTS, "{name}");
+        assert_eq!(kept, 1, "{name}");
     }
 }
 
@@ -253,19 +294,14 @@ async fn the_request_cap_holds_under_a_crowd() {
 async fn only_one_of_many_approvals_wins() {
     for (name, store) in stores().await {
         let id = open(&store, NOW + 60).await;
-        for n in 0..8 {
-            store
-                .add_invite_request(&id, &format!("r{n}"), b"x", NOW)
-                .await
-                .unwrap();
-        }
+        store.add_invite_request(&id, "r", b"x", NOW).await.unwrap();
         let tasks: Vec<_> = (0..8)
-            .map(|n| {
+            .map(|_| {
                 let store = store.clone();
                 let id = id.clone();
                 tokio::spawn(async move {
                     store
-                        .answer_invite_request(&id, &format!("r{n}"), Some(b"g"), NOW)
+                        .answer_invite_request(&id, "r", Some(b"g"), NOW)
                         .await
                         .unwrap()
                 })
@@ -277,17 +313,7 @@ async fn only_one_of_many_approvals_wins() {
                 done += 1;
             }
         }
-        assert_eq!(done, 1, "{name}: an invite admitted more than one person");
-        let approved = store
-            .invite(&id)
-            .await
-            .unwrap()
-            .unwrap()
-            .requests
-            .iter()
-            .filter(|r| r.state == RequestState::Approved)
-            .count();
-        assert_eq!(approved, 1, "{name}");
+        assert_eq!(done, 1, "{name}: one request was answered more than once");
     }
 }
 

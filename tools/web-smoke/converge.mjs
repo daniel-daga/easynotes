@@ -193,12 +193,12 @@ await tap(a, /^Share$/);
 await setUpSharing(a, 'Ann');
 await find(a, n => n.text.trim() === 'Share');
 await tap(a, /^Send link$/);
-await find(a, n => /^Nobody has asked to join yet\.$/.test(n.text.trim()));
+await find(a, n => /^Nobody has opened it yet\.$/.test(n.text.trim()));
 const message = await a.page.evaluate(() => window.__shared ?? '');
 const link = message.slice(message.lastIndexOf('http'));
 check(link.startsWith(url) && link.endsWith('#join#' + link.split('#').pop()), `A made a link: ${link.replace(/#join#.*/, '#join#…')}`);
 
-// --- B opens it, and A lets B in ----------------------------------------------
+// --- B opens it, and is let in without anyone asking -------------------------
 // In a tab of its own, as a link opened from a message would be. The same tab
 // would only change its fragment and never start the app again.
 step('B closes its tab');
@@ -208,15 +208,14 @@ step('B opens the link in a new tab');
 await load(b, link);
 step('B sets up sharing');
 await setUpSharing(b, 'Bea');
-await tap(b, /^Ask to join as Bea$/);
-const code = (await find(b, n => /^\d{3} ?\d{3}$/.test(n.text.trim()), { timeout: 20_000 })).text.trim();
-const shown = await find(a, n => n.text.includes('Their screen shows'), { timeout: 30_000 });
+await tap(b, /^Join as Bea$/);
+// A's share dialog is still open, and its poll is what lets Bea in: nobody on
+// A taps anything.
+step('A lets Bea in');
 check(
-  shown.text.includes('Bea wants to join') && shown.text.includes(`shows ${code}.`),
-  `A sees Bea's request with the code on B's screen (${code})`,
+  !!(await find(a, n => n.text.includes('Bea joined.'), { timeout: 30_000 })),
+  'A says Bea joined, without being asked',
 );
-step('A approves');
-await tap(a, /^Approve$/);
 // On the note's people, beside the owner, with a way to remove her.
 check(
   !!(await find(a, n => /(^|\n)Bea$/.test(n.text.trim()), { timeout: 20_000 })),

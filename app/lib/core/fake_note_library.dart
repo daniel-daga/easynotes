@@ -163,12 +163,13 @@ class FakeNoteLibrary implements NoteLibrary {
   // -- invites --------------------------------------------------------------
   //
   // A relay in a map. The two `fake…` methods at the end are the other person:
-  // a guest arriving on this device's invite, and an owner answering this
+  // a guest opening this device's link, and an owner's device answering this
   // device's request.
 
   final Map<String, Invite> _invites = {};
-  final Map<String, List<JoinRequest>> _requests = {};
-  final Set<String> _closed = {};
+
+  /// Who opened each invite's link, once somebody has.
+  final Map<String, String> _opened = {};
   final Map<String, PendingJoin> _joins = {};
   final Map<String, JoinCheck> _answers = {};
 
@@ -233,7 +234,6 @@ class FakeNoteLibrary implements NoteLibrary {
       expiresIn: const Duration(days: 7),
     );
     _invites[id] = invite;
-    _requests[id] = [];
     return invite;
   }
 
@@ -247,65 +247,40 @@ class FakeNoteLibrary implements NoteLibrary {
   List<Invite> get allInvites => _invites.values.toList();
 
   @override
-  Future<InviteRequests> inviteRequests(String inviteId) async {
-    final requests = _requests[inviteId];
-    if (requests == null) throw 'This device has no such invite open.';
-    final open = !_closed.contains(inviteId);
-    if (!open) _invites.remove(inviteId);
-    return InviteRequests(
-      open: open,
-      expiresIn: const Duration(days: 7),
-      requests: List.of(requests),
-    );
-  }
-
-  void _answer(String inviteId, String requestId, JoinRequestState state) {
-    final requests = _requests[inviteId]!;
-    for (var i = 0; i < requests.length; i++) {
-      final r = requests[i];
-      final approvedOther =
-          state == JoinRequestState.approved &&
-          r.id != requestId &&
-          r.state == JoinRequestState.pending;
-      if (r.id == requestId || approvedOther) {
-        requests[i] = JoinRequest(
-          id: r.id,
-          name: r.name,
-          code: r.code,
-          readable: r.readable,
-          state: r.id == requestId ? state : JoinRequestState.declined,
-        );
-      }
+  Future<InviteStatus> checkInvite(String inviteId) async {
+    calls.add('checkInvite($inviteId)');
+    final invite = _invites[inviteId];
+    if (invite == null) throw 'This device has no such invite open.';
+    final name = _opened[inviteId];
+    if (name == null) {
+      return const InviteStatus(open: true, expiresIn: Duration(days: 7));
     }
-  }
-
-  @override
-  Future<Approval> approveRequest(String inviteId, String requestId) async {
-    calls.add('approveRequest($inviteId, $requestId)');
-    final noteId = _invites[inviteId]!.noteId;
-    final request = _requests[inviteId]!.firstWhere((r) => r.id == requestId);
-    _answer(inviteId, requestId, JoinRequestState.approved);
-    _closed.add(inviteId);
+    if (!online) {
+      return InviteStatus(
+        open: false,
+        expiresIn: const Duration(days: 7),
+        lettingIn: name,
+      );
+    }
     _invites.remove(inviteId);
-    if (request.alreadyMember) return Approval.alreadyMember;
+    _opened.remove(inviteId);
+    final noteId = invite.noteId;
     _setList(noteId, [
       ...people(noteId).people,
-      Person(member: 'member-$requestId', invite: inviteId, name: request.name),
+      Person(member: 'member-$inviteId', invite: inviteId, name: name),
     ]);
-    return Approval.done;
-  }
-
-  @override
-  Future<void> declineRequest(String inviteId, String requestId) async {
-    calls.add('declineRequest($inviteId, $requestId)');
-    _answer(inviteId, requestId, JoinRequestState.declined);
+    return InviteStatus(
+      open: false,
+      expiresIn: const Duration(days: 7),
+      joined: name,
+    );
   }
 
   @override
   Future<void> withdrawInvite(String inviteId) async {
     calls.add('withdrawInvite($inviteId)');
     _invites.remove(inviteId);
-    _requests.remove(inviteId);
+    _opened.remove(inviteId);
   }
 
   @override
@@ -373,7 +348,7 @@ class FakeNoteLibrary implements NoteLibrary {
     if (relayError != null) throw relayError!;
     if (!link.contains('#')) throw 'that is not an invite link: not base64url';
     final id = link.split('#').last;
-    final join = PendingJoin(inviteId: id, name: profileName!, code: '123 456');
+    final join = PendingJoin(inviteId: id, name: profileName!);
     _joins[id] = join;
     return join;
   }
@@ -396,27 +371,14 @@ class FakeNoteLibrary implements NoteLibrary {
     _joins.remove(inviteId);
   }
 
-  /// Somebody opened this device's invite and asked to join.
-  void fakeRequest(
-    String inviteId, {
-    required String name,
-    String? code,
-    bool alreadyMember = false,
-  }) {
-    final requests = _requests[inviteId]!;
-    requests.add(
-      JoinRequest(
-        id: 'request-${requests.length}',
-        name: name,
-        code: code ?? '${100 + requests.length}${' 000'}',
-        state: JoinRequestState.pending,
-        alreadyMember: alreadyMember,
-      ),
-    );
+  /// Somebody opened this device's link. The next [checkInvite] lets them
+  /// in, as the real one does.
+  void fakeOpened(String inviteId, {required String name}) {
+    _opened[inviteId] = name;
   }
 
-  /// The owner of the invite this device is waiting on answered. Approving
-  /// adds a note, as the real one does.
+  /// The owner's device answered the request this device is waiting on.
+  /// Letting it in adds a note, as the real one does.
   void fakeAnswer(String inviteId, JoinState state, {String? message}) {
     if (state == JoinState.joined) {
       final id = 'joined-${_counter++}';

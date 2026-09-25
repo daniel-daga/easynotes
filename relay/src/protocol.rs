@@ -162,9 +162,9 @@ pub enum SyncServerMessage {
 // Invites
 // ---------------------------------------------------------------------------
 //
-// An invite is a mailbox with a lifetime. The owner opens one, guests leave
-// sealed join requests in it, and the owner answers one of them with a sealed
-// grant. The relay stores all of it and can read none of it: the requests are
+// An invite is a mailbox with a lifetime and room for one letter. The owner
+// opens one, the first guest to present the link leaves a sealed join request
+// in it, and the owner's device answers it with a sealed grant. The relay stores all of it and can read none of it: the requests are
 // sealed under a key derived from the link's secret, the grant under a key only
 // the guest who asked can derive, and neither side authenticates with a device
 // key — so the relay learns no new edge between two devices either
@@ -183,10 +183,6 @@ pub const INVITE_MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 /// How long an expired invite is kept so that a guest who opens a stale link
 /// is told it expired, rather than that it never existed. Past this it is swept.
 pub const INVITE_GRACE_SECS: i64 = 24 * 60 * 60;
-
-/// How many join requests one invite will hold, answered or not. A household
-/// needs one; the cap is what stops a leaked link turning into a storage bill.
-pub const MAX_INVITE_REQUESTS: usize = 16;
 
 /// A sealed join request: an X25519 key, a short name, and AEAD overhead.
 pub const MAX_INVITE_PAYLOAD_BYTES: usize = 1024;
@@ -219,13 +215,18 @@ pub struct CreatedInvite {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JoinInvite {
     pub token: String,
+    /// The request's name: sixteen bytes, base64url, which the guest derives
+    /// from the link and its account. The same person asking again sends the
+    /// same name, and is given back the request they already made; anyone else
+    /// finds the link used. The relay cannot tell whose it is.
+    pub request: String,
     /// The sealed request, base64url.
     pub payload: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JoinedInvite {
-    /// The relay's name for this request, for polling it and for answering it.
+    /// The request's name, for polling it and for answering it.
     pub request: String,
 }
 

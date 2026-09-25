@@ -96,15 +96,17 @@ and [ADR 0014](docs/adr/0014-what-the-relay-learns.md) says what the relay is no
 told and what that costs.
 
 **A list is shared by a link now, and the link is not the key.** Share makes an
-invite link that carries one secret and no note key. Whoever opens it asks to
-join under a name; the owner sees the request with six digits the guest's screen
-shows too, and lets them in or turns them away. Only then is the key handed over,
-sealed to that one guest. A link admits one person and stops after seven days,
-and the relay that holds the invite in between cannot read who asked or which
-note it is for, and is never told which devices are on either side. [ADR
-0015](docs/adr/0015-invites.md) has the decisions and what they cost: the
-owner's device has to be reachable to let anyone in, both sides poll rather than
-being woken, and the link is pasted rather than tapped until the platforms
+invite link that carries one secret and no note key. Whoever opens it first
+joins under their name, and the owner's device lets them in without anyone
+tapping Approve; the key is handed over sealed to that one person. A link works
+once, for one account — anybody else who opens it is told it has been used —
+and stops after seven days. The relay that holds the invite in between cannot
+read who joined or which note it is for, and is never told which devices are on
+either side. [ADR 0015](docs/adr/0015-invites.md) and [ADR
+0025](docs/adr/0025-links-that-let-people-in.md) have the decisions and what
+they cost: a leaked link lets its finder in until the owner removes them, the
+owner's device has to be reachable to let anyone in, both sides poll rather
+than being woken, and the link is pasted rather than tapped until the platforms
 register it.
 
 **A note is shared with people, not phones.** A collaborator is an account under
@@ -181,9 +183,10 @@ With no relay there, nothing breaks: the app is a local notes app and the status
 button in the app bar says so, with the count of edits that have not left the
 device. The web build says the same thing about the same relay — it reaches one
 through the browser's own WebSocket. To share a list, open it, press the share
-button and send the link it makes. The link carries no key: the other person
-asks to join with it and you approve them ([ADR 0015](docs/adr/0015-invites.md),
-[ADR 0023](docs/adr/0023-access-packages.md)).
+button and send the link it makes. The link carries no key: the first person to
+open it joins, and nobody after them can ([ADR 0015](docs/adr/0015-invites.md),
+[ADR 0023](docs/adr/0023-access-packages.md),
+[ADR 0025](docs/adr/0025-links-that-let-people-in.md)).
 
 The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
 they are the only cover for the concurrency in sequence allocation — so a green
@@ -242,7 +245,7 @@ reading the whole database at open.
 | [ADR 0012](docs/adr/0012-compacting-the-account-document.md) | Compacting the account document: the snapshot goes in the log |
 | [ADR 0013](docs/adr/0013-recovery-phrase.md) | The recovery phrase: twelve words deriving one document, and not the note keys |
 | [ADR 0014](docs/adr/0014-what-the-relay-learns.md) | What the relay learns about a person: nothing new |
-| [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers |
+| [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers (*amended by 0025:* nobody approves) |
 | [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
 | [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
 | [ADR 0018](docs/adr/0018-revocation.md) | Revocation is a creator-signed key generation |
@@ -252,6 +255,7 @@ reading the whole database at open.
 | [ADR 0022](docs/adr/0022-account-wide-deletion.md) | Permanent deletion across one person's devices |
 | [ADR 0023](docs/adr/0023-access-packages.md) | Share with people: account member keys and access packages |
 | [ADR 0024](docs/adr/0024-relay-storage-quota.md) | A storage quota for an anonymous relay: members compact a note's log to a base |
+| [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
 
 ## Security, in one paragraph
 

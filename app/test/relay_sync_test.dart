@@ -88,23 +88,18 @@ void main() {
     return (library, core);
   }
 
-  /// Approve, and keep asking until the package is out and the answer sent
-  /// — which is what the invite dialog's poll does.
-  Future<void> letIn(
-    RustNoteLibrary owner,
-    String noteId,
-    Invite invite,
-    JoinRequest request,
-  ) async {
-    var approval = await owner.approveRequest(invite.id, request.id);
+  /// Keep checking the invite until whoever opened the link is in — which
+  /// is what the invite dialog's poll, and the grid's, does. Nobody approves
+  /// anything. Returns the name of the person let in.
+  Future<String> letIn(RustNoteLibrary owner, Invite invite) async {
     final deadline = DateTime.now().add(patience);
-    while (approval == Approval.pending &&
-        owner.invitesFor(noteId).isNotEmpty) {
-      if (DateTime.now().isAfter(deadline)) fail('the approval never went');
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    while (true) {
       try {
-        await owner.inviteRequests(invite.id);
+        final status = await owner.checkInvite(invite.id);
+        if (status.joined != null) return status.joined!;
       } catch (_) {}
+      if (DateTime.now().isAfter(deadline)) fail('nobody was let in');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
 
@@ -122,8 +117,8 @@ void main() {
     }
   }
 
-  /// A second person on `noteId`, let in the way the app lets one in: a link,
-  /// a request and an approval. The owner is given an account and a name first
+  /// A second person on `noteId`, let in the way the app lets one in: a link
+  /// they open, and the owner's device noticing. The owner is given an account and a name first
   /// if it has none, since sharing needs both.
   Future<(RustNoteLibrary, NoteCore)> share(
     RustNoteLibrary owner,
@@ -136,8 +131,7 @@ void main() {
     await guest.createAccount();
     await guest.setProfileName('Anna');
     final waiting = await guest.requestJoin(invite.link);
-    final request = (await owner.inviteRequests(invite.id)).pending.single;
-    await letIn(owner, noteId, invite, request);
+    await letIn(owner, invite);
     final check = await joined(guest, waiting.inviteId);
     expect(check.state, JoinState.joined);
     final core = guest.openNote(check.noteId!);
@@ -407,7 +401,7 @@ void main() {
     }
 
     test(
-      'a guest asks with a link, the owner lets them in, and the list arrives',
+      'a guest opens a link, is let in without asking, and the list arrives',
       () async {
         final (owner, a, noteId) = await owned();
         await a.setTitle('Groceries');
@@ -418,7 +412,7 @@ void main() {
         expect(owner.invitesFor(noteId).single.id, invite.id);
 
         // Only the link crosses. It carries no key: the guest's library has
-        // nothing to open until the owner says so.
+        // nothing to open until the owner's device lets them in.
         final guest = await person('Anna');
         final waiting = await guest.requestJoin(invite.link);
         expect(waiting.name, 'Anna');
@@ -429,13 +423,7 @@ void main() {
         );
         expect(guest.notes, isEmpty);
 
-        final asked = await owner.inviteRequests(invite.id);
-        expect(asked.open, isTrue);
-        final request = asked.pending.single;
-        expect(request.name, 'Anna');
-        expect(request.code, waiting.code, reason: 'the two screens disagree');
-
-        await letIn(owner, noteId, invite, request);
+        expect(await letIn(owner, invite), 'Anna');
         expect(owner.invitesFor(noteId), isEmpty);
         expect(owner.people(noteId).people.map((p) => p.name), [
           'Olga',
@@ -513,8 +501,7 @@ void main() {
 
       final invite = await owner.createInvite(noteId);
       final waiting = await guest.requestJoin(invite.link);
-      final request = (await owner.inviteRequests(invite.id)).pending.single;
-      await letIn(owner, noteId, invite, request);
+      await letIn(owner, invite);
       expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
 
       final b = guest.openNote(noteId);
@@ -542,16 +529,25 @@ void main() {
       expect(guest.tags, isEmpty);
     });
 
-    test('a spent link says so to the next person', () async {
+    test('a link works once, for the first account that opens it', () async {
       final (owner, _, noteId) = await owned();
       final invite = await owner.createInvite(noteId);
       final first = await person('Anna');
       final waiting = await first.requestJoin(invite.link);
-      final request = (await owner.inviteRequests(invite.id)).pending.single;
-      await letIn(owner, noteId, invite, request);
-      expect((await joined(first, waiting.inviteId)).state, JoinState.joined);
 
+      // Claimed the moment Anna opened it, before the owner's device has
+      // seen anything.
       final late = await person('Late');
+      await expectLater(
+        late.requestJoin(invite.link),
+        throwsA(contains('already been used')),
+      );
+      // Anna opening it again is the same request, not a refusal.
+      expect((await first.requestJoin(invite.link)).inviteId, waiting.inviteId);
+
+      expect(await letIn(owner, invite), 'Anna');
+      expect((await joined(first, waiting.inviteId)).state, JoinState.joined);
+      expect(owner.people(noteId).people.map((p) => p.name), ['Olga', 'Anna']);
       await expectLater(
         late.requestJoin(invite.link),
         throwsA(contains('already been used')),
@@ -570,25 +566,6 @@ void main() {
       expect(check.state, JoinState.gone);
       expect(check.message, contains('does not exist'));
       expect(guest.pendingJoins, isEmpty);
-    });
-
-    test('a turned-away guest is told, and the link still works', () async {
-      final (owner, _, noteId) = await owned();
-      final invite = await owner.createInvite(noteId);
-      final stranger = await person('Stranger');
-      final waiting = await stranger.requestJoin(invite.link);
-      final request = (await owner.inviteRequests(invite.id)).pending.single;
-
-      await owner.declineRequest(invite.id, request.id);
-
-      expect(
-        (await stranger.checkJoin(waiting.inviteId)).state,
-        JoinState.declined,
-      );
-      final anna = await person('Anna');
-      await anna.requestJoin(invite.link);
-      final asked = await owner.inviteRequests(invite.id);
-      expect(asked.pending.single.name, 'Anna');
     });
 
     test('sharing asks for an account and a name first', () async {

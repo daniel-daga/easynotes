@@ -1,16 +1,17 @@
 /// Sharing a note with other people, by invite link.
 ///
 /// A collaborator is a person, not a phone: their account, under the name they
-/// chose. The link carries a secret and no key. Someone who opens it asks to
-/// join; the owner sees who asked, with six digits both screens show, and lets
-/// them in with one tap. The owner can remove one person, and everyone else
-/// keeps the note. An invite admits one person and lasts seven days. See
-/// `docs/plan-account-collaboration.md` and `docs/adr/0023-access-packages.md`.
+/// chose. The link carries a secret and no key. The first account to open it
+/// claims it, and the owner's device lets them in without asking anyone; the
+/// link then stops working for everybody else. The owner can remove one
+/// person, and everyone else keeps the note. An invite lasts seven days. See
+/// `docs/adr/0025-links-that-let-people-in.md` and
+/// `docs/adr/0023-access-packages.md`.
 ///
 /// Every call that says "relay" needs one: an invite lives there between the
 /// two people. What this device remembers about its invites and its requests
-/// survives a restart, so either side may close the app while the other
-/// decides.
+/// survives a restart, so either side may close the app before the other's
+/// device has caught up.
 library;
 
 import 'package:flutter/foundation.dart';
@@ -92,7 +93,7 @@ class People {
   final bool canManage;
   final List<Person> people;
 
-  /// Names of people approved whose access is still on its way.
+  /// Names of people let in whose access is still on its way.
   final List<String> adding;
 }
 
@@ -109,7 +110,8 @@ class Invite {
   final String id;
   final String noteId;
 
-  /// What to send. It holds no key, but anyone who has it can *ask*.
+  /// What to send. It holds no key, but the first person to open it is let
+  /// in.
   final String link;
 
   /// By this device's clock. The relay's is the one that holds.
@@ -126,93 +128,38 @@ class Invite {
   int get hashCode => Object.hash(id, noteId, link);
 }
 
-enum JoinRequestState { pending, approved, declined }
-
-/// Somebody asking to join, as the owner sees them.
-@immutable
-class JoinRequest {
-  const JoinRequest({
-    required this.id,
-    required this.name,
-    required this.code,
-    required this.state,
-    this.readable = true,
-    this.alreadyMember = false,
-  });
-
-  final String id;
-
-  /// The name their account shares under. Nothing checks it: it is their
-  /// word.
-  final String name;
-
-  /// The six digits their own screen shows. The check a careful owner makes
-  /// is that the two match. Optional.
-  final String code;
-  final JoinRequestState state;
-
-  /// False for a request nobody holding the link made. It cannot be approved.
-  final bool readable;
-
-  /// This person already has access — from another of their phones, say.
-  /// Approving changes nothing.
-  final bool alreadyMember;
-}
-
 /// Where an invite stands, from the relay.
 @immutable
-class InviteRequests {
-  const InviteRequests({
+class InviteStatus {
+  const InviteStatus({
     required this.open,
     required this.expiresIn,
-    required this.requests,
     this.lettingIn,
+    this.joined,
   });
 
-  /// False once somebody has been let in or the invite has expired.
+  /// False once somebody has opened the link or it has expired.
   final bool open;
   final Duration expiresIn;
-  final List<JoinRequest> requests;
 
-  /// Somebody approved whose access is still on its way.
+  /// Somebody who opened the link, whose access is still on its way.
   final String? lettingIn;
 
-  List<JoinRequest> get pending => [
-    for (final r in requests)
-      if (r.state == JoinRequestState.pending) r,
-  ];
-}
-
-/// Where an approval got to.
-enum Approval {
-  /// They are in.
-  done,
-
-  /// Saved, and on its way; it finishes when this device reaches the relay.
-  pending,
-
-  /// They already had access. Nothing changed.
-  alreadyMember,
+  /// Somebody who opened the link and is now in. Reported once.
+  final String? joined;
 }
 
 /// A request this device made and is waiting on.
 @immutable
 class PendingJoin {
-  const PendingJoin({
-    required this.inviteId,
-    required this.name,
-    required this.code,
-  });
+  const PendingJoin({required this.inviteId, required this.name});
 
   final String inviteId;
   final String name;
-
-  /// What the owner will see beside this request.
-  final String code;
 }
 
 enum JoinState {
-  /// Nobody has answered.
+  /// The owner's device has not seen the request yet.
   waiting,
 
   /// Let in, and the note is still arriving.
@@ -221,7 +168,7 @@ enum JoinState {
   /// Let in. The note is on this device.
   joined,
 
-  /// Turned away.
+  /// Turned away: the owner's device could not read the request.
   declined,
 
   /// Expired, used by someone else, or withdrawn.
@@ -288,15 +235,10 @@ abstract class Invites implements Accounts {
   /// Every invite open on this device. Local.
   List<Invite> get allInvites;
 
-  /// Who has asked to join through an invite. Asks the relay, and finishes an
-  /// approval that was interrupted.
-  Future<InviteRequests> inviteRequests(String inviteId);
-
-  /// Let the person who made [requestId] in, and close the invite.
-  Future<Approval> approveRequest(String inviteId, String requestId);
-
-  /// Turn a request away. The invite stays open.
-  Future<void> declineRequest(String inviteId, String requestId);
+  /// Where an invite stands. Asks the relay, and lets in whoever has opened
+  /// the link — nobody is asked — finishing on a later call what cannot
+  /// finish yet.
+  Future<InviteStatus> checkInvite(String inviteId);
 
   /// Take an invite down. The link stops working.
   Future<void> withdrawInvite(String inviteId);
@@ -307,13 +249,14 @@ abstract class Invites implements Accounts {
   /// Remove everyone but the owner, and cancel every open link to the note.
   Future<void> stopSharing(String noteId);
 
-  /// Ask to join through [link], under this account's name.
+  /// Claim [link] under this account's name. The owner's device lets this
+  /// person in the next time it is online.
   Future<PendingJoin> requestJoin(String link);
 
   /// The requests this device is waiting on. Local.
   List<PendingJoin> get pendingJoins;
 
-  /// Ask how a request went. An approved one adds the note.
+  /// Ask how a request went. One that was let in adds the note.
   Future<JoinCheck> checkJoin(String inviteId);
 
   /// Stop waiting on a request.

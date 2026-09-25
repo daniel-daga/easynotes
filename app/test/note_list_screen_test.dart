@@ -203,14 +203,14 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('join-link-field')), link);
       // The name is the account's: the button says it, and nothing asks.
-      expect(find.text('Ask to join as Anna'), findsOneWidget);
+      expect(find.text('Join as Anna'), findsOneWidget);
       await tester.tap(find.byKey(const Key('join-confirm')));
       // Not `pumpAndSettle`: the waiting dialog's progress bar never settles,
       // which is the point of it.
       await settleWhileWaiting(tester);
     }
 
-    testWidgets('a link asks to join, waits, and opens the list once let in', (
+    testWidgets('a link joins, waits, and opens the list once let in', (
       tester,
     ) async {
       final library = twoLists()..setUpSharing('Anna');
@@ -219,8 +219,8 @@ void main() {
       await ask(tester, '  easynotes://join#abc  ');
 
       expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
-      expect(find.byKey(const Key('join-code')), findsOneWidget);
-      expect(find.text('123 456'), findsOneWidget);
+      // No code to read out: there is nobody to read it to.
+      expect(find.byKey(const Key('join-waiting')), findsOneWidget);
 
       library.fakeAnswer('abc', JoinState.joined);
       await tester.pump(invitePollInterval);
@@ -230,7 +230,7 @@ void main() {
         library.calls.where((c) => c.startsWith('openNote(joined-')),
         hasLength(1),
       );
-      expect(find.byKey(const Key('join-code')), findsNothing);
+      expect(find.byKey(const Key('join-waiting')), findsNothing);
     });
 
     testWidgets('a tapped link only asks for a yes', (tester) async {
@@ -252,7 +252,7 @@ void main() {
       await settleWhileWaiting(tester);
 
       expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
-      expect(find.byKey(const Key('join-code')), findsOneWidget);
+      expect(find.byKey(const Key('join-waiting')), findsOneWidget);
       await tester.tap(find.byKey(const Key('join-stop-waiting')));
       await settleWhileWaiting(tester);
     });
@@ -299,7 +299,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('join-ended')), findsOneWidget);
-      expect(find.textContaining('turned this request away'), findsOneWidget);
+      expect(find.textContaining('Ask them for a new link'), findsOneWidget);
     });
 
     testWidgets('stopping the wait cancels the request', (tester) async {
@@ -322,7 +322,6 @@ void main() {
       await pumpList(tester, library);
 
       expect(find.byKey(const Key('join-banner-abc')), findsOneWidget);
-      expect(find.textContaining('123 456'), findsOneWidget);
 
       library.fakeAnswer('abc', JoinState.joined);
       await tester.pump(inviteBannerPollInterval);
@@ -332,24 +331,32 @@ void main() {
       expect(find.byKey(const Key('join-banner-abc')), findsNothing);
     });
 
-    testWidgets('someone asking on an invite is shown above the grid', (
-      tester,
-    ) async {
-      final library = twoLists()..setUpSharing('Anna');
-      final invite = await library.createInvite('groceries');
-      library.fakeRequest(invite.id, name: 'Anna');
-      await pumpList(tester, library);
+    testWidgets(
+      'someone who opened a link is let in and shown above the grid',
+      (tester) async {
+        final library = twoLists()..setUpSharing('Olga');
+        final invite = await library.createInvite('groceries');
+        library.fakeOpened(invite.id, name: 'Anna');
+        await pumpList(tester, library);
 
-      expect(find.text('Anna wants to join "Groceries"'), findsOneWidget);
+        // Nobody was asked: the grid's own poll let her in.
+        expect(find.text('Anna joined "Groceries"'), findsOneWidget);
+        expect(
+          library.people('groceries').people.map((p) => p.name),
+          contains('Anna'),
+        );
+        expect(library.allInvites, isEmpty);
 
-      await tester.tap(find.text('Review'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.text('View'));
+        await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('approve-request-0')), findsOneWidget);
-      // Closed before the test ends, so its poll does not outlive it.
-      await tester.tap(find.byKey(const Key('share-done')));
-      await tester.pumpAndSettle();
-    });
+        expect(find.text('Anna joined "Groceries"'), findsNothing);
+        expect(find.byKey(Key('person-member-${invite.id}')), findsOneWidget);
+        // Closed before the test ends, so its poll does not outlive it.
+        await tester.tap(find.byKey(const Key('share-done')));
+        await tester.pumpAndSettle();
+      },
+    );
   });
 
   testWidgets('there is no way to join where joining is not possible', (

@@ -2,8 +2,8 @@
 //!
 //! A share blob put the note key in the link, which made the link the key: it
 //! never expired, nobody could withdraw it, and anyone it was forwarded to was
-//! a member. An invite link carries a secret instead, and a person is let in
-//! only when the owner says so. See `docs/adr/0015-invites.md` and
+//! a member. An invite link carries a secret instead: the first person to open
+//! it claims it, and the owner's device lets them in. See `docs/adr/0015-invites.md` and
 //! `docs/adr/0023-access-packages.md` for the decisions; this module is the
 //! cryptography, and nothing here talks to a relay or touches a disk.
 //!
@@ -19,27 +19,23 @@
 //!   relay carries a request without reading who is asking.
 //!
 //! The owner has one more secret, random and never in the link, whose hash the
-//! relay keeps: presenting it is what lets the owner list the requests and
-//! answer one. A guest holding the link cannot approve itself.
+//! relay keeps: presenting it is what lets the owner read the request and
+//! answer it. A guest holding the link cannot answer itself; it can only
+//! claim the link, and the owner's device does the rest without asking anyone.
 //!
 //! ## The request and the answer
 //!
 //! A request names a *person*: their account's member ID and box key, and the
 //! name they chose, signed by their member key over the invite ID so that it
-//! cannot be replayed onto another link. The answer tells that person which
+//! cannot be replayed onto another link. An invite takes one request, and the
+//! request's name on the relay is derived from the link and the member ID, so
+//! the same person asking twice — a retry, or their second phone — finds the
+//! request they already made, and anybody else finds the link used. The answer tells that person which
 //! note they were let into and which owner key signs its access packages,
 //! sealed to their box key with the request key as the salt — so it opens on
 //! any of their phones, not for someone else holding the same link, and not
 //! for the relay. It carries no note key: the note's current access package
 //! is where every person on the note gets that.
-//!
-//! ## The safety code
-//!
-//! Six digits both screens show, computed from the invite and the member ID.
-//! A leaked link lets a stranger ask to join; the code is how an owner who is
-//! on the phone with the person they meant to invite can tell the two
-//! requests apart. It is a check a person may make, not one the protocol
-//! needs.
 
 use crate::account::MemberIdentity;
 use crate::crypto::{
@@ -79,7 +75,7 @@ const ANSWER_DOMAIN: &[u8] = b"easynotes/invite/answer/v1";
 const REQUEST_VERSION: u8 = 4;
 const ANSWER_VERSION: u8 = 5;
 const REQUEST_MEMBER_DOMAIN: &[u8] = b"easynotes/invite/request-member/v1";
-const CODE_DOMAIN: &[u8] = b"easynotes/invite/code/v2";
+const REQUEST_NAME_DOMAIN: &[u8] = b"easynotes/invite/request-name/v1";
 
 fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
@@ -234,15 +230,30 @@ pub struct JoinRequest {
     /// The public half of the key the answer and every grant are sealed to.
     pub box_key: [u8; PUBLIC_LEN],
     /// What they call themselves. Not verified by anything — it is a person's
-    /// word, and the safety code is what a careful owner checks instead.
+    /// word.
     pub name: String,
 }
 
 impl JoinRequest {
-    /// The six digits both screens show for this request.
-    pub fn code(&self, secret: &InviteSecret) -> String {
-        safety_code(secret, &self.member)
+    /// Whether this request carries the name its person would have given it.
+    /// One that does not was not made by this app, and is not let in.
+    pub fn is_named(&self, secret: &InviteSecret, request: &str) -> bool {
+        request_name(secret, &self.member) == request
     }
+}
+
+/// The name a person's request goes by on the relay: sixteen bytes, base64url,
+/// from the link's request key and the member ID. The relay has neither the
+/// key nor the member ID, so it cannot tell whose request it is, or that two
+/// invites were claimed by one person.
+pub fn request_name(secret: &InviteSecret, member: &AuthorKey) -> String {
+    let mut key = secret.request_key();
+    let mut hasher = Sha256::new();
+    hasher.update(REQUEST_NAME_DOMAIN);
+    hasher.update(key);
+    hasher.update(member.0);
+    key.zeroize();
+    b64(&hasher.finalize()[..16])
 }
 
 /// Seal a request for the owner: who is asking, where to seal their answer,
@@ -397,17 +408,6 @@ pub fn open_answer(
     ))
 }
 
-/// Six digits, as `123 456`, from the invite and the person asking.
-pub fn safety_code(secret: &InviteSecret, member: &AuthorKey) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(CODE_DOMAIN);
-    hasher.update(secret.id().as_bytes());
-    hasher.update(member.0);
-    let digest = hasher.finalize();
-    let n = u32::from_be_bytes(digest[..4].try_into().unwrap()) % 1_000_000;
-    format!("{:03} {:03}", n / 1000, n % 1000)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn every_phone_of_one_person_shows_the_same_safety_code() {
+    fn every_phone_of_one_person_names_its_request_alike() {
         let secret = InviteSecret::random();
         let phrase = RecoveryPhrase::generate();
         let phone = phrase.root().member();
@@ -541,10 +541,15 @@ mod tests {
             .unwrap()
             .root()
             .member();
+        let name = request_name(&secret, &phone.id());
+        assert_eq!(name, request_name(&secret, &other_phone.id()));
+        assert_eq!(URL_SAFE_NO_PAD.decode(&name).unwrap().len(), 16);
+        // Somebody else, or the same person on another link, is another name.
+        assert_ne!(name, request_name(&secret, &member().id()));
+        assert_ne!(name, request_name(&InviteSecret::random(), &phone.id()));
+
         let request = open_request(&secret, &seal_request(&secret, &phone, "A").unwrap()).unwrap();
-        let code = request.code(&secret);
-        assert_eq!(code, safety_code(&secret, &other_phone.id()));
-        assert_eq!(code.len(), 7);
-        assert_ne!(code, safety_code(&secret, &member().id()));
+        assert!(request.is_named(&secret, &name));
+        assert!(!request.is_named(&secret, &request_name(&secret, &member().id())));
     }
 }

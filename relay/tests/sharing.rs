@@ -147,13 +147,16 @@ async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
         .unwrap();
 
     let secret = InviteSecret::from_link(&outgoing.secret.link()).unwrap();
-    let sealed = guest
-        .core
-        .lock()
-        .unwrap()
-        .seal_join_request(&secret)
+    let (sealed, member) = {
+        let core = guest.core.lock().unwrap();
+        (
+            core.seal_join_request(&secret).unwrap(),
+            core.member().unwrap().id(),
+        )
+    };
+    let request = invite::request(&http, &secret, &member, &sealed)
+        .await
         .unwrap();
-    let request = invite::request(&http, &secret, &sealed).await.unwrap();
 
     let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
         .await

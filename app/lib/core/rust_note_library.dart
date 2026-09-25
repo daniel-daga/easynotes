@@ -241,44 +241,15 @@ class RustNoteLibrary implements NoteLibrary {
   List<Invite> get allInvites => _library.allInvites().map(_toInvite).toList();
 
   @override
-  Future<InviteRequests> inviteRequests(String inviteId) async {
-    final listing = await _library.inviteRequests(invite: inviteId);
-    return InviteRequests(
-      open: listing.open,
-      expiresIn: Duration(seconds: listing.expiresInSecs),
-      lettingIn: listing.lettingIn,
-      requests: [
-        for (final r in listing.requests)
-          JoinRequest(
-            id: r.id,
-            name: r.name,
-            code: r.code,
-            readable: r.readable,
-            alreadyMember: r.alreadyMember,
-            state: switch (r.state) {
-              rust.RequestStateView.pending => JoinRequestState.pending,
-              rust.RequestStateView.approved => JoinRequestState.approved,
-              rust.RequestStateView.declined => JoinRequestState.declined,
-            },
-          ),
-      ],
+  Future<InviteStatus> checkInvite(String inviteId) async {
+    final status = await _library.checkInvite(invite: inviteId);
+    return InviteStatus(
+      open: status.open,
+      expiresIn: Duration(seconds: status.expiresInSecs),
+      lettingIn: status.lettingIn,
+      joined: status.joined,
     );
   }
-
-  @override
-  Future<Approval> approveRequest(String inviteId, String requestId) async =>
-      switch (await _library.approveRequest(
-        invite: inviteId,
-        request: requestId,
-      )) {
-        rust.ApprovalView.done => Approval.done,
-        rust.ApprovalView.pending => Approval.pending,
-        rust.ApprovalView.alreadyMember => Approval.alreadyMember,
-      };
-
-  @override
-  Future<void> declineRequest(String inviteId, String requestId) =>
-      _library.declineRequest(invite: inviteId, request: requestId);
 
   @override
   Future<void> withdrawInvite(String inviteId) =>
@@ -298,7 +269,7 @@ class RustNoteLibrary implements NoteLibrary {
   ];
 
   static PendingJoin _toJoin(rust.PendingJoinView join) =>
-      PendingJoin(inviteId: join.invite, name: join.name, code: join.code);
+      PendingJoin(inviteId: join.invite, name: join.name);
 
   @override
   Future<PendingJoin> requestJoin(String link) async =>

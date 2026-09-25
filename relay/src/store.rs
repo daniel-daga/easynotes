@@ -12,7 +12,7 @@
 //! nothing meaningful in them.
 
 use crate::error::{RelayError, Result};
-use crate::protocol::{RequestState, MAX_INVITE_REQUESTS};
+use crate::protocol::RequestState;
 use crate::quota::{self, Limits, Proposal, Refusal, Topic};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -114,7 +114,11 @@ pub trait RelayStore: Send + Sync + 'static {
     /// An invite and every request on it, expired or not, until it is swept.
     async fn invite(&self, id: &str) -> Result<Option<Invite>>;
 
-    /// Leave a request on an invite, if it is open, unexpired and not full.
+    /// Leave a request on an invite, if it is open, unexpired and nobody has
+    /// asked yet. An invite admits one person, so it takes one request; the
+    /// same request again is [`AddRequest::Again`], whatever has happened to
+    /// the invite since, so that a guest whose first answer was lost can still
+    /// find out how it went.
     async fn add_invite_request(
         &self,
         id: &str,
@@ -125,9 +129,9 @@ pub trait RelayStore: Send + Sync + 'static {
 
     /// Approve a pending request with `grant`, or decline it with `None`.
     ///
-    /// Approving closes the invite and declines every other request still
-    /// pending: an invite admits one person, and a second approval would hand
-    /// the key to whoever the first one was not.
+    /// Approving closes the invite. An invite holds one request, so there is
+    /// nobody else to decline; were there, a second approval would hand the
+    /// key to whoever the first one was not.
     async fn answer_invite_request(
         &self,
         id: &str,
@@ -169,12 +173,12 @@ pub struct InviteRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddRequest {
     Added,
+    /// This request is there already.
+    Again,
     /// No such invite.
     Missing,
-    /// Expired, or a request on it has already been approved.
+    /// Expired, answered, or somebody else has asked already.
     Closed,
-    /// [`MAX_INVITE_REQUESTS`] already.
-    Full,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,11 +441,11 @@ impl RelayStore for MemoryStore {
         let Some(invite) = invites.get_mut(id) else {
             return Ok(AddRequest::Missing);
         };
-        if !invite.open || invite.expires_at <= now {
-            return Ok(AddRequest::Closed);
+        if invite.requests.iter().any(|r| r.id == request) {
+            return Ok(AddRequest::Again);
         }
-        if invite.requests.len() >= MAX_INVITE_REQUESTS {
-            return Ok(AddRequest::Full);
+        if !invite.open || invite.expires_at <= now || !invite.requests.is_empty() {
+            return Ok(AddRequest::Closed);
         }
         invite.requests.push(InviteRequest {
             id: request.to_string(),
@@ -962,8 +966,8 @@ impl RelayStore for PostgresStore {
         now: i64,
     ) -> Result<AddRequest> {
         let mut tx = self.pool.begin().await.map_err(pg)?;
-        // The row lock is what makes the cap a cap: without it, sixteen guests
-        // arriving at once all count fifteen and all get in.
+        // The row lock is what makes one request one: without it, two guests
+        // arriving at once both find the invite empty and both get in.
         let row: Option<(bool, i64)> =
             sqlx::query_as("SELECT open, expires_at FROM invites WHERE invite_id = $1 FOR UPDATE")
                 .bind(id)
@@ -973,17 +977,17 @@ impl RelayStore for PostgresStore {
         let Some((open, expires_at)) = row else {
             return Ok(AddRequest::Missing);
         };
-        if !open || expires_at <= now {
-            return Ok(AddRequest::Closed);
-        }
-        let (count,): (i64,) =
-            sqlx::query_as("SELECT count(*) FROM invite_requests WHERE invite_id = $1")
+        let asked: Vec<(String,)> =
+            sqlx::query_as("SELECT request_id FROM invite_requests WHERE invite_id = $1")
                 .bind(id)
-                .fetch_one(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(pg)?;
-        if count as usize >= MAX_INVITE_REQUESTS {
-            return Ok(AddRequest::Full);
+        if asked.iter().any(|(r,)| r == request) {
+            return Ok(AddRequest::Again);
+        }
+        if !open || expires_at <= now || !asked.is_empty() {
+            return Ok(AddRequest::Closed);
         }
         sqlx::query(
             "INSERT INTO invite_requests (invite_id, request_id, payload) VALUES ($1, $2, $3)",

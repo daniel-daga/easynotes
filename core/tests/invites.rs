@@ -5,7 +5,6 @@
 //! side act on them have to still be there — sealed, like everything else this
 //! device keeps. The relay half is `relay/tests/invites.rs`.
 
-use easynotes_core::account::RecoveryPhrase;
 use easynotes_core::crdt::DefaultNoteDoc;
 use easynotes_core::crypto::MasterKey;
 use easynotes_core::invite::{self, InviteSecret};
@@ -42,7 +41,6 @@ fn join(name: &str) -> PendingJoin {
     PendingJoin {
         secret: InviteSecret::random(),
         request: "req".into(),
-        member: RecoveryPhrase::generate().root().member().id(),
         name: name.into(),
     }
 }

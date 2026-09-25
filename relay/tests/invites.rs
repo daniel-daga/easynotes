@@ -1,10 +1,10 @@
 //! Invites, end to end: real cores asking a real relay over HTTP.
 //!
-//! The acceptance for Slice 3 item 3 at the protocol level, as ADR 0023 left
+//! The acceptance for Slice 3 item 3 at the protocol level, as ADR 0025 left
 //! it. A link that carries a token rather than a key, a token that expires,
-//! and an owner who approves a person before anything is handed over — and,
-//! because this is the item that opens the relay's protocol, a relay that
-//! learns nothing from any of it that ADR 0014 says it must not.
+//! and a link that one person claims and nobody after them can — and, because
+//! this is the item that opens the relay's protocol, a relay that learns
+//! nothing from any of it that ADR 0014 says it must not.
 
 mod support;
 
@@ -48,25 +48,33 @@ async fn owner_with_invite(http: &str, expires_in: u64) -> (Core, OutgoingInvite
     (owner, outgoing)
 }
 
-/// Somebody who has read the link and asked to join as `name`.
+/// Somebody new who has read the link and asked to join as `name`.
 async fn ask(
     http: &str,
     link: &str,
     name: &str,
 ) -> Result<(PendingJoin, MemberIdentity), CoreError> {
-    let secret = InviteSecret::from_link(link)?;
     let member = RecoveryPhrase::generate().root().member();
-    let sealed = easynotes_core::invite::seal_request(&secret, &member, name)?;
-    let request = invite::request(http, &secret, &sealed).await?;
-    Ok((
-        PendingJoin {
-            secret,
-            request,
-            member: member.id(),
-            name: name.to_string(),
-        },
-        member,
-    ))
+    ask_as(http, link, &member, name)
+        .await
+        .map(|join| (join, member))
+}
+
+/// `member` asking to join through `link` as `name`.
+async fn ask_as(
+    http: &str,
+    link: &str,
+    member: &MemberIdentity,
+    name: &str,
+) -> Result<PendingJoin, CoreError> {
+    let secret = InviteSecret::from_link(link)?;
+    let sealed = easynotes_core::invite::seal_request(&secret, member, name)?;
+    let request = invite::request(http, &secret, &member.id(), &sealed).await?;
+    Ok(PendingJoin {
+        secret,
+        request,
+        name: name.to_string(),
+    })
 }
 
 /// An answer for a request, sealed as an owner would. Enough for the tests
@@ -87,7 +95,7 @@ fn is_invite_error(result: Result<impl Sized, CoreError>, needle: &str) {
 }
 
 #[tokio::test]
-async fn an_approved_person_gets_the_note_and_can_sync_it() {
+async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
     let (relay, _) = relay().await;
     let http = relay.http_base();
     let (owner, outgoing) = owner_with_invite(&http, 3600).await;
@@ -97,27 +105,28 @@ async fn an_approved_person_gets_the_note_and_can_sync_it() {
     let mut guest = person("Anna");
     let secret = InviteSecret::from_link(&link).unwrap();
     let sealed = guest.seal_join_request(&secret).unwrap();
-    let request_id = invite::request(&http, &secret, &sealed).await.unwrap();
     let member = guest.member().unwrap();
+    let request_id = invite::request(&http, &secret, &member.id(), &sealed)
+        .await
+        .unwrap();
     let join = PendingJoin {
         secret: secret.clone(),
         request: request_id,
-        member: member.id(),
         name: "Anna".into(),
     };
     guest.remember_join(&join).unwrap();
 
-    // Nothing yet: the owner has not said.
+    // Nothing yet: the owner's device has not seen it.
     match invite::poll(&http, &join.secret, &member, &join.request)
         .await
         .unwrap()
     {
         Answer::Pending { expires_in } => assert!(expires_in > 3500),
-        _ => panic!("answered before the owner said anything"),
+        _ => panic!("answered before the owner's device did anything"),
     }
 
-    // The owner sees the request, with the name the guest's account shares
-    // under and the same six digits the guest's screen shows.
+    // The owner's device finds the request, with the name the guest's
+    // account shares under.
     let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
@@ -127,9 +136,9 @@ async fn an_approved_person_gets_the_note_and_can_sync_it() {
     assert_eq!(listed.state, RequestState::Pending);
     let request = listed.join.clone().expect("the request opens");
     assert_eq!(request.name, "Anna");
-    assert_eq!(request.code(&outgoing.secret), join.code());
 
-    // Approve: saved, then the package out and back, then the answer.
+    // And lets them in, asking nobody: saved, then the package out and back,
+    // then the answer.
     let note = outgoing.note;
     let mut owner = Device::with_core("owner", owner, note, &http, &relay.ws_base()).await;
     owner
@@ -184,18 +193,22 @@ async fn an_invite_admits_one_person() {
     let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
     let link = outgoing.secret.link();
 
-    let (_first, _) = ask(&http, &link, "Anna").await.unwrap();
-    let (second, second_member) = ask(&http, &link, "Someone else").await.unwrap();
+    let anna_member = RecoveryPhrase::generate().root().member();
+    let anna = ask_as(&http, &link, &anna_member, "Anna").await.unwrap();
+
+    // The link is claimed: anybody else is told so, before anyone answers.
+    is_invite_error(ask(&http, &link, "Someone else").await, "already been used");
+
+    // Anna asking again — a retry after a lost reply, or her other phone —
+    // is the same request, not a second one.
+    let again = ask_as(&http, &link, &anna_member, "Anna").await.unwrap();
+    assert_eq!(again.request, anna.request);
 
     let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
-    let anna = listing
-        .requests
-        .iter()
-        .find(|r| r.join.as_ref().unwrap().name == "Anna")
-        .unwrap();
-    let answer = answer_for(&outgoing, anna.join.as_ref().unwrap());
+    assert_eq!(listing.requests.len(), 1);
+    let answer = answer_for(&outgoing, listing.requests[0].join.as_ref().unwrap());
     invite::approve(
         &http,
         &outgoing.secret,
@@ -205,47 +218,62 @@ async fn an_invite_admits_one_person() {
     )
     .await
     .unwrap();
-
-    // The request left waiting is declined, not left hanging.
-    assert!(matches!(
-        invite::poll(&http, &second.secret, &second_member, &second.request)
-            .await
-            .unwrap(),
-        Answer::Declined
-    ));
-    // The link is spent.
-    is_invite_error(ask(&http, &link, "Late").await, "already been used");
     let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert!(!listing.open);
 
-    // Approving again — the second request, or the first twice — is refused.
-    let other = listing
-        .requests
-        .iter()
-        .find(|r| r.request == second.request)
-        .unwrap();
-    let answer = answer_for(&outgoing, other.join.as_ref().unwrap());
+    // Still spent, and answering it again is refused.
+    is_invite_error(ask(&http, &link, "Late").await, "already been used");
     is_invite_error(
         invite::approve(
             &http,
             &outgoing.secret,
             &outgoing.owner,
-            &other.request,
+            &anna.request,
             &answer,
         )
         .await,
         "answered",
     );
+    // Anna can still find her answer.
+    let again = ask_as(&http, &link, &anna_member, "Anna").await.unwrap();
+    assert!(matches!(
+        invite::poll(&http, &again.secret, &anna_member, &again.request)
+            .await
+            .unwrap(),
+        Answer::Approved { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_request_filed_under_someone_elses_name_is_not_let_in() {
+    // Somebody with the link who knows Anna's member ID files their own
+    // request under the name hers would have, to take her place. The owner's
+    // device reads it as unreadable, and it is never let in.
+    let (relay, _) = relay().await;
+    let http = relay.http_base();
+    let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
+    let anna = RecoveryPhrase::generate().root().member();
+    let squatter = RecoveryPhrase::generate().root().member();
+    let sealed = easynotes_core::invite::seal_request(&outgoing.secret, &squatter, "Anna").unwrap();
+    invite::request(&http, &outgoing.secret, &anna.id(), &sealed)
+        .await
+        .unwrap();
+
+    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+        .await
+        .unwrap();
+    assert_eq!(listing.requests.len(), 1);
+    assert!(listing.requests[0].join.is_none());
 }
 
 #[tokio::test]
 async fn an_answer_meant_for_one_person_does_not_open_for_another() {
-    // Two people hold the link. The owner approves one. The other can read the
-    // relay's answer to that request — it only needs the link — and still
-    // cannot open it, because it is sealed to a key only the approved person
-    // has.
+    // Two people hold the link. One claims it and is let in. The other can
+    // read the relay's answer to that request — it only needs the link — and
+    // still cannot open it, because it is sealed to a key only the person let
+    // in has.
     let (relay, _) = relay().await;
     let http = relay.http_base();
     let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
@@ -275,7 +303,7 @@ async fn an_answer_meant_for_one_person_does_not_open_for_another() {
 }
 
 #[tokio::test]
-async fn a_declined_person_is_told_and_the_invite_stays_open() {
+async fn a_declined_request_is_told_and_spends_the_link() {
     let (relay, _) = relay().await;
     let http = relay.http_base();
     let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
@@ -291,9 +319,8 @@ async fn a_declined_person_is_told_and_the_invite_stays_open() {
             .unwrap(),
         Answer::Declined
     ));
-    // Declining a leaked link's stranger does not spend it on the person it
-    // was meant for.
-    assert!(ask(&http, &link, "Anna").await.is_ok());
+    // One link, one request: the owner sends a new link.
+    is_invite_error(ask(&http, &link, "Anna").await, "already been used");
 }
 
 #[tokio::test]
@@ -328,7 +355,7 @@ async fn a_wrong_link_learns_nothing() {
     let member = RecoveryPhrase::generate().root().member();
     let sealed = easynotes_core::invite::seal_request(&nobody, &member, "x").unwrap();
     is_invite_error(
-        invite::request(&http, &nobody, &sealed).await,
+        invite::request(&http, &nobody, &member.id(), &sealed).await,
         "does not exist",
     );
     is_invite_error(
@@ -407,18 +434,6 @@ async fn an_invite_cannot_be_asked_to_last_for_ever() {
 }
 
 #[tokio::test]
-async fn a_leaked_link_cannot_fill_the_relay() {
-    let (relay, _) = relay().await;
-    let http = relay.http_base();
-    let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
-    let link = outgoing.secret.link();
-    for _ in 0..easynotes_relay::protocol::MAX_INVITE_REQUESTS {
-        ask(&http, &link, "flood").await.unwrap();
-    }
-    is_invite_error(ask(&http, &link, "one more").await, "as many requests");
-}
-
-#[tokio::test]
 async fn an_invite_names_no_device_no_note_and_no_person() {
     // ADR 0014, held against the one item that opens the relay's protocol: the
     // relay must not learn which devices are on either side of an invite,
@@ -430,9 +445,14 @@ async fn an_invite_names_no_device_no_note_and_no_person() {
     let (owner, outgoing) = owner_with_invite(&http, 3600).await;
     let guest = person("Annabelle Quist");
     let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
-    let request = invite::request(&http, &outgoing.secret, &sealed)
-        .await
-        .unwrap();
+    let request = invite::request(
+        &http,
+        &outgoing.secret,
+        &guest.member().unwrap().id(),
+        &sealed,
+    )
+    .await
+    .unwrap();
     let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();

@@ -80,9 +80,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
-  ApprovalView dco_decode_approval_view(dynamic raw);
-
-  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -98,7 +95,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_i_64(dynamic raw);
 
   @protected
-  InviteRequestsView dco_decode_invite_requests_view(dynamic raw);
+  InviteStatusView dco_decode_invite_status_view(dynamic raw);
 
   @protected
   InviteView dco_decode_invite_view(dynamic raw);
@@ -108,9 +105,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   JoinCheckView dco_decode_join_check_view(dynamic raw);
-
-  @protected
-  JoinRequestView dco_decode_join_request_view(dynamic raw);
 
   @protected
   JoinStateView dco_decode_join_state_view(dynamic raw);
@@ -129,9 +123,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ItemView> dco_decode_list_item_view(dynamic raw);
-
-  @protected
-  List<JoinRequestView> dco_decode_list_join_request_view(dynamic raw);
 
   @protected
   List<LabelView> dco_decode_list_label_view(dynamic raw);
@@ -213,9 +204,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RemovalView dco_decode_removal_view(dynamic raw);
-
-  @protected
-  RequestStateView dco_decode_request_state_view(dynamic raw);
 
   @protected
   SearchHitView dco_decode_search_hit_view(dynamic raw);
@@ -315,9 +303,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
-  ApprovalView sse_decode_approval_view(SseDeserializer deserializer);
-
-  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
@@ -333,9 +318,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
 
   @protected
-  InviteRequestsView sse_decode_invite_requests_view(
-    SseDeserializer deserializer,
-  );
+  InviteStatusView sse_decode_invite_status_view(SseDeserializer deserializer);
 
   @protected
   InviteView sse_decode_invite_view(SseDeserializer deserializer);
@@ -345,9 +328,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   JoinCheckView sse_decode_join_check_view(SseDeserializer deserializer);
-
-  @protected
-  JoinRequestView sse_decode_join_request_view(SseDeserializer deserializer);
 
   @protected
   JoinStateView sse_decode_join_state_view(SseDeserializer deserializer);
@@ -368,11 +348,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ItemView> sse_decode_list_item_view(SseDeserializer deserializer);
-
-  @protected
-  List<JoinRequestView> sse_decode_list_join_request_view(
-    SseDeserializer deserializer,
-  );
 
   @protected
   List<LabelView> sse_decode_list_label_view(SseDeserializer deserializer);
@@ -468,9 +443,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RemovalView sse_decode_removal_view(SseDeserializer deserializer);
-
-  @protected
-  RequestStateView sse_decode_request_state_view(SseDeserializer deserializer);
 
   @protected
   SearchHitView sse_decode_search_hit_view(SseDeserializer deserializer);
@@ -581,9 +553,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
-  void sse_encode_approval_view(ApprovalView self, SseSerializer serializer);
-
-  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -605,8 +574,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
 
   @protected
-  void sse_encode_invite_requests_view(
-    InviteRequestsView self,
+  void sse_encode_invite_status_view(
+    InviteStatusView self,
     SseSerializer serializer,
   );
 
@@ -618,12 +587,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_join_check_view(JoinCheckView self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_join_request_view(
-    JoinRequestView self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_join_state_view(JoinStateView self, SseSerializer serializer);
@@ -648,12 +611,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_item_view(List<ItemView> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_join_request_view(
-    List<JoinRequestView> self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_list_label_view(
@@ -783,12 +740,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_removal_view(RemovalView self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_request_state_view(
-    RequestStateView self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_search_hit_view(SearchHitView self, SseSerializer serializer);
