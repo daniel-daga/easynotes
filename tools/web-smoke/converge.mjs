@@ -7,14 +7,16 @@
 // apart as two people's phones — driven through the screens a person uses:
 // one makes a list and shares it, the other opens the link and is let in, and
 // then both edit it, online and then offline, and must end up with the same
-// list.
+// list. Then one turns it into a text note and the other turns it back, and
+// each switch has to reach the other tab.
 //
 // Flutter draws to a canvas, so everything here goes through the semantics
 // tree: a node is found by the text or field label a person would see, and
-// clicked at its centre. The helpers below are all there is to that.
+// clicked at its centre. `semantics.mjs` is all there is to that.
 //
 //     node tools/web-smoke/converge.mjs <app url>
 import { chromium } from 'playwright-core';
+import { fill, find, load, nodes, tap, texts } from './semantics.mjs';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
 const executablePath = process.env.CHROME_EXECUTABLE;
@@ -60,82 +62,6 @@ async function device(name) {
   return d;
 }
 
-async function load(d, to) {
-  await d.page.goto(to, { waitUntil: 'load' });
-  await d.page.waitForSelector('flutter-view', { timeout: 120_000 });
-  await d.page.waitForTimeout(5000);
-  await accessible(d);
-}
-
-/// Turn the semantics tree on. The placeholder is deliberately off-screen, so
-/// the click is dispatched rather than performed. A tab can drop the tree again
-/// when another one takes the foreground, so [find] asks for it again whenever
-/// it finds none.
-async function accessible(d) {
-  await d.page.evaluate(() =>
-    document.querySelector('flt-semantics-placeholder')
-      ?.dispatchEvent(new PointerEvent('click', { bubbles: true })));
-  await d.page.waitForTimeout(1500);
-}
-
-/// The semantics nodes a person could see: what each says, the label of the
-/// field it holds, whether it is ticked, and where its centre is.
-const nodes = d => d.page.evaluate(() =>
-  Array.from(document.querySelectorAll('flt-semantics')).map(e => {
-    const r = e.getBoundingClientRect();
-    const input = e.querySelector('input, textarea');
-    return {
-      role: e.getAttribute('role') ?? '',
-      // A container that merges what is inside it, like a card, says it in
-      // its label rather than in text of its own.
-      text: (e.querySelector('flt-semantics')
-        ? Array.from(e.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join('')
-        : e.textContent) || (e.getAttribute('aria-label') ?? ''),
-      field: input?.getAttribute('aria-label') ?? '',
-      checked: e.getAttribute('aria-checked'),
-      x: r.x + r.width / 2, y: r.y + r.height / 2, area: r.width * r.height,
-    };
-  }).filter(n => n.area > 0));
-
-/// Every visible text, for reading what a screen says.
-const texts = async d => (await nodes(d)).map(n => n.text.trim()).filter(Boolean);
-
-/// Wait for a node to match, and return it. The tree is rebuilt between
-/// frames, so a single look can land on it half-built.
-async function find(d, match, { timeout = 10_000 } = {}) {
-  const until = Date.now() + timeout;
-  for (;;) {
-    // The smallest match: a field's label is also on every node around it.
-    const all = await nodes(d);
-    if (all.length === 0) await accessible(d);
-    const found = all.filter(match).sort((a, b) => a.area - b.area)[0];
-    if (found) return found;
-    if (Date.now() > until) {
-      if (process.env.DEBUG_DIR) {
-        await d.page.screenshot({ path: `${process.env.DEBUG_DIR}/${d.name}.png` });
-        const html = await d.page.evaluate(() => document.querySelector('flt-semantics-host')?.outerHTML ?? '');
-        (await import('node:fs')).writeFileSync(`${process.env.DEBUG_DIR}/${d.name}.html`, html);
-      }
-      throw new Error(`${d.name}: nothing matched ${match.what ?? match}\n  on screen: ${(await texts(d)).join(' | ')}`);
-    }
-    await d.page.waitForTimeout(250);
-  }
-}
-
-async function tap(d, re, options) {
-  const n = await find(d, n => re.test(n.text.trim()), options);
-  await d.page.mouse.click(n.x, n.y);
-  await d.page.waitForTimeout(800);
-}
-
-async function fill(d, label, value) {
-  const n = await find(d, n => n.field === label);
-  await d.page.mouse.click(n.x, n.y);
-  await d.page.waitForTimeout(400);
-  await d.page.keyboard.type(value);
-  await d.page.waitForTimeout(400);
-}
-
 /// Add an item to the open list: a new row takes the focus, so it is typed
 /// straight into.
 async function addItem(d, text) {
@@ -164,15 +90,18 @@ async function setUpSharing(d, name) {
   await tap(d, /^Continue$/);
 }
 
-/// The list's card on the grid, once it shows every item in [want]. The card
-/// is text, where the note screen's items are fields a canvas does not
-/// expose, so this is where a device's copy of the list is read. It shows four
-/// items and folds the rest into "+n more", so the list here never has more.
-async function cardWith(d, want, timeout = 30_000) {
+/// The list's card on the grid, once it shows every item in [want] and none
+/// of [not]. The card is text, where the note screen's items are fields a
+/// canvas does not expose, so this is where a device's copy of the list is
+/// read. It shows four items and folds the rest into "+n more", so the list
+/// here never has more.
+async function cardWith(d, want, timeout = 30_000, not = []) {
   if ((await texts(d)).includes('Back')) await tap(d, /^Back$/);
   return (await find(
     d,
-    n => n.text.includes('milk') && want.every(item => n.text.includes(item)),
+    n => n.text.includes('milk')
+      && want.every(item => n.text.includes(item))
+      && !not.some(item => n.text.includes(item)),
     { timeout },
   )).text;
 }
@@ -181,6 +110,18 @@ async function cardWith(d, want, timeout = 30_000) {
 async function reopen(d) {
   await tap(d, /milk/);
   await find(d, n => n.text.trim() === '+ Checklist item');
+}
+
+/// Open the note from its card, whichever kind it is now, and flip it with
+/// the button a person would use: "Hide checkboxes" on a checklist, "Show
+/// checkboxes" on text. Waits for the button to say the other thing.
+async function switchKind(d, to) {
+  const [from, then] = to === 'text'
+    ? ['Hide checkboxes', 'Show checkboxes']
+    : ['Show checkboxes', 'Hide checkboxes'];
+  await tap(d, /milk/);
+  await tap(d, new RegExp(`^${from}$`));
+  await find(d, n => n.text.trim() === then);
 }
 
 const a = await device('A');
@@ -267,6 +208,31 @@ check(
   met[0] === met[1],
   `back online, both show the same list: ${JSON.stringify(met[0])}`,
 );
+// --- One switches it to text, the other back to a list -----------------------
+// The switch is one edit on the note's own document, so it is shared: the
+// other person's card follows. Ticks do not survive the trip to text, as in
+// Keep, so the list that comes back has four items and none of them done.
+step('A switches the list to text');
+await switchKind(a, 'text');
+const asText = [
+  await cardWith(a, ['apples', 'butter'], 30_000, ['done']),
+  await cardWith(b, ['apples', 'butter'], 60_000, ['done']),
+];
+check(
+  asText[0] === asText[1] && !asText[0].includes('•'),
+  `A's switch to text reached B, with no bullets and no tally: ${JSON.stringify(asText[0])}`,
+);
+step('B switches it back to a checklist');
+await switchKind(b, 'checklist');
+const asList = [
+  await cardWith(b, ['• apples', '• butter', '0 of 4 done'], 30_000),
+  await cardWith(a, ['• apples', '• butter', '0 of 4 done'], 60_000),
+];
+check(
+  asList[0] === asList[1],
+  `B's switch back reached A, every line an item again: ${JSON.stringify(asList[0])}`,
+);
+
 check(a.crashes.length === 0, `A threw nothing: ${a.crashes.slice(0, 3).join(' | ')}`);
 check(b.crashes.length === 0, `B threw nothing: ${b.crashes.slice(0, 3).join(' | ')}`);
 // A panic in a synchronous bridge call is logged, not thrown: the one this

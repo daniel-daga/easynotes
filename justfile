@@ -140,6 +140,22 @@ web-converge port="8099":
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
     node converge.mjs http://127.0.0.1:{{port}}/
 
+# Does a deletion survive IndexedDB refusing a write partway through it?
+#
+# The trash is emptied with the browser's own database made to refuse the
+# first write of it, then the second, and so on, and a new tab must hold
+# each note whole or not at all. Needs `just build-web` first; no relay.
+web-storage-failure port="8099":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd '{{justfile_directory()}}/tools/web-smoke'
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    python3 serve.py '{{justfile_directory()}}/app/build/web' {{port}} &
+    server=$!
+    trap 'kill $server 2>/dev/null || true' EXIT
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node storage-failure.mjs http://127.0.0.1:{{port}}/
+
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings

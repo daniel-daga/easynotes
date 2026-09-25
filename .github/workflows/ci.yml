@@ -210,6 +210,14 @@ jobs:
         working-directory: tools/web-smoke
         run: node converge.mjs http://127.0.0.1:8098/
 
+      # And what a deletion leaves when the browser refuses a write partway
+      # through it. The refusal is IndexedDB's own, a failed request that aborts
+      # the transaction, which no `flutter test` can make. No relay is needed;
+      # the server from the first browser step is still on 8099.
+      - name: A deletion survives a refused write
+        working-directory: tools/web-smoke
+        run: node storage-failure.mjs http://127.0.0.1:8099/
+
       # A size that grows quietly is a size nobody notices until launch.
       - name: Report the bundle size
         working-directory: app
