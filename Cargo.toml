@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["core", "relay", "tools/wasm-size", "tools/web-bench", "app/rust"]
+# Vendored with a patch, not ours to lint, test or format: see third_party/README.md.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +15,9 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = "1"
+
+# flutter_rust_bridge 2.13.0 with one change: its object pool's lock does not
+# wait on the page's main thread in a browser. third_party/README.md has the
+# diff and why, and what to do on an upgrade.
+[patch.crates-io]
+flutter_rust_bridge = { path = "third_party/flutter_rust_bridge" }

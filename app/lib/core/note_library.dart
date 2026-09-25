@@ -345,7 +345,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   ///
   /// The caller disposes what it gets back. Two handles to one note are two
   /// views of one document, not two documents.
-  NoteCore openNote(String noteId);
+  ///
+  /// A `Future` because opening a note can refresh what the list's watchers
+  /// see, and in a browser that has to happen on a Web Worker rather than on
+  /// the page's main thread (ADR 0002).
+  Future<NoteCore> openNote(String noteId);
 
   /// Colour a note, or take its colour away. Personal, like everything below it
   /// until [connect].

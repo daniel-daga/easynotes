@@ -91,7 +91,7 @@ Future<String> createNoteFromSharedText(
   SharedText shared,
 ) async {
   final id = await library.createNote(kind: NoteKind.text);
-  final core = library.openNote(id);
+  final core = await library.openNote(id);
   try {
     if (shared.subject != null) await core.setTitle(shared.subject!);
     await core.editBody('', shared.text);

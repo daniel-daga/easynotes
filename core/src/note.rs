@@ -1288,7 +1288,26 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         labels
     }
 
+    /// The note list as [`NoteCore::notes`] last left it, without loading
+    /// anything or telling anyone.
+    ///
+    /// For a caller that must not touch the list's channel: sending on it, or
+    /// even borrowing it, takes a lock a watcher on another thread can hold,
+    /// and in a browser the page's main thread cannot wait for one (ADR 0002).
+    /// The same list [`NoteCore::watch_notes`] last sent, computed again.
+    pub fn listed(&self) -> Vec<NoteSummary> {
+        self.summaries()
+    }
+
     fn refresh_library(&self) {
+        // `send_replace`, not `send`: the latter refuses when nothing is
+        // subscribed yet and leaves the channel holding a list that is already
+        // wrong. A screen that subscribes after the first edit would then be
+        // handed that stale list as its opening frame.
+        self.library.send_replace(self.summaries());
+    }
+
+    fn summaries(&self) -> Vec<NoteSummary> {
         let mut summaries: Vec<NoteSummary> = self
             .index
             .iter()
@@ -1315,11 +1334,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 .then_with(|| a.placement.order.cmp(&b.placement.order))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        // `send_replace`, not `send`: the latter refuses when nothing is
-        // subscribed yet and leaves the channel holding a list that is already
-        // wrong. A screen that subscribes after the first edit would then be
-        // handed that stale list as its opening frame.
-        self.library.send_replace(summaries);
+        summaries
     }
 
     /// The ordinal a note was made with. `0` for one that predates [`ADDED`]

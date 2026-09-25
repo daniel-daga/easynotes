@@ -69,7 +69,7 @@ void main() {
   /// One new note in a library of its own, which is what most of these want.
   Future<NoteCore> openInTempDir() async {
     final library = await openLibraryInTempDir();
-    final core = library.openNote(await library.createNote());
+    final core = await library.openNote(await library.createNote());
     addTearDown(core.dispose);
     return core;
   }
@@ -128,7 +128,7 @@ void main() {
         () async {
           final library = await openLibraryInTempDir();
           final id = await library.createNote(kind: NoteKind.text);
-          final core = library.openNote(id);
+          final core = await library.openNote(id);
           addTearDown(core.dispose);
           expect(core.current.kind, NoteKind.text);
 
@@ -191,7 +191,7 @@ void main() {
 
         final first = await RustNoteLibrary.open(dir.path, key);
         final id = await first.createNote();
-        final note = first.openNote(id);
+        final note = await first.openNote(id);
         await note.setTitle('Groceries');
         for (final text in ['milk', 'bread', 'eggs']) {
           await note.addItem(text);
@@ -204,7 +204,7 @@ void main() {
         expect(second.notes.single.title, 'Groceries');
         expect(second.notes.single.items, 3);
 
-        final reopened = second.openNote(id);
+        final reopened = await second.openNote(id);
         addTearDown(reopened.dispose);
         expect(reopened.current.items.map((i) => i.text), [
           'milk',
@@ -215,10 +215,10 @@ void main() {
 
       test('several notes live side by side, newest first', () async {
         final library = await openLibraryInTempDir();
-        final groceries = library.openNote(await library.createNote());
+        final groceries = await library.openNote(await library.createNote());
         addTearDown(groceries.dispose);
         await groceries.setTitle('Groceries');
-        final hardware = library.openNote(await library.createNote());
+        final hardware = await library.openNote(await library.createNote());
         addTearDown(hardware.dispose);
         await hardware.setTitle('Hardware');
         await hardware.addItem('screws');
@@ -241,7 +241,7 @@ void main() {
               onTimeout: () => fail('the note list stream never fired'),
             );
 
-        final note = library.openNote(await library.createNote());
+        final note = await library.openNote(await library.createNote());
         addTearDown(note.dispose);
         await note.setTitle('Groceries');
 
@@ -256,13 +256,13 @@ void main() {
 
       test('a search finds a note by something on it', () async {
         final library = await openLibraryInTempDir();
-        final groceries = library.openNote(await library.createNote());
+        final groceries = await library.openNote(await library.createNote());
         addTearDown(groceries.dispose);
         await groceries.setTitle('Groceries');
         for (final item in ['milk', 'bread', 'eggs', 'coffee', 'asparagus']) {
           await groceries.addItem(item);
         }
-        final hardware = library.openNote(await library.createNote());
+        final hardware = await library.openNote(await library.createNote());
         addTearDown(hardware.dispose);
         await hardware.setTitle('Hardware');
         await hardware.addItem('screws');
@@ -288,7 +288,7 @@ void main() {
 
         {
           final library = await openLibraryInTempDir(dir, key);
-          final core = library.openNote(await library.createNote());
+          final core = await library.openNote(await library.createNote());
           addTearDown(core.dispose);
           await core.setTitle('Groceries');
           await core.addItem('asparagus');
@@ -303,7 +303,7 @@ void main() {
         expect(hits.single.matched, 'asparagus');
 
         // And the note still opens, with everything that was on it.
-        final core = library.openNote(hits.single.note.id);
+        final core = await library.openNote(hits.single.note.id);
         addTearDown(core.dispose);
         expect(core.current.title, 'Groceries');
         expect(core.current.items.map((i) => i.text), ['asparagus']);
@@ -326,7 +326,7 @@ void main() {
         final existing = MasterKeyStore.newKey();
         await File('${dir.path}/master.key').writeAsBytes(existing);
         final before = await RustNoteLibrary.open(dir.path, existing);
-        final note = before.openNote(await before.createNote());
+        final note = await before.openNote(await before.createNote());
         await note.setTitle('Groceries');
         await note.dispose();
         await before.dispose();
@@ -371,7 +371,7 @@ void main() {
           dir.path,
           MasterKeyStore.newKey(),
         );
-        final note = right.openNote(await right.createNote());
+        final note = await right.openNote(await right.createNote());
         await note.setTitle('Groceries');
         await note.dispose();
         await right.dispose();
@@ -636,11 +636,11 @@ void main() {
         final key = MasterKeyStore.newKey();
 
         final before = await RustNoteLibrary.open(dir.path, key);
-        final kept = before.openNote(await before.createNote());
+        final kept = await before.openNote(await before.createNote());
         await kept.setTitle('Groceries');
         await kept.dispose();
         final gone = await before.createNote();
-        final goneNote = before.openNote(gone);
+        final goneNote = await before.openNote(gone);
         await goneNote.setTitle('Tax papers');
         await goneNote.addItem('shred this');
         await goneNote.dispose();
@@ -667,7 +667,7 @@ void main() {
         () async {
           final library = await openLibraryInTempDir();
           final kept = await library.createNote();
-          final keptNote = library.openNote(kept);
+          final keptNote = await library.openNote(kept);
           await keptNote.setTitle('Groceries');
           await keptNote.addItem('milk');
           final gone = await library.createNote();
@@ -693,7 +693,7 @@ void main() {
         addTearDown(() => dir.delete(recursive: true));
 
         final library = await openLibraryInTempDir(dir);
-        final core = library.openNote(await library.createNote());
+        final core = await library.openNote(await library.createNote());
         addTearDown(core.dispose);
         await core.setTitle('Groceries');
         await core.addItem('asparagus');
@@ -745,7 +745,7 @@ void main() {
 
         final first = await openTab(db, key);
         final id = await first.createNote();
-        final note = first.openNote(id);
+        final note = await first.openNote(id);
         await note.setTitle('Groceries');
         await note.addItem('asparagus');
         await note.dispose();
@@ -754,7 +754,7 @@ void main() {
 
         final second = await openTab(db, key);
         expect(second.notes.single.title, 'Groceries');
-        final reopened = second.openNote(id);
+        final reopened = await second.openNote(id);
         addTearDown(reopened.dispose);
         expect(reopened.current.items.map((i) => i.text), ['asparagus']);
       });
@@ -768,7 +768,7 @@ void main() {
 
         final first = await openTab(db, key);
         final id = await first.createNote();
-        final note = first.openNote(id);
+        final note = await first.openNote(id);
         await note.addItem('milk');
         await note.dispose();
         await first.dispose();
@@ -777,13 +777,13 @@ void main() {
         // the note opens — which it would not if the author or the counter had
         // restarted.
         final second = await openTab(db, key);
-        final reopened = second.openNote(id);
+        final reopened = await second.openNote(id);
         addTearDown(reopened.dispose);
         await reopened.addItem('bread');
         await second.flush();
 
         final third = await openTab(db, key);
-        final again = third.openNote(id);
+        final again = await third.openNote(id);
         addTearDown(again.dispose);
         expect(again.current.items.map((i) => i.text), ['milk', 'bread']);
       });
@@ -794,7 +794,7 @@ void main() {
 
         final library = await openTab(db, key);
         final id = await library.createNote();
-        final note = library.openNote(id);
+        final note = await library.openNote(id);
         await note.setTitle('Groceries');
         await note.addItem('asparagus');
         await note.dispose();
@@ -817,7 +817,7 @@ void main() {
       test('nothing a browser holds is plaintext', () async {
         final db = MemoryBrowserStore();
         final library = await openTab(db, MasterKeyStore.newKey());
-        final note = library.openNote(await library.createNote());
+        final note = await library.openNote(await library.createNote());
         addTearDown(note.dispose);
         await note.setTitle('Groceries');
         await note.addItem('asparagus');
@@ -847,7 +847,7 @@ void main() {
         final seen = library.watchStorageError().take(2).toList();
 
         db.refuse = true;
-        final note = library.openNote(await library.createNote());
+        final note = await library.openNote(await library.createNote());
         addTearDown(note.dispose);
         await note.addItem('asparagus');
         await library.flush();
@@ -871,7 +871,7 @@ void main() {
         final db = _RefusingStore(MemoryBrowserStore());
         final library = await openTab(db, MasterKeyStore.newKey());
         final id = await library.createNote();
-        final note = library.openNote(id);
+        final note = await library.openNote(id);
         addTearDown(note.dispose);
         await library.flush();
 
@@ -900,7 +900,7 @@ void main() {
         final library = await openTab(db, key);
         Future<String> make(String title) async {
           final id = await library.createNote();
-          final note = library.openNote(id);
+          final note = await library.openNote(id);
           await note.setTitle(title);
           await note.addItem('milk');
           await note.dispose();
@@ -939,7 +939,7 @@ void main() {
           return false;
         }
         expect(summary.trashed, isTrue, reason: 'still in the trash');
-        final note = tab.openNote(id);
+        final note = await tab.openNote(id);
         expect(note.current.items.map((i) => i.text), ['milk']);
         await note.dispose();
         return true;
@@ -1022,7 +1022,7 @@ void main() {
             }
             final survivor = again.notes.singleWhere((n) => n.id == kept);
             expect(survivor.trashed, isFalse);
-            final note = again.openNote(kept);
+            final note = await again.openNote(kept);
             expect(note.current.items.map((i) => i.text), ['milk']);
             await note.dispose();
             if (failed == null) break;

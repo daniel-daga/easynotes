@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `send`, `settle`, `turn_away`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_replace`, `send`, `settle`, `subscribe`, `turn_away`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `StatusCell`, `Statuses`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -169,6 +169,11 @@ abstract class Library implements RustOpaqueInterface {
   /// Whether the grid is a masonry or one column, as this person last left it.
   NoteLayout layout();
 
+  /// The list as [`Library::notes`] last left it, and as every edit since has
+  /// changed it. Loads nothing and tells nobody, so it is safe to call from
+  /// the page's main thread.
+  List<NoteSummaryView> listed();
+
   /// Make a label that no note carries yet, and return it. An existing label
   /// with this name is returned rather than a second one made.
   Future<String> makeTag({required String name});
@@ -186,9 +191,18 @@ abstract class Library implements RustOpaqueInterface {
   /// Cheap, and there may be several: they share the library's core, so two
   /// handles to one note are two views of the same document rather than two
   /// documents.
-  Note note({required String id});
+  Future<Note> note({required String id});
 
-  List<NoteSummaryView> notes();
+  /// Every note, reading in any the core has not read yet.
+  ///
+  /// Not `#[frb(sync)]`, and neither is [`Library::note`]: both can tell the
+  /// core's watchers something — the list is refreshed, a note opened — and
+  /// telling a `watch` channel takes locks a watcher on a Web Worker may be
+  /// holding. A synchronous call runs on the page's main thread, where waiting
+  /// for one throws (ADR 0002), so these run on a worker like an edit does.
+  /// What stays synchronous only reads: [`Library::listed`] is the list for a
+  /// first frame, once this has been called.
+  Future<List<NoteSummaryView>> notes();
 
   /// Open the notes stored in `dir`, on a device that has a disk, unlocked by
   /// `master_key`.

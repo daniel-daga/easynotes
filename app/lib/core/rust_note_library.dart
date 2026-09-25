@@ -56,7 +56,7 @@ class RustNoteLibrary implements NoteLibrary {
     return RustNoteLibrary._(
       rust.Library.open(dir: directory, masterKey: masterKey),
       canJoin: true,
-    );
+    )._loaded();
   }
 
   /// Open the notes [db] is holding, unlocked by [masterKey].
@@ -75,7 +75,7 @@ class RustNoteLibrary implements NoteLibrary {
     Uint8List masterKey,
   ) async {
     await RustNoteCore.ensureInitialized();
-    final library = RustNoteLibrary._(
+    final library = await RustNoteLibrary._(
       rust.Library.openInBrowser(
         notes: await db.rows(rust.StorageArea.notes),
         keys: await db.rows(rust.StorageArea.keys),
@@ -83,7 +83,7 @@ class RustNoteLibrary implements NoteLibrary {
       ),
       canJoin: true,
       db: db,
-    );
+    )._loaded();
     // Opening a device for the first time writes its identity, and nothing has
     // asked for those bytes to be kept yet.
     await library.flush();
@@ -103,7 +103,18 @@ class RustNoteLibrary implements NoteLibrary {
   /// there.
   static Future<RustNoteLibrary> openEphemeral() async {
     await RustNoteCore.ensureInitialized();
-    return RustNoteLibrary._(rust.Library.openEphemeral(), canJoin: false);
+    return RustNoteLibrary._(
+      rust.Library.openEphemeral(),
+      canJoin: false,
+    )._loaded();
+  }
+
+  /// Read in every note the core has not read yet, so that [notes] has the
+  /// whole list from the first frame. On a Web Worker in a browser, for the
+  /// reason [openNote] is asynchronous; [notes] after this only reads.
+  Future<RustNoteLibrary> _loaded() async {
+    await _library.notes();
+    return this;
   }
 
   /// How often the writes the core has queued are handed to the browser.
@@ -148,7 +159,7 @@ class RustNoteLibrary implements NoteLibrary {
   /// fresh while something is listening to [watchNotes], and a caller that reads
   /// this without subscribing would silently get a stale list.
   @override
-  List<NoteSummary> get notes => _library.notes().map(_toSummary).toList();
+  List<NoteSummary> get notes => _library.listed().map(_toSummary).toList();
 
   @override
   Stream<List<NoteSummary>> watchNotes() async* {
@@ -333,7 +344,8 @@ class RustNoteLibrary implements NoteLibrary {
   }
 
   @override
-  NoteCore openNote(String noteId) => RustNoteCore(_library.note(id: noteId));
+  Future<NoteCore> openNote(String noteId) async =>
+      RustNoteCore(await _library.note(id: noteId));
 
   @override
   Future<void> setColour(String noteId, NoteColour? colour) =>

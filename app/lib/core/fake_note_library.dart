@@ -420,7 +420,7 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  NoteCore openNote(String noteId) {
+  Future<NoteCore> openNote(String noteId) async {
     calls.add('openNote($noteId)');
     return _cores[noteId] ?? (throw StateError('no note $noteId'));
   }

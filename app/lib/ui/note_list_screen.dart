@@ -254,7 +254,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// the watcher behind the screen that has just gone away. Leaking one per
   /// visit would leave a Rust task per note per open, for ever.
   Future<void> _openNote(String id) async {
-    final core = widget.library.openNote(id);
+    final core = await widget.library.openNote(id);
+    // The list may have gone while the note was opening; the handle then has
+    // no screen to go to, and is let go of here rather than leaked.
+    if (!mounted) {
+      await core.dispose();
+      return;
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => NoteScreen(

@@ -83,7 +83,7 @@ void main() {
   /// A device with one new note on it, which is what most of these want.
   Future<(RustNoteLibrary, NoteCore)> open() async {
     final library = await device();
-    final core = library.openNote(await library.createNote());
+    final core = await library.openNote(await library.createNote());
     addTearDown(core.dispose);
     return (library, core);
   }
@@ -134,7 +134,7 @@ void main() {
     await letIn(owner, invite);
     final check = await joined(guest, waiting.inviteId);
     expect(check.state, JoinState.joined);
-    final core = guest.openNote(check.noteId!);
+    final core = await guest.openNote(check.noteId!);
     addTearDown(core.dispose);
     return (guest, core);
   }
@@ -234,7 +234,7 @@ void main() {
       final (library, groceries) = await open();
       await groceries.setTitle('Groceries');
       final hardwareId = await library.createNote();
-      final hardware = library.openNote(hardwareId);
+      final hardware = await library.openNote(hardwareId);
       addTearDown(hardware.dispose);
       await hardware.addItem('screws');
 
@@ -270,7 +270,7 @@ void main() {
       expect(a.hasAccount, isTrue);
 
       final noteId = await a.createNote();
-      final groceries = a.openNote(noteId);
+      final groceries = await a.openNote(noteId);
       addTearDown(groceries.dispose);
       await groceries.setTitle('Groceries');
       await groceries.addItem('milk');
@@ -297,7 +297,7 @@ void main() {
 
       // And it is the note rather than a card of one: B can open it and read
       // what is inside, which means the key travelled too.
-      final bGroceries = b.openNote(noteId);
+      final bGroceries = await b.openNote(noteId);
       addTearDown(bGroceries.dispose);
       await _until(
         bGroceries.watch(),
@@ -315,11 +315,11 @@ void main() {
       final a = await device();
       final phrase = await a.createAccount();
       final goneId = await a.createNote();
-      final gone = a.openNote(goneId);
+      final gone = await a.openNote(goneId);
       addTearDown(gone.dispose);
       await gone.addItem('milk');
       final keptId = await a.createNote();
-      final kept = a.openNote(keptId);
+      final kept = await a.openNote(keptId);
       addTearDown(kept.dispose);
       await kept.addItem('drill bits');
 
@@ -333,7 +333,7 @@ void main() {
         "B never received A's notes",
       );
       // Open on B, as it would be on a phone left on the list.
-      final bGone = b.openNote(goneId);
+      final bGone = await b.openNote(goneId);
       addTearDown(bGone.dispose);
       await _until(
         bGone.watch(),
@@ -360,7 +360,7 @@ void main() {
       );
 
       // The note that was kept still syncs, both ways, on the same socket.
-      final bKept = b.openNote(keptId);
+      final bKept = await b.openNote(keptId);
       addTearDown(bKept.dispose);
       await bKept.addItem('screws');
       await _until(
@@ -436,7 +436,7 @@ void main() {
         expect(check.noteId, noteId);
         expect(guest.pendingJoins, isEmpty);
 
-        final b = guest.openNote(check.noteId!);
+        final b = await guest.openNote(check.noteId!);
         addTearDown(b.dispose);
         await _until(
           b.watch(),
@@ -495,7 +495,7 @@ void main() {
       await owner.addTag(noteId, 'errands');
 
       final guest = await person('Anna');
-      final mine = guest.openNote(await guest.createNote());
+      final mine = await guest.openNote(await guest.createNote());
       addTearDown(mine.dispose);
       await mine.setTitle('Mine');
 
@@ -504,7 +504,7 @@ void main() {
       await letIn(owner, invite);
       expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
 
-      final b = guest.openNote(noteId);
+      final b = await guest.openNote(noteId);
       addTearDown(b.dispose);
       await _until(
         b.watch(),

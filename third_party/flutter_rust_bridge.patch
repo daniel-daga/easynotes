@@ -1,0 +1,103 @@
+diff -ruN a/src/generalized_arc/moi_arc.rs b/src/generalized_arc/moi_arc.rs
+--- a/src/generalized_arc/moi_arc.rs
++++ b/src/generalized_arc/moi_arc.rs
+@@ -6,6 +6,57 @@
+         use std::marker::PhantomData;
+         use std::sync::Arc;
+ 
++        // EasyNotes patch (see third_party/README.md): the pool's lock is taken by
++        // asking until it is free, on the web.
++        //
++        // A browser also takes this lock on the page's main thread: every call
++        // Dart makes on an object clones its handle there, a `#[frb(sync)]` call
++        // drops one there, and so does the finalizer. A contended `RwLock` waits
++        // with `Atomics.wait`, which throws on a main thread, so without this a
++        // handle released on a worker at the wrong moment throws
++        // `Atomics.wait cannot be called in this context` out of a synchronous
++        // call. Nothing that holds the lock waits for anything while it does,
++        // so the spin is as short as a map operation.
++        #[cfg(target_family = "wasm")]
++        fn moi_arc_pool_read<T: ?Sized>(
++            pool: &MoiArcPool<T>,
++        ) -> std::sync::LockResult<std::sync::RwLockReadGuard<'_, MoiArcPoolInner<T>>> {
++            loop {
++                match pool.try_read() {
++                    Ok(guard) => return Ok(guard),
++                    Err(std::sync::TryLockError::Poisoned(poisoned)) => return Err(poisoned),
++                    Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
++                }
++            }
++        }
++
++        #[cfg(target_family = "wasm")]
++        fn moi_arc_pool_write<T: ?Sized>(
++            pool: &MoiArcPool<T>,
++        ) -> std::sync::LockResult<std::sync::RwLockWriteGuard<'_, MoiArcPoolInner<T>>> {
++            loop {
++                match pool.try_write() {
++                    Ok(guard) => return Ok(guard),
++                    Err(std::sync::TryLockError::Poisoned(poisoned)) => return Err(poisoned),
++                    Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
++                }
++            }
++        }
++
++        #[cfg(not(target_family = "wasm"))]
++        fn moi_arc_pool_read<T: ?Sized>(
++            pool: &MoiArcPool<T>,
++        ) -> std::sync::LockResult<std::sync::RwLockReadGuard<'_, MoiArcPoolInner<T>>> {
++            pool.read()
++        }
++
++        #[cfg(not(target_family = "wasm"))]
++        fn moi_arc_pool_write<T: ?Sized>(
++            pool: &MoiArcPool<T>,
++        ) -> std::sync::LockResult<std::sync::RwLockWriteGuard<'_, MoiArcPoolInner<T>>> {
++            pool.write()
++        }
++
+         #[derive(Debug)]
+         pub struct MoiArc<T: ?Sized + MoiArcValue> {
+             // `Option` for correct dropping
+@@ -34,7 +85,7 @@
+             where
+                 T: Sized,
+             {
+-                let mut pool = T::get_pool().write().unwrap();
++                let mut pool = moi_arc_pool_write(T::get_pool()).unwrap();
+                 let object_id = pool.id_generator.next_id();
+ 
+                 let value = Arc::new(value);
+@@ -60,7 +111,7 @@
+                 T: Sized,
+             {
+                 // NOTE: Ensure lock is held during all operations to avoid racing conditions
+-                let pool = &mut T::get_pool().write().unwrap();
++                let pool = &mut moi_arc_pool_write(T::get_pool()).unwrap();
+ 
+                 if pool.map.get(&self.object_id.unwrap()).unwrap().ref_count == 1 {
+                     Self::decrement_strong_count_raw(self.object_id.unwrap(), pool);
+@@ -102,7 +153,7 @@
+             where
+                 T: Sized,
+             {
+-                let map = &T::get_pool().read().unwrap().map;
++                let map = &moi_arc_pool_read(T::get_pool()).unwrap().map;
+ 
+                 Self {
+                     object_id: Some(raw),
+@@ -112,12 +163,12 @@
+             }
+ 
+             pub fn increment_strong_count(raw: usize) {
+-                let map = &mut T::get_pool().write().unwrap().map;
++                let map = &mut moi_arc_pool_write(T::get_pool()).unwrap().map;
+                 map.get_mut(&raw).unwrap().ref_count += 1;
+             }
+ 
+             pub fn decrement_strong_count(raw: usize) {
+-                let mut pool = T::get_pool().write().unwrap();
++                let mut pool = moi_arc_pool_write(T::get_pool()).unwrap();
+                 let object = Self::decrement_strong_count_raw(raw, &mut pool);
+                 drop(pool);
+                 drop(object);

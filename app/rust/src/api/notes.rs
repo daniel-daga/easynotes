@@ -505,9 +505,59 @@ impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
 // Where sync status goes
 // ---------------------------------------------------------------------------
 
+/// A sync status, as a stream for the watchers and as a value for a getter.
+///
+/// Two copies because they are read on different threads. A watcher is an
+/// `async` call, which on the web runs on a Web Worker; a getter is a
+/// `#[frb(sync)]` call, which runs on the page's main thread. Reading a
+/// `watch` channel takes the `std::sync::RwLock` inside it, and a worker
+/// reporting a status can be holding that lock, so a getter reading the
+/// channel on the main thread waits for it with `Atomics.wait`, which throws
+/// there (ADR 0002). The getter's copy is behind a lock taken with
+/// [`crate::lock::lock`] instead, which never waits.
+pub(crate) struct StatusCell {
+    tx: watch::Sender<SyncStatus>,
+    last: Mutex<SyncStatus>,
+}
+
+impl StatusCell {
+    fn new(status: SyncStatus) -> Self {
+        Self {
+            tx: watch::channel(status.clone()).0,
+            last: Mutex::new(status),
+        }
+    }
+
+    /// The status now. Safe on the page's main thread.
+    fn get(&self) -> SyncStatus {
+        crate::lock::lock(&self.last)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Both copies change under the value's lock, so a getter never sees one
+    /// status while the watchers are told another.
+    fn send_replace(&self, status: SyncStatus) {
+        let mut last =
+            crate::lock::lock(&self.last).unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = status.clone();
+        self.tx.send_replace(status);
+    }
+
+    /// Wake every watcher with the status they already have, so that one told
+    /// to stop notices.
+    fn resend(&self) {
+        self.send_replace(self.get());
+    }
+
+    fn subscribe(&self) -> watch::Receiver<SyncStatus> {
+        self.tx.subscribe()
+    }
+}
+
 /// One note's status channel, and which connection is allowed to write to it.
 struct NoteStatus {
-    tx: Arc<watch::Sender<SyncStatus>>,
+    tx: Arc<StatusCell>,
     /// Bumped every time a connection is started or stopped for this note. A
     /// report from an older one is dropped.
     ///
@@ -526,7 +576,7 @@ struct NoteStatus {
 /// that keeps alive the connection, and a closed library would never let go.
 pub(crate) struct Statuses {
     per_note: Mutex<HashMap<NoteId, NoteStatus>>,
-    overall: Arc<watch::Sender<SyncStatus>>,
+    overall: StatusCell,
 }
 
 impl Statuses {
@@ -537,14 +587,14 @@ impl Statuses {
             // is the empty fold's answer and has to agree with it — otherwise a
             // library that never refreshes (because it never gets a note) keeps
             // reporting a relay problem it does not have.
-            overall: Arc::new(watch::channel(SyncStatus::nothing_to_sync()).0),
+            overall: StatusCell::new(SyncStatus::nothing_to_sync()),
         }
     }
 
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
         let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
-            tx: Arc::new(watch::channel(SyncStatus::offline()).0),
+            tx: Arc::new(StatusCell::new(SyncStatus::offline())),
             epoch: 0,
         }))
     }
@@ -561,7 +611,7 @@ impl Statuses {
     /// It belongs to the note rather than to a connection, so the UI subscribes
     /// once and keeps seeing the truth across a disconnect, a reconnect, or a
     /// move to a different relay.
-    fn channel(&self, note: NoteId) -> Arc<watch::Sender<SyncStatus>> {
+    fn channel(&self, note: NoteId) -> Arc<StatusCell> {
         self.entry(note, |status| status.tx.clone())
     }
 
@@ -606,10 +656,7 @@ impl Statuses {
 
     fn refresh(&self) {
         let per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
-        let each: Vec<SyncStatus> = per_note
-            .values()
-            .map(|status| status.tx.borrow().clone())
-            .collect();
+        let each: Vec<SyncStatus> = per_note.values().map(|status| status.tx.get()).collect();
         drop(per_note);
         self.overall.send_replace(SyncStatus::combined(each.iter()));
     }
@@ -1542,12 +1589,34 @@ impl Library {
 
     // -- the list -----------------------------------------------------------
 
-    #[frb(sync)]
+    /// Every note, reading in any the core has not read yet.
+    ///
+    /// Not `#[frb(sync)]`, and neither is [`Library::note`]: both can tell the
+    /// core's watchers something — the list is refreshed, a note opened — and
+    /// telling a `watch` channel takes locks a watcher on a Web Worker may be
+    /// holding. A synchronous call runs on the page's main thread, where waiting
+    /// for one throws (ADR 0002), so these run on a worker like an edit does.
+    /// What stays synchronous only reads: [`Library::listed`] is the list for a
+    /// first frame, once this has been called.
     pub fn notes(&self) -> Result<Vec<NoteSummaryView>, String> {
         let mut core = self.shared.locked()?;
         Ok(core
             .notes()
             .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// The list as [`Library::notes`] last left it, and as every edit since has
+    /// changed it. Loads nothing and tells nobody, so it is safe to call from
+    /// the page's main thread.
+    #[frb(sync)]
+    pub fn listed(&self) -> Result<Vec<NoteSummaryView>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .listed()
             .into_iter()
             .map(Into::into)
             .collect())
@@ -1612,7 +1681,6 @@ impl Library {
     /// Cheap, and there may be several: they share the library's core, so two
     /// handles to one note are two views of the same document rather than two
     /// documents.
-    #[frb(sync)]
     pub fn note(&self, id: String) -> Result<Note, String> {
         let id = note_id(&id)?;
         // Opening is what makes the watch channel and the view real; a note the
@@ -2514,7 +2582,7 @@ impl Library {
     /// Where this device stands with the relay, over all its notes.
     #[frb(sync)]
     pub fn sync_status(&self) -> SyncStatus {
-        self.shared.statuses.overall.borrow().clone()
+        self.shared.statuses.overall.get()
     }
 
     pub async fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
@@ -2534,8 +2602,7 @@ impl Library {
     /// forever too.
     pub fn stop_watching(&self) -> Result<(), String> {
         self.stop.store(true, Ordering::SeqCst);
-        let overall = self.shared.statuses.overall.borrow().clone();
-        self.shared.statuses.overall.send_replace(overall);
+        self.shared.statuses.overall.resend();
         // The note list watcher is parked on its own channel and needs the same
         // wake. Re-sending the list it already has changes nothing and moves it.
         //
@@ -2586,7 +2653,7 @@ pub struct Note {
     id: NoteId,
     /// This note's sync status, for the life of the note rather than of one
     /// connection.
-    status: Arc<watch::Sender<SyncStatus>>,
+    status: Arc<StatusCell>,
     stop: Arc<AtomicBool>,
 }
 
@@ -2646,7 +2713,7 @@ impl Note {
     /// Where this note stands with the relay.
     #[frb(sync)]
     pub fn sync_status(&self) -> SyncStatus {
-        self.status.borrow().clone()
+        self.status.get()
     }
 
     pub async fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
@@ -2657,11 +2724,7 @@ impl Note {
     /// open in the library, because another screen may be showing it.
     pub fn stop_watching(&self) -> Result<(), String> {
         self.stop.store(true, Ordering::SeqCst);
-        // The clone is bound first on purpose: `borrow()` holds a read guard
-        // until the end of the statement, and a send inside that statement would
-        // wait for a lock the same expression is holding.
-        let unchanged = self.status.borrow().clone();
-        self.status.send_replace(unchanged);
+        self.status.resend();
         // Closed: the note's channel went with the core, and its watcher with
         // that — as for [`Library::stop_watching`].
         // A note that is gone — deleted, or this person was removed from it —
