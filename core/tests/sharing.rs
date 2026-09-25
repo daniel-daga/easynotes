@@ -436,6 +436,8 @@ both_backends!(
     people_are_accounts_not_names_or_phones,
     every_arrival_order_picks_the_same_current_package,
     stop_sharing_removes_everyone_but_the_owner,
+    an_offline_rotation_loses_to_a_deletion_that_syncs_first,
+    an_offline_rotation_loses_to_a_deletion_that_syncs_second,
 );
 
 // ---------------------------------------------------------------------------
@@ -1100,4 +1102,137 @@ fn stop_sharing_removes_everyone_but_the_owner<D: NoteDoc>() {
     assert!(anna.sync(&mut relay, note).removed);
     assert!(ben.sync(&mut relay, note).removed);
     assert_eq!(owner.title(note).as_deref(), Some("Secret"));
+}
+
+// ---------------------------------------------------------------------------
+// A rotation against a permanent deletion
+// ---------------------------------------------------------------------------
+
+/// Nothing of the note is left on this owner device, and nothing it can send.
+fn deleted_here<D: NoteDoc>(phone: &mut Phone<D>, note: NoteId) {
+    let core = phone.core();
+    assert!(core.is_deleted_note(note), "the marker is there");
+    assert!(!core.store().notes().unwrap().contains(&note), "no rows");
+    assert!(core.keyring().note_key(note).unwrap().is_none(), "no key");
+    assert!(core.open_note(note).is_err(), "it does not open");
+    assert!(
+        core.unsent(note, None).unwrap().is_empty(),
+        "nothing to send"
+    );
+    assert!(!core.syncable().unwrap().contains(&note), "not subscribed");
+    assert!(
+        core.settle_note(note).unwrap().is_empty(),
+        "nothing to settle"
+    );
+}
+
+/// The owner's laptop removes Anna while offline — a rotation to a fresh key,
+/// with a new access package granting it to the owner's account and to Ben —
+/// while the owner's phone deletes the note for good (plan-permanent-deletion,
+/// "B … rotates while offline; A deletes").
+///
+/// `rotation_first` says which reaches the relay first. If the deletion does,
+/// the laptop learns of it on reconnecting, before it publishes, and the
+/// rotation never leaves it. If the rotation does, it cannot be recalled: Anna
+/// is removed and Ben moves to the new key, as any rotation would do. Either
+/// way, both owner devices end deleted, neither takes the new key from the
+/// package that grants it to them, a device restored from the words later
+/// takes nothing either, and nobody's account keeps writing about it. Ben's
+/// copy is his own and keeps working.
+fn an_offline_rotation_against_a_deletion<D: NoteDoc>(rotation_first: bool) {
+    let mut relay = Relay::default();
+    let (mut phone, note) = shared::<D>(&mut relay, "Chores");
+    let mut laptop = phone.restored();
+    laptop.sync_account(&mut relay);
+    laptop.sync(&mut relay, note);
+    let mut anna = Phone::<D>::person("Anna");
+    let mut ben = Phone::<D>::person("Ben");
+    let_in(&mut relay, &mut phone, &mut anna, note);
+    let_in(&mut relay, &mut phone, &mut ben, note);
+    laptop.sync(&mut relay, note);
+    let old_key = laptop.key_id(note).unwrap();
+    let before = relay.log(note).len();
+
+    // Offline, on the laptop: remove Anna, which the app settles at once, and
+    // type something that waits behind it.
+    let anna_member = anna.member();
+    remove(&mut laptop, note, &anna_member);
+    let out = laptop.core().settle_note(note).unwrap();
+    assert!(!out.envelopes.is_empty(), "the rotation is built");
+    assert_ne!(laptop.key_id(note), Some(old_key), "under a new key");
+    laptop.core().set_title(note, "Chores, rotated").unwrap();
+    assert!(!laptop.peek().unsent(note, None).unwrap().is_empty());
+
+    // Offline, on the phone: delete it.
+    phone.core().set_trashed(note, true).unwrap();
+    phone.core().forget_note(note).unwrap();
+
+    if rotation_first {
+        // The laptop's note socket catches up before its account one does.
+        laptop.sync(&mut relay, note);
+        assert!(relay.log(note).len() > before, "the rotation went out");
+        phone.sync_account(&mut relay);
+        laptop.sync_account(&mut relay);
+        assert!(
+            anna.sync(&mut relay, note).removed,
+            "a sent rotation stands"
+        );
+        ben.sync(&mut relay, note);
+        assert_eq!(ben.title(note).as_deref(), Some("Chores, rotated"));
+        assert_ne!(ben.key_id(note), Some(old_key));
+    } else {
+        phone.sync_account(&mut relay);
+        // Reconnecting catches the account up before any note publishes.
+        laptop.sync_account(&mut relay);
+        laptop.push(&mut relay, note);
+        assert_eq!(relay.log(note).len(), before, "the rotation never left");
+        assert!(!anna.sync(&mut relay, note).removed, "Anna was not removed");
+        assert_eq!(anna.title(note).as_deref(), Some("Chores"));
+        ben.sync(&mut relay, note);
+        assert_eq!(ben.key_id(note), Some(old_key));
+    }
+
+    // Whatever else arrives — the whole note log, the rotation's package with
+    // its grant for this account among it, and the account again — nothing
+    // comes back on either owner device.
+    for _ in 0..2 {
+        for owner in [&mut phone, &mut laptop] {
+            owner.sync_account(&mut relay);
+            owner.try_sync(&mut relay, note).unwrap();
+            owner.cursors.remove(&note);
+            owner
+                .core()
+                .set_sync_cursor(note, Default::default())
+                .unwrap();
+            owner.try_sync(&mut relay, note).unwrap();
+            owner.core().adopt_note_keys().unwrap();
+            deleted_here(owner, note);
+        }
+    }
+    let mut tablet = phone.restored();
+    tablet.sync_account(&mut relay);
+    tablet.try_sync(&mut relay, note).unwrap();
+    deleted_here(&mut tablet, note);
+
+    // The two owner devices have said all they have to say.
+    let account = phone.peek().account_id().unwrap();
+    let logged = relay.log(account).len();
+    for owner in [&mut phone, &mut laptop, &mut tablet] {
+        owner.sync_account(&mut relay);
+    }
+    assert_eq!(relay.log(account).len(), logged, "the account went quiet");
+
+    // Ben's copy is his.
+    set_title(&mut ben, &mut relay, note, "Chores, Ben's");
+    ben.relaunch();
+    ben.sync(&mut relay, note);
+    assert_eq!(ben.title(note).as_deref(), Some("Chores, Ben's"));
+}
+
+fn an_offline_rotation_loses_to_a_deletion_that_syncs_first<D: NoteDoc>() {
+    an_offline_rotation_against_a_deletion::<D>(false);
+}
+
+fn an_offline_rotation_loses_to_a_deletion_that_syncs_second<D: NoteDoc>() {
+    an_offline_rotation_against_a_deletion::<D>(true);
 }

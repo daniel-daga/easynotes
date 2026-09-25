@@ -427,13 +427,15 @@ impl Crash {
     }
 }
 
+/// A store that crashes on cue, over another: the in-memory one, or a real
+/// SQLite file that a relaunch opens again from disk.
 #[derive(Clone, Default)]
-struct Store {
-    inner: MemoryStore,
+struct Store<S = MemoryStore> {
+    inner: S,
     crash: Crash,
 }
 
-impl OpStore for Store {
+impl<S: OpStore> OpStore for Store<S> {
     fn append(&mut self, note: NoteId, envelope: &[u8]) -> Result<()> {
         self.crash.write()?;
         self.inner.append(note, envelope)
@@ -469,12 +471,12 @@ impl OpStore for Store {
 }
 
 #[derive(Clone, Default)]
-struct Keys {
-    inner: MemoryKeyring,
+struct Keys<K = MemoryKeyring> {
+    inner: K,
     crash: Crash,
 }
 
-impl Keyring for Keys {
+impl<K: Keyring> Keyring for Keys<K> {
     fn device_seed(&self) -> Result<Option<easynotes_core::crypto::DeviceSeed>> {
         self.inner.device_seed()
     }
@@ -544,6 +546,86 @@ fn a_deletion_interrupted_anywhere_either_never_happened_or_finishes<D: NoteDoc>
     }
 }
 
+/// Emptying a trash of three on a real SQLite store, killed at every write the
+/// batch makes, and launched again from the files on disk. Each note is its
+/// own durable marker, so a crash partway leaves the notes already marked
+/// gone for good and the rest exactly as they were: still whole, still in the
+/// trash, and deleted by emptying it again. The note that was never in the
+/// trash is never touched, and the other device ends where this one does.
+fn emptying_the_trash_interrupted_anywhere_loses_nothing<D: NoteDoc>() {
+    for writes in 0.. {
+        let dir = tempfile::tempdir().unwrap();
+        let master: MasterKey = master_key_from_file(dir.path().join("master.key")).unwrap();
+        let crash = Crash::default();
+        let store = Store {
+            inner: SqliteStore::open(dir.path().join("notes.db"), master.clone()).unwrap(),
+            crash: crash.clone(),
+        };
+        let keys = Keys {
+            inner: SqliteKeyring::open(dir.path().join("keys.db"), master).unwrap(),
+            crash: crash.clone(),
+        };
+        let mut core = NoteCore::<D, _, _>::open(store, keys).unwrap();
+        let phrase = core.create_account().unwrap();
+        let thrown: Vec<_> = (0..3).map(|_| a_full_note(&mut core)).collect();
+        let kept = a_full_note(&mut core);
+        for id in &thrown {
+            core.set_trashed(*id, true).unwrap();
+        }
+        let mut laptop = restored::<D>(&phrase);
+        deliver_account(&core, &mut laptop);
+
+        crash.0.set(Some(writes));
+        let result = core.empty_trash();
+        drop(core);
+
+        let mut core = on_disk::<D>(dir.path());
+        let marked: Vec<_> = thrown
+            .iter()
+            .copied()
+            .filter(|id| core.is_deleted_note(*id))
+            .collect();
+        if result.is_ok() {
+            assert_eq!(marked, thrown, "an emptied trash deleted all three");
+        }
+        for id in &thrown {
+            if marked.contains(id) {
+                nothing_left(&mut core, *id);
+            } else {
+                assert!(result.is_err(), "writes={writes}");
+                let view = core.open_note(*id).unwrap();
+                assert_eq!(view.items.len(), 1, "writes={writes}: kept whole");
+                assert!(core.placement(*id).trashed, "and still in the trash");
+                assert_eq!(core.reminders_on(*id).len(), 1);
+            }
+        }
+
+        // Emptying it again finishes the job, and deletes what was left.
+        assert_eq!(
+            core.empty_trash().unwrap(),
+            thrown.len() - marked.len(),
+            "writes={writes}"
+        );
+        deliver_account(&core, &mut laptop);
+        for id in &thrown {
+            nothing_left(&mut core, *id);
+            nothing_left(&mut laptop, *id);
+        }
+        for placement in [core.placement(kept), laptop.placement(kept)] {
+            assert!(!placement.trashed, "the kept note never went in");
+        }
+        assert_eq!(core.open_note(kept).unwrap().items.len(), 1);
+        assert_eq!(core.reminders_on(kept).len(), 1);
+        assert!(!core.is_deleted_note(kept) && !laptop.is_deleted_note(kept));
+        assert_eq!(laptop.reminders_on(kept).len(), 1);
+
+        if result.is_ok() {
+            break;
+        }
+        assert!(writes < 50, "three deletions should not need fifty writes");
+    }
+}
+
 macro_rules! backend_suite {
     ($name:ident, $backend:ty) => {
         mod $name {
@@ -596,6 +678,10 @@ macro_rules! backend_suite {
                 super::a_deletion_interrupted_anywhere_either_never_happened_or_finishes::<
                     $backend,
                 >()
+            }
+            #[test]
+            fn emptying_the_trash_interrupted_anywhere_loses_nothing() {
+                super::emptying_the_trash_interrupted_anywhere_loses_nothing::<$backend>()
             }
         }
     };
