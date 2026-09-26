@@ -29,13 +29,47 @@ String _area(rust.StorageArea area) => switch (area) {
   rust.StorageArea.keys => _keys,
 };
 
-Future<BrowserStore> openIndexedDb(String name) async =>
-    IndexedDbStore._(await _open(name));
+Future<BrowserStore> openIndexedDb(String name) async {
+  // The core caches both rows and device counters. Transaction-level locking
+  // cannot protect two copies of those caches; ownership lasts until close.
+  final acquired = Completer<void>();
+  final release = Completer<JSAny?>();
+  final held = web.window.navigator.locks
+      .request(
+        'easynotes-database:$name',
+        ((web.Lock lock) {
+          acquired.complete();
+          return release.future.toJS;
+        }).toJS,
+      )
+      .toDart;
+  unawaited(
+    held.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        if (!acquired.isCompleted) acquired.completeError(error, stack);
+      },
+    ),
+  );
+  await acquired.future;
+  Future<void> unlock() async {
+    if (!release.isCompleted) release.complete(null);
+    await held;
+  }
+
+  try {
+    return IndexedDbStore._(await _open(name), unlock);
+  } on Object {
+    await unlock();
+    rethrow;
+  }
+}
 
 class IndexedDbStore implements BrowserStore {
-  IndexedDbStore._(this._db);
+  IndexedDbStore._(this._db, this._unlock);
 
   final web.IDBDatabase _db;
+  final Future<void> Function() _unlock;
 
   @override
   Future<List<rust.StorageRow>> rows(rust.StorageArea area) async {
@@ -82,7 +116,10 @@ class IndexedDbStore implements BrowserStore {
   }
 
   @override
-  Future<void> close() async => _db.close();
+  Future<void> close() async {
+    _db.close();
+    await _unlock();
+  }
 }
 
 Future<web.IDBDatabase> _open(String name) {
@@ -110,8 +147,9 @@ Future<web.IDBDatabase> _open(String name) {
 Future<JSAny?> _request(web.IDBRequest request) {
   final done = Completer<JSAny?>();
   request.onsuccess = ((web.Event _) => done.complete(request.result)).toJS;
-  request.onerror = ((web.Event _) =>
-      done.completeError(StateError('${request.error?.message}'))).toJS;
+  request.onerror = ((web.Event _) => done.completeError(
+    StateError('${request.error?.message}'),
+  )).toJS;
   return done.future;
 }
 

@@ -106,6 +106,20 @@ Future<void> main() async {
       : null;
   // Read, so gone from the address: a reload must not make the note twice.
   if (kIsWeb) address_bar.dropQuery();
+  if (kIsWeb) {
+    runApp(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Text(
+              'Opening your notes…\nIf EasyNotes is open in another tab, close it to continue here.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
   runApp(
     EasyNotesApp(
       library: await openLibrary(),
@@ -149,14 +163,15 @@ Future<NoteLibrary> openLibrary() async {
 /// switched off outright. The notes go in memory for that tab, which is what
 /// every tab had before this, and the app runs.
 Future<NoteLibrary> openInBrowser() async {
-  final masterKey = await MasterKeyStore().forBrowser();
   NoteLibrary library;
+  BrowserStore? db;
   try {
-    library = await RustNoteLibrary.openInBrowser(
-      await openBrowserStore(browserDatabase),
-      masterKey,
-    );
+    // Own the database before reading or minting the shared master key too.
+    db = await openBrowserStore(browserDatabase);
+    final masterKey = await MasterKeyStore().forBrowser();
+    library = await RustNoteLibrary.openInBrowser(db, masterKey);
   } on Object catch (error) {
+    await db?.close();
     debugPrint('keeping this tab\'s notes in memory only: $error');
     library = await RustNoteLibrary.openEphemeral();
   }

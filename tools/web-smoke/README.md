@@ -64,3 +64,18 @@ missing-ID panic fail the test. Without `BRIDGE_TRACE_DIR`, the existing smoke
 test policy is unchanged. Rebuild the Rust half **without** `EASYNOTES_TRACE_MOI`
 and rebuild Flutter before using the web build normally; unsetting the variable
 does not remove diagnostics from an already compiled WASM file.
+# Browser database ownership
+
+This regression uses the real Dart IndexedDB adapter in three pages sharing
+one browser profile. It checks waiting, committed edits after handoff, repeated
+close, and ownership release when a tab closes without cleanup. It needs no
+Flutter renderer or Rust build.
+
+```powershell
+cd app
+dart compile js tool/browser_store_ownership.dart -o build/store-ownership.js
+cd ..
+node tools/web-smoke/store-ownership.mjs
+```
+
+Set `CHROME_EXECUTABLE` to override the installed Chrome executable.

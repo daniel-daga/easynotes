@@ -95,10 +95,7 @@ class ReminderScheduler {
     // the operating system's limited pending-notification slots.
     final scheduled = <({Reminder reminder, tz.TZDateTime occurrence})>[];
     for (final reminder in reminders) {
-      final occurrence = _nextOccurrence(
-        reminder,
-        _location(reminder.timezone),
-      );
+      final occurrence = nextOccurrence(reminder, _location(reminder.timezone));
       if (occurrence != null) {
         scheduled.add((reminder: reminder, occurrence: occurrence));
       }
@@ -175,7 +172,7 @@ class ReminderScheduler {
   }
 
   void _scheduleInProcess(Reminder reminder, int id, String title) {
-    final due = _nextOccurrence(reminder, _location(reminder.timezone));
+    final due = nextOccurrence(reminder, _location(reminder.timezone));
     if (due == null) return;
     final delay = due.difference(
       tz.TZDateTime.now(_location(reminder.timezone)),
@@ -208,7 +205,7 @@ class ReminderScheduler {
     bool exact = true,
   }) async {
     final location = _location(reminder.timezone);
-    final scheduled = _nextOccurrence(reminder, location);
+    final scheduled = nextOccurrence(reminder, location);
     if (scheduled == null) {
       await _notifications.cancel(id: id);
       return;
@@ -250,9 +247,29 @@ class ReminderScheduler {
     }
   }
 
-  tz.TZDateTime? _nextOccurrence(Reminder reminder, tz.Location location) {
+  /// Calendar repeats keep their original date, matching native notification
+  /// components. Months without that day (and non-leap years for February 29)
+  /// are skipped rather than changing every subsequent occurrence.
+  @visibleForTesting
+  static tz.TZDateTime? nextOccurrence(
+    Reminder reminder,
+    tz.Location location, {
+    DateTime? now,
+  }) {
     final first = tz.TZDateTime.from(reminder.fireAt, location);
-    final now = tz.TZDateTime.now(location);
+    final current = now;
+    final localNow = current == null
+        ? tz.TZDateTime.now(location)
+        : tz.TZDateTime.from(current, location);
+    return _nextOccurrenceAt(reminder, location, first, localNow);
+  }
+
+  static tz.TZDateTime? _nextOccurrenceAt(
+    Reminder reminder,
+    tz.Location location,
+    tz.TZDateTime first,
+    tz.TZDateTime now,
+  ) {
     if (reminder.repeat == ReminderRepeat.never) {
       return first.isAfter(now) ? first : null;
     }
@@ -318,28 +335,31 @@ class ReminderScheduler {
     }
   }
 
-  tz.TZDateTime _nextMonth(
+  static tz.TZDateTime _nextMonth(
     tz.Location location,
     tz.TZDateTime now,
     int day,
     int hour,
     int minute,
   ) {
-    var next = _atClampedDay(location, now.year, now.month, day, hour, minute);
-    if (!next.isAfter(now)) {
-      next = _atClampedDay(
+    for (var month = now.month; ; month++) {
+      final normalized = DateTime(now.year, month);
+      if (day > DateTime(normalized.year, normalized.month + 1, 0).day) {
+        continue;
+      }
+      final next = tz.TZDateTime(
         location,
-        now.year,
-        now.month + 1,
+        normalized.year,
+        normalized.month,
         day,
         hour,
         minute,
       );
+      if (next.isAfter(now)) return next;
     }
-    return next;
   }
 
-  tz.TZDateTime _nextYear(
+  static tz.TZDateTime _nextYear(
     tz.Location location,
     tz.TZDateTime now,
     int month,
@@ -347,30 +367,11 @@ class ReminderScheduler {
     int hour,
     int minute,
   ) {
-    var next = _atClampedDay(location, now.year, month, day, hour, minute);
-    if (!next.isAfter(now)) {
-      next = _atClampedDay(location, now.year + 1, month, day, hour, minute);
+    for (var year = now.year; ; year++) {
+      if (day > DateTime(year, month + 1, 0).day) continue;
+      final next = tz.TZDateTime(location, year, month, day, hour, minute);
+      if (next.isAfter(now)) return next;
     }
-    return next;
-  }
-
-  tz.TZDateTime _atClampedDay(
-    tz.Location location,
-    int year,
-    int month,
-    int day,
-    int hour,
-    int minute,
-  ) {
-    final days = DateTime(year, month + 1, 0).day;
-    return tz.TZDateTime(
-      location,
-      year,
-      month,
-      day.clamp(1, days),
-      hour,
-      minute,
-    );
   }
 
   int _notificationId(String reminderId, Set<int> used) {

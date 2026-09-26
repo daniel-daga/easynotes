@@ -1965,7 +1965,15 @@ class _ReminderEditorState extends State<_ReminderEditor> {
           DropdownButtonFormField<ReminderRepeat>(
             key: const Key('reminder-repeat'),
             initialValue: _repeat,
-            decoration: const InputDecoration(labelText: 'Repeat'),
+            decoration: InputDecoration(
+              labelText: 'Repeat',
+              helperText:
+                  _repeat == ReminderRepeat.monthly ||
+                      _repeat == ReminderRepeat.yearly
+                  ? 'Dates missing from the calendar are skipped.'
+                  : null,
+              helperMaxLines: 2,
+            ),
             items: [
               for (final repeat in ReminderRepeat.values)
                 DropdownMenuItem(

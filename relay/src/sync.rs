@@ -350,7 +350,7 @@ fn refuse(out: &mpsc::Sender<SyncServerMessage>, note: Option<String>, message: 
 /// the two is in the store by the time the backlog is read, and anything seen
 /// both ways is dropped by `seq`.
 fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) -> JoinHandle<()> {
-    let mut live = state.channel(&note).subscribe();
+    let mut live = state.subscribe(&note);
     tokio::spawn(async move {
         loop {
             let event = match live.recv().await {

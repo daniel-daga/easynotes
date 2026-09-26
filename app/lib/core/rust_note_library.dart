@@ -75,7 +75,7 @@ class RustNoteLibrary implements NoteLibrary {
     Uint8List masterKey,
   ) async {
     await RustNoteCore.ensureInitialized();
-    final library = await RustNoteLibrary._(
+    final library = RustNoteLibrary._(
       rust.Library.openInBrowser(
         notes: await db.rows(rust.StorageArea.notes),
         keys: await db.rows(rust.StorageArea.keys),
@@ -83,11 +83,18 @@ class RustNoteLibrary implements NoteLibrary {
       ),
       canJoin: true,
       db: db,
-    )._loaded();
+    );
     // Opening a device for the first time writes its identity, and nothing has
     // asked for those bytes to be kept yet.
-    await library.flush();
-    return library;
+    try {
+      await library._loaded();
+      await library.flush();
+      return library;
+    } on Object {
+      // Stop watchers and queued writes before releasing database ownership.
+      await library.dispose();
+      rethrow;
+    }
   }
 
   /// Open notes that live only in memory and are gone when the tab closes.

@@ -30,7 +30,7 @@ use base64::Engine;
 use easynotes_core::crypto::Envelope;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, OwnedMutexGuard};
 
@@ -42,6 +42,35 @@ pub(crate) const FANOUT_BUFFER: usize = 256;
 /// `(seq, envelope)` — what one note's subscribers receive.
 type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
 
+/// Removes the channel when its last subscriber goes away, including when a
+/// forwarder is aborted before its first poll.
+pub(crate) struct Listener {
+    receiver: Option<broadcast::Receiver<(i64, Vec<u8>)>>,
+    state: Arc<AppState>,
+    note: String,
+}
+
+impl Listener {
+    pub(crate) async fn recv(
+        &mut self,
+    ) -> std::result::Result<(i64, Vec<u8>), broadcast::error::RecvError> {
+        self.receiver.as_mut().expect("live listener").recv().await
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        let mut channels = self.state.channels.lock().unwrap();
+        self.receiver.take();
+        if channels
+            .get(&self.note)
+            .is_some_and(|channel| channel.receiver_count() == 0)
+        {
+            channels.remove(&self.note);
+        }
+    }
+}
+
 pub struct AppState {
     pub store: Arc<dyn RelayStore>,
     pub auth: Auth,
@@ -52,7 +81,7 @@ pub struct AppState {
     /// Serializes appending and broadcasting one note's envelopes. The store
     /// assigns sequence numbers, so the corresponding fan-out must keep that
     /// same order even when concurrent websocket handlers append at once.
-    append_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    append_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl AppState {
@@ -74,21 +103,39 @@ impl AppState {
         })
     }
 
-    pub(crate) fn channel(&self, note: &str) -> Fanout {
+    pub(crate) fn subscribe(self: &Arc<Self>, note: &str) -> Listener {
         let mut channels = self.channels.lock().unwrap();
-        channels
+        let receiver = channels
             .entry(note.to_string())
             .or_insert_with(|| broadcast::channel(FANOUT_BUFFER).0)
-            .clone()
+            .subscribe();
+        Listener {
+            receiver: Some(receiver),
+            state: self.clone(),
+            note: note.to_string(),
+        }
+    }
+
+    fn broadcast(&self, note: &str, seq: i64, envelope: Vec<u8>) {
+        if let Some(channel) = self.channels.lock().unwrap().get(note) {
+            let _ = channel.send((seq, envelope));
+        }
     }
 
     async fn append_lock(&self, note: &str) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.append_locks.lock().unwrap();
-            locks
-                .entry(note.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
+            // Keep only locks held by an appender or a waiter. Holding this
+            // map lock through upgrade/insert prevents two locks for one note.
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            match locks.get(note).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    locks.insert(note.to_string(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
         };
         lock.lock_owned().await
     }
@@ -398,7 +445,7 @@ pub(crate) async fn append(
     match state.store.append_within(note, &raw, &state.limits).await? {
         Appended::Stored { seq, crowded } => {
             // `send` fails only when nobody is listening, which is not an error.
-            let _ = state.channel(note).send((seq, raw));
+            state.broadcast(note, seq, raw);
             Ok(Accepted { crowded })
         }
         Appended::NoteFull => Err(RelayError::NoteFull),
@@ -441,10 +488,85 @@ pub(crate) async fn compact(
     let _append = state.append_lock(note).await;
     match state.store.compact(note, &proposal).await {
         Ok(Ok(seq)) => {
-            let _ = state.channel(note).send((seq, base));
+            state.broadcast(note, seq, base);
             Ok(seq)
         }
         Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    fn state() -> Arc<AppState> {
+        AppState::new(Arc::new(crate::store::MemoryStore::new()), [0; 32])
+    }
+
+    #[tokio::test]
+    async fn subscription_churn_releases_channels_without_disconnect() {
+        let state = state();
+        let mut keeper = state.subscribe("kept");
+        for i in 0..10_000 {
+            let listener = state.subscribe(&i.to_string());
+            drop(listener);
+            assert_eq!(state.channels.lock().unwrap().len(), 1);
+        }
+        state.broadcast("kept", 1, vec![1]);
+        assert_eq!(keeper.recv().await.unwrap(), (1, vec![1]));
+        drop(keeper);
+        assert!(state.channels.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_one_listener_preserves_the_other_and_resubscription() {
+        let state = state();
+        let first = state.subscribe("note");
+        let mut second = state.subscribe("note");
+        drop(first);
+        state.broadcast("note", 1, vec![1]);
+        assert_eq!(second.recv().await.unwrap().0, 1);
+        drop(second);
+        let mut third = state.subscribe("note");
+        state.broadcast("note", 2, vec![2]);
+        assert_eq!(third.recv().await.unwrap().0, 2);
+    }
+
+    #[tokio::test]
+    async fn aborting_a_forwarder_releases_its_listener() {
+        let state = state();
+        let mut listener = state.subscribe("note");
+        let task = tokio::spawn(async move { listener.recv().await });
+        task.abort();
+        let _ = task.await;
+        assert!(state.channels.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn append_lock_churn_is_bounded_and_waiters_keep_the_same_lock() {
+        let state = state();
+        for i in 0..10_000 {
+            drop(state.append_lock(&i.to_string()).await);
+            assert!(state.append_locks.lock().unwrap().len() <= 1);
+        }
+        let guard = state.append_lock("note").await;
+        let waiting = state.append_lock("note");
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        drop(state.append_lock("other").await);
+        drop(guard);
+        let guard = waiting.await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), state.append_lock("note"))
+                .await
+                .is_err()
+        );
+        drop(guard);
+        drop(state.append_lock("note").await);
     }
 }
