@@ -145,6 +145,10 @@ checklist shared out and back in comes back as a checklist. The details are in
 [`docs/plan-text-interchange.md`](docs/plan-text-interchange.md); the
 Google Keep Takeout importer is deferred.
 
+`just web-shared-text` verifies the browser's incoming share route: text and
+checklists keep their content and checked state after reload, and a consumed
+share URL does not create a duplicate note. It needs a web build, but no relay.
+
 ## Layout
 
 ```

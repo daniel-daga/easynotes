@@ -1,3 +1,23 @@
+# Receiving shared text
+
+After `just build-web`, run `just web-shared-text` (no relay needed), or serve
+`app/build/web` with `serve.py` and run:
+
+```powershell
+node tools/web-smoke/shared-text.mjs http://127.0.0.1:8099/
+```
+
+The test reads the shipped manifest and navigates to its GET share target. It
+checks plain text with a subject and URL, a checklist with checked items, and
+mixed text with an already included URL. The real UI's Copy action verifies
+the complete content, before and after reload; IndexedDB note IDs prove each
+arrival adds exactly one note and reload adds none. Windows clipboard line
+endings are normalized for comparison. Page exceptions and console errors fail
+the run. This runs in the manually triggered web-build workflow too.
+
+It covers the receiving route, not registration in an installed PWA's operating
+system share sheet. That and the Android share-sheet walkthrough remain manual.
+
 # Bridge lifetime diagnostics
 
 `bridge-lifetime.mjs` drives the generated Dart bindings against the real WASM

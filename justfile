@@ -167,6 +167,19 @@ web-storage-failure port="8099":
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
     node storage-failure.mjs http://127.0.0.1:{{port}}/
 
+# Receive text through the manifest's share target, then reload without
+# importing it twice. Needs `just build-web` first; no relay.
+web-shared-text port="8099":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd '{{justfile_directory()}}/tools/web-smoke'
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    python3 serve.py '{{justfile_directory()}}/app/build/web' {{port}} &
+    server=$!
+    trap 'kill $server 2>/dev/null || true' EXIT
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node shared-text.mjs http://127.0.0.1:{{port}}/
+
 lint: lint-wasm
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings

@@ -193,6 +193,10 @@ jobs:
           until curl -sfo /dev/null http://127.0.0.1:8099/; do sleep 0.2; done
           node smoke.mjs http://127.0.0.1:8099/
 
+      - name: Shared text survives import and reload
+        working-directory: tools/web-smoke
+        run: node shared-text.mjs http://127.0.0.1:8099/
+
       # And whether it can reach a relay. The browser transport is the one part
       # of syncing no `cargo test` can run — it is the tab's own WebSocket and
       # `fetch` — so this is the only thing that covers the join between the
