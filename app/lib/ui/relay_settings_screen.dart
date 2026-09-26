@@ -135,6 +135,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
         Text('Saved profiles', style: Theme.of(context).textTheme.titleMedium),
         for (final profile in widget.profiles)
           ListTile(
+            contentPadding: EdgeInsets.zero,
             leading: Icon(
               profile.url == widget.profile.url
                   ? Icons.radio_button_checked

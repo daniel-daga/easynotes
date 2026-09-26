@@ -41,6 +41,7 @@ ThemeData _easyNotesTheme(Brightness brightness) {
       backgroundColor: scheme.surface,
       surfaceTintColor: Colors.transparent,
       scrolledUnderElevation: 1,
+      actionsPadding: const EdgeInsets.only(right: 8),
     ),
     cardTheme: CardThemeData(
       elevation: 0,

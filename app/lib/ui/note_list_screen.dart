@@ -114,7 +114,7 @@ class _Where {
 }
 
 class NoteListScreen extends StatefulWidget {
-  const NoteListScreen({
+  NoteListScreen({
     super.key,
     required this.library,
     this.profile = const RelayProfile(id: 'default', url: null),
@@ -1386,7 +1386,7 @@ class _NoteCollection extends StatelessWidget {
     return layout == NoteLayout.grid
         ? _MasonryGrid(wrap: wrap, children: cards)
         : ListView(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
               for (final card in cards)
                 Padding(
@@ -1565,7 +1565,16 @@ class _Shelves extends StatelessWidget {
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
-          const DrawerHeader(child: Text('EasyNotes')),
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+              child: Text(
+                'EasyNotes',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+            ),
+          ),
           for (final shelf in _Shelf.values)
             ListTile(
               key: Key('shelf-${shelf.name}'),
@@ -2158,7 +2167,7 @@ class _MasonryGrid extends StatelessWidget {
           heights[shortest] += _estimate(card);
         }
         return SingleChildScrollView(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

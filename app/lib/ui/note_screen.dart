@@ -680,30 +680,33 @@ class _NoteToolbar extends StatelessWidget {
       color:
           noteColourTint(context, note.colour) ??
           Theme.of(context).colorScheme.surface,
-      child: Row(
-        children: [
-          IconButton(
-            key: const Key('colour-button'),
-            tooltip: 'Change colour',
-            icon: const Icon(Icons.palette_outlined),
-            onPressed: () => _chooseColour(context),
-          ),
-          IconButton(
-            key: const Key('kind-toggle'),
-            icon: Icon(
-              isText ? Icons.check_box_outlined : Icons.notes_outlined,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(
+          children: [
+            IconButton(
+              key: const Key('colour-button'),
+              tooltip: 'Change colour',
+              icon: const Icon(Icons.palette_outlined),
+              onPressed: () => _chooseColour(context),
             ),
-            tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
-            onPressed: onKindToggle,
-          ),
-          const Spacer(),
-          IconButton(
-            key: const Key('note-more-menu'),
-            tooltip: 'More note actions',
-            icon: const Icon(Icons.more_vert),
-            onPressed: () => _showActions(context),
-          ),
-        ],
+            IconButton(
+              key: const Key('kind-toggle'),
+              icon: Icon(
+                isText ? Icons.check_box_outlined : Icons.notes_outlined,
+              ),
+              tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+              onPressed: onKindToggle,
+            ),
+            const Spacer(),
+            IconButton(
+              key: const Key('note-more-menu'),
+              tooltip: 'More note actions',
+              icon: const Icon(Icons.more_vert),
+              onPressed: () => _showActions(context),
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -722,35 +725,40 @@ class _KindToggleBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SafeArea(
-    child: Row(
-      children: [
-        IconButton(
-          key: const Key('kind-toggle'),
-          icon: Icon(isText ? Icons.check_box_outlined : Icons.notes_outlined),
-          tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
-          onPressed: onKindToggle,
-        ),
-        const Spacer(),
-        IconButton(
-          key: const Key('note-more-menu'),
-          tooltip: 'More note actions',
-          icon: const Icon(Icons.more_vert),
-          onPressed: () => showModalBottomSheet<void>(
-            context: context,
-            builder: (context) => SafeArea(
-              child: ListTile(
-                key: const Key('share-content-button'),
-                leading: const Icon(Icons.ios_share),
-                title: const Text('Send a copy'),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  unawaited(onSend());
-                },
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('kind-toggle'),
+            icon: Icon(
+              isText ? Icons.check_box_outlined : Icons.notes_outlined,
+            ),
+            tooltip: isText ? 'Show checkboxes' : 'Hide checkboxes',
+            onPressed: onKindToggle,
+          ),
+          const Spacer(),
+          IconButton(
+            key: const Key('note-more-menu'),
+            tooltip: 'More note actions',
+            icon: const Icon(Icons.more_vert),
+            onPressed: () => showModalBottomSheet<void>(
+              context: context,
+              builder: (context) => SafeArea(
+                child: ListTile(
+                  key: const Key('share-content-button'),
+                  leading: const Icon(Icons.ios_share),
+                  title: const Text('Send a copy'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    unawaited(onSend());
+                  },
+                ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -1186,7 +1194,9 @@ class _ItemRowState extends State<_ItemRow> {
                 height: 48,
                 child: Icon(Icons.drag_handle),
               ),
-            ),
+            )
+          else
+            const SizedBox(width: 40),
           Checkbox(
             key: Key('check:${item.id}'),
             value: item.checked,
