@@ -2,8 +2,10 @@
 
 Verified on 2026-09-26: the release x64 build succeeds with Flutter 3.47.5
 and Visual Studio 2022; all 40 first-launch and bridge tests pass against its
-bundled Rust DLL, and `flutter analyze` reports no issues. The dependency lock
-is unchanged. Native UI and OS integration checks below remain open.
+bundled Rust DLL, and `flutter analyze` reports no issues. A separate-process
+smoke check also saved a note with a temporary key in Windows secure storage,
+reopened it from a second process, and removed its key. The dependency lock is
+unchanged. Native UI, reminders and two-device checks remain open.
 
 The Windows x64 runner is in `app/windows`. It bundles the Rust core through
 the existing Cargokit plugin, plus Flutter's secure-storage, timezone and local
@@ -28,7 +30,8 @@ The latter accepts a relay URL, like `just run-linux`. For a release build with
 a remote relay, pass `--dart-define=EASYNOTES_RELAY=https://relay.example` to
 `flutter build windows --release`. The default is `http://127.0.0.1:8080`.
 
-The manually triggered **App builds** workflow has a Windows checkbox and
+`just windows-storage-smoke` runs those three steps locally and leaves the
+normal release build in place. The manually triggered **App builds** workflow has a Windows checkbox and
 uploads the complete folder as `easynotes-windows-x64`. It also runs the
 first-launch and Rust bridge tests against the DLL from that folder:
 
@@ -39,8 +42,19 @@ flutter test test/first_launch_test.dart test/rust_bridge_test.dart
 ```
 
 These tests exercise the packaged Rust library, persistence and bridge lifetime.
-They mock secure storage and do not prove Windows key storage or notification
-delivery. A native UI walkthrough, restart with the real key store, reminder
-delivery, and two-device sync remain separate runtime checks. Windows invite
-links currently use the drawer's **Join with a link**; native URL registration
-and receiving text through the Windows share sheet are not implemented.
+They mock secure storage. To exercise the Windows key store itself, the manual
+workflow builds a small alternate entrypoint and runs:
+
+```powershell
+flutter build windows --release --target tool/windows_storage_smoke.dart
+../tools/windows-storage-smoke.ps1
+flutter build windows --release
+```
+
+It uses a fresh temporary SQLite directory and a separate DPAPI-backed test
+key. Two short-lived processes write and reopen the note; the script then
+deletes only that test key and the temporary directory. It never touches the
+production key. A native UI walkthrough, reminder delivery, and two-device sync
+remain separate runtime checks. Windows invite links currently use the drawer's
+**Join with a link**; native URL registration and receiving text through the
+Windows share sheet are not implemented.

@@ -42,6 +42,13 @@ jobs:
           channel: stable
       - run: flutter pub get
         working-directory: app
+      - name: Build the native Windows storage check
+        working-directory: app
+        run: flutter build windows --release --target tool/windows_storage_smoke.dart
+      - name: Reopen a note with the Windows key store
+        shell: pwsh
+        run: ./tools/windows-storage-smoke.ps1
+      # Restore the normal entrypoint before testing and uploading the app.
       - name: Build the Windows app
         working-directory: app
         run: flutter build windows --release

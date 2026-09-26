@@ -214,6 +214,11 @@ run-windows relay="http://127.0.0.1:8080":
 build-windows:
     cd app && flutter build windows --release
 
+# Uses a temporary Windows secure-storage key and SQLite directory, then puts
+# the normal app back in the release output folder.
+windows-storage-smoke:
+    cd app && flutter build windows --release --target tool/windows_storage_smoke.dart && ../tools/windows-storage-smoke.ps1 && flutter build windows --release
+
 # The app on Linux desktop. It syncs with the relay at EASYNOTES_RELAY, which
 # defaults to the one `just run-relay` starts — so the two-device demo is this
 # in one terminal and `just run-relay` in another.
