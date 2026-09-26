@@ -207,6 +207,13 @@ fmt:
 run-relay:
     RUST_LOG=easynotes_relay=debug cargo run -p easynotes-relay
 
+# Windows desktop, using the installed Visual Studio C++ toolchain.
+run-windows relay="http://127.0.0.1:8080":
+    cd app && flutter run -d windows --dart-define=EASYNOTES_RELAY={{relay}}
+
+build-windows:
+    cd app && flutter build windows --release
+
 # The app on Linux desktop. It syncs with the relay at EASYNOTES_RELAY, which
 # defaults to the one `just run-relay` starts — so the two-device demo is this
 # in one terminal and `just run-relay` in another.

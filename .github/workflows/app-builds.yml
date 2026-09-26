@@ -20,11 +20,44 @@ on:
         description: Web build and its browser checks
         type: boolean
         default: true
+      windows:
+        description: Windows desktop
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  windows:
+    name: Windows
+    if: inputs.windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: app
+      - name: Build the Windows app
+        working-directory: app
+        run: flutter build windows --release
+      - name: Exercise the bundled Rust library
+        working-directory: app
+        shell: pwsh
+        run: |
+          $env:EASYNOTES_NATIVE_LIB = (Resolve-Path 'build/windows/x64/runner/Release/rust_lib_easynotes.dll').Path
+          flutter test test/first_launch_test.dart test/rust_bridge_test.dart
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easynotes-windows-x64
+          path: app/build/windows/x64/runner/Release/
+          if-no-files-found: error
+          retention-days: 14
+
   linux:
     name: Linux desktop
     if: inputs.linux

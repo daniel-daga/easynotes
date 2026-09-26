@@ -165,6 +165,10 @@ negotiable.
 
 ## Getting started
 
+Windows desktop build instructions and validation limits are in
+[`docs/windows-desktop.md`](docs/windows-desktop.md). `just build-windows`
+produces an unpackaged x64 app; `just run-windows` runs a development build.
+
 Needs a stable Rust toolchain, Flutter, and [`just`](https://github.com/casey/just).
 
 ```sh
