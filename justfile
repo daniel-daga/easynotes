@@ -208,8 +208,8 @@ run-relay:
     RUST_LOG=easynotes_relay=debug cargo run -p easynotes-relay
 
 # Windows desktop, using the installed Visual Studio C++ toolchain.
-run-windows relay="http://127.0.0.1:8080":
-    cd app && flutter run -d windows --dart-define=EASYNOTES_RELAY={{relay}}
+run-windows:
+    cd app && flutter run -d windows
 
 build-windows:
     cd app && flutter build windows --release
@@ -219,11 +219,9 @@ build-windows:
 windows-storage-smoke:
     cd app && flutter build windows --release --target tool/windows_storage_smoke.dart && ../tools/windows-storage-smoke.ps1 && flutter build windows --release
 
-# The app on Linux desktop. It syncs with the relay at EASYNOTES_RELAY, which
-# defaults to the one `just run-relay` starts — so the two-device demo is this
-# in one terminal and `just run-relay` in another.
-run-linux relay="http://127.0.0.1:8080": bridge
-    cd app && flutter run -d linux --dart-define=EASYNOTES_RELAY={{relay}}
+# The app on Linux desktop. Choose a relay in Settings after it starts.
+run-linux: bridge
+    cd app && flutter run -d linux
 
 # ---------------------------------------------------------------------------
 # Measure

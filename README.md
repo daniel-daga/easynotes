@@ -180,17 +180,14 @@ just --list           # everything else
 ```
 
 The two-device demo is `just run-relay` in one terminal and `just run-linux` in
-another — twice, if you want two devices. The app syncs with the relay at
-`EASYNOTES_RELAY`, which defaults to the one `just run-relay` starts:
+another — twice, if you want two devices. In each app, open the drawer's
+**Relay settings** and enter `http://127.0.0.1:8080` (or the URL of your relay).
+The URL is saved in the app, so release builds can choose a relay after
+installation.
 
-```sh
-just run-linux https://relay.example     # or wherever yours is
-```
-
-With no relay there, nothing breaks: the app is a local notes app and the status
-button in the app bar says so, with the count of edits that have not left the
-device. The web build says the same thing about the same relay — it reaches one
-through the browser's own WebSocket. To share a list, open it, press the share
+On a new install, notes start in **On this device** until a relay is selected.
+Each relay has its own notes and account; switching relays leaves both profiles
+available. To share a list, open it, press the share
 button and send the link it makes. The link carries no key: the first person to
 open it joins, and nobody after them can ([ADR 0015](docs/adr/0015-invites.md),
 [ADR 0023](docs/adr/0023-access-packages.md),

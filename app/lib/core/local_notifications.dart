@@ -102,6 +102,16 @@ class SystemJoinAlerts implements JoinAlerts {
     );
   }
 
+  Future<void> dispose({bool cancelScheduled = false}) async {
+    if (!cancelScheduled || kIsWeb) return;
+    final pending = await _notifications.pendingNotificationRequests();
+    for (final request in pending) {
+      if (request.payload?.startsWith(_payloadPrefix) ?? false) {
+        await _notifications.cancel(id: request.id);
+      }
+    }
+  }
+
   /// One per invite, so two people joining are two notifications. Kept out of
   /// the range reminders hash into by being negative.
   static int _id(String inviteId) {

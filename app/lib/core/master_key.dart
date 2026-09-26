@@ -42,8 +42,8 @@ class MasterKeyStore {
 
   final FlutterSecureStorage _storage;
 
-  /// The name under which the key is filed. One device, one key, so it does not
-  /// need to say which notes it opens.
+  /// The default profile's keychain entry. Relay profiles append their stable
+  /// profile ID so each local store has an independent key.
   static const _key = 'easynotes.master-key';
 
   /// The key for the notes stored in [directory], from the keychain — adopting
@@ -57,8 +57,12 @@ class MasterKeyStore {
   /// deleting the only copy of the thing that unlocks everything, on the same
   /// launch that first writes it somewhere else, is how a migration turns a bug
   /// into a loss.
-  Future<Uint8List> forDirectory(String directory) async {
-    final stored = await _storage.read(key: _key);
+  Future<Uint8List> forDirectory(
+    String directory, {
+    String profileId = 'default',
+  }) async {
+    final keyName = _profileKey(profileId);
+    final stored = await _storage.read(key: keyName);
     if (stored != null) return _decode(stored);
 
     // This is the one place in the app where the bridge is crossed before a
@@ -73,7 +77,7 @@ class MasterKeyStore {
     await RustNoteCore.ensureInitialized();
     final carriedOver = rust.masterKeyBesideTheDatabase(dir: directory);
     final key = carriedOver ?? newKey();
-    await _storage.write(key: _key, value: base64Encode(key));
+    await _storage.write(key: keyName, value: base64Encode(key));
     return key;
   }
 
@@ -95,13 +99,17 @@ class MasterKeyStore {
   ///
   /// There is no file to carry over, because no version of this app ever wrote
   /// one in a browser.
-  Future<Uint8List> forBrowser() async {
-    final stored = await _storage.read(key: _key);
+  Future<Uint8List> forBrowser({String profileId = 'default'}) async {
+    final keyName = _profileKey(profileId);
+    final stored = await _storage.read(key: keyName);
     if (stored != null) return _decode(stored);
     final key = newKey();
-    await _storage.write(key: _key, value: base64Encode(key));
+    await _storage.write(key: keyName, value: base64Encode(key));
     return key;
   }
+
+  String _profileKey(String profileId) =>
+      profileId == 'default' ? _key : '$_key.$profileId';
 
   /// A key for a device that has never had one.
   ///

@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 import '../core/reminder_scheduler.dart';
+import '../core/relay_profiles.dart';
 import '../core/shared_text.dart';
 import '../core/sync_status.dart';
 import 'account_screen.dart';
@@ -29,6 +30,7 @@ import 'invites.dart';
 import 'motion.dart';
 import 'note_appearance.dart';
 import 'note_screen.dart';
+import 'relay_settings_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
 
@@ -115,13 +117,19 @@ class NoteListScreen extends StatefulWidget {
   const NoteListScreen({
     super.key,
     required this.library,
+    this.profile = const RelayProfile(id: 'default', url: null),
+    RelayProfiles? profiles,
+    this.onSwitchRelay = _ignoreRelaySwitch,
     this.initialInviteLink,
     this.inviteLinks,
     this.initialSharedText,
     this.sharedTexts,
-  });
+  }) : profiles = profiles ?? RelayProfiles();
 
   final NoteLibrary library;
+  final RelayProfile profile;
+  final RelayProfiles profiles;
+  final Future<void> Function(String?) onSwitchRelay;
   final String? initialInviteLink;
   final Stream<String>? inviteLinks;
 
@@ -129,6 +137,9 @@ class NoteListScreen extends StatefulWidget {
   /// launch, and then whenever the app is sent more while it runs.
   final SharedText? initialSharedText;
   final Stream<SharedText>? sharedTexts;
+
+  // Standalone screen tests do not need profile management.
+  static Future<void> _ignoreRelaySwitch(String? _) async {}
 
   @override
   State<NoteListScreen> createState() => _NoteListScreenState();
@@ -467,6 +478,16 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _openRelaySettings() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => RelaySettingsScreen(
+        profile: widget.profile,
+        profiles: widget.profiles.profiles,
+        onSwitchRelay: widget.onSwitchRelay,
+      ),
+    ),
+  );
+
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
     await widget.library.setLayout(next);
@@ -680,6 +701,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onForget: _forgetLabel,
               hasAccount: widget.library.hasAccount,
               onAccount: _openAccount,
+              profile: widget.profile,
+              onRelaySettings: _openRelaySettings,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
               onJoin: widget.library.canJoin ? _join : null,
@@ -1495,6 +1518,8 @@ class _Shelves extends StatelessWidget {
     required this.onForget,
     required this.hasAccount,
     required this.onAccount,
+    required this.profile,
+    required this.onRelaySettings,
     required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
@@ -1517,6 +1542,8 @@ class _Shelves extends StatelessWidget {
   /// needs to find out about before they lose the phone.
   final bool hasAccount;
   final VoidCallback onAccount;
+  final RelayProfile profile;
+  final VoidCallback onRelaySettings;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
@@ -1605,6 +1632,16 @@ class _Shelves extends StatelessWidget {
           const Divider(),
           SyncStatusTile(watch: watchSync, initial: initialSyncStatus),
           const Divider(),
+          ListTile(
+            key: const Key('relay-settings-entry'),
+            leading: const Icon(Icons.dns_outlined),
+            title: const Text('Relay settings'),
+            subtitle: Text(profile.label),
+            onTap: () {
+              Navigator.of(context).pop();
+              onRelaySettings();
+            },
+          ),
           ListTile(
             key: const Key('account-entry'),
             leading: Icon(hasAccount ? Icons.devices : Icons.phone_android),

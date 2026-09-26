@@ -18,6 +18,7 @@ import 'core/local_notifications.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/reminder_scheduler.dart';
+import 'core/relay_profiles.dart';
 import 'core/rust_note_core.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
@@ -68,20 +69,6 @@ ThemeData _easyNotesTheme(Brightness brightness) {
   );
 }
 
-/// Where the relay is.
-///
-/// A compile-time setting rather than a screen, because Slice 2 has no settings
-/// and a hard-coded address that can be overridden is honest about that:
-///
-///     flutter run --dart-define=EASYNOTES_RELAY=https://relay.example
-///
-/// The default is the one `just run-relay` starts. Nothing is lost when it is
-/// not there: the app works offline and the status button says so.
-const relayUrl = String.fromEnvironment(
-  'EASYNOTES_RELAY',
-  defaultValue: 'http://127.0.0.1:8080',
-);
-
 bool get _hasNativeDeepLinks =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.android ||
@@ -106,6 +93,8 @@ Future<void> main() async {
       : null;
   // Read, so gone from the address: a reload must not make the note twice.
   if (kIsWeb) address_bar.dropQuery();
+  final profiles = RelayProfiles();
+  await profiles.load();
   if (kIsWeb) {
     runApp(
       const MaterialApp(
@@ -122,7 +111,9 @@ Future<void> main() async {
   }
   runApp(
     EasyNotesApp(
-      library: await openLibrary(),
+      library: await openLibrary(profiles.selected),
+      profiles: profiles,
+      profile: profiles.selected,
       initialInviteLink: initialInvite,
       initialSharedText: initialShare,
     ),
@@ -130,8 +121,18 @@ Future<void> main() async {
 }
 
 /// Open this device's notes, and start syncing them.
-Future<NoteLibrary> openLibrary() async {
-  if (kIsWeb) return openInBrowser();
+Future<NoteLibrary> openLibrary(
+  RelayProfile profile, {
+  bool connect = true,
+  bool allowEphemeral = true,
+}) async {
+  if (kIsWeb) {
+    return openInBrowser(
+      profile,
+      connect: connect,
+      allowEphemeral: allowEphemeral,
+    );
+  }
   final directory = (await getApplicationSupportDirectory()).path;
   // The bridge up front. Not load-bearing any more — every entry point below
   // brings it up itself, including [MasterKeyStore.forDirectory], which is the
@@ -142,12 +143,16 @@ Future<NoteLibrary> openLibrary() async {
   // The keychain first, because it is what says whether this device has a key
   // at all — and because a device that updated into this version has one in a
   // file that has to be adopted rather than replaced.
-  final masterKey = await MasterKeyStore().forDirectory(directory);
-  final library = await RustNoteLibrary.open(directory, masterKey);
+  final profileDirectory = '$directory/easynotes-${profile.id}';
+  final masterKey = await MasterKeyStore().forDirectory(
+    profileDirectory,
+    profileId: profile.id,
+  );
+  final library = await RustNoteLibrary.open(profileDirectory, masterKey);
   // Connecting cannot fail loudly enough to matter: with no relay the app is a
   // local notes app, which is what it is designed to be when the network is
   // gone.
-  if (relayUrl.isNotEmpty) await library.connect(relayUrl);
+  if (connect && profile.url != null) await library.connect(profile.url!);
   return library;
 }
 
@@ -162,38 +167,46 @@ Future<NoteLibrary> openLibrary() async {
 /// refusing to start over: some private-browsing modes do not, and it can be
 /// switched off outright. The notes go in memory for that tab, which is what
 /// every tab had before this, and the app runs.
-Future<NoteLibrary> openInBrowser() async {
+Future<NoteLibrary> openInBrowser(
+  RelayProfile profile, {
+  bool connect = true,
+  bool allowEphemeral = true,
+}) async {
   NoteLibrary library;
   BrowserStore? db;
   try {
     // Own the database before reading or minting the shared master key too.
-    db = await openBrowserStore(browserDatabase);
-    final masterKey = await MasterKeyStore().forBrowser();
+    db = await openBrowserStore('$browserDatabase-${profile.id}');
+    final masterKey = await MasterKeyStore().forBrowser(profileId: profile.id);
     library = await RustNoteLibrary.openInBrowser(db, masterKey);
   } on Object catch (error) {
     await db?.close();
+    if (!allowEphemeral) rethrow;
     debugPrint('keeping this tab\'s notes in memory only: $error');
     library = await RustNoteLibrary.openEphemeral();
   }
   // As on a device: with no relay there the app is a local notes app, and the
   // status button says so.
-  if (relayUrl.isNotEmpty) await library.connect(relayUrl);
+  if (connect && profile.url != null) await library.connect(profile.url!);
   return library;
 }
 
-/// The name of the IndexedDB database. One per origin, so it says what it is
-/// rather than which notes are in it.
+/// Base name for this origin's profile-specific IndexedDB databases.
 const browserDatabase = 'easynotes';
 
 class EasyNotesApp extends StatefulWidget {
   const EasyNotesApp({
     super.key,
     required this.library,
+    required this.profiles,
+    required this.profile,
     this.initialInviteLink,
     this.initialSharedText,
   });
 
   final NoteLibrary library;
+  final RelayProfiles profiles;
+  final RelayProfile profile;
   final String? initialInviteLink;
   final SharedText? initialSharedText;
 
@@ -206,31 +219,117 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   /// phone, minimised on a desktop, a tab switched away from in a browser. All
   /// three are `hidden` to Flutter, and it is the last state the app is sure
   /// to reach with its sockets still up.
-  late final AppLifecycleListener _lifecycle;
-  late final ReminderScheduler _reminders;
+  AppLifecycleListener? _lifecycle;
+  late ReminderScheduler _reminders;
+  late NoteLibrary _library;
+  late RelayProfile _profile;
+  bool _switching = false;
+  bool _launchPayloadsDelivered = false;
 
   @override
   void initState() {
     super.initState();
-    _reminders = ReminderScheduler(widget.library);
+    _library = widget.library;
+    _profile = widget.profile;
+    _installSession();
+  }
+
+  void _installSession() {
+    _reminders = ReminderScheduler(_library);
     unawaited(_reminders.start());
-    joinAlerts = SystemJoinAlerts(widget.library);
+    joinAlerts = SystemJoinAlerts(_library);
     _lifecycle = AppLifecycleListener(
-      onHide: widget.library.sendHeldEdits,
+      onHide: _library.sendHeldEdits,
       onResume: () => unawaited(_reminders.reconcile()),
     );
   }
 
+  Future<void> _switchRelay(String? url) async {
+    if (_switching || url == _profile.url) return;
+    setState(() => _switching = true);
+    final previousProfile = _profile;
+    NoteLibrary? next;
+    var oldDisposed = false;
+    try {
+      final target = await widget.profiles.prepare(url);
+      next = await openLibrary(
+        target,
+        connect: false,
+        allowEphemeral: false,
+      );
+      if (_library is RustNoteLibrary &&
+          !(_library as RustNoteLibrary).canJoin) {
+        throw StateError(
+          'This tab has no persistent storage. Keep it open and switch on a tab with storage enabled.',
+        );
+      }
+      if (_library is RustNoteLibrary) {
+        await (_library as RustNoteLibrary).flush();
+      }
+      if (_library.storageError != null) {
+        await next.dispose();
+        next = null;
+        throw StateError('This profile has unsaved local changes.');
+      }
+      final old = _library;
+      _lifecycle?.dispose();
+      await _reminders.dispose(cancelScheduled: true);
+      final oldJoinAlerts = joinAlerts;
+      if (oldJoinAlerts is SystemJoinAlerts) {
+        await oldJoinAlerts.dispose(cancelScheduled: true);
+      }
+      await old.dispose();
+      oldDisposed = true;
+      await widget.profiles.activate(target);
+      final opened = next!;
+      if (target.url != null) await opened.connect(target.url!);
+      if (!mounted) {
+        await opened.dispose();
+        return;
+      }
+      setState(() {
+        _library = opened;
+        _profile = target;
+      });
+      _installSession();
+      next = null;
+    } on Object catch (error) {
+      if (next != null) await next.dispose();
+      if (oldDisposed && mounted) {
+        try {
+          if (next == null) await _library.dispose();
+          await widget.profiles.activate(previousProfile);
+          final restored = await openLibrary(previousProfile);
+          setState(() {
+            _library = restored;
+            _profile = previousProfile;
+          });
+          _installSession();
+        } on Object catch (restoreError) {
+          debugPrint(
+            'could not reopen the previous relay profile: $restoreError',
+          );
+        }
+      }
+      if (mounted) {
+        setState(() => _switching = false);
+      }
+      Error.throwWithStackTrace(error, StackTrace.current);
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
   @override
   void dispose() {
-    _lifecycle.dispose();
+    _lifecycle?.dispose();
     unawaited(_reminders.dispose());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final library = widget.library;
+    final library = _library;
     return MaterialApp(
       title: 'EasyNotes',
       debugShowCheckedModeBanner: false,
@@ -241,13 +340,26 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       // has a use for.
       theme: _easyNotesTheme(Brightness.light),
       darkTheme: _easyNotesTheme(Brightness.dark),
-      home: NoteListScreen(
-        library: library,
-        initialInviteLink: widget.initialInviteLink,
-        inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
-        initialSharedText: widget.initialSharedText,
-        sharedTexts: _hasNativeShares ? SharedTexts.incoming : null,
-      ),
+      home: _noteList(library),
+    );
+  }
+
+  Widget _noteList(NoteLibrary library) {
+    final initialInvite =
+        _launchPayloadsDelivered ? null : widget.initialInviteLink;
+    final initialShare =
+        _launchPayloadsDelivered ? null : widget.initialSharedText;
+    _launchPayloadsDelivered = true;
+    return NoteListScreen(
+      key: ValueKey(_profile.id),
+      library: library,
+      profile: _profile,
+      profiles: widget.profiles,
+      onSwitchRelay: _switchRelay,
+      initialInviteLink: initialInvite,
+      inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
+      initialSharedText: initialShare,
+      sharedTexts: _hasNativeShares ? SharedTexts.incoming : null,
     );
   }
 }

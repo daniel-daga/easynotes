@@ -26,9 +26,8 @@ whole `Release` folder: the executable needs the DLLs and `data` beside it.
 The folder is an unpackaged build, without an installer or code signing.
 
 `just build-windows` builds it; `just run-windows` launches a development build.
-The latter accepts a relay URL, like `just run-linux`. For a release build with
-a remote relay, pass `--dart-define=EASYNOTES_RELAY=https://relay.example` to
-`flutter build windows --release`. The default is `http://127.0.0.1:8080`.
+Choose the relay in **Relay settings** after the app starts. This setting is
+saved on the device and works in release builds too.
 
 `just windows-storage-smoke` runs those three steps locally and leaves the
 normal release build in place. The manually triggered **App builds** workflow has a Windows checkbox and

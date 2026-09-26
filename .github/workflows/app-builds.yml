@@ -147,9 +147,7 @@ jobs:
       # used to add x86 to every debug build regardless; its plugin.gradle now
       # honours the list when one is given (a local change to the vendored file).
       #
-      # No EASYNOTES_RELAY: the default, 127.0.0.1:8080, is what an emulator
-      # reaches through `adb reverse`. Build locally with the define for 10.0.2.2
-      # or a real relay.
+      # Relay selection is saved in app Settings after installation.
       - name: Build the debug APK
         working-directory: app
         run: flutter build apk --debug --target-platform android-arm64,android-x64

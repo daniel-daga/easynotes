@@ -407,7 +407,7 @@ class ReminderScheduler {
     return hash;
   }
 
-  Future<void> dispose() async {
+  Future<void> dispose({bool cancelScheduled = false}) async {
     _started = false;
     await _updates?.cancel();
     await _reconciling;
@@ -415,6 +415,16 @@ class ReminderScheduler {
       timer.cancel();
     }
     _inProcessTimers.clear();
+    if (cancelScheduled &&
+        !kIsWeb &&
+        defaultTargetPlatform != TargetPlatform.linux) {
+      final pending = await _notifications.pendingNotificationRequests();
+      for (final request in pending) {
+        if (request.payload?.startsWith(_payloadPrefix) ?? false) {
+          await _notifications.cancel(id: request.id);
+        }
+      }
+    }
     if (identical(instance, this)) instance = null;
   }
 }
