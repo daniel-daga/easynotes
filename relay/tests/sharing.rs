@@ -491,3 +491,95 @@ async fn a_member_compacts_a_shared_note_and_the_removed_one_cannot() {
     })
     .await;
 }
+
+/// A reconnect must settle revocations before uploading offline edits.
+#[tokio::test]
+async fn offline_edits_are_only_published_under_the_current_key() {
+    let (relay, log) = relay().await;
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    let owner = Phone::new("Owner", &endpoint);
+    let anna = Phone::new("Anna", &endpoint);
+    let ben = Phone::new("Ben", &endpoint);
+    let note = owner.create_note("Original");
+    let_in(&owner, &anna, note).await;
+    let_in(&owner, &ben, note).await;
+    ben.wait_until("initial title", || {
+        ben.title(note).as_deref() == Some("Original")
+    })
+    .await;
+    // Wait for the engine task to finish, not just for shutdown to be queued.
+    let handle = ben.engines.lock().unwrap().remove(&note).unwrap();
+    let mut status = handle.watch_status();
+    handle.shutdown();
+    tokio::time::timeout(PATIENCE, async { while status.changed().await.is_ok() {} })
+        .await
+        .unwrap();
+    let key = |phone: &Phone| {
+        let blob = phone.core.lock().unwrap().export_share_blob(note).unwrap();
+        easynotes_core::crypto::import_share_blob(&blob).unwrap().1
+    };
+    let old_key = key(&ben);
+    // Model a bridge command delayed until after the owner's rotation. Its
+    // content will already be included in the rotation snapshot.
+    let delayed = owner
+        .core
+        .lock()
+        .unwrap()
+        .set_body(note, "held typing")
+        .unwrap()
+        .unwrap();
+    let anna_member = anna.core.lock().unwrap().member().unwrap().id().encode();
+    {
+        let mut core = owner.core.lock().unwrap();
+        let people = core.people(note).unwrap();
+        let row = people
+            .people
+            .iter()
+            .find(|p| p.member == anna_member)
+            .unwrap();
+        let (member, invite) = (row.member.clone(), row.invite.clone());
+        core.remove_person(note, &member, &invite).unwrap();
+    }
+    owner.settle(note);
+    owner
+        .wait_until("rotation", || key(&owner).id() != old_key.id())
+        .await;
+    anna.wait_until("removal delivered", || {
+        !anna.core.lock().unwrap().can_open(note)
+    })
+    .await;
+    let before = log.head(&note.encode()).await.unwrap();
+    owner.engines.lock().unwrap()[&note].publish(delayed);
+    let current = owner
+        .core
+        .lock()
+        .unwrap()
+        .set_body(note, "current typing")
+        .unwrap()
+        .unwrap();
+    owner.engines.lock().unwrap()[&note].publish(current);
+    ben.core
+        .lock()
+        .unwrap()
+        .set_title(note, "PRIVATE AFTER REMOVAL")
+        .unwrap();
+    ben.connect_everything();
+    owner
+        .wait_until("offline edit under the new key", || {
+            owner.title(note).as_deref() == Some("PRIVATE AFTER REMOVAL")
+        })
+        .await;
+    assert_ne!(key(&ben).id(), old_key.id());
+    ben.wait_until("the owner's newer edit", || {
+        ben.core.lock().unwrap().open_note(note).unwrap().body == "current typing"
+    })
+    .await;
+    let rows = log.since(&note.encode(), before).await.unwrap();
+    assert!(
+        !rows.iter().any(|row| {
+            let env = Envelope::decode(&row.envelope).unwrap();
+            env.kind == EnvelopeKind::Update && env.open(&old_key).is_ok()
+        }),
+        "offline updates reached the relay under the removed person's key"
+    );
+}

@@ -702,7 +702,12 @@ async fn session<P: SyncPeer>(
             match sync.next().await {
                 Ok(Some(Routed::Note(id, incoming))) if id == account => {
                     match device.receive(peer, &me, id, incoming) {
-                        Ok(Received::Caught) => break,
+                        Ok(Received::Caught) => {
+                            if let Err(e) = device.send_urgent(&mut sync).await {
+                                return Ended::Failed(e);
+                            }
+                            break;
+                        }
                         Ok(Received::Reset) => {
                             let _ = sync.close().await;
                             return Ended::Connected {
@@ -920,8 +925,8 @@ impl Device {
         live.on_socket
     }
 
-    /// Put one note on a live connection: subscribe it from its cursor, and
-    /// send what it has not.
+    /// Put one note on a live connection, subscribing from its saved cursor.
+    /// Its outbox is rebuilt and sent only after access has settled at Caught.
     ///
     /// The error is the socket's, and ends the connection. A note whose own
     /// store fails is told so and left off the socket, rather than taking every
@@ -966,45 +971,9 @@ impl Device {
         live.on_socket = true;
         live.connected();
 
-        // Everything this device wrote that the relay has not acknowledged,
-        // including edits from earlier runs of the app and whatever was held
-        // back while offline — all of it is in the log, so the log is where it
-        // is read from, and it replaces the outbox rather than joining it.
-        // Folded into as few envelopes as will do: an hour of offline typing is
-        // one burst as far as anyone else is concerned.
-        match peer.unsent(id, live.cursor.sent_upto) {
-            Ok(unsent) => {
-                // A `Publish` still in the channel for anything read here is the
-                // same edit arriving a second time. The counter says so, because
-                // the log gets an edit before the channel does.
-                // Ours only: an access package is signed by the note's owner
-                // key and carries a revision, not one of this device's
-                // counters.
-                let me = peer.device_key().ok();
-                live.covered = unsent
-                    .iter()
-                    .filter(|(_, envelope)| {
-                        Envelope::decode(envelope).is_ok_and(|e| Some(e.author) == me)
-                    })
-                    .map(|(counter, _)| *counter)
-                    .max();
-                live.release();
-                let unsent = unsent.into_iter().map(|(_, envelope)| envelope).collect();
-                live.outbox = live.squash(peer, id, unsent);
-            }
-            Err(e) => {
-                live.release();
-                live.outbox.clear();
-                live.note_error(e.to_string());
-            }
-        }
-        live.publish();
-
-        for envelope in live.outbox.clone() {
-            sync.append(id, &envelope)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
+        // The backlog may revoke our key. Keep edits local until Caught has
+        // settled access, then rebuild the outbox under the resulting key.
+        live.covered = None;
         Ok(())
     }
 
@@ -1053,6 +1022,8 @@ impl Device {
                 // arriving a second time. Sending it again would put a
                 // duplicate in the relay's log on every launch where the user
                 // edits while it is still connecting.
+                // A key rotation also supersedes commands still carrying the
+                // previous key, even when only an owner-signed snapshot remains.
                 if live.covers(&envelope) {
                     return Ok(Next::Continue);
                 }
@@ -1096,9 +1067,9 @@ impl Device {
         let Some(live) = self.notes.get_mut(&id) else {
             return Ok(());
         };
-        // Left held, with its timers stopped, when the note could not be put on
-        // the socket: the relay would refuse it, and the log has it anyway.
-        if !live.on_socket {
+        // Catch-up may still change access. Leave edits in the log until the
+        // barrier rebuilds the outbox; stop timers so they cannot spin here.
+        if !live.on_socket || !live.caught {
             live.quiet = None;
             live.cap = None;
             return Ok(());
@@ -1120,7 +1091,7 @@ impl Device {
     /// made for the relay.
     async fn send_urgent(&mut self, sync: &mut DeviceSync) -> std::result::Result<(), String> {
         for (id, live) in self.notes.iter_mut() {
-            if !live.on_socket {
+            if !live.on_socket || !live.caught {
                 continue;
             }
             if let Some(request) = live.compact.take() {
@@ -1203,8 +1174,14 @@ impl Device {
                 // After the cursor has moved, so that a peer that does work
                 // here and then fails does not also lose its place in the log
                 // it has already applied.
-                settle(peer, id, live);
-                live.set_state(SyncState::Synced);
+                // A failed access transition must not release old-key edits.
+                let out = peer.settled(id).map_err(|e| e.to_string())?;
+                live.take(out);
+                if live.on_socket {
+                    live.rebuild_outbox(peer, id)?;
+                    live.urgent = live.outbox.clone();
+                    live.set_state(SyncState::Synced);
+                }
                 Ok(Received::Caught)
             }
             Incoming::Reset => {
@@ -1263,6 +1240,9 @@ struct Live {
     /// Anything at or below it is already in the outbox, whatever it was folded
     /// into on the way.
     covered: Option<u64>,
+    /// After a rotation, commands already queued by the UI may still carry
+    /// the old key. Their content is in the replacement snapshot/update.
+    publish_key: Option<[u8; crate::crypto::KEY_ID_LEN]>,
     /// What settling the note said to send, waiting for the socket.
     urgent: Vec<Vec<u8>>,
     /// The relay has asked for a compaction on this connection, and this
@@ -1295,6 +1275,7 @@ impl Live {
             outbox: Vec::new(),
             held: Vec::new(),
             covered: None,
+            publish_key: None,
             urgent: Vec::new(),
             crowded: false,
             compact: None,
@@ -1341,10 +1322,22 @@ impl Live {
     /// the state the new key opens, and sending it would hand it to whoever the
     /// key change removed.
     fn take(&mut self, out: Outgoing) {
+        if out.removed {
+            self.on_socket = false;
+            self.release();
+            self.outbox.clear();
+            self.urgent.clear();
+            self.set_state(SyncState::Offline);
+            return;
+        }
         if out.rekey {
             self.release();
             self.outbox.clear();
             self.covered = None;
+            self.publish_key = out
+                .envelopes
+                .iter()
+                .find_map(|raw| Envelope::decode(raw).ok().and_then(|env| env.key_id));
         }
         self.urgent.extend(out.envelopes);
         self.publish();
@@ -1375,10 +1368,33 @@ impl Live {
     }
 
     fn covers(&self, envelope: &[u8]) -> bool {
-        let Some(covered) = self.covered else {
-            return false;
-        };
-        Envelope::decode(envelope).is_ok_and(|e| e.counter <= covered)
+        Envelope::decode(envelope).is_ok_and(|e| {
+            self.covered.is_some_and(|covered| e.counter <= covered)
+                || self.publish_key.is_some_and(|key| e.key_id != Some(key))
+        })
+    }
+
+    /// Read only after access has settled: a key rotation may replace the log.
+    /// Commands queued during catch-up are already represented in these rows.
+    fn rebuild_outbox<P: SyncPeer>(
+        &mut self,
+        peer: &P,
+        note: NoteId,
+    ) -> std::result::Result<(), String> {
+        let unsent = peer
+            .unsent(note, self.cursor.sent_upto)
+            .map_err(|e| e.to_string())?;
+        let me = peer.device_key().map_err(|e| e.to_string())?;
+        self.covered = unsent
+            .iter()
+            .filter(|(_, raw)| Envelope::decode(raw).is_ok_and(|env| env.author == me))
+            .map(|(counter, _)| *counter)
+            .max()
+            .max(self.cursor.sent_upto);
+        self.release();
+        self.outbox = self.squash(peer, note, unsent.into_iter().map(|(_, raw)| raw).collect());
+        self.publish();
+        Ok(())
     }
 
     /// [`SyncPeer::squash`], falling back to sending what came in unchanged.

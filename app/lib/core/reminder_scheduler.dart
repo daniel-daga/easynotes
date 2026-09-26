@@ -28,6 +28,8 @@ class ReminderScheduler {
   StreamSubscription<List<Reminder>>? _updates;
   final Map<String, Timer> _inProcessTimers = {};
   bool _started = false;
+  Future<void>? _reconciling;
+  bool _reconcileAgain = false;
 
   /// Start after the library is open. This never asks for notification
   /// permission: that prompt belongs to the explicit "Add reminder" gesture.
@@ -82,8 +84,27 @@ class ReminderScheduler {
   /// Mirror encrypted reminders into native pending notifications. Trashed
   /// notes are deliberately excluded; restoring the note makes its reminder
   /// eligible again without rewriting its account-document entry.
-  Future<void> reconcile() async {
-    if (!_started) return;
+  Future<void> reconcile() {
+    if (!_started) return Future.value();
+    // Platform calls yield. A second pass must read fresh state after the
+    // current pass finishes, otherwise an older schedule can undo a deletion.
+    // All callers await the same drain, including any requested follow-up.
+    _reconcileAgain = true;
+    return _reconciling ??= _drainReconciliations();
+  }
+
+  Future<void> _drainReconciliations() async {
+    try {
+      while (_started && _reconcileAgain) {
+        _reconcileAgain = false;
+        await _reconcileOnce();
+      }
+    } finally {
+      _reconciling = null;
+    }
+  }
+
+  Future<void> _reconcileOnce() async {
     final noteById = {for (final note in _library.notes) note.id: note};
     final reminders = [
       for (final reminder in _library.reminders)
@@ -387,7 +408,9 @@ class ReminderScheduler {
   }
 
   Future<void> dispose() async {
+    _started = false;
     await _updates?.cancel();
+    await _reconciling;
     for (final timer in _inProcessTimers.values) {
       timer.cancel();
     }
