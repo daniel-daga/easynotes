@@ -16,9 +16,11 @@
 //!
 //! This covers the locks in this crate. flutter_rust_bridge's own pool of the
 //! objects Dart holds is taken the same way, by a patch in
-//! `third_party/flutter_rust_bridge`, and a `tokio::sync::watch` channel is
-//! never touched from a synchronous call — see [`crate::api::notes::StatusCell`]
-//! and ADR 0002, "Not done, and honest about it".
+//! `third_party/flutter_rust_bridge`. The `#[frb(sync)]` status getters read
+//! [`crate::api::notes::StatusCell`]'s copied value rather than a Tokio watch
+//! channel, which could block the page thread; stream methods subscribe and
+//! start their watcher on a Web Worker. See ADR 0002, "Not done, and honest
+//! about it".
 
 use std::sync::{LockResult, Mutex, MutexGuard};
 

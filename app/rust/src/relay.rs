@@ -4,9 +4,10 @@
 //! same on every target so that one set of generated bindings serves all of
 //! them. A browser cannot open a native WebSocket, so the difference lives here
 //! rather than as `#[cfg]` scattered through the API — and it is now only this:
-//! what runs a task. A tokio runtime the app starts on a device, and the page's
-//! own event loop in a tab. The engine, the outbox, the cursor, the reconnect
-//! policy and the protocol are the same code in both — `easynotes_core::sync`.
+//! what runs a task. A tokio runtime for native background work, and the
+//! current WebAssembly instance's event loop in a tab. The engine, the outbox,
+//! the cursor, the reconnect policy and the protocol are the same code in both
+//! — `easynotes_core::sync`.
 //!
 //! **One socket per device.** A [`Device`] is one engine, and so one
 //! connection to the relay and one token handshake, however many notes are
@@ -22,11 +23,9 @@ use std::sync::Arc;
 mod native {
     use std::sync::OnceLock;
 
-    /// The engine needs a reactor and the bridge does not provide one: its own
-    /// executor runs the `async fn`s in the generated API, and nothing there
-    /// speaks TCP. So the app gets one runtime, started on the first connection
-    /// and never shut down — a relay being changed must not take the runtime
-    /// the next one needs with it.
+    /// The app's background tasks need a runtime the bridge does not provide.
+    /// One runtime is started on the first task and never shut down — a relay
+    /// being changed must not take the runtime the next task needs with it.
     fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
         static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
         if let Some(runtime) = RUNTIME.get() {
@@ -43,7 +42,7 @@ mod native {
         Ok(RUNTIME.get_or_init(|| built))
     }
 
-    pub fn spawn<F>(work: F) -> Result<(), String>
+    pub(crate) fn spawn<F>(work: F) -> Result<(), String>
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
@@ -71,7 +70,9 @@ mod native {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    /// The page's own event loop, instead of a tokio runtime.
+    /// The current WebAssembly instance's event loop, instead of a tokio
+    /// runtime. Ordinary bridge calls run on workers, keeping detached watcher
+    /// tasks and lock-guard drops off the page's main thread.
     ///
     /// There is no runtime to start and none to shut down: `spawn_local` hands
     /// the future to the JavaScript microtask queue of whichever thread we are
@@ -90,7 +91,7 @@ mod web {
     /// memory rather than an `Rc` that cannot leave its thread. Without
     /// `+atomics` this would be unsound, which is one more reason the threading
     /// flags in the justfile stay together.
-    pub fn spawn<F>(work: F) -> Result<(), String>
+    pub(crate) fn spawn<F>(work: F) -> Result<(), String>
     where
         F: std::future::Future<Output = ()> + 'static,
     {
@@ -112,11 +113,11 @@ mod web {
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::on_network;
 #[cfg(not(target_arch = "wasm32"))]
-use native::spawn;
+pub(crate) use native::spawn;
 #[cfg(target_arch = "wasm32")]
 pub use web::on_network;
 #[cfg(target_arch = "wasm32")]
-use web::spawn;
+pub(crate) use web::spawn;
 
 /// This device's connection to one relay: one engine, one socket.
 pub struct Device {

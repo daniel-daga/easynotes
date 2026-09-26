@@ -507,8 +507,8 @@ impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
 
 /// A sync status, as a stream for the watchers and as a value for a getter.
 ///
-/// Two copies because they are read on different threads. A watcher is an
-/// `async` call, which on the web runs on a Web Worker; a getter is a
+/// Two copies because they are read on different threads. Stream methods copy
+/// their receiver and start watcher tasks on a Web Worker; a getter is a
 /// `#[frb(sync)]` call, which runs on the page's main thread. Reading a
 /// `watch` channel takes the `std::sync::RwLock` inside it, and a worker
 /// reporting a status can be holding that lock, so a getter reading the
@@ -1626,27 +1626,29 @@ impl Library {
     ///
     /// Every edit reaches it, whether it was made here or arrived from another
     /// device, because both go through the core's one refresh.
-    pub async fn watch_notes(&self, sink: StreamSink<Vec<NoteSummaryView>>) -> Result<(), String> {
+    pub fn watch_notes(&self, sink: StreamSink<Vec<NoteSummaryView>>) -> Result<(), String> {
         let mut updates = { self.shared.locked()?.watch_notes() };
         let stop = self.stop.clone();
-        let send = |summaries: Vec<easynotes_core::note::NoteSummary>| {
-            sink.add(summaries.into_iter().map(Into::into).collect::<Vec<_>>())
-        };
-        if send(updates.borrow_and_update().clone()).is_err() {
-            return Ok(());
-        }
-        loop {
-            if updates.changed().await.is_err() {
-                return Ok(()); // the library was dropped
+        crate::relay::spawn(async move {
+            let send = |summaries: Vec<easynotes_core::note::NoteSummary>| {
+                sink.add(summaries.into_iter().map(Into::into).collect::<Vec<_>>())
+            };
+            if send(updates.borrow_and_update().clone()).is_err() {
+                return;
             }
-            if stop.load(Ordering::SeqCst) {
-                return Ok(());
+            loop {
+                if updates.changed().await.is_err() {
+                    return; // the library was dropped
+                }
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let next = updates.borrow_and_update().clone();
+                if send(next).is_err() {
+                    return; // Dart stopped listening
+                }
             }
-            let next = updates.borrow_and_update().clone();
-            if send(next).is_err() {
-                return Ok(()); // Dart stopped listening
-            }
-        }
+        })
     }
 
     /// Every note whose text contains all of the query's words.
@@ -2585,13 +2587,12 @@ impl Library {
         self.shared.statuses.overall.get()
     }
 
-    pub async fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
-        watch_status(
+    pub fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
+        spawn_watch_status(
             self.shared.statuses.overall.subscribe(),
             self.stop.clone(),
             sink,
         )
-        .await
     }
 
     /// End the watchers started above and let their tasks finish.
@@ -2676,7 +2677,7 @@ impl Note {
     /// This is the only way the UI learns anything. A local edit and an edit
     /// arriving from another device both come out here, which is what keeps the
     /// one-device and two-device cases identical.
-    pub async fn watch(&self, sink: StreamSink<NoteView>) -> Result<(), String> {
+    pub fn watch(&self, sink: StreamSink<NoteView>) -> Result<(), String> {
         let mut rx = {
             self.shared
                 .locked()?
@@ -2685,29 +2686,31 @@ impl Note {
         };
         let stop = self.stop.clone();
 
-        // An async task rather than a thread, and not as a style preference:
-        // `std::thread::spawn` is unsupported on `wasm32-unknown-unknown` and
-        // panics with `operation not supported on this platform`, which took the
-        // whole web app down on the first frame. Awaiting works on both targets,
-        // and the bridge drives this future for the life of the stream.
+        // Do not make this method async. flutter_rust_bridge would hold the
+        // auto-opaque read guard for the entire stream, and dropping Tokio's
+        // guard can wait on its semaphore mutex. On the web that drop must stay
+        // off the page's main thread. Capture the receiver and stop flag here,
+        // then let the worker's event loop drive the watcher independently.
         //
         // `changed()` is runtime-agnostic, so nothing polls and an idle watcher
         // costs nothing.
-        if sink.add(rx.borrow_and_update().clone().into()).is_err() {
-            return Ok(());
-        }
-        loop {
-            if rx.changed().await.is_err() {
-                return Ok(()); // the library was dropped
+        crate::relay::spawn(async move {
+            if sink.add(rx.borrow_and_update().clone().into()).is_err() {
+                return;
             }
-            if stop.load(Ordering::SeqCst) {
-                return Ok(());
+            loop {
+                if rx.changed().await.is_err() {
+                    return; // the library was dropped
+                }
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let view = rx.borrow_and_update().clone();
+                if sink.add(view.into()).is_err() {
+                    return; // Dart stopped listening
+                }
             }
-            let view = rx.borrow_and_update().clone();
-            if sink.add(view.into()).is_err() {
-                return Ok(()); // Dart stopped listening
-            }
-        }
+        })
     }
 
     /// Where this note stands with the relay.
@@ -2716,8 +2719,8 @@ impl Note {
         self.status.get()
     }
 
-    pub async fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
-        watch_status(self.status.subscribe(), self.stop.clone(), sink).await
+    pub fn watch_sync(&self, sink: StreamSink<SyncStatus>) -> Result<(), String> {
+        spawn_watch_status(self.status.subscribe(), self.stop.clone(), sink)
     }
 
     /// End this handle's watchers and let their tasks finish. The note stays
@@ -2887,4 +2890,19 @@ async fn watch_status(
             return Ok(());
         }
     }
+}
+
+/// Start a status stream without keeping the generated auto-opaque lock guard
+/// alive for the stream's lifetime.
+fn spawn_watch_status(
+    updates: watch::Receiver<SyncStatus>,
+    stop: Arc<AtomicBool>,
+    sink: StreamSink<SyncStatus>,
+) -> Result<(), String> {
+    let error_sink = sink.clone();
+    crate::relay::spawn(async move {
+        if let Err(error) = watch_status(updates, stop, sink).await {
+            let _ = error_sink.add_error(error);
+        }
+    })
 }
