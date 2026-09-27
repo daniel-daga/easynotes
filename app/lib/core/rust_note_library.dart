@@ -636,6 +636,8 @@ class RustNoteLibrary implements NoteLibrary {
     items: s.items,
     checked: s.checked,
     preview: s.preview,
+    images: s.images,
+    audio: s.audio,
     colour: _fromRustColour(s.colour),
     pinned: s.pinned,
     archived: s.archived,

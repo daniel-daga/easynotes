@@ -260,6 +260,10 @@ pub struct NoteSummaryView {
     /// The first few lines of the body, then the first few items. A card shows
     /// these under the title, and most shopping lists do not have one.
     pub preview: Vec<String>,
+    /// How many live pictures and sound files the note holds, for a card to
+    /// say so and a search to filter by, without opening it.
+    pub images: u32,
+    pub audio: u32,
     /// What this person has done with the note. From the account document, so
     /// none of it is shared with whoever else is on the note.
     ///
@@ -296,6 +300,8 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
             items: s.items as u32,
             checked: s.checked as u32,
             preview: s.preview,
+            images: s.images as u32,
+            audio: s.audio as u32,
             colour: s.placement.colour.map(Into::into),
             pinned: s.placement.pinned,
             archived: s.placement.archived,

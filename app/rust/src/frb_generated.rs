@@ -4931,6 +4931,8 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
         let mut var_items = <u32>::sse_decode(deserializer);
         let mut var_checked = <u32>::sse_decode(deserializer);
         let mut var_preview = <Vec<String>>::sse_decode(deserializer);
+        let mut var_images = <u32>::sse_decode(deserializer);
+        let mut var_audio = <u32>::sse_decode(deserializer);
         let mut var_colour = <Option<crate::api::notes::NoteColour>>::sse_decode(deserializer);
         let mut var_pinned = <bool>::sse_decode(deserializer);
         let mut var_archived = <bool>::sse_decode(deserializer);
@@ -4944,6 +4946,8 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
             items: var_items,
             checked: var_checked,
             preview: var_preview,
+            images: var_images,
+            audio: var_audio,
             colour: var_colour,
             pinned: var_pinned,
             archived: var_archived,
@@ -5784,6 +5788,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteSummaryView {
             self.items.into_into_dart().into_dart(),
             self.checked.into_into_dart().into_dart(),
             self.preview.into_into_dart().into_dart(),
+            self.images.into_into_dart().into_dart(),
+            self.audio.into_into_dart().into_dart(),
             self.colour.into_into_dart().into_dart(),
             self.pinned.into_into_dart().into_dart(),
             self.archived.into_into_dart().into_dart(),
@@ -6657,6 +6663,8 @@ impl SseEncode for crate::api::notes::NoteSummaryView {
         <u32>::sse_encode(self.items, serializer);
         <u32>::sse_encode(self.checked, serializer);
         <Vec<String>>::sse_encode(self.preview, serializer);
+        <u32>::sse_encode(self.images, serializer);
+        <u32>::sse_encode(self.audio, serializer);
         <Option<crate::api::notes::NoteColour>>::sse_encode(self.colour, serializer);
         <bool>::sse_encode(self.pinned, serializer);
         <bool>::sse_encode(self.archived, serializer);

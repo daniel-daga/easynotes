@@ -20,6 +20,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../core/attachments.dart';
 import '../core/note_library.dart';
 import '../core/reminder_scheduler.dart';
 import '../core/relay_profiles.dart';
@@ -875,6 +876,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
       kind == NoteKind.checklist ? 'Search in Checklists' : 'Search in Notes',
       (note, _) => note.kind == kind,
     ),
+    // Whatever the note's kind: a checklist can hold a photo as well as a
+    // text note can.
+    onMedia: (kind) => _selectFilter(
+      kind == AttachmentKind.image ? 'Search in Images' : 'Search in Audio',
+      (note, _) =>
+          kind == AttachmentKind.image ? note.images > 0 : note.audio > 0,
+    ),
     onLabel: (id) => _selectFilter(
       'Search in ${widget.library.tags.where((tag) => tag.id == id).first.name}',
       (note, _) => note.tagIds.contains(id),
@@ -959,6 +967,7 @@ class _SearchFilterBrowser extends StatefulWidget {
     required this.tags,
     required this.reminderNoteIds,
     required this.onKind,
+    required this.onMedia,
     required this.onLabel,
     required this.onColour,
     required this.onReminder,
@@ -969,6 +978,7 @@ class _SearchFilterBrowser extends StatefulWidget {
   final List<Tag> tags;
   final Set<String> reminderNoteIds;
   final ValueChanged<NoteKind> onKind;
+  final ValueChanged<AttachmentKind> onMedia;
   final ValueChanged<String> onLabel;
   final ValueChanged<String> onColour;
   final ValueChanged<_ReminderFilter> onReminder;
@@ -1041,6 +1051,20 @@ class _SearchFilterBrowserState extends State<_SearchFilterBrowser> {
               label: 'Checklists',
               count: _kindCount(NoteKind.checklist),
               onSelected: () => widget.onKind(NoteKind.checklist),
+            ),
+            _FacetChip(
+              key: const Key('filter-type-images'),
+              icon: Icons.image_outlined,
+              label: 'Images',
+              count: widget.notes.where((note) => note.images > 0).length,
+              onSelected: () => widget.onMedia(AttachmentKind.image),
+            ),
+            _FacetChip(
+              key: const Key('filter-type-audio'),
+              icon: Icons.audiotrack_outlined,
+              label: 'Audio',
+              count: widget.notes.where((note) => note.audio > 0).length,
+              onSelected: () => widget.onMedia(AttachmentKind.audio),
             ),
           ],
         ),
@@ -2336,6 +2360,10 @@ class _NoteCardState extends State<_NoteCard> {
                     style: theme.textTheme.bodySmall,
                   ),
                 ],
+                if (note.images > 0 || note.audio > 0) ...[
+                  const SizedBox(height: 8),
+                  _MediaCount(images: note.images, audio: note.audio),
+                ],
                 // The labels, as small chips. On the card and not only in the
                 // drawer, because a note's filing is part of what it is — and
                 // because a shared list that one person has labelled looks the
@@ -2631,6 +2659,44 @@ class _LabelsDialogState extends State<_LabelsDialog> {
           child: const Text('Done'),
         ),
       ],
+    );
+  }
+}
+
+/// How many pictures and sound files a note holds: quiet icons with counts,
+/// so a card says there is more inside without drawing any of it.
+class _MediaCount extends StatelessWidget {
+  const _MediaCount({required this.images, required this.audio});
+
+  final int images;
+  final int audio;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodySmall;
+    Widget count(IconData icon, int n) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: style?.color),
+        const SizedBox(width: 2),
+        Text('$n', style: style),
+      ],
+    );
+    final said = [
+      if (images > 0) images == 1 ? '1 image' : '$images images',
+      if (audio > 0) audio == 1 ? '1 sound file' : '$audio sound files',
+    ].join(', ');
+    return Semantics(
+      label: said,
+      excludeSemantics: true,
+      child: Wrap(
+        key: const Key('media-count'),
+        spacing: 12,
+        children: [
+          if (images > 0) count(Icons.image_outlined, images),
+          if (audio > 0) count(Icons.audiotrack_outlined, audio),
+        ],
+      ),
     );
   }
 }
