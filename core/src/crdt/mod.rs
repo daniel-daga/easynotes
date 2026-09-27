@@ -112,6 +112,11 @@ pub struct NoteView {
     /// in the document as tombstones and not here. Neither kind of note owns
     /// them, so converting one never touches this.
     pub attachments: Vec<AttachmentView>,
+    /// Attachments the document holds and this view does not draw: removed, or
+    /// with a descriptor this build cannot read. Sorted. An ID here is spent —
+    /// adding it again would write a fresh map over the tombstone and bring a
+    /// removed file back for everyone — so [`crate::note::NoteCore`] refuses it.
+    pub retired_attachments: Vec<AttachmentId>,
 }
 
 impl NoteView {

@@ -46,6 +46,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 const STAGING_CONTEXT: &[u8] = b"attachment-staging";
 
@@ -82,6 +83,11 @@ pub struct ImportHints {
 pub struct MediaStore {
     root: PathBuf,
     master: MasterKey,
+    /// Held by an import from its first object to its record, and by anything
+    /// that deletes objects by what is *not* named. Between an import's step 1
+    /// and step 2 its objects are named by nothing, and a collection that ran
+    /// then would take bytes the record is about to promise are here.
+    commit: Mutex<()>,
 }
 
 impl MediaStore {
@@ -97,7 +103,17 @@ impl MediaStore {
             fs::remove_dir_all(&tmp).map_err(io)?;
         }
         fs::create_dir_all(&tmp).map_err(io)?;
-        Ok(Self { root, master })
+        Ok(Self {
+            root,
+            master,
+            commit: Mutex::new(()),
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        // The guard protects no data, only an order of file operations, so a
+        // panic elsewhere while it was held leaves nothing to repair.
+        self.commit.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn note_dir(&self, note: NoteId) -> PathBuf {
@@ -149,6 +165,7 @@ impl MediaStore {
         if len == 0 {
             return Err(refused("the file is empty"));
         }
+        let _commit = self.lock();
         let id = AttachmentId::random();
         let key = ContentKey::random();
 
@@ -416,6 +433,7 @@ impl MediaStore {
     /// Delete every object this device holds for a note, and every import into
     /// it still staged. What forgetting or purging the note does.
     pub fn purge_note(&self, note: NoteId) -> Result<()> {
+        let _commit = self.lock();
         for staged in self.staged()? {
             if staged.note == note {
                 self.settle(staged.id)?;
@@ -432,6 +450,7 @@ impl MediaStore {
     /// what a crash before a record was written leaves, and what a removal
     /// leaves on a device that was not the one to remove it. Returns how many.
     pub fn collect_garbage(&self, note: NoteId, live: &[&Media]) -> Result<usize> {
+        let _commit = self.lock();
         let staged = self.staged()?;
         let keep: HashSet<MediaObjectId> = live
             .iter()

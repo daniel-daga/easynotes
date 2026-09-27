@@ -269,6 +269,7 @@ impl NoteDoc for YrsNote {
         let body = self.body.get_string(&txn);
         let mut items = Vec::new();
         let mut attachments = Vec::new();
+        let mut retired_attachments = Vec::new();
         {
             let items_map = &self.root;
             for (key, value) in items_map.iter(&txn) {
@@ -277,13 +278,16 @@ impl NoteDoc for YrsNote {
                 }
                 if let Some(id) = parse_attachment_key(key) {
                     if let Out::YMap(obj) = value {
-                        attachments.extend(attachment_view(
+                        match attachment_view(
                             id,
                             &any_str(obj.get(&txn, field::MEDIA)),
                             any_str(obj.get(&txn, field::ORDER)),
                             any_str(obj.get(&txn, field::DESCRIPTION)),
                             any_bool(obj.get(&txn, field::REMOVED)),
-                        ));
+                        ) {
+                            Some(view) => attachments.push(view),
+                            None => retired_attachments.push(id),
+                        }
                     }
                     continue;
                 }
@@ -303,12 +307,14 @@ impl NoteDoc for YrsNote {
         }
         sort_items(&mut items);
         sort_attachments(&mut attachments);
+        retired_attachments.sort();
         NoteView {
             kind,
             title,
             body,
             items,
             attachments,
+            retired_attachments,
         }
     }
 

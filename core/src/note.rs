@@ -2598,6 +2598,16 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 "that attachment is already on the note".into(),
             ));
         }
+        // Not only for tidiness: a second add of a removed ID is a new map at
+        // the same key, which replaces the tombstone and brings the file back
+        // for everyone. Recovering a staged import after a crash is exactly
+        // where that would happen, so it is refused here and not left to the
+        // caller to remember.
+        if view.retired_attachments.contains(&attachment) {
+            return Err(CoreError::Attachment(
+                "that attachment was removed from the note".into(),
+            ));
+        }
         if view.attachments.len() >= MAX_ATTACHMENTS_PER_NOTE {
             return Err(CoreError::Attachment(
                 "a note can have up to 20 attachments".into(),
@@ -2674,6 +2684,38 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     pub fn remove_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<Vec<u8>> {
         self.require_attachment(id, attachment)?;
         self.apply_local(id, Edit::RemoveAttachment { id: attachment })
+    }
+
+    /// Where an attachment stands in its note: what a staged import is
+    /// reconciled against on the next launch ([ADR 0027](../../docs/adr/0027-attachments.md) §3).
+    ///
+    /// * [`AttachmentState::Pending`] — not in the note: publish it when its
+    ///   bytes are on the relay.
+    /// * [`AttachmentState::Live`] — published before the crash: settle the
+    ///   record and keep the objects.
+    /// * [`AttachmentState::Removed`] — published, then removed by someone:
+    ///   discard the objects and the record. Never add it again.
+    /// * [`AttachmentState::NoNote`] — the note was forgotten, purged or
+    ///   deleted while the import was staged: discard it.
+    pub fn attachment_state(
+        &mut self,
+        id: NoteId,
+        attachment: AttachmentId,
+    ) -> Result<crate::attachment::AttachmentState> {
+        use crate::attachment::AttachmentState;
+        match self.ensure_open(id) {
+            Ok(()) => {}
+            Err(CoreError::UnknownNote(_)) => return Ok(AttachmentState::NoNote),
+            Err(e) => return Err(e),
+        }
+        let view = self.view(id)?;
+        Ok(if view.attachment(attachment).is_some() {
+            AttachmentState::Live
+        } else if view.retired_attachments.contains(&attachment) {
+            AttachmentState::Removed
+        } else {
+            AttachmentState::Pending
+        })
     }
 
     fn require_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<()> {

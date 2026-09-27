@@ -379,6 +379,21 @@ pub struct AttachmentView {
     pub media: Media,
 }
 
+/// Where an attachment stands in its note, from this device's view of it.
+/// See [`crate::note::NoteCore::attachment_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentState {
+    /// Not in the note yet.
+    Pending,
+    /// In the note and drawn.
+    Live,
+    /// In the note as a tombstone, or as a descriptor this build cannot read.
+    /// Its ID is spent.
+    Removed,
+    /// The note itself is not in this library any more.
+    NoNote,
+}
+
 /// Validate a description before it is written.
 pub fn check_description(description: &str) -> Result<()> {
     if description.chars().count() > MAX_DESCRIPTION_CHARS {

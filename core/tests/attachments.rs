@@ -4,8 +4,8 @@
 use easynotes_core::attachment::seal::{seal_whole, verify_sealed, CHUNK_OVERHEAD};
 use easynotes_core::attachment::store::{ImportHints, MediaStore, ThumbnailInput};
 use easynotes_core::attachment::{
-    AttachmentKind, ContentKey, Media, MediaFormat, MediaOpener, MediaSealer, Variant,
-    MAX_ATTACHMENTS_PER_NOTE,
+    AttachmentKind, AttachmentState, ContentKey, Media, MediaFormat, MediaOpener, MediaSealer,
+    Variant, MAX_ATTACHMENTS_PER_NOTE,
 };
 use easynotes_core::crdt::{NoteDoc, NoteView};
 use easynotes_core::crypto::MasterKey;
@@ -633,6 +633,48 @@ fn limits_are_held<D: NoteDoc>() {
         .is_err());
 }
 
+/// The launch after a crash between publishing a staged import and settling
+/// it. What the record is reconciled against has to tell "still to publish"
+/// from "published and then removed by someone else" — republishing the second
+/// would write a fresh map over the tombstone and bring the file back for
+/// everyone on the note.
+fn a_staged_import_is_reconciled_without_resurrecting_it<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>(NoteKind::Text);
+    let (att, m) = media("receipt.png", 10);
+    assert_eq!(
+        a.attachment_state(id, att).unwrap(),
+        AttachmentState::Pending
+    );
+
+    let add = a.add_attachment(id, att, m.clone()).unwrap();
+    assert_eq!(a.attachment_state(id, att).unwrap(), AttachmentState::Live);
+    deliver(&mut b, id, &[add]);
+    let removal = b.remove_attachment(id, att).unwrap();
+    deliver(&mut a, id, &[removal]);
+    assert_eq!(
+        a.attachment_state(id, att).unwrap(),
+        AttachmentState::Removed
+    );
+
+    // The record still holds the live descriptor, key and all. Adding it
+    // again is refused, on both devices.
+    assert!(matches!(
+        a.add_attachment(id, att, m.clone()),
+        Err(CoreError::Attachment(_))
+    ));
+    assert!(b.add_attachment(id, att, m).is_err());
+    assert!(a.view(id).unwrap().attachments.is_empty());
+    assert_eq!(a.view(id).unwrap().retired_attachments, vec![att]);
+    assert_eq!(a.view(id).unwrap(), b.view(id).unwrap());
+
+    // A note that has gone is its own answer: discard the import.
+    let gone = NoteId::random();
+    assert_eq!(
+        a.attachment_state(gone, att).unwrap(),
+        AttachmentState::NoNote
+    );
+}
+
 macro_rules! both_backends {
     ($($name:ident),* $(,)?) => {
         mod automerge_backend {
@@ -649,6 +691,7 @@ both_backends!(
     removal_beats_a_concurrent_move_and_description,
     concurrent_adds_both_survive,
     limits_are_held,
+    a_staged_import_is_reconciled_without_resurrecting_it,
 );
 
 #[test]
