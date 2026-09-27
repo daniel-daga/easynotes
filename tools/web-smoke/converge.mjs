@@ -132,9 +132,9 @@ await tap(a, /^New checklist$/);
 await addItem(a, 'milk');
 await tap(a, /^Share$/);
 await setUpSharing(a, 'Ann');
-await find(a, n => n.text.trim() === 'Share');
-await tap(a, /^Send link$/);
-await find(a, n => /^Nobody has opened it yet\.$/.test(n.text.trim()));
+await find(a, n => n.text.trim() === 'Collaborators');
+await tap(a, /^New invite link$/);
+await find(a, n => /^Not opened yet$/.test(n.text.trim()));
 const message = await a.page.evaluate(() => window.__shared ?? '');
 const link = message.slice(message.lastIndexOf('http'));
 check(link.startsWith(url) && link.endsWith('#join#' + link.split('#').pop()), `A made a link: ${link.replace(/#join#.*/, '#join#…')}`);
@@ -150,7 +150,7 @@ await load(b, link);
 step('B sets up sharing');
 await setUpSharing(b, 'Bea');
 await tap(b, /^Join as Bea$/);
-// A's share dialog is still open, and its poll is what lets Bea in: nobody on
+// A's collaborators screen is still open, and its poll is what lets Bea in: nobody on
 // A taps anything.
 step('A lets Bea in');
 check(

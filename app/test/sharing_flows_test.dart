@@ -135,9 +135,9 @@ void main() {
     expect(library.profileName, 'Olga');
     expect(find.text('Olga (you)'), findsOneWidget);
 
-    await tapKey(tester, 'send-invite-link');
+    await tapKey(tester, 'new-invite');
     final invite = library.invitesFor('groceries').single;
-    expect(find.byKey(const Key('invite-link')), findsOneWidget);
+    expect(find.byKey(Key('invite-link-${invite.id}')), findsOneWidget);
 
     // Anna opens the link, and is in: nothing to approve.
     library.fakeOpened(invite.id, name: 'Anna');
@@ -162,7 +162,7 @@ void main() {
     await tapKey(tester, 'share-button');
     await tapKey(tester, 'setup-not-now');
     expect(library.hasAccount, isFalse);
-    expect(find.byKey(const Key('send-invite-link')), findsNothing);
+    expect(find.byKey(const Key('new-invite')), findsNothing);
   });
 
   testWidgets(
@@ -292,8 +292,9 @@ void main() {
     expect(find.text('Stop sharing?'), findsOneWidget);
     expect(
       find.text(
-        'Everyone else will lose this note on every device. Anything they '
-        'already saved or copied can\'t be taken back.',
+        'Everyone else will lose this note on every device, and every open '
+        'link stops working. Anything they already saved or copied can\'t '
+        'be taken back.',
       ),
       findsOneWidget,
     );

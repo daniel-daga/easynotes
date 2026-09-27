@@ -258,10 +258,10 @@ class RustNoteLibrary implements NoteLibrary {
   @override
   List<Invite> get allInvites => _library.allInvites().map(_toInvite).toList();
 
-  /// Checks of invites, by invite ID. The share dialog and the owner's
-  /// background watcher both poll, and the check that lets someone in also
-  /// forgets the invite. So one caller can finish a join the other is still
-  /// asking about: two checks at once would answer the relay twice, and a
+  /// Checks of invites, by invite ID. The collaborators screen and the
+  /// owner's background watcher both poll, and the check that lets someone in
+  /// also forgets the invite. So one caller can finish a join the other is
+  /// still asking about: two checks at once would answer the relay twice, and a
   /// check after the join would find no invite to report it from. A check
   /// that starts while another is out gets that one's result, and a join,
   /// being final, stays here for whoever asks next.

@@ -438,10 +438,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   /// Answer whoever asked to join one of this device's lists.
-  Future<void> _review(String noteId) => showDialog<void>(
-    context: context,
-    builder: (context) => ShareDialog(invites: widget.library, noteId: noteId),
-  );
+  Future<void> _review(String noteId) =>
+      showCollaborators(context, invites: widget.library, noteId: noteId);
 
   /// A request that was waiting in the background was let in.
   void _joinedInBackground(String noteId) {

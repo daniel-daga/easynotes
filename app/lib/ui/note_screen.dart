@@ -166,13 +166,13 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   /// Share: the first time, set up an account and a name, then straight on
-  /// to the people on this note and the link that adds one more.
+  /// to the people on this note and the links that add more.
   Future<void> _share() async {
     if (!await ensureSharingSetUp(context, widget.invites) || !mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) =>
-          ShareDialog(invites: widget.invites, noteId: widget.noteId),
+    await showCollaborators(
+      context,
+      invites: widget.invites,
+      noteId: widget.noteId,
     );
   }
 

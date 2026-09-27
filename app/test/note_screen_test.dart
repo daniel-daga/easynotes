@@ -36,11 +36,12 @@ Future<void> pumpScreen(
   await tester.pumpAndSettle();
 }
 
-/// Open the share dialog and copy a link, returning the invite it made.
+/// Open the collaborators screen and make a link, returning the invite it
+/// made.
 Future<String> makeLink(WidgetTester tester, FakeNoteLibrary invites) async {
   await tester.tap(find.byKey(const Key('share-button')));
   await tester.pumpAndSettle();
-  await tester.tap(find.byKey(const Key('send-invite-link')));
+  await tester.tap(find.byKey(const Key('new-invite')));
   await tester.pumpAndSettle();
   return invites.invitesFor('this-note').single.id;
 }
@@ -123,7 +124,8 @@ void main() {
     expect(find.byKey(const Key('people-footer')), findsOneWidget);
     expect(find.text('Names are chosen by each person.'), findsOneWidget);
     expect(find.textContaining('Device'), findsNothing);
-    expect(find.byKey(const Key('send-invite-link')), findsNothing);
+    expect(find.byKey(const Key('new-invite')), findsNothing);
+    expect(find.byKey(const Key('invites-heading')), findsNothing);
     expect(find.byKey(const Key('stop-sharing')), findsNothing);
     expect(find.byKey(const Key('remove-other-anna')), findsNothing);
     await tester.tap(find.byKey(const Key('share-done')));
@@ -382,9 +384,10 @@ void main() {
       final invites = FakeNoteLibrary()..setUpSharing();
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
       await makeLink(tester, invites);
-      // Sending the same link again is not a new question.
-      await tester.tap(find.byKey(const Key('send-invite-link')));
+      // A second link is not a new question.
+      await tester.tap(find.byKey(const Key('new-invite')));
       await tester.pumpAndSettle();
+      expect(invites.invitesFor('this-note'), hasLength(2));
       expect(alerts.calls, ['requestPermission()']);
       await tester.tap(find.byKey(const Key('share-done')));
       await tester.pumpAndSettle();
@@ -395,11 +398,12 @@ void main() {
       final invites = FakeNoteLibrary()..setUpSharing();
       await pumpScreen(tester, core, invites: invites);
 
-      await makeLink(tester, invites);
+      final id = await makeLink(tester, invites);
 
       expect(invites.calls, contains('createInvite(this-note)'));
-      expect(find.byKey(const Key('invite-link')), findsOneWidget);
-      expect(find.byKey(const Key('invite-waiting')), findsOneWidget);
+      expect(find.byKey(Key('invite-link-$id')), findsOneWidget);
+      expect(find.byKey(Key('invite-status-$id')), findsOneWidget);
+      expect(find.text('Not opened yet'), findsOneWidget);
     });
 
     testWidgets('Send link hands the link to the share sheet', (tester) async {
@@ -440,11 +444,11 @@ void main() {
       final invites = FakeNoteLibrary()..setUpSharing();
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
 
-      await makeLink(tester, invites);
+      final id = await makeLink(tester, invites);
 
       expect(copied, invites.invitesFor('this-note').single.link);
       expect(find.text('Link copied'), findsOneWidget);
-      expect(find.byKey(const Key('copy-invite-link')), findsOneWidget);
+      expect(find.byKey(Key('copy-invite-$id')), findsOneWidget);
     });
 
     testWidgets('whoever opens the link is let in without anyone asking', (
@@ -468,7 +472,7 @@ void main() {
         find.text('Anna joined. They can open this note now.'),
         findsOneWidget,
       );
-      expect(find.byKey(const Key('invite-link')), findsNothing);
+      expect(find.byKey(Key('invite-link-$id')), findsNothing);
       expect(find.text('Anna'), findsOneWidget);
       await tester.tap(find.byKey(const Key('share-done')));
       await tester.pumpAndSettle();
@@ -509,25 +513,26 @@ void main() {
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
       final id = await makeLink(tester, invites);
 
-      await tester.tap(find.byKey(const Key('withdraw-invite')));
+      await tester.tap(find.byKey(Key('withdraw-invite-$id')));
       await tester.pumpAndSettle();
 
       expect(invites.calls, contains('withdrawInvite($id)'));
       expect(invites.invitesFor('this-note'), isEmpty);
-      expect(find.byKey(const Key('invite-link')), findsNothing);
+      expect(find.byKey(Key('invite-link-$id')), findsNothing);
+      expect(find.byKey(const Key('no-invites')), findsOneWidget);
     });
 
     testWidgets('coming back finds the link that was sent', (tester) async {
       final invites = FakeNoteLibrary()..setUpSharing();
       await pumpScreen(tester, FakeNoteCore(), invites: invites);
-      await makeLink(tester, invites);
+      final id = await makeLink(tester, invites);
       await tester.tap(find.byKey(const Key('share-done')));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('share-button')));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('invite-link')), findsOneWidget);
+      expect(find.byKey(Key('invite-link-$id')), findsOneWidget);
       expect(
         invites.calls.where((c) => c.startsWith('createInvite')),
         hasLength(1),
@@ -546,11 +551,60 @@ void main() {
 
       await tester.tap(find.byKey(const Key('share-button')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('send-invite-link')));
+      await tester.tap(find.byKey(const Key('new-invite')));
       await tester.pumpAndSettle();
 
       expect(find.textContaining('needs a relay'), findsOneWidget);
-      expect(find.byKey(const Key('invite-link')), findsNothing);
+      expect(find.byKey(const Key('invites-table')), findsNothing);
+    });
+
+    testWidgets('several people are invited at once, one link each', (
+      tester,
+    ) async {
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(tester, FakeNoteCore(), invites: invites);
+      final first = await makeLink(tester, invites);
+      await tester.tap(find.byKey(const Key('new-invite')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('new-invite')));
+      await tester.pumpAndSettle();
+
+      final ids = [for (final i in invites.invitesFor('this-note')) i.id];
+      expect(ids, hasLength(3));
+      expect(ids.first, first);
+      for (final id in ids) {
+        expect(find.byKey(Key('invite-link-$id')), findsOneWidget);
+      }
+      expect(find.text('Invite links (3)'), findsOneWidget);
+      expect(find.text('Not opened yet'), findsNWidgets(3));
+
+      // Anna opens the second; the others stay open, waiting for theirs.
+      invites.fakeOpened(ids[1], name: 'Anna');
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+      expect(find.text('Anna'), findsOneWidget);
+      expect(find.byKey(Key('invite-link-${ids[1]}')), findsNothing);
+      expect(find.byKey(Key('invite-link-${ids[0]}')), findsOneWidget);
+      expect(find.byKey(Key('invite-link-${ids[2]}')), findsOneWidget);
+      expect(find.text('Invite links (2)'), findsOneWidget);
+      expect(find.text('People (2)'), findsOneWidget);
+
+      // Cancelling one leaves the other.
+      await tester.ensureVisible(find.byKey(Key('withdraw-invite-${ids[0]}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('withdraw-invite-${ids[0]}')));
+      await tester.pumpAndSettle();
+      expect(invites.invitesFor('this-note').map((i) => i.id), [ids[2]]);
+
+      // Ben opens the last.
+      invites.fakeOpened(ids[2], name: 'Ben');
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+      expect(find.text('Ben'), findsOneWidget);
+      expect(find.text('Anna'), findsOneWidget);
+      expect(find.byKey(const Key('no-invites')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('share-done')));
+      await tester.pumpAndSettle();
     });
   });
 
