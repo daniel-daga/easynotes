@@ -32,7 +32,7 @@ gunzip -c "$dump" | psql -d "$scratch" >/dev/null
 # The tables every relay has. A dump of the wrong database, or of an empty one
 # that was never migrated, restores cleanly and fails here.
 missing=$(psql -d "$scratch" -At -c "
-    SELECT string_agg(t, ', ') FROM unnest(ARRAY['note_log', 'note_head', 'invites', 'invite_requests']) AS t
+    SELECT string_agg(t, ', ') FROM unnest(ARRAY['note_log', 'note_head', 'invites', 'invite_requests', 'media_objects']) AS t
     WHERE to_regclass('public.' || t) IS NULL")
 if [ -n "$missing" ]; then
     printf 'error: %s restored without table(s): %s\n' "$dump" "$missing" >&2

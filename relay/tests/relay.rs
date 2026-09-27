@@ -789,6 +789,37 @@ impl RelayStore for Unreachable {
     ) -> easynotes_relay::error::Result<Result<(), easynotes_relay::quota::Refusal>> {
         gone()
     }
+    async fn reserve_media(
+        &self,
+        _: &str,
+        _: &str,
+        _: easynotes_relay::media::Geometry,
+        _: &easynotes_relay::MediaLimits,
+        _: i64,
+    ) -> easynotes_relay::error::Result<easynotes_relay::media::Reserved> {
+        gone()
+    }
+    async fn media(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> easynotes_relay::error::Result<Option<easynotes_relay::media::MediaRow>> {
+        gone()
+    }
+    async fn touch_media(&self, _: &str, _: &str, _: i64) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn commit_media(
+        &self,
+        _: &str,
+        _: &str,
+        _: [u8; 32],
+    ) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn expire_media(&self, _: i64) -> easynotes_relay::error::Result<Vec<(String, String)>> {
+        gone()
+    }
     async fn check(&self) -> easynotes_relay::error::Result<()> {
         gone()
     }

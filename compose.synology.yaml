@@ -31,7 +31,14 @@ services:
       RELAY_ALLOWED_ORIGINS: ${RELAY_ALLOWED_ORIGINS:?Set RELAY_ALLOWED_ORIGINS in .env}
       RELAY_TOKEN_SIGNING_KEY: ${RELAY_TOKEN_SIGNING_KEY:?Set RELAY_TOKEN_SIGNING_KEY in .env}
       RELAY_STORAGE_CEILING: ${RELAY_STORAGE_CEILING:-}
+      RELAY_MEDIA_DIR: /var/lib/easynotes-media
+      RELAY_MEDIA_PER_NOTE: ${RELAY_MEDIA_PER_NOTE:-}
+      RELAY_MEDIA_CEILING: ${RELAY_MEDIA_CEILING:-}
       RUST_LOG: easynotes_relay=info
+    volumes:
+      # Attachment bytes (ADR 0027). Must be writable by uid 10001, the user
+      # the relay runs as; see deploy/synology/README.md.
+      - ${NAS_DATA_DIR:-/volume1/docker/easynotes-data}/media:/var/lib/easynotes-media
     ports:
       # DSM's reverse proxy connects on the NAS itself. Do not expose this port
       # directly on the LAN or the Internet; publish HTTPS through DSM instead.

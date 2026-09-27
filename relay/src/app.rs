@@ -81,6 +81,8 @@ pub struct AppState {
     pub auth: Auth,
     /// How much a note may keep, and when to ask for a compaction.
     pub limits: Limits,
+    /// Where attachment bytes go, and how much of them there may be.
+    pub media: crate::media::MediaConfig,
     /// One broadcast channel per note that currently has subscribers.
     channels: Mutex<HashMap<String, Fanout>>,
     /// Serializes appending and broadcasting one note's envelopes. The store
@@ -99,10 +101,25 @@ impl AppState {
         token_signing_key: [u8; 32],
         limits: Limits,
     ) -> Arc<Self> {
+        Self::with_media(
+            store,
+            token_signing_key,
+            limits,
+            crate::media::MediaConfig::default(),
+        )
+    }
+
+    pub fn with_media(
+        store: Arc<dyn RelayStore>,
+        token_signing_key: [u8; 32],
+        limits: Limits,
+        media: crate::media::MediaConfig,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
             auth: Auth::new(token_signing_key),
             limits,
+            media,
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
         })
@@ -132,7 +149,7 @@ impl AppState {
         }
     }
 
-    async fn append_lock(&self, note: &str) -> OwnedMutexGuard<()> {
+    pub(crate) async fn append_lock(&self, note: &str) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.append_locks.lock().unwrap();
             // Keep only locks held by an appender or a waiter. Holding this
@@ -182,8 +199,9 @@ fn browser_access(origins: &Origins) -> tower_http::cors::CorsLayer {
     };
     tower_http::cors::CorsLayer::new()
         .allow_origin(allow)
-        .allow_methods([Method::POST])
-        .allow_headers([header::CONTENT_TYPE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::RANGE])
+        .expose_headers([header::CONTENT_RANGE])
 }
 
 /// Which pages may drive the handshake.
@@ -240,6 +258,12 @@ pub struct RelayConfig {
     /// How much one note may keep, and the whole relay
     /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
     pub storage: Limits,
+    /// Every attachment call, per address. A 50 MB file is fifty-odd chunk
+    /// requests, so this is looser than the rest.
+    pub media_rate: RateLimit,
+    /// Where attachment bytes go and how much of them there may be
+    /// ([ADR 0027](../../docs/adr/0027-attachments.md) §4).
+    pub media: crate::media::MediaConfig,
 }
 
 impl Default for RelayConfig {
@@ -255,6 +279,8 @@ impl Default for RelayConfig {
             sockets: RateLimit::unlimited(),
             invites: RateLimit::unlimited(),
             storage: Limits::default(),
+            media_rate: RateLimit::unlimited(),
+            media: crate::media::MediaConfig::default(),
         }
     }
 }
@@ -287,6 +313,14 @@ impl RelayConfig {
             storage: Limits {
                 ceiling: Some(DEFAULT_CEILING),
                 ..Limits::default()
+            },
+            media_rate: RateLimit::new(600, 200),
+            media: crate::media::MediaConfig {
+                limits: crate::media::MediaLimits {
+                    ceiling: Some(crate::media::DEFAULT_MEDIA_CEILING),
+                    ..crate::media::MediaLimits::default()
+                },
+                ..crate::media::MediaConfig::default()
             },
         }
     }
@@ -323,6 +357,26 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         .route("/v1/invites/{invite}/list", post(invite::list))
         .route("/v1/invites/{invite}/withdraw", post(invite::withdraw))
         .route("/v1/purge", post(purge))
+        // Attachment objects (ADR 0027 §4). `status` and `commit` are static
+        // segments, so they win over `{index}` in the same place.
+        .route(
+            "/v1/media/{note}/{object}",
+            post(crate::media::reserve).get(crate::media::fetch),
+        )
+        .route(
+            "/v1/media/{note}/{object}/status",
+            get(crate::media::status),
+        )
+        .route(
+            "/v1/media/{note}/{object}/commit",
+            post(crate::media::commit),
+        )
+        .route(
+            "/v1/media/{note}/{object}/{index}",
+            axum::routing::put(crate::media::put_chunk).layer(
+                axum::extract::DefaultBodyLimit::max(crate::media::MAX_PART_BYTES),
+            ),
+        )
         // Health is outside the limiter on purpose: it is what a load balancer
         // polls, it costs nothing to answer, and a relay that fails its health
         // check because it is busy gets taken out of rotation for being busy.
@@ -369,6 +423,7 @@ async fn enforce_limits(
         "/v1/challenge" | "/v1/token" | "/v1/purge" => &config.handshake,
         "/v1/sync" => &config.sockets,
         path if path.starts_with("/v1/invites") => &config.invites,
+        path if path.starts_with("/v1/media") => &config.media_rate,
         _ => return next.run(req).await,
     };
     let peer = req
@@ -524,7 +579,16 @@ async fn purge(
         };
         let _append = state.append_lock(&topic.note).await;
         match state.store.purge(&topic.note, key, signature).await? {
-            Ok(()) => state.broadcast_gone(&topic.note),
+            Ok(()) => {
+                // The metadata went in the same transaction; the bytes follow.
+                // A crash in between leaves bytes nothing names, which only a
+                // later purge of the same topic removes — never bytes a
+                // reader is told exist.
+                if let Some(blobs) = &state.media.blobs {
+                    blobs.remove_note(&topic.note).await?;
+                }
+                state.broadcast_gone(&topic.note)
+            }
             Err(refusal) => response.refused.push(refuse(refusal.as_str())),
         }
     }

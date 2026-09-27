@@ -28,12 +28,27 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
 - Optionally set `RELAY_STORAGE_CEILING` to the number of bytes the relay
   may hold before it refuses to start new notes. Notes it already has keep
   working. Leave it empty for the default of 16 GiB, or set it to `off`.
+- Optionally set `RELAY_MEDIA_PER_NOTE` and `RELAY_MEDIA_CEILING`, the bytes
+  one note's attachments may hold (default 1 GiB) and all of them together
+  (default 64 GiB, or `off`). Removing an attachment does not yet free space
+  on the relay ([ADR 0027](../../docs/adr/0027-attachments.md) §5), so a note
+  whose attachments change often reaches its budget sooner than its live
+  files suggest.
 - Set `NAS_DATA_DIR` to a persistent shared-folder path, for example
   `/volume1/docker/easynotes-data`.
 
 Create the data directory in File Station and ensure the Container Manager
 service can write to it. Postgres stores its database under
-`$NAS_DATA_DIR/postgres`.
+`$NAS_DATA_DIR/postgres`, and the relay keeps attachment bytes under
+`$NAS_DATA_DIR/media`. The relay runs as uid 10001, so create that folder
+and hand it over before the first start, over SSH:
+
+```sh
+mkdir -p /volume1/docker/easynotes-data/media
+sudo chown 10001:10001 /volume1/docker/easynotes-data/media
+```
+
+A relay that cannot write there refuses to start and says so in its log.
 
 ## 2. Build and start the project
 
@@ -82,9 +97,13 @@ Docker. Use this script as the command:
 ```
 
 Change the path if your repository is elsewhere. It writes a compressed
-Postgres dump under `/volume1/docker/easynotes-backups`, checks that pg_dump
-finished and the archive is intact, and only then deletes dumps older than
-`BACKUP_KEEP_DAYS` (30 by default). It exits non-zero when any of that fails:
+Postgres dump under `/volume1/docker/easynotes-backups`, then an archive of the
+attachment directory (`MEDIA_DIR`, `/volume1/docker/easynotes-data/media` by
+default) with the same timestamp, checks that pg_dump finished and both
+archives are intact, and only then deletes backups older than
+`BACKUP_KEEP_DAYS` (30 by default). The database goes first on purpose: every
+object it records as committed was on disk before the dump began, so the
+archive taken after it holds its bytes. It exits non-zero when any of that fails:
 tick **Send run details by email → only when the script terminates abnormally**
 in the task's settings, so a failed backup is an email rather than a surprise.
 Configure Hyper Backup to copy that folder to a different device or cloud
@@ -100,7 +119,12 @@ relay's tables — it never touches the live one:
 ```
 
 To restore for real, into an empty database, gunzip a dump and pipe it to
-`docker exec -i easynotes-db psql -U easynotes easynotes`. Devices that synced
+`docker exec -i easynotes-db psql -U easynotes easynotes`, and unpack the
+media archive with the same timestamp into the empty media directory
+(`tar -xzf easynotes-media-<stamp>.tar.gz -C /volume1/docker/easynotes-data`)
+before starting the relay. Restore the two together: a database with no media
+archive lists attachments whose bytes are gone, and devices that still hold
+them have to upload them again. Devices that synced
 after the dump was taken notice the relay went backwards, replay it and resend
 what they still hold ([ADR 0004](../../docs/adr/0004-sync-engine.md), "Relay
 restore recovery"); history they have already compacted away is not resent. So

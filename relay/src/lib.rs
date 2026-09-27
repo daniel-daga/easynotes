@@ -6,12 +6,14 @@ pub mod auth;
 pub mod error;
 pub mod invite;
 pub mod limit;
+pub mod media;
 pub mod protocol;
 pub mod quota;
 pub mod store;
 pub mod sync;
 
 pub use app::{router, router_with, AppState, Origins, RelayConfig};
+pub use media::{Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs};
 pub use quota::Limits;
 pub use store::{Appended, MemoryStore, PostgresStore, RelayStore};
 
@@ -43,7 +45,12 @@ impl Relay {
         addr: SocketAddr,
         config: RelayConfig,
     ) -> anyhow::Result<Self> {
-        let state = AppState::with_limits(store, config.token_signing_key, config.storage);
+        let state = AppState::with_media(
+            store,
+            config.token_signing_key,
+            config.storage,
+            config.media.clone(),
+        );
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let app = router_with(state.clone(), config);

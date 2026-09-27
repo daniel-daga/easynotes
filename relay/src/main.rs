@@ -17,10 +17,22 @@
 //!   together before the relay refuses to start new notes (appends to existing
 //!   ones still go). A whole number of bytes, or `off`. Unset means
 //!   [`easynotes_relay::app::DEFAULT_CEILING`], 16 GiB.
+//! * `RELAY_MEDIA_DIR` — where attachment bytes live: a directory on a
+//!   persistent volume, backed up with the database. Unset keeps them in
+//!   memory when the log is in memory too, and turns attachments off when the
+//!   log is in Postgres, rather than keep bytes a restart would lose while the
+//!   database says they are there.
+//! * `RELAY_MEDIA_PER_NOTE` — bytes one note's attachments may hold, reserved
+//!   and committed. Unset means 1 GiB.
+//! * `RELAY_MEDIA_CEILING` — bytes every note's attachments may hold together,
+//!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
+//!   64 GiB.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use easynotes_relay::{MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore};
+use easynotes_relay::{
+    DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -37,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
 
+    let durable = std::env::var("DATABASE_URL").is_ok();
     let store: Arc<dyn RelayStore> = match std::env::var("DATABASE_URL") {
         Ok(url) => {
             tracing::info!("storing to Postgres");
@@ -102,9 +115,55 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::info!("RELAY_ALLOWED_ORIGINS is unset: any page may handshake"),
     }
 
+    match std::env::var("RELAY_MEDIA_DIR").as_deref().map(str::trim) {
+        Ok(dir) if !dir.is_empty() => {
+            let blobs = DirBlobs::open(dir).map_err(|e| {
+                anyhow::anyhow!("RELAY_MEDIA_DIR {dir:?} could not be opened for writing: {e}")
+            })?;
+            config.media.blobs = Some(Arc::new(blobs));
+            tracing::info!(dir, "attachments are stored here");
+        }
+        _ if durable => {
+            tracing::warn!(
+                "RELAY_MEDIA_DIR is unset: attachments are off, because their bytes would not survive a restart that the database does"
+            );
+            config.media.blobs = None;
+        }
+        _ => tracing::warn!("RELAY_MEDIA_DIR is unset: attachments are kept in memory"),
+    }
+    if let Some(bytes) = bytes_or_off("RELAY_MEDIA_PER_NOTE", false)? {
+        config.media.limits.note_bytes = bytes.unwrap_or(u64::MAX);
+        tracing::info!(bytes, "one note's attachments stop at this much");
+    }
+    if let Some(bytes) = bytes_or_off("RELAY_MEDIA_CEILING", true)? {
+        config.media.limits.ceiling = bytes;
+        match bytes {
+            Some(bytes) => tracing::info!(bytes, "new attachments stop at this much stored"),
+            None => tracing::warn!(
+                "RELAY_MEDIA_CEILING=off: attachments are accepted however full the relay is"
+            ),
+        }
+    }
+
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
     // Hold the relay until the process is killed.
     std::future::pending::<()>().await;
     Ok(())
+}
+
+/// A size in bytes from the environment: `None` when unset or empty, `Some(None)`
+/// for `off` where that is allowed, and an error for anything else, so a typo
+/// fails to start rather than silently keeping the default.
+fn bytes_or_off(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u64>>> {
+    match std::env::var(name).as_deref().map(str::trim) {
+        Ok("") | Err(_) => Ok(None),
+        Ok("off") if off_allowed => Ok(Some(None)),
+        Ok(raw) => raw.parse().map(|b| Some(Some(b))).map_err(|_| {
+            anyhow::anyhow!(
+                "{name} must be a whole number of bytes{}",
+                if off_allowed { ", or off" } else { "" }
+            )
+        }),
+    }
 }

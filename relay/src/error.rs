@@ -26,6 +26,10 @@ pub enum RelayError {
     /// The topic was purged ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
     #[error("gone")]
     TopicGone,
+    /// Something this relay was not set up to do: media without a media
+    /// directory.
+    #[error("{0}")]
+    Unavailable(&'static str),
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -40,6 +44,7 @@ impl IntoResponse for RelayError {
             RelayError::Gone(_) | RelayError::TopicGone => StatusCode::GONE,
             RelayError::Conflict(_) => StatusCode::CONFLICT,
             RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
+            RelayError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // The body carries the category and never the detail: a storage error's

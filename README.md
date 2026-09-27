@@ -209,6 +209,12 @@ already has keep working. `RELAY_STORAGE_CEILING` sets that ceiling in bytes, or
 below that by compacting it when the relay asks
 ([ADR 0024](docs/adr/0024-relay-storage-quota.md)).
 
+Attachment bytes live apart from the log, in `RELAY_MEDIA_DIR`, and are backed
+up with the database. Without it a relay on Postgres turns attachments off, and
+one in memory keeps them in memory. `RELAY_MEDIA_PER_NOTE` (1 GiB) and
+`RELAY_MEDIA_CEILING` (64 GiB, or `off`) bound them
+([ADR 0027](docs/adr/0027-attachments.md) §4).
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy

@@ -11,14 +11,18 @@ backup_dir="${BACKUP_DIR:-/volume1/docker/easynotes-backups}"
 # How many days of dumps to keep here. The off-site copy (Hyper Backup) has its
 # own retention; this only bounds what fills the NAS.
 keep_days="${BACKUP_KEEP_DAYS:-30}"
+# Attachment bytes (ADR 0027). Archived after the dump, never before: an
+# object the dump says is committed was on disk before the dump began.
+media_dir="${MEDIA_DIR:-/volume1/docker/easynotes-data/media}"
 
 mkdir -p "$backup_dir"
 stamp=$(date +%Y%m%d-%H%M%S)
 sql="$backup_dir/.easynotes-$stamp.sql"
 archive="$backup_dir/easynotes-$stamp.sql.gz"
+media="$backup_dir/easynotes-media-$stamp.tar.gz"
 
 cleanup() {
-    rm -f "$sql" "$archive.tmp"
+    rm -f "$sql" "$archive.tmp" "$media.tmp"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -33,9 +37,20 @@ gzip -c "$sql" > "$archive.tmp"
 gzip -t "$archive.tmp"
 mv "$archive.tmp" "$archive"
 rm -f "$sql"
+if [ -d "$media_dir" ]; then
+    tar -czf "$media.tmp" -C "$(dirname "$media_dir")" "$(basename "$media_dir")"
+    gzip -t "$media.tmp"
+    mv "$media.tmp" "$media"
+    printf 'Wrote %s\n' "$media"
+else
+    printf 'error: no media directory at %s; set MEDIA_DIR\n' "$media_dir" >&2
+    exit 1
+fi
 trap - EXIT HUP INT TERM
 printf 'Wrote %s\n' "$archive"
 
 # Only the script's own archives, and never the one just written.
-find "$backup_dir" -maxdepth 1 -type f -name 'easynotes-*.sql.gz' \
-    -mtime +"$keep_days" ! -name "$(basename "$archive")" -print -exec rm -f {} +
+find "$backup_dir" -maxdepth 1 -type f \
+    \( -name 'easynotes-*.sql.gz' -o -name 'easynotes-media-*.tar.gz' \) \
+    -mtime +"$keep_days" ! -name "$(basename "$archive")" ! -name "$(basename "$media")" \
+    -print -exec rm -f {} +

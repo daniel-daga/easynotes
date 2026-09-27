@@ -12,6 +12,7 @@
 //! nothing meaningful in them.
 
 use crate::error::{RelayError, Result};
+use crate::media::{Geometry, MediaLimits, MediaRow, Reserved};
 use crate::protocol::RequestState;
 use crate::quota::{self, Limits, Proposal, Refusal, Topic};
 use async_trait::async_trait;
@@ -156,6 +157,35 @@ pub trait RelayStore: Send + Sync + 'static {
         signature: [u8; easynotes_core::crypto::SIG_LEN],
     ) -> Result<std::result::Result<(), Refusal>>;
 
+    // -- media (ADR 0027 §4) ------------------------------------------------
+    //
+    // The metadata of attachment objects; the bytes are `crate::media::Blobs`'.
+    // Times are Unix seconds, passed in as for invites.
+
+    /// Reserve an object's bytes against its topic's budget and the relay's,
+    /// both counting reserved and committed objects, checked atomically with
+    /// the insert.
+    async fn reserve_media(
+        &self,
+        note: &str,
+        object: &str,
+        geometry: Geometry,
+        limits: &MediaLimits,
+        now: i64,
+    ) -> Result<Reserved>;
+
+    async fn media(&self, note: &str, object: &str) -> Result<Option<MediaRow>>;
+
+    /// A chunk arrived: the upload is not abandoned.
+    async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()>;
+
+    /// Record an object as committed under `digest`.
+    async fn commit_media(&self, note: &str, object: &str, digest: [u8; 32]) -> Result<()>;
+
+    /// Delete every uncommitted reservation last touched before `before`, and
+    /// say which, so their bytes can go too.
+    async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>>;
+
     /// Whether the store can answer a query right now. What `/v1/ready`
     /// reports: a relay whose database has gone away still accepts
     /// connections, and only this says it cannot keep what they send.
@@ -238,9 +268,17 @@ struct Log {
     topic: Topic,
 }
 
+/// One object's metadata, and when it last heard from its uploader.
+#[derive(Clone)]
+struct MediaMeta {
+    row: MediaRow,
+    touched: i64,
+}
+
 #[derive(Default, Clone)]
 pub struct MemoryStore {
     notes: Arc<Mutex<HashMap<String, Log>>>,
+    media: Arc<Mutex<HashMap<(String, String), MediaMeta>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
     auth_challenges: Arc<Mutex<Challenges>>,
 }
@@ -394,7 +432,101 @@ impl RelayStore for MemoryStore {
             rows: Vec::new(),
             topic: gone(log.topic.head),
         };
+        // Under the notes lock, which a reservation takes first too, so none
+        // lands between the flag and this.
+        self.media.lock().unwrap().retain(|(n, _), _| n != note);
         Ok(Ok(()))
+    }
+
+    async fn reserve_media(
+        &self,
+        note: &str,
+        object: &str,
+        geometry: Geometry,
+        limits: &MediaLimits,
+        now: i64,
+    ) -> Result<Reserved> {
+        let notes = self.notes.lock().unwrap();
+        if notes.get(note).is_some_and(|log| log.topic.gone) {
+            return Ok(Reserved::Gone);
+        }
+        let mut media = self.media.lock().unwrap();
+        if let Some(existing) = media.get(&(note.to_string(), object.to_string())) {
+            return Ok(if existing.row.geometry == geometry {
+                Reserved::Same
+            } else {
+                Reserved::Conflict
+            });
+        }
+        let in_note: u64 = media
+            .iter()
+            .filter(|((n, _), _)| n == note)
+            .map(|(_, m)| m.row.geometry.sealed_len)
+            .sum();
+        if in_note + geometry.sealed_len > limits.note_bytes {
+            return Ok(Reserved::NoteFull);
+        }
+        if let Some(ceiling) = limits.ceiling {
+            let total: u64 = media.values().map(|m| m.row.geometry.sealed_len).sum();
+            if total + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayFull);
+            }
+        }
+        media.insert(
+            (note.to_string(), object.to_string()),
+            MediaMeta {
+                row: MediaRow {
+                    geometry,
+                    committed: None,
+                },
+                touched: now,
+            },
+        );
+        Ok(Reserved::New)
+    }
+
+    async fn media(&self, note: &str, object: &str) -> Result<Option<MediaRow>> {
+        let media = self.media.lock().unwrap();
+        Ok(media
+            .get(&(note.to_string(), object.to_string()))
+            .map(|m| m.row.clone()))
+    }
+
+    async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()> {
+        if let Some(m) = self
+            .media
+            .lock()
+            .unwrap()
+            .get_mut(&(note.to_string(), object.to_string()))
+        {
+            m.touched = now;
+        }
+        Ok(())
+    }
+
+    async fn commit_media(&self, note: &str, object: &str, digest: [u8; 32]) -> Result<()> {
+        if let Some(m) = self
+            .media
+            .lock()
+            .unwrap()
+            .get_mut(&(note.to_string(), object.to_string()))
+        {
+            m.row.committed.get_or_insert(digest);
+        }
+        Ok(())
+    }
+
+    async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>> {
+        let mut media = self.media.lock().unwrap();
+        let expired: Vec<(String, String)> = media
+            .iter()
+            .filter(|(_, m)| m.row.committed.is_none() && m.touched < before)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &expired {
+            media.remove(key);
+        }
+        Ok(expired)
     }
 
     async fn topic(&self, note: &str) -> Result<Topic> {
@@ -672,6 +804,29 @@ impl PostgresStore {
             )
             .execute(&mut *conn)
             .await?;
+            // ADR 0027: attachment objects. The bytes are in the media
+            // directory; this is what is reserved and what is committed.
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS media_objects (
+                    note_id    TEXT    NOT NULL,
+                    object_id  TEXT    NOT NULL,
+                    sealed_len BIGINT  NOT NULL,
+                    chunk_size INTEGER NOT NULL,
+                    digest     BYTEA,
+                    touched_at BIGINT  NOT NULL,
+                    PRIMARY KEY (note_id, object_id)
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS media_objects_staging \
+                 ON media_objects (touched_at) WHERE digest IS NULL",
+            )
+            .execute(&mut *conn)
+            .await?;
             // Invites. `expires_at` is Unix seconds, the same number the memory
             // store keeps, so the two cannot round differently. `grant_blob`
             // because `grant` is a keyword.
@@ -890,6 +1045,11 @@ impl RelayStore for PostgresStore {
             return Ok(Err(refusal));
         }
         sqlx::query("DELETE FROM note_log WHERE note_id = $1")
+            .bind(note)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+        sqlx::query("DELETE FROM media_objects WHERE note_id = $1")
             .bind(note)
             .execute(&mut *tx)
             .await
@@ -1167,6 +1327,149 @@ impl RelayStore for PostgresStore {
         }
         tx.commit().await.map_err(pg)?;
         Ok(Answered::Done)
+    }
+
+    async fn reserve_media(
+        &self,
+        note: &str,
+        object: &str,
+        geometry: Geometry,
+        limits: &MediaLimits,
+        now: i64,
+    ) -> Result<Reserved> {
+        // One reservation at a time, relay-wide: the budgets are sums over
+        // rows, and two reservations that each read the sum before the other
+        // wrote would both fit. A reservation is one per attached file, so
+        // this queue is short.
+        const MEDIA_LOCK: i64 = 0x0000_EA51_0ED1;
+        let mut tx = self.pool.begin().await.map_err(pg)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(MEDIA_LOCK)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+        // Shared-locked, so a purge holding the row waits for this or this
+        // waits for it, and a reservation cannot land on a topic being purged.
+        let gone: Option<(bool,)> =
+            sqlx::query_as("SELECT gone FROM note_head WHERE note_id = $1 FOR SHARE")
+                .bind(note)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(pg)?;
+        if gone.is_some_and(|(gone,)| gone) {
+            return Ok(Reserved::Gone);
+        }
+        let existing: Option<(i64, i32)> = sqlx::query_as(
+            "SELECT sealed_len, chunk_size FROM media_objects WHERE note_id = $1 AND object_id = $2",
+        )
+        .bind(note)
+        .bind(object)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(pg)?;
+        if let Some((sealed_len, chunk_size)) = existing {
+            let same = sealed_len as u64 == geometry.sealed_len
+                && chunk_size as u32 == geometry.chunk_size;
+            return Ok(if same {
+                Reserved::Same
+            } else {
+                Reserved::Conflict
+            });
+        }
+        let (in_note,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE note_id = $1",
+        )
+        .bind(note)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(pg)?;
+        if in_note as u64 + geometry.sealed_len > limits.note_bytes {
+            return Ok(Reserved::NoteFull);
+        }
+        if let Some(ceiling) = limits.ceiling {
+            let (total,): (i64,) =
+                sqlx::query_as("SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(pg)?;
+            if total as u64 + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayFull);
+            }
+        }
+        sqlx::query(
+            "INSERT INTO media_objects (note_id, object_id, sealed_len, chunk_size, touched_at) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(note)
+        .bind(object)
+        .bind(geometry.sealed_len as i64)
+        .bind(geometry.chunk_size as i32)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(pg)?;
+        tx.commit().await.map_err(pg)?;
+        Ok(Reserved::New)
+    }
+
+    async fn media(&self, note: &str, object: &str) -> Result<Option<MediaRow>> {
+        let row: Option<(i64, i32, Option<Vec<u8>>)> = sqlx::query_as(
+            "SELECT sealed_len, chunk_size, digest FROM media_objects \
+             WHERE note_id = $1 AND object_id = $2",
+        )
+        .bind(note)
+        .bind(object)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        row.map(|(sealed_len, chunk_size, digest)| {
+            Ok(MediaRow {
+                geometry: Geometry {
+                    sealed_len: sealed_len as u64,
+                    chunk_size: chunk_size as u32,
+                },
+                committed: digest.map(key32).transpose()?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE media_objects SET touched_at = $3 WHERE note_id = $1 AND object_id = $2",
+        )
+        .bind(note)
+        .bind(object)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn commit_media(&self, note: &str, object: &str, digest: [u8; 32]) -> Result<()> {
+        sqlx::query(
+            "UPDATE media_objects SET digest = $3 \
+             WHERE note_id = $1 AND object_id = $2 AND digest IS NULL",
+        )
+        .bind(note)
+        .bind(object)
+        .bind(digest.to_vec())
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>> {
+        sqlx::query_as(
+            "DELETE FROM media_objects WHERE digest IS NULL AND touched_at < $1 \
+             RETURNING note_id, object_id",
+        )
+        .bind(before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(pg)
     }
 
     async fn withdraw_invite(&self, id: &str) -> Result<()> {
