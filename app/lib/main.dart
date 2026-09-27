@@ -282,7 +282,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       await old.dispose();
       oldDisposed = true;
       await widget.profiles.activate(target);
-      final opened = next!;
+      final opened = next;
       if (target.url != null) await opened.connect(target.url!);
       if (!mounted) {
         await opened.dispose();
