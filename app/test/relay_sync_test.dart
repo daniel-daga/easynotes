@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:easynotes/core/attachment_files.dart';
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
@@ -28,6 +29,7 @@ import 'package:easynotes/core/sync_status.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 /// Long enough that a loaded machine is slow rather than red.
 const patience = Duration(seconds: 20);
@@ -163,8 +165,16 @@ void main() {
         final dir = await Directory.systemTemp.createTemp('easynotes-media');
         addTearDown(() => dir.delete(recursive: true));
         final key = MasterKeyStore.newKey();
-        final photo = _png(640, 480, (1 << 20) + 77);
-        final thumb = _png(64, 48, 600);
+        // A real picture, and the preview the app makes of it: the core
+        // holds a thumbnail to its own limits, so this is also the check
+        // that what `makeThumbnail` makes is one it takes.
+        final photo = img.encodePng(
+          img.Image(width: 1600, height: 1200)
+            ..clear(img.ColorRgb8(200, 120, 40)),
+        );
+        final thumb = (await makeThumbnail(photo))!;
+        final preview = img.decodeJpg(thumb)!;
+        expect([preview.width, preview.height], [512, 384]);
 
         var library = await RustNoteLibrary.open(dir.path, key);
         final id = await library.createNote();
@@ -176,7 +186,8 @@ void main() {
         );
         expect(added.pending, isTrue);
         expect(added.kind, AttachmentKind.image);
-        expect(added.width, 640);
+        expect(added.width, 1600);
+        expect(added.thumbnailWidth, 512);
         // No relay to wait for: the queue publishes it straight away.
         await _until(
           core.watch(),

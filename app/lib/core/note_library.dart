@@ -152,6 +152,8 @@ class NoteSummary {
     required this.checked,
     this.kind = NoteKind.checklist,
     this.preview = const [],
+    this.images = 0,
+    this.audio = 0,
     this.colour,
     this.pinned = false,
     this.archived = false,
@@ -172,6 +174,10 @@ class NoteSummary {
   /// The first few lines of the body, then the first few items, so a card can
   /// show what the note is about. Most shopping lists never get a title.
   final List<String> preview;
+
+  /// Live pictures and sound files on the note.
+  final int images;
+  final int audio;
 
   /// What this person has done with the note. Personal: it comes from the
   /// account document and is not on the note, so it is not shared with whoever
@@ -201,6 +207,8 @@ class NoteSummary {
       other.title == title &&
       other.items == items &&
       other.checked == checked &&
+      other.images == images &&
+      other.audio == audio &&
       other.colour == colour &&
       other.pinned == pinned &&
       other.archived == archived &&
@@ -216,6 +224,8 @@ class NoteSummary {
     title,
     items,
     checked,
+    images,
+    audio,
     Object.hashAll(preview),
     colour,
     pinned,

@@ -136,6 +136,14 @@ until it has a second real use or a clear independent role.
   matches device identity, so equal names do not merge different collaborators.
 - Send a copy lives in the bottom-right overflow menu below Reminders. It opens
   the content preview with system sharing and copy actions.
+- Add attachment (`add_box_outlined`) is the first control at the bottom left
+  of the editor toolbar, before Colour and the checkbox switch. Its sheet
+  offers Choose images and Audio file. Pictures show in a gallery above the
+  title; sound files are rows below the content. An attachment's menu holds
+  Save a copy, Describe and Remove attachment, in that order. Removal always
+  confirms, because it changes the note for everyone on it. Transfer states
+  ("Waiting to upload", "Couldn't upload" with Retry) sit on the attachment
+  they concern, never on the whole note.
 
 - Let content size itself with Material layout widgets. Use fixed dimensions
   only for controls whose target or visual geometry needs them, such as color

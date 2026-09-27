@@ -14,14 +14,17 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/attachment_files.dart';
 import '../core/content_interchange.dart';
 import '../core/content_sharing.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
+import 'attachments.dart';
 import 'invites.dart';
 import 'note_appearance.dart';
 import 'storage_banner.dart';
@@ -36,9 +39,13 @@ class NoteScreen extends StatefulWidget {
     this.library,
     this.onLabels,
     this.onReminders,
+    this.files = const DeviceAttachmentFiles(),
   });
 
   final NoteCore core;
+
+  /// Where attachments are picked from and saved to.
+  final AttachmentFiles files;
 
   /// Which note this is, for the invite made from here.
   final String noteId;
@@ -96,8 +103,219 @@ class _NoteScreenState extends State<NoteScreen> {
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
 
+  // -- attachments ----------------------------------------------------------
+
+  /// This device's imports into the note that are not in it yet, as the core
+  /// last said. Asked again whenever the note or a transfer changes, which is
+  /// when one can have been published.
+  List<AttachmentView> _pendingAttachments = const [];
+
+  /// Files chosen and still being prepared: read, previewed and sealed. Shown
+  /// at once, so a large file is not a silence.
+  final List<String> _preparing = [];
+
+  /// The transfers that concern this note.
+  List<AttachmentTransfer> _transfers = const [];
+  StreamSubscription<List<AttachmentTransfer>>? _transferWatch;
+  StreamSubscription<NoteView>? _viewWatch;
+
+  @override
+  void initState() {
+    super.initState();
+    _viewWatch = widget.core.watch().listen((_) => _refreshPending());
+    _transferWatch = widget.library?.watchTransfers().listen((transfers) {
+      if (!mounted) return;
+      setState(
+        () => _transfers = [
+          for (final t in transfers)
+            if (t.note == widget.noteId) t,
+        ],
+      );
+      _refreshPending();
+    });
+  }
+
+  Future<void> _refreshPending() async {
+    try {
+      final pending = await widget.core.pendingAttachments();
+      if (!mounted) return;
+      if (!listEquals(pending, _pendingAttachments)) {
+        setState(() => _pendingAttachments = pending);
+      }
+    } on Object {
+      // The note has gone or the library closed; the screen is leaving.
+    }
+  }
+
+  void _say(String message) => ScaffoldMessenger.maybeOf(
+    context,
+  )?.showSnackBar(SnackBar(content: Text(message)));
+
+  Future<void> _addAttachment() async {
+    final choice = await showModalBottomSheet<AttachmentKind>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: const Key('attach-images'),
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Choose images'),
+              onTap: () => Navigator.of(context).pop(AttachmentKind.image),
+            ),
+            ListTile(
+              key: const Key('attach-audio'),
+              leading: const Icon(Icons.audiotrack_outlined),
+              title: const Text('Audio file'),
+              onTap: () => Navigator.of(context).pop(AttachmentKind.audio),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    final List<PickedFile> picked;
+    try {
+      picked = choice == AttachmentKind.image
+          ? await widget.files.pickImages()
+          : await widget.files.pickAudio();
+    } on Object catch (e) {
+      if (mounted) _say('Couldn\'t open the file picker: $e');
+      return;
+    }
+    // One at a time, in the order chosen, so the gallery keeps that order.
+    for (final file in picked) {
+      if (!mounted) return;
+      setState(() => _preparing.add(file.name));
+      try {
+        await _import(file, image: choice == AttachmentKind.image);
+      } on Object catch (e) {
+        if (mounted) _say('Couldn\'t add ${file.name}: ${_reason(e)}');
+      } finally {
+        if (mounted) setState(() => _preparing.remove(file.name));
+      }
+      await _refreshPending();
+    }
+  }
+
+  Future<void> _import(PickedFile file, {required bool image}) async {
+    final bytes = file.bytes;
+    if (bytes != null) {
+      final thumbnail = image ? await widget.files.thumbnail(bytes) : null;
+      await widget.core.importAttachment(
+        file.name,
+        bytes,
+        thumbnail: thumbnail,
+      );
+    } else {
+      await widget.core.importAttachmentFile(file.path!, file.name);
+    }
+  }
+
+  /// The core's words, without the bridge's wrapping around them.
+  static String _reason(Object e) {
+    final text = '$e';
+    const prefix = 'AnyhowException(';
+    if (text.startsWith(prefix) && text.endsWith(')')) {
+      return text.substring(prefix.length, text.length - 1);
+    }
+    return text;
+  }
+
+  void _retryTransfers() => widget.library?.retryTransfers();
+
+  Future<void> _openImage(List<AttachmentView> images, int index) =>
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AttachmentViewer(
+            images: images,
+            initial: index,
+            read: widget.core.readAttachment,
+            onAction: _attachmentAction,
+          ),
+        ),
+      );
+
+  Future<void> _attachmentAction(
+    AttachmentView attachment,
+    AttachmentAction action,
+  ) async {
+    switch (action) {
+      case AttachmentAction.saveCopy:
+        final bytes = await widget.core.readAttachment(attachment.id);
+        if (!mounted) return;
+        if (bytes == null) {
+          _say('This file is still downloading. Try again when it is here.');
+          return;
+        }
+        try {
+          await widget.files.save(attachment.name, attachment.mime, bytes);
+        } on Object catch (e) {
+          if (mounted) _say('Couldn\'t save a copy: ${_reason(e)}');
+        }
+      case AttachmentAction.describe:
+        final description = await showDialog<String>(
+          context: context,
+          builder: (context) =>
+              _DescribeDialog(initial: attachment.description),
+        );
+        if (description == null) return;
+        await widget.core.describeAttachment(attachment.id, description);
+      case AttachmentAction.remove:
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Remove attachment?'),
+            content: Text(
+              attachment.pending
+                  ? 'It has not been shared yet, so only this device has it.'
+                  : 'Remove this attachment for everyone on this note? The '
+                        'file you added it from stays where it is.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                key: const Key('confirm-remove-attachment'),
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Remove'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
+        await widget.core.removeAttachment(attachment.id);
+        await _refreshPending();
+    }
+  }
+
+  List<AttachmentView> _attachments(NoteView note, AttachmentKind kind) => [
+    for (final a in note.attachments)
+      if (a.kind == kind) a,
+    for (final a in _pendingAttachments)
+      if (a.kind == kind) a,
+  ];
+
+  Widget _audioRows(NoteView note) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      for (final audio in _attachments(note, AttachmentKind.audio))
+        AttachmentAudioRow(
+          audio: audio,
+          transfers: _transfers,
+          onAction: (action) => _attachmentAction(audio, action),
+          onRetry: _retryTransfers,
+        ),
+    ],
+  );
+
   @override
   void dispose() {
+    unawaited(_viewWatch?.cancel());
+    unawaited(_transferWatch?.cancel());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
       focus.dispose();
@@ -334,14 +552,18 @@ class _NoteScreenState extends State<NoteScreen> {
     builder: (context, constraints) {
       // Give the body the unused viewport height so tapping its blank area
       // focuses the editor, while keeping room for any items a merge left here.
-      final bodyHeight = (constraints.maxHeight - note.items.length * 56 - 16)
-          .clamp(160.0, double.infinity)
-          .toDouble();
+      // Sound files are rows under it too, and must not be pushed off screen.
+      final audioRows = _attachments(note, AttachmentKind.audio).length;
+      final bodyHeight =
+          (constraints.maxHeight - note.items.length * 56 - audioRows * 72 - 16)
+              .clamp(160.0, double.infinity)
+              .toDouble();
       return ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         children: [
           SizedBox(height: bodyHeight, child: _bodyField(note, expands: true)),
           for (final item in note.items) _row(item),
+          _audioRows(note),
         ],
       );
     },
@@ -381,6 +603,7 @@ class _NoteScreenState extends State<NoteScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: _bodyField(note),
             ),
+      footer: _audioRows(note),
       itemCount: itemCount,
       // Only unchecked rows have drag handles. Convert the target position in
       // that visible group back to the core's complete item order.
@@ -512,6 +735,31 @@ class _NoteScreenState extends State<NoteScreen> {
         body: Column(
           children: [
             StorageBanner(storage: widget.storage),
+            for (final name in _preparing)
+              ListTile(
+                dense: true,
+                leading: const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                title: Text(
+                  'Preparing $name',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            if (_attachments(note, AttachmentKind.image) case final images
+                when images.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: AttachmentGallery(
+                  images: images,
+                  read: widget.core.readAttachment,
+                  transfers: _transfers,
+                  onOpen: (index) => _openImage(images, index),
+                  onRetry: _retryTransfers,
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
               child: _TitleField(
@@ -526,6 +774,7 @@ class _NoteScreenState extends State<NoteScreen> {
         ),
         bottomNavigationBar: library == null || summary == null
             ? _KindToggleBar(
+                onAttach: _addAttachment,
                 onSend: () => _shareContent(widget.core.current),
                 isText: isText,
                 onKindToggle: () => widget.core.setKind(
@@ -533,6 +782,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 ),
               )
             : _NoteToolbar(
+                onAttach: _addAttachment,
                 onSend: () => _shareContent(widget.core.current),
                 note: summary,
                 library: library,
@@ -554,6 +804,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
 class _NoteToolbar extends StatelessWidget {
   const _NoteToolbar({
+    required this.onAttach,
     required this.onSend,
     required this.note,
     required this.library,
@@ -565,6 +816,7 @@ class _NoteToolbar extends StatelessWidget {
   });
 
   final NoteSummary note;
+  final Future<void> Function() onAttach;
   final Future<void> Function() onSend;
   final NoteLibrary library;
   final bool isText;
@@ -684,6 +936,7 @@ class _NoteToolbar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Row(
           children: [
+            _AttachButton(onAttach: onAttach),
             IconButton(
               key: const Key('colour-button'),
               tooltip: 'Change colour',
@@ -714,11 +967,13 @@ class _NoteToolbar extends StatelessWidget {
 
 class _KindToggleBar extends StatelessWidget {
   const _KindToggleBar({
+    required this.onAttach,
     required this.isText,
     required this.onKindToggle,
     required this.onSend,
   });
 
+  final Future<void> Function() onAttach;
   final bool isText;
   final VoidCallback onKindToggle;
   final Future<void> Function() onSend;
@@ -729,6 +984,7 @@ class _KindToggleBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
         children: [
+          _AttachButton(onAttach: onAttach),
           IconButton(
             key: const Key('kind-toggle'),
             icon: Icon(
@@ -760,6 +1016,66 @@ class _KindToggleBar extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+/// Add attachment, at the bottom left of both toolbars.
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({required this.onAttach});
+
+  final Future<void> Function() onAttach;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    key: const Key('add-attachment'),
+    tooltip: 'Add attachment',
+    icon: const Icon(Icons.add_box_outlined),
+    onPressed: () => unawaited(onAttach()),
+  );
+}
+
+/// The shared words for someone who cannot see a picture.
+class _DescribeDialog extends StatefulWidget {
+  const _DescribeDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_DescribeDialog> createState() => _DescribeDialogState();
+}
+
+class _DescribeDialogState extends State<_DescribeDialog> {
+  late final _text = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Describe'),
+    content: TextField(
+      key: const Key('attachment-description'),
+      controller: _text,
+      autofocus: true,
+      maxLength: 1000,
+      maxLines: null,
+      decoration: const InputDecoration(
+        helperText: 'Everyone on this note sees this description.',
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(_text.text.trim()),
+        child: const Text('Save'),
+      ),
+    ],
   );
 }
 

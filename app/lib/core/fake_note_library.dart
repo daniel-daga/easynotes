@@ -847,6 +847,12 @@ class FakeNoteLibrary implements NoteLibrary {
             ..._bodyLines(_cores[id]!.current.body),
             for (final item in _cores[id]!.current.items) item.text,
           ].take(4).toList(),
+          images: _cores[id]!.current.attachments
+              .where((a) => a.kind == AttachmentKind.image)
+              .length,
+          audio: _cores[id]!.current.attachments
+              .where((a) => a.kind == AttachmentKind.audio)
+              .length,
           colour: _placements[id]?.colour,
           pinned: _placements[id]?.pinned ?? false,
           archived: _placements[id]?.archived ?? false,

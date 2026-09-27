@@ -3840,8 +3840,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NoteSummaryView dco_decode_note_summary_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return NoteSummaryView(
       collaborators: dco_decode_list_collaborator_view(arr[0]),
       id: dco_decode_String(arr[1]),
@@ -3850,11 +3850,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       items: dco_decode_u_32(arr[4]),
       checked: dco_decode_u_32(arr[5]),
       preview: dco_decode_list_String(arr[6]),
-      colour: dco_decode_opt_box_autoadd_note_colour(arr[7]),
-      pinned: dco_decode_bool(arr[8]),
-      archived: dco_decode_bool(arr[9]),
-      trashed: dco_decode_bool(arr[10]),
-      tags: dco_decode_list_label_view(arr[11]),
+      images: dco_decode_u_32(arr[7]),
+      audio: dco_decode_u_32(arr[8]),
+      colour: dco_decode_opt_box_autoadd_note_colour(arr[9]),
+      pinned: dco_decode_bool(arr[10]),
+      archived: dco_decode_bool(arr[11]),
+      trashed: dco_decode_bool(arr[12]),
+      tags: dco_decode_list_label_view(arr[13]),
     );
   }
 
@@ -4668,6 +4670,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_items = sse_decode_u_32(deserializer);
     var var_checked = sse_decode_u_32(deserializer);
     var var_preview = sse_decode_list_String(deserializer);
+    var var_images = sse_decode_u_32(deserializer);
+    var var_audio = sse_decode_u_32(deserializer);
     var var_colour = sse_decode_opt_box_autoadd_note_colour(deserializer);
     var var_pinned = sse_decode_bool(deserializer);
     var var_archived = sse_decode_bool(deserializer);
@@ -4681,6 +4685,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       items: var_items,
       checked: var_checked,
       preview: var_preview,
+      images: var_images,
+      audio: var_audio,
       colour: var_colour,
       pinned: var_pinned,
       archived: var_archived,
@@ -5523,6 +5529,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.items, serializer);
     sse_encode_u_32(self.checked, serializer);
     sse_encode_list_String(self.preview, serializer);
+    sse_encode_u_32(self.images, serializer);
+    sse_encode_u_32(self.audio, serializer);
     sse_encode_opt_box_autoadd_note_colour(self.colour, serializer);
     sse_encode_bool(self.pinned, serializer);
     sse_encode_bool(self.archived, serializer);

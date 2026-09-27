@@ -848,6 +848,11 @@ class NoteSummaryView {
   /// these under the title, and most shopping lists do not have one.
   final List<String> preview;
 
+  /// How many live pictures and sound files the note holds, for a card to
+  /// say so and a search to filter by, without opening it.
+  final int images;
+  final int audio;
+
   /// What this person has done with the note. From the account document, so
   /// none of it is shared with whoever else is on the note.
   ///
@@ -876,6 +881,8 @@ class NoteSummaryView {
     required this.items,
     required this.checked,
     required this.preview,
+    required this.images,
+    required this.audio,
     this.colour,
     required this.pinned,
     required this.archived,
@@ -892,6 +899,8 @@ class NoteSummaryView {
       items.hashCode ^
       checked.hashCode ^
       preview.hashCode ^
+      images.hashCode ^
+      audio.hashCode ^
       colour.hashCode ^
       pinned.hashCode ^
       archived.hashCode ^
@@ -910,6 +919,8 @@ class NoteSummaryView {
           items == other.items &&
           checked == other.checked &&
           preview == other.preview &&
+          images == other.images &&
+          audio == other.audio &&
           colour == other.colour &&
           pinned == other.pinned &&
           archived == other.archived &&
