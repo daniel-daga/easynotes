@@ -25,6 +25,7 @@ import '../core/reminder_scheduler.dart';
 import '../core/relay_profiles.dart';
 import '../core/shared_text.dart';
 import '../core/sync_status.dart';
+import 'about_screen.dart';
 import 'account_screen.dart';
 import 'invites.dart';
 import 'motion.dart';
@@ -490,6 +491,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
     ),
   );
 
+  Future<void> _openAbout() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => AboutScreen(profile: widget.profile),
+    ),
+  );
+
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
     await widget.library.setLayout(next);
@@ -705,6 +712,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onAccount: _openAccount,
               profile: widget.profile,
               onRelaySettings: _openRelaySettings,
+              onAbout: _openAbout,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
               onJoin: widget.library.canJoin ? _join : null,
@@ -1522,6 +1530,7 @@ class _Shelves extends StatelessWidget {
     required this.onAccount,
     required this.profile,
     required this.onRelaySettings,
+    required this.onAbout,
     required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
@@ -1546,6 +1555,7 @@ class _Shelves extends StatelessWidget {
   final VoidCallback onAccount;
   final RelayProfile profile;
   final VoidCallback onRelaySettings;
+  final VoidCallback onAbout;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
@@ -1675,6 +1685,16 @@ class _Shelves extends StatelessWidget {
                 onJoin!();
               },
             ),
+          const Divider(),
+          ListTile(
+            key: const Key('about-entry'),
+            leading: const Icon(Icons.info_outline),
+            title: const Text('About and privacy'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onAbout();
+            },
+          ),
         ],
       ),
     );

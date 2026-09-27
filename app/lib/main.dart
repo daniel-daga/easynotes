@@ -23,6 +23,7 @@ import 'core/relay_profiles.dart';
 import 'core/relay_session.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
+import 'ui/about_screen.dart' show registerBundledLicenses;
 import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
 
@@ -83,6 +84,7 @@ bool get _hasNativeShares =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerBundledLicenses();
   final initialInvite = kIsWeb
       ? inviteLinkFrom(Uri.base.toString())
       : _hasNativeDeepLinks

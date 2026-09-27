@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
@@ -7,6 +8,16 @@ import '../core/relay_profiles.dart';
 /// will refuse it a plain `http://` or `ws://` relay (mixed content).
 bool get _servedOverHttps => kIsWeb && Uri.base.scheme == 'https';
 
+/// Whether this is a release build for a phone, whose operating system refuses
+/// plain `http://` and `ws://` outright: Android since API 28 unless the
+/// manifest allows it (only the debug one does), iOS through App Transport
+/// Security. Debug builds keep plain http for a relay on the local network.
+bool get _mobileRelease =>
+    kReleaseMode &&
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS);
+
 class RelaySettingsScreen extends StatefulWidget {
   RelaySettingsScreen({
     super.key,
@@ -14,7 +25,9 @@ class RelaySettingsScreen extends StatefulWidget {
     required this.profiles,
     required this.onSwitchRelay,
     bool? servedOverHttps,
-  }) : servedOverHttps = servedOverHttps ?? _servedOverHttps;
+    bool? mobileRelease,
+  }) : servedOverHttps = servedOverHttps ?? _servedOverHttps,
+       mobileRelease = mobileRelease ?? _mobileRelease;
 
   final RelayProfile profile;
   final List<RelayProfile> profiles;
@@ -25,6 +38,16 @@ class RelaySettingsScreen extends StatefulWidget {
   /// device app has no such rule, and a relay on the local network is how it
   /// is developed.
   final bool servedOverHttps;
+
+  /// A released phone app cannot reach a relay without TLS either, and a relay
+  /// anyone else uses should not be reached without it, so the same address is
+  /// refused here with its own reason.
+  final bool mobileRelease;
+
+  /// Whether [url], a canonical relay URL, is one this build cannot reach.
+  bool refuses(String? url) =>
+      (servedOverHttps || mobileRelease) &&
+      (url?.startsWith('http://') ?? false);
 
   @override
   State<RelaySettingsScreen> createState() => _RelaySettingsScreenState();
@@ -96,6 +119,10 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       return 'This page is served over HTTPS, so the browser will only reach '
           'a relay whose address starts with https://.';
     }
+    if (widget.mobileRelease && url.startsWith('http://')) {
+      return 'Notes only sync over an encrypted connection. Use a relay '
+          'address that starts with https:// or wss://.';
+    }
     return null;
   }
 
@@ -161,8 +188,13 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
             title: Text(profile.label),
             subtitle: profile.url == widget.profile.url
                 ? const Text('Selected')
+                : widget.refuses(profile.url)
+                ? const Text('Needs an https:// relay in this version')
                 : null,
-            enabled: !_switching && profile.id != widget.profile.id,
+            enabled:
+                !_switching &&
+                profile.id != widget.profile.id &&
+                !widget.refuses(profile.url),
             onTap: () => _switchTo(profile.url),
           ),
         if (_switching) const Center(child: CircularProgressIndicator()),

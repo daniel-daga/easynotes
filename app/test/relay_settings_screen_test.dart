@@ -30,6 +30,7 @@ void main() {
     RelayProfile profile = _local,
     List<RelayProfile> profiles = const [_local, _relay],
     bool servedOverHttps = false,
+    bool mobileRelease = false,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -42,6 +43,7 @@ void main() {
                   profiles: profiles,
                   onSwitchRelay: onSwitch,
                   servedOverHttps: servedOverHttps,
+                  mobileRelease: mobileRelease,
                 ),
               ),
             ),
@@ -130,6 +132,34 @@ void main() {
 
     await submit(tester, 'https://relay.example');
     expect(find.text('Switch relay?'), findsOneWidget);
+  });
+
+  testWidgets('a released phone app refuses a relay without TLS', (
+    tester,
+  ) async {
+    await pump(tester, mobileRelease: true);
+    await submit(tester, 'ws://192.168.1.10:8080');
+    expect(
+      find.textContaining('only sync over an encrypted connection'),
+      findsOneWidget,
+    );
+    expect(switched, isEmpty);
+
+    await submit(tester, 'wss://relay.example');
+    expect(find.text('Switch relay?'), findsOneWidget);
+  });
+
+  testWidgets('a saved plain-http profile cannot be chosen in a phone '
+      'release', (tester) async {
+    const plain = RelayProfile(id: 'lan', url: 'http://192.168.1.10:8080');
+    await pump(tester, profiles: const [_local, plain], mobileRelease: true);
+    expect(
+      find.text('Needs an https:// relay in this version'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('http://192.168.1.10:8080'));
+    await tester.pumpAndSettle();
+    expect(find.text('Switch relay?'), findsNothing);
   });
 
   testWidgets('a saved profile is one tap and a confirmation away', (
