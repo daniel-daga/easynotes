@@ -725,6 +725,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "easynotes-web-media"
+version = "0.1.0"
+dependencies = [
+ "easynotes-core",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "ed25519"
 version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,18 @@
+[package]
+name = "easynotes-web-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The browser's attachment store and transfer queue, run in a real tab against a real relay."
+
+[lib]
+crate-type = ["cdylib"]
+
+# Only ever built for the browser; natively the library is empty (see lib.rs),
+# which is what lets `cargo build --workspace` and clippy walk past it.
+[dependencies]
+easynotes-core = { path = "../../core", default-features = false, features = ["yrs-backend", "web-store", "sync-web"] }
+js-sys = "0.3.105"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"

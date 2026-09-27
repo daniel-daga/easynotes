@@ -104,6 +104,59 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
     Ok((status, text))
 }
 
+/// A call made as a device — its token as a bearer — and the status and body
+/// that came back, whatever the status. The native client's `call`, over
+/// `fetch`; what the attachment calls are made of.
+///
+/// Every one of these is a preflighted request, for its `authorization`
+/// header alone, so the relay's CORS rules have to allow that header, `range`,
+/// and `PUT` — see `browser_access` in the relay.
+pub(crate) async fn call(
+    method: &str,
+    url: &str,
+    token: &str,
+    request: super::media::Request,
+) -> Result<(u16, Vec<u8>)> {
+    use super::media::Request as Body;
+    let init = RequestInit::new();
+    init.set_method(method);
+    let content_type = match &request {
+        Body::Json(body) => {
+            init.set_body(&JsValue::from_str(body));
+            Some("application/json")
+        }
+        Body::Bytes(bytes) => {
+            init.set_body(&js_sys::Uint8Array::from(bytes.as_slice()));
+            Some("application/octet-stream")
+        }
+        Body::Empty | Body::Range(..) => None,
+    };
+    let request_js = Request::new_with_str_and_init(url, &init).map_err(js)?;
+    let headers = request_js.headers();
+    headers
+        .set("authorization", &format!("Bearer {token}"))
+        .map_err(js)?;
+    if let Some(content_type) = content_type {
+        headers.set("content-type", content_type).map_err(js)?;
+    }
+    if let Body::Range(at, len) = request {
+        headers
+            .set("range", &format!("bytes={at}-{}", at + len - 1))
+            .map_err(js)?;
+    }
+
+    let response: Response = JsFuture::from(fetch(&request_js)?)
+        .await
+        .map_err(js)?
+        .dyn_into()
+        .map_err(|_| net("fetch did not return a response"))?;
+    let status = response.status();
+    let body = JsFuture::from(response.array_buffer().map_err(js)?)
+        .await
+        .map_err(js)?;
+    Ok((status, js_sys::Uint8Array::new(&body).to_vec()))
+}
+
 /// Prove possession of the device key and get a short-lived token.
 ///
 /// The same two calls the native client makes, and the same order; only the HTTP

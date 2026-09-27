@@ -166,10 +166,11 @@ async fn an_upload_cut_off_part_way_finishes_on_the_next_try() {
 
     // The network goes after the second chunk.
     let cut = upload(&base, &token, note, original, |index| {
-        if index >= 2 {
-            return Err(CoreError::Storage("relay: connection reset".into()));
-        }
-        store.read_sealed_chunk(note, original, index)
+        Box::pin(std::future::ready(if index >= 2 {
+            Err(CoreError::Storage("relay: connection reset".into()))
+        } else {
+            store.read_sealed_chunk(note, original, index)
+        }))
     })
     .await;
     assert!(cut.is_err());
@@ -178,7 +179,9 @@ async fn an_upload_cut_off_part_way_finishes_on_the_next_try() {
     let mut sent = Vec::new();
     upload(&base, &token, note, original, |index| {
         sent.push(index);
-        store.read_sealed_chunk(note, original, index)
+        Box::pin(std::future::ready(
+            store.read_sealed_chunk(note, original, index),
+        ))
     })
     .await
     .unwrap();

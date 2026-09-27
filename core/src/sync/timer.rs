@@ -58,3 +58,22 @@ pub(crate) type Timer = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>
 pub(crate) fn timer(how_long: Duration) -> Timer {
     Box::pin(sleep(how_long))
 }
+
+/// How long since some fixed moment: a clock to measure waits against, and
+/// nothing else. `Instant` is the obvious one and it panics in a browser, so
+/// the transfer queue's backoffs and token ages are measured with this.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn now() -> Duration {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed()
+}
+
+/// The page's clock. `Date.now()` rather than `performance.now()`, because
+/// both a window and a worker have it under the same name; a wall clock can
+/// step, and the worst a step does here is shorten or lengthen one backoff.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn now() -> Duration {
+    Duration::from_secs_f64(js_sys::Date::now().max(0.0) / 1000.0)
+}

@@ -447,3 +447,88 @@ async fn a_relay_that_refuses_attachments_fails_the_upload_and_keeps_the_file() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_same_queue_runs_over_a_tabs_store() {
+    use easynotes_core::attachment::web::{MemoryRows, WebMediaStore};
+
+    let blobs = Arc::new(MemoryBlobs::default());
+    let (_relay, endpoint) = relay_with(Some(blobs.clone())).await;
+    let (a, b) = pair(&endpoint);
+    a.connect(&endpoint);
+    b.connect(&endpoint);
+
+    // A tab's store and queue beside each device's own, over the same core:
+    // the rows are in memory here, and in IndexedDB in a browser.
+    let tab = |peer: &Peer| {
+        let peer = peer.clone();
+        let http_base = endpoint.http_base.clone();
+        async move {
+            let store = Arc::new(
+                WebMediaStore::open(MemoryRows::default(), MasterKey::random())
+                    .await
+                    .unwrap(),
+            );
+            let (runner, queue) = TransferRunner::new(peer, store.clone(), Some(http_base));
+            tokio::spawn(runner.run());
+            (store, queue)
+        }
+    };
+    let (store_a, queue_a) = tab(&a.peer).await;
+    let (store_b, queue_b) = tab(&b.peer).await;
+
+    let photo = png(1200, 900, (1 << 20) + 5);
+    let thumb = png(256, 192, 3000);
+    let staged = store_a
+        .import(
+            a.note,
+            "tab.png",
+            &photo,
+            Some(ThumbnailInput {
+                bytes: thumb.clone(),
+            }),
+            ImportHints::default(),
+        )
+        .await
+        .unwrap();
+    // Kicked as the bridge will kick it, on every status change; here, on
+    // every look, so the test does not wait out a recheck.
+    eventually("the tab's import to reach b", || {
+        queue_a.kick();
+        b.state(staged.id) == AttachmentState::Live
+    })
+    .await;
+    eventually("the tab's record to settle", || {
+        queue_a.transfers().is_empty()
+    })
+    .await;
+    assert!(store_a.staged().await.unwrap().is_empty());
+
+    let media = b.peer.attachment(b.note, staged.id).unwrap().unwrap();
+    let thumbnail = media.thumbnail.as_ref().unwrap().media.clone();
+    queue_b.fetch(b.note, staged.id, Variant::Thumbnail);
+    queue_b.fetch(b.note, staged.id, Variant::Original);
+    let mut both = false;
+    for _ in 0..500 {
+        if store_b.has(b.note, &thumbnail).await && store_b.has(b.note, &media.original).await {
+            both = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(both, "b's tab never fetched both variants");
+    assert_eq!(
+        store_b
+            .read(b.note, staged.id, &media, Variant::Original)
+            .await
+            .unwrap(),
+        photo
+    );
+    assert_eq!(
+        store_b
+            .read(b.note, staged.id, &media, Variant::Thumbnail)
+            .await
+            .unwrap(),
+        thumb
+    );
+}

@@ -188,6 +188,12 @@ impl MediaSealer {
         })
     }
 
+    /// Where the sealed file will live. Known from the start, so a store that
+    /// keeps chunks under their object's name can write each as it is sealed.
+    pub fn object(&self) -> MediaObjectId {
+        self.object
+    }
+
     /// The plaintext the next chunk must hold, or `None` when all are sealed.
     pub fn next_len(&self) -> Option<usize> {
         (self.next < self.frame.chunks).then(|| self.frame.plain_len(self.next))

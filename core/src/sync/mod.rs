@@ -74,15 +74,20 @@ pub use socket::DeviceSync;
 ))]
 pub mod invite;
 
-/// Attachment bytes to and from the relay. Native only until the browser's
-/// transport has a `call` and a media store to put what it fetches in.
-#[cfg(feature = "sync-native")]
+/// Attachment bytes to and from the relay, over either transport's `call`.
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
 pub mod media;
 
 /// The queue that runs those transfers: staged imports uploaded and published
-/// once their note is caught up, and downloads the app asks for. Native only,
-/// with [`media`].
-#[cfg(all(feature = "sync-native", feature = "file-store"))]
+/// once their note is caught up, and downloads the app asks for. Over any
+/// [`crate::attachment::storage::MediaStorage`], so a tab runs the same one.
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
 pub mod transfers;
 
 /// Purging topics from the relay, the last step of deleting an account.

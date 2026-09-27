@@ -39,23 +39,25 @@
 //!   stale one. The queue authenticates as the same device, keeps the token
 //!   for ten minutes, and asks for a new one after any failure.
 //!
-//! Native only, like [`super::media`]: the browser's media store and `call`
-//! come next, and the reconciliation here is what they will share.
+//! Written over [`MediaStorage`], so it runs the same on a device, over its
+//! directory, and in a tab, over IndexedDB. What differs between the two is the
+//! future it hands the executor — `Send` on a device, not in a tab — and the
+//! clock ([`super::timer::now`]), and neither is visible from here.
 //!
 //! [`kick`]: TransferQueue::kick
 
 use super::authenticate;
 use super::media::{download, upload};
-use crate::attachment::store::{MediaStore, Staged};
+use super::timer::now;
+use crate::attachment::storage::{variant_ref, Fut, IncomingMedia, MediaStorage, Staged};
 use crate::attachment::{AttachmentState, Media, MediaRef, Variant};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
-use futures_util::future::BoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 /// Transfers in flight at once, uploads and downloads together.
@@ -211,20 +213,20 @@ impl TransferQueue {
     }
 }
 
-/// A token, and when it was issued.
+/// A token, and when it was issued, on [`now`]'s clock.
 #[derive(Default)]
-struct Tokens(tokio::sync::Mutex<Option<(String, Instant)>>);
+struct Tokens(tokio::sync::Mutex<Option<(String, Duration)>>);
 
 impl Tokens {
     async fn get(&self, http_base: &str, signer: &impl DeviceSigner) -> Result<String> {
         let mut held = self.0.lock().await;
         if let Some((token, at)) = held.as_ref() {
-            if at.elapsed() < TOKEN_LIFE {
+            if now().saturating_sub(*at) < TOKEN_LIFE {
                 return Ok(token.clone());
             }
         }
         let token = authenticate(http_base, signer).await?;
-        *held = Some((token.clone(), Instant::now()));
+        *held = Some((token.clone(), now()));
         Ok(token)
     }
 
@@ -255,7 +257,8 @@ struct Job {
     /// The record an upload publishes; `None` for a download.
     staged: Option<Staged>,
     failures: u32,
-    not_before: Option<Instant>,
+    /// On [`now`]'s clock.
+    not_before: Option<Duration>,
     failed: bool,
     running: bool,
 }
@@ -289,9 +292,9 @@ type Finished = (Transfer, Result<()>);
 
 /// The loop. Build it with [`TransferRunner::new`] and spawn
 /// [`run`](TransferRunner::run) on the runtime the engine uses.
-pub struct TransferRunner<P: TransferPeer> {
+pub struct TransferRunner<P: TransferPeer, S: MediaStorage> {
     peer: Arc<P>,
-    store: Arc<MediaStore>,
+    store: Arc<S>,
     http_base: Option<String>,
     commands: mpsc::UnboundedReceiver<Command>,
     status: Arc<watch::Sender<TransferMap>>,
@@ -300,17 +303,13 @@ pub struct TransferRunner<P: TransferPeer> {
     /// Imports cancelled while their upload was running. The upload finishes or
     /// fails on its own; either way what follows is a discard.
     cancelled: HashSet<AttachmentId>,
-    running: FuturesUnordered<BoxFuture<'static, Finished>>,
+    running: FuturesUnordered<Fut<'static, Finished>>,
 }
 
-impl<P: TransferPeer> TransferRunner<P> {
+impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
     /// `http_base` is the relay's, or `None` for a device with no relay, whose
     /// every note is local-only.
-    pub fn new(
-        peer: P,
-        store: Arc<MediaStore>,
-        http_base: Option<String>,
-    ) -> (Self, TransferQueue) {
+    pub fn new(peer: P, store: Arc<S>, http_base: Option<String>) -> (Self, TransferQueue) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = watch::channel(TransferMap::new());
         let runner = Self {
@@ -334,9 +333,9 @@ impl<P: TransferPeer> TransferRunner<P> {
     /// Run until every [`TransferQueue`] is dropped. A transfer in flight then
     /// is abandoned where it stands; the next launch resumes it.
     pub async fn run(mut self) {
-        self.rescan();
+        self.rescan().await;
         loop {
-            self.schedule();
+            self.schedule().await;
             let wake = self.next_wake();
             let sleep = async {
                 match wake {
@@ -346,20 +345,20 @@ impl<P: TransferPeer> TransferRunner<P> {
             };
             tokio::select! {
                 command = self.commands.recv() => match command {
-                    Some(command) => self.command(command),
+                    Some(command) => self.command(command).await,
                     None => break,
                 },
                 Some((transfer, result)) = self.running.next(), if !self.running.is_empty() => {
-                    self.finished(transfer, result);
+                    self.finished(transfer, result).await;
                 }
                 () = sleep => {}
             }
         }
     }
 
-    fn command(&mut self, command: Command) {
+    async fn command(&mut self, command: Command) {
         match command {
-            Command::Kick => self.rescan(),
+            Command::Kick => self.rescan().await,
             Command::Fetch(note, id, variant) => {
                 let transfer = Transfer {
                     note,
@@ -368,7 +367,7 @@ impl<P: TransferPeer> TransferRunner<P> {
                 };
                 self.jobs.entry(transfer).or_insert_with(|| Job::new(None));
             }
-            Command::Cancel(id) => self.cancel(id),
+            Command::Cancel(id) => self.cancel(id).await,
             Command::Retry => {
                 for job in self.jobs.values_mut() {
                     job.failed = false;
@@ -381,8 +380,8 @@ impl<P: TransferPeer> TransferRunner<P> {
     /// Take on every staging record the queue does not have yet. A record that
     /// has gone — settled, discarded, or purged with its note — takes its job
     /// with it, unless its upload is running; then the completion finds out.
-    fn rescan(&mut self) {
-        let staged = match self.store.staged() {
+    async fn rescan(&mut self) {
+        let staged = match self.store.staged().await {
             Ok(staged) => staged,
             // The store cannot be read now. What it holds is still there, and
             // the next kick or recheck looks again.
@@ -412,7 +411,7 @@ impl<P: TransferPeer> TransferRunner<P> {
         }
     }
 
-    fn cancel(&mut self, id: AttachmentId) {
+    async fn cancel(&mut self, id: AttachmentId) {
         let transfer = self
             .jobs
             .keys()
@@ -428,11 +427,12 @@ impl<P: TransferPeer> TransferRunner<P> {
             None => self
                 .store
                 .staged()
+                .await
                 .ok()
                 .and_then(|all| all.into_iter().find(|s| s.id == id)),
         };
         if let Some(staged) = staged {
-            self.drop_import(&staged);
+            self.drop_import(&staged).await;
             self.done(Transfer {
                 note: staged.note,
                 id,
@@ -444,17 +444,17 @@ impl<P: TransferPeer> TransferRunner<P> {
     /// An import that will never be published. Discarded if nothing in the
     /// note names it; if its descriptor did get in — published before a crash,
     /// say — the objects are the note's and only the record goes.
-    fn drop_import(&self, staged: &Staged) {
+    async fn drop_import(&mut self, staged: &Staged) {
         let _ = match self.peer.attachment_state(staged.note, staged.id) {
-            Ok(AttachmentState::Live) => self.store.settle(staged.id),
-            _ => self.store.discard(staged),
+            Ok(AttachmentState::Live) => self.store.settle(staged.id).await,
+            _ => self.store.discard(staged).await,
         };
     }
 
     /// Look at every job that is not running, not failed and not backing off,
     /// in priority order, and start what may start.
-    fn schedule(&mut self) {
-        let now = Instant::now();
+    async fn schedule(&mut self) {
+        let now = now();
         let mut ready: Vec<Transfer> = self
             .jobs
             .iter()
@@ -465,7 +465,7 @@ impl<P: TransferPeer> TransferRunner<P> {
             .collect();
         ready.sort_by_key(|t| (t.priority(), t.id));
         for transfer in ready {
-            match self.decide(transfer) {
+            match self.decide(transfer).await {
                 Step::Done => self.done(transfer),
                 Step::Wait => self.show(transfer, TransferState::Waiting),
                 Step::Fail(error) => self.fail(transfer, error),
@@ -475,7 +475,7 @@ impl<P: TransferPeer> TransferRunner<P> {
         }
     }
 
-    fn decide(&mut self, transfer: Transfer) -> Step {
+    async fn decide(&mut self, transfer: Transfer) -> Step {
         let room = self.running.len() < MAX_RUNNING;
         let (note, id) = (transfer.note, transfer.id);
         match transfer.direction {
@@ -486,15 +486,15 @@ impl<P: TransferPeer> TransferRunner<P> {
                 match self.peer.attachment_state(note, id) {
                     Err(e) => Step::Retry(e.to_string()),
                     Ok(AttachmentState::Live) => {
-                        let _ = self.store.settle(id);
+                        let _ = self.store.settle(id).await;
                         Step::Done
                     }
                     Ok(AttachmentState::Removed | AttachmentState::NoNote) => {
-                        let _ = self.store.discard(&staged);
+                        let _ = self.store.discard(&staged).await;
                         Step::Done
                     }
                     Ok(AttachmentState::Pending) => match self.peer.reach(note) {
-                        Reach::LocalOnly => self.publish(&staged),
+                        Reach::LocalOnly => self.publish(&staged).await,
                         Reach::Synced if self.http_base.is_some() => {
                             if room {
                                 Step::Start
@@ -516,7 +516,7 @@ impl<P: TransferPeer> TransferRunner<P> {
                 let Some(media) = variant_ref(&media, variant) else {
                     return Step::Done;
                 };
-                if self.store.has(note, media) {
+                if self.store.has(note, media).await {
                     return Step::Done;
                 }
                 match self.peer.reach(note) {
@@ -532,7 +532,7 @@ impl<P: TransferPeer> TransferRunner<P> {
 
     /// Publish a staged import whose bytes are where they need to be, and
     /// forget its record. The last thing that happens to an upload.
-    fn publish(&self, staged: &Staged) -> Step {
+    async fn publish(&mut self, staged: &Staged) -> Step {
         match self
             .peer
             .publish(staged.note, staged.id, staged.media.clone())
@@ -540,7 +540,7 @@ impl<P: TransferPeer> TransferRunner<P> {
             Ok(()) => {
                 // Published and not settled is the state §3 recovers from: the
                 // next scan finds the record, sees `Live`, and settles it.
-                let _ = self.store.settle(staged.id);
+                let _ = self.store.settle(staged.id).await;
                 Step::Done
             }
             Err(e) if permanent(&e) => Step::Fail(e.to_string()),
@@ -560,7 +560,7 @@ impl<P: TransferPeer> TransferRunner<P> {
             transfer,
         };
         let (peer, store, tokens) = (self.peer.clone(), self.store.clone(), self.tokens.clone());
-        let work: BoxFuture<'static, Result<()>> = match transfer.direction {
+        let work: Fut<'static, Result<()>> = match transfer.direction {
             Direction::Up => {
                 let Some(staged) = job.staged.clone() else {
                     return;
@@ -592,14 +592,14 @@ impl<P: TransferPeer> TransferRunner<P> {
             .push(Box::pin(async move { (transfer, work.await) }));
     }
 
-    fn finished(&mut self, transfer: Transfer, result: Result<()>) {
+    async fn finished(&mut self, transfer: Transfer, result: Result<()>) {
         if let Some(job) = self.jobs.get_mut(&transfer) {
             job.running = false;
         }
         if let Err(e) = result {
             self.tokens.forget();
             if self.cancelled.remove(&transfer.id) {
-                self.cancel(transfer.id);
+                self.cancel(transfer.id).await;
             } else if permanent(&e) {
                 self.fail(transfer, e.to_string());
             } else {
@@ -611,7 +611,7 @@ impl<P: TransferPeer> TransferRunner<P> {
             Direction::Down(_) => self.done(transfer),
             Direction::Up => {
                 if self.cancelled.remove(&transfer.id) {
-                    self.cancel(transfer.id);
+                    self.cancel(transfer.id).await;
                     return;
                 }
                 // Asked again: a removal, a deletion or a revocation may have
@@ -622,8 +622,8 @@ impl<P: TransferPeer> TransferRunner<P> {
                     return;
                 };
                 let step = match self.peer.attachment_state(transfer.note, transfer.id) {
-                    Ok(AttachmentState::Pending) => self.publish(&staged),
-                    _ => self.decide(transfer),
+                    Ok(AttachmentState::Pending) => self.publish(&staged).await,
+                    _ => self.decide(transfer).await,
                 };
                 match step {
                     Step::Done => self.done(transfer),
@@ -664,7 +664,7 @@ impl<P: TransferPeer> TransferRunner<P> {
                 .saturating_mul(1 << job.failures.min(16))
                 .min(MAX_BACKOFF);
             job.failures += 1;
-            job.not_before = Some(Instant::now() + wait);
+            job.not_before = Some(now() + wait);
         }
         self.show(transfer, TransferState::Retrying { error });
     }
@@ -672,7 +672,7 @@ impl<P: TransferPeer> TransferRunner<P> {
     /// When the loop next has something to look at on its own: the earliest
     /// backoff to run out, or a recheck while anything waits for its note.
     fn next_wake(&self) -> Option<Duration> {
-        let now = Instant::now();
+        let now = now();
         let mut wake: Option<Duration> = None;
         let mut soonest = |after: Duration| {
             wake = Some(wake.map_or(after, |w| w.min(after)));
@@ -682,7 +682,7 @@ impl<P: TransferPeer> TransferRunner<P> {
                 continue;
             }
             match job.not_before {
-                Some(at) => soonest(at.saturating_duration_since(now)),
+                Some(at) => soonest(at.saturating_sub(now)),
                 None => soonest(RECHECK),
             }
         }
@@ -698,17 +698,10 @@ fn permanent(e: &CoreError) -> bool {
     matches!(e, CoreError::Attachment(_) | CoreError::Crypto(_))
 }
 
-fn variant_ref(media: &Media, variant: Variant) -> Option<&MediaRef> {
-    match variant {
-        Variant::Original => Some(&media.original),
-        Variant::Thumbnail => media.thumbnail.as_ref().map(|t| &t.media),
-    }
-}
-
 /// Upload both of an import's variants, reporting each chunk as it goes.
-async fn push<P: TransferPeer>(
+async fn push<P: TransferPeer, S: MediaStorage>(
     peer: Arc<P>,
-    store: Arc<MediaStore>,
+    store: Arc<S>,
     tokens: Arc<Tokens>,
     http_base: String,
     staged: Staged,
@@ -722,11 +715,13 @@ async fn push<P: TransferPeer>(
     let mut done = 0;
     progress.set(done, of);
     for variant in variants {
+        let store = &*store;
         upload(&http_base, &token, staged.note, variant, |index| {
-            let chunk = store.read_sealed_chunk(staged.note, variant, index)?;
+            // Counted as it is handed over rather than once it has arrived:
+            // the relay's answer to the next call is what says it did.
             done += 1;
             progress.set(done, of);
-            Ok(chunk)
+            store.read_sealed_chunk(staged.note, variant, index)
         })
         .await?;
     }
@@ -735,29 +730,27 @@ async fn push<P: TransferPeer>(
 
 /// Download one variant into the store, which keeps it only once its length
 /// and digest are the descriptor's.
-async fn pull<P: TransferPeer>(
+async fn pull<P: TransferPeer, S: MediaStorage>(
     peer: Arc<P>,
-    store: Arc<MediaStore>,
+    store: Arc<S>,
     tokens: Arc<Tokens>,
     http_base: String,
     note: NoteId,
     media: MediaRef,
     progress: Progress,
 ) -> Result<()> {
-    if store.has(note, &media) {
+    if store.has(note, &media).await {
         return Ok(());
     }
     let token = tokens.get(&http_base, &*peer).await?;
     let of = media.chunks();
     let mut done = 0;
     progress.set(done, of);
-    let mut incoming = store.incoming(note, &media)?;
-    download(&http_base, &token, note, &media, |bytes| {
-        incoming.write(bytes)?;
+    let mut incoming = store.incoming(note, &media).await?;
+    download(&http_base, &token, note, &media, &mut incoming, || {
         done += 1;
         progress.set(done, of);
-        Ok(())
     })
     .await?;
-    incoming.finish()
+    incoming.finish().await
 }

@@ -75,7 +75,7 @@ sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "toki
 # transport differs — see `sync::wire` for everything the two share — and the
 # dependencies it needs exist only for wasm32, so the feature is inert
 # elsewhere and the module behind it is `cfg`-ed on the target as well.
-sync-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "tokio/macros"]
+sync-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:futures-util", "tokio/macros"]
 
 [dev-dependencies]
 # Lets this crate's integration tests use `test-support` without every
@@ -84,6 +84,8 @@ easynotes-core = { path = ".", features = ["test-support"] }
 # The store tests reach past the trait to check what is actually in the file.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.27.0"
+# The browser's media store is asynchronous; its tests run it on a runtime.
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 
 # WebAssembly needs to be told where randomness comes from. Two versions of
 # `getrandom` are in the tree — 0.3 directly, and 0.2 via RustCrypto's `rand_core`
@@ -109,4 +111,16 @@ web-sys = { version = "0.3.105", optional = true, features = [
     "Headers",
     "Window",
     "WorkerGlobalScope",
+    # The browser's media store (`attachment::idb`).
+    "DomException",
+    "Event",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbKeyRange",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbVersionChangeEvent",
 ] }

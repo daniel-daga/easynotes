@@ -2,8 +2,8 @@
 //! ([ADR 0027](../../../docs/adr/0027-attachments.md) §4).
 //!
 //! Written once over the transport's `call`, as the invite calls are over its
-//! `post`. Only the native transport has `call` so far, so only a native build
-//! has this module; the browser's follows with its media store.
+//! `post`, and once over [`MediaStorage`], so a tab moves bytes between the
+//! relay and IndexedDB with the same code a device uses for its directory.
 //!
 //! Both directions go a chunk at a time and hold one chunk in memory. Neither
 //! decrypts anything: an upload sends what the media store holds, and a
@@ -13,7 +13,8 @@
 //! coming out.
 
 use super::transport::call;
-use crate::attachment::MediaRef;
+use crate::attachment::storage::{Fut, IncomingMedia, MediaStorage};
+use crate::attachment::{Media, MediaRef};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -76,17 +77,18 @@ fn part(media: &MediaRef, index: u32) -> (u64, u64) {
 
 /// Put one sealed variant on the relay and commit it, from wherever it got to.
 ///
-/// `chunk` hands back sealed chunk `index` as the media store holds it. Safe to
+/// `chunk` hands back sealed chunk `index` as the media store holds it — a
+/// future, because in a tab the store has to be waited for. Safe to
 /// call again after any interruption, including after it succeeded: it asks
 /// the relay what arrived and sends only the rest, and a commit that is
 /// already done is done. If the relay finds the chunks are not the digest —
 /// a torn write somewhere — it drops them, and this sends them all once more.
-pub async fn upload(
+pub async fn upload<'c>(
     http_base: &str,
     token: &str,
     note: NoteId,
     media: &MediaRef,
-    mut chunk: impl FnMut(u32) -> Result<Vec<u8>>,
+    mut chunk: impl FnMut(u32) -> Fut<'c, Result<Vec<u8>>>,
 ) -> Result<()> {
     let reserve = serde_json::to_string(&Reserve {
         sealed_len: media.sealed_len(),
@@ -136,7 +138,7 @@ pub async fn upload(
                     "PUT",
                     &url(http_base, note, media, &format!("/{index}")),
                     token,
-                    Request::Bytes(chunk(index)?),
+                    Request::Bytes(chunk(index).await?),
                 )
                 .await?;
                 if !(200..300).contains(&status) {
@@ -164,18 +166,20 @@ pub async fn upload(
     ))
 }
 
-/// Fetch one sealed variant a chunk at a time, in order, into `sink`.
+/// Fetch one sealed variant a chunk at a time, in order, into `incoming`,
+/// calling `each` after every chunk.
 ///
-/// `sink` is where the bytes go to be checked: [`crate::attachment::store::Incoming`]
-/// on a native device, which refuses to keep anything whose length and digest
-/// are not the descriptor's. This checks each chunk's length, so a relay cannot
-/// make it read more than the descriptor says.
-pub async fn download(
+/// `incoming` is where the bytes go to be checked: it keeps nothing whose
+/// length and digest are not the descriptor's. This checks each chunk's length,
+/// so a relay cannot make it read more than the descriptor says. It does not
+/// finish `incoming`; the caller does, once this has returned.
+pub async fn download<I: IncomingMedia>(
     http_base: &str,
     token: &str,
     note: NoteId,
     media: &MediaRef,
-    mut sink: impl FnMut(&[u8]) -> Result<()>,
+    incoming: &mut I,
+    mut each: impl FnMut(),
 ) -> Result<()> {
     for index in 0..media.chunks() {
         let (at, len) = part(media, index);
@@ -187,23 +191,23 @@ pub async fn download(
         )
         .await?;
         match status {
-            206 if body.len() as u64 == len => sink(&body)?,
+            206 if body.len() as u64 == len => incoming.write(&body).await?,
             206 | 200 => return Err(CoreError::Crypto("an attachment chunk of the wrong length")),
             other => return Err(refused(other)),
         }
+        each();
     }
     Ok(())
 }
 
 /// Upload an attachment's original and thumbnail from this device's media
 /// store. What a staged import does before its descriptor is published.
-#[cfg(feature = "file-store")]
-pub async fn upload_media(
+pub async fn upload_media<S: MediaStorage>(
     http_base: &str,
     token: &str,
-    store: &crate::attachment::store::MediaStore,
+    store: &S,
     note: NoteId,
-    media: &crate::attachment::Media,
+    media: &Media,
 ) -> Result<()> {
     let variants =
         std::iter::once(&media.original).chain(media.thumbnail.as_ref().map(|t| &t.media));
@@ -218,18 +222,17 @@ pub async fn upload_media(
 
 /// Download one variant into this device's media store, unless it is already
 /// there. Kept only once it has proved to be the file attached.
-#[cfg(feature = "file-store")]
-pub async fn download_into(
+pub async fn download_into<S: MediaStorage>(
     http_base: &str,
     token: &str,
-    store: &crate::attachment::store::MediaStore,
+    store: &S,
     note: NoteId,
     media: &MediaRef,
 ) -> Result<()> {
-    if store.has(note, media) {
+    if store.has(note, media).await {
         return Ok(());
     }
-    let mut incoming = store.incoming(note, media)?;
-    download(http_base, token, note, media, |bytes| incoming.write(bytes)).await?;
-    incoming.finish()
+    let mut incoming = store.incoming(note, media).await?;
+    download(http_base, token, note, media, &mut incoming, || {}).await?;
+    incoming.finish().await
 }

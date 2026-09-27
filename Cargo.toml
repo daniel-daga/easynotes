@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "relay", "tools/wasm-size", "tools/web-bench", "app/rust"]
+members = ["core", "relay", "tools/wasm-size", "tools/web-bench", "tools/web-media", "app/rust"]
 # Vendored with a patch, not ours to lint, test or format: see third_party/README.md.
 exclude = ["third_party"]
 
