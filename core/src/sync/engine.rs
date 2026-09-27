@@ -95,6 +95,21 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
         Ok(false)
     }
 
+    /// Whether the relay has said this topic was purged
+    /// ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)). Such a
+    /// topic is never subscribed again.
+    fn is_gone(&self, note: NoteId) -> Result<bool> {
+        let _ = note;
+        Ok(false)
+    }
+
+    /// The relay says this topic was purged. Remember it, so no later
+    /// connection asks again; keep everything local.
+    fn gone(&self, note: NoteId) -> Result<()> {
+        let _ = note;
+        Ok(())
+    }
+
     /// Verify, decrypt and apply an envelope from the relay.
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> Result<()>;
 
@@ -191,6 +206,14 @@ where
     fn is_deleted(&self, note: NoteId) -> Result<bool> {
         let core = self.lock().map_err(|_| poisoned())?;
         Ok(core.is_deleted_note(note))
+    }
+
+    fn is_gone(&self, note: NoteId) -> Result<bool> {
+        self.lock().map_err(|_| poisoned())?.is_gone(note)
+    }
+
+    fn gone(&self, note: NoteId) -> Result<()> {
+        self.lock().map_err(|_| poisoned())?.mark_gone(note)
     }
 
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> Result<()> {
@@ -349,6 +372,14 @@ impl RelayEndpoint {
 // ---------------------------------------------------------------------------
 // What the UI sees
 // ---------------------------------------------------------------------------
+
+/// A note's sync status once its owner has deleted it from the relay.
+pub const GONE_NOTE: &str =
+    "This list was deleted by its owner. It no longer syncs; what is on this device stays.";
+
+/// The account document's, once the account was deleted on another device.
+pub const GONE_ACCOUNT: &str = "This account was deleted on another device. \
+     Notes here no longer sync; remove the account from Your devices to delete them here too.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncState {
@@ -1007,9 +1038,15 @@ impl Device {
             }
             return Ok(());
         }
+        let gone = peer.is_gone(id).map_err(|e| e.to_string())?;
+        let account = peer.account_topic().map_err(|e| e.to_string())? == Some(id);
         let Some(live) = self.notes.get_mut(&id) else {
             return Ok(());
         };
+        if gone {
+            live.gone(account);
+            return Ok(());
+        }
         live.on_socket = false;
         live.caught = false;
         live.crowded = false;
@@ -1263,6 +1300,14 @@ impl Device {
                 live.compact_if_due(peer, id);
                 Ok(Received::Continue)
             }
+            Incoming::Gone => {
+                // Recorded before anything else, so that a failure to record
+                // it is a failure to stop, not a quiet resubscribe next time.
+                peer.gone(id).map_err(|e| e.to_string())?;
+                let account = peer.account_topic().map_err(|e| e.to_string())? == Some(id);
+                live.gone(account);
+                Ok(Received::Continue)
+            }
             // Not the person's problem: the log is as it was, and whoever
             // compacts it next will. This device does not try again on this
             // connection, so a relay that keeps refusing does not cost it a
@@ -1405,6 +1450,25 @@ impl Live {
         }
         self.urgent.extend(out.envelopes);
         self.publish();
+    }
+
+    /// The relay purged this topic. Nothing more goes to it, and the person is
+    /// told why; the local copy is untouched.
+    fn gone(&mut self, account: bool) {
+        self.on_socket = false;
+        self.caught = false;
+        self.crowded = false;
+        self.compact = None;
+        self.compacting = None;
+        self.release();
+        self.outbox.clear();
+        self.urgent.clear();
+        self.current.last_error = Some(if account {
+            GONE_ACCOUNT.to_string()
+        } else {
+            GONE_NOTE.to_string()
+        });
+        self.set_state(SyncState::Offline);
     }
 
     /// Something went wrong that did not end the connection.

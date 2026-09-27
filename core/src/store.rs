@@ -455,6 +455,13 @@ pub trait Keyring {
     /// transaction, and pretending otherwise would hide the window rather than
     /// close it. Forgetting a key that is not there is not an error.
     fn forget_note_key(&mut self, note: NoteId) -> Result<()>;
+
+    /// Forget every key this keyring holds: the device seed, the account root
+    /// and every note key. What deleting an account leaves on the device
+    /// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)): nothing that
+    /// opens anything, and no identity the next thing this device does could
+    /// be linked through.
+    fn forget_everything(&mut self) -> Result<()>;
 }
 
 #[derive(Default, Clone)]
@@ -495,6 +502,11 @@ impl Keyring for MemoryKeyring {
 
     fn put_note_key(&mut self, note: NoteId, key: &crate::crypto::NoteKey) -> Result<()> {
         self.keys.insert(note, key.clone());
+        Ok(())
+    }
+
+    fn forget_everything(&mut self) -> Result<()> {
+        *self = Self::default();
         Ok(())
     }
 
@@ -582,6 +594,17 @@ pub mod file_keyring {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(io(e)),
             }
+        }
+
+        fn forget_everything(&mut self) -> Result<()> {
+            for entry in fs::read_dir(&self.root).map_err(io)? {
+                let path = entry.map_err(io)?.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "device.seed" || name == "account.root" || name.ends_with(".key") {
+                    fs::remove_file(&path).map_err(io)?;
+                }
+            }
+            Ok(())
         }
     }
 }
@@ -777,5 +800,8 @@ impl Keyring for Box<dyn Keyring + Send> {
     }
     fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
         (**self).forget_note_key(note)
+    }
+    fn forget_everything(&mut self) -> Result<()> {
+        (**self).forget_everything()
     }
 }

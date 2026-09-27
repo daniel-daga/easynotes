@@ -23,6 +23,7 @@ use easynotes_core::access::{Digest, Package};
 use easynotes_core::compaction::Request;
 use easynotes_core::crypto::{AuthorKey, Envelope, EnvelopeKind, SIG_LEN};
 use easynotes_core::ids::NoteId;
+use easynotes_core::purge;
 
 /// What a deployment allows. The defaults are ADR 0024's starting values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +81,10 @@ pub struct Topic {
     pub registered: Option<[u8; 32]>,
     /// How far the newest base reaches; 0 before the first.
     pub covers: i64,
+    /// Purged ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)): nothing
+    /// is stored and nothing will be. Kept so a device still holding the topic
+    /// cannot bring it back.
+    pub gone: bool,
 }
 
 impl Topic {
@@ -167,6 +172,8 @@ pub enum Refusal {
     Stale,
     /// Not a sealed update for this note.
     NotABase,
+    /// The topic was purged.
+    Gone,
 }
 
 impl Refusal {
@@ -176,6 +183,7 @@ impl Refusal {
             Refusal::BadSignature => "the signature does not verify",
             Refusal::Stale => "stale",
             Refusal::NotABase => "not a base for this note",
+            Refusal::Gone => crate::protocol::GONE,
         }
     }
 }
@@ -183,6 +191,9 @@ impl Refusal {
 /// Check a compaction. `Ok(register)` says whether to register its key, which
 /// happens for the first compaction of a topic with no package.
 pub fn authorise(topic: &Topic, note: &str, proposal: &Proposal<'_>) -> Result<bool, Refusal> {
+    if topic.gone {
+        return Err(Refusal::Gone);
+    }
     let note_id = NoteId::decode(note).map_err(|_| Refusal::NotABase)?;
     let register = match topic.authority() {
         Some(key) if key == proposal.key => false,
@@ -208,4 +219,41 @@ pub fn authorise(topic: &Topic, note: &str, proposal: &Proposal<'_>) -> Result<b
         return Err(Refusal::NotABase);
     }
     Ok(register)
+}
+
+/// Check a purge ([ADR 0026](../../docs/adr/0026-deleting-an-account.md) §1).
+///
+/// The authority is the one compaction already has, except that a shared
+/// note's owner key outranks the compaction key its package names: every guest
+/// holds the note key and so the compaction key, and a guest must not be able
+/// to delete the owner's list for everyone. A topic with neither is trusted on
+/// first use, as an unshared topic's compaction is. Purging what is already
+/// gone is not checked at all: it succeeds, so an interrupted deletion can be
+/// run again.
+pub fn authorise_purge(
+    topic: &Topic,
+    note: &str,
+    key: [u8; 32],
+    signature: [u8; SIG_LEN],
+) -> Result<(), Refusal> {
+    if topic.gone {
+        return Ok(());
+    }
+    let note_id = NoteId::decode(note).map_err(|_| Refusal::Unauthorised)?;
+    let allowed = match (topic.owner, topic.registered) {
+        (Some(owner), _) => key == owner,
+        (None, Some(registered)) => key == registered,
+        (None, None) => true,
+    };
+    if !allowed {
+        return Err(Refusal::Unauthorised);
+    }
+    let request = purge::Request {
+        key: AuthorKey(key),
+        signature,
+    };
+    if !request.verifies(note_id) {
+        return Err(Refusal::BadSignature);
+    }
+    Ok(())
 }

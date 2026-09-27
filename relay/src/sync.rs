@@ -70,6 +70,8 @@ enum Fanned {
     /// The note's fan-out dropped messages for this subscriber; read them back
     /// out of the store.
     Lagged { note: String },
+    /// The note was purged while subscribed.
+    Gone { note: String },
 }
 
 struct Subscription {
@@ -171,6 +173,15 @@ async fn serve(
                         Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
                     }
                 }
+                Fanned::Gone { note } => {
+                    // The subscription ends here, so nothing of the note is
+                    // sent after this, backlog included.
+                    if let Some(sub) = subs.0.remove(&note) {
+                        sub.forwarder.abort();
+                        backlog.retain(|n| n != &note);
+                        refuse(&out, Some(note), GONE);
+                    }
+                }
                 Fanned::Lagged { note } => {
                     let Some(sub) = subs.0.get_mut(&note) else { continue };
                     tracing::debug!(note = %note, "subscriber lagged; replaying");
@@ -263,8 +274,9 @@ async fn handle(
                 return refuse(out, Some(note), "too many notes on one socket");
             }
             let since = since.max(0);
-            let head = match state.store.head(&note).await {
-                Ok(head) => head,
+            let head = match state.store.topic(&note).await {
+                Ok(topic) if topic.gone => return refuse(out, Some(note), GONE),
+                Ok(topic) => topic.head,
                 Err(e) => return refuse(out, Some(note), &e.to_string()),
             };
             if since > head {
@@ -354,6 +366,7 @@ fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) ->
     tokio::spawn(async move {
         loop {
             let event = match live.recv().await {
+                Ok((app::GONE_SEQ, _)) => Fanned::Gone { note: note.clone() },
                 Ok((seq, envelope)) => Fanned::Update {
                     note: note.clone(),
                     seq,

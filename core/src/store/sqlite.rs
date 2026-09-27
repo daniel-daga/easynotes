@@ -469,6 +469,12 @@ impl Keyring for SqliteKeyring {
         checkpoint(&self.conn);
         Ok(())
     }
+
+    fn forget_everything(&mut self) -> Result<()> {
+        self.conn.execute("DELETE FROM keys", []).map_err(db)?;
+        checkpoint(&self.conn);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

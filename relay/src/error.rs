@@ -23,6 +23,9 @@ pub enum RelayError {
     /// The relay is at its ceiling and will not start a new note.
     #[error("relay_full")]
     RelayFull,
+    /// The topic was purged ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+    #[error("gone")]
+    TopicGone,
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -34,7 +37,7 @@ impl IntoResponse for RelayError {
             RelayError::Unauthorized => StatusCode::UNAUTHORIZED,
             RelayError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             RelayError::NotFound => StatusCode::NOT_FOUND,
-            RelayError::Gone(_) => StatusCode::GONE,
+            RelayError::Gone(_) | RelayError::TopicGone => StatusCode::GONE,
             RelayError::Conflict(_) => StatusCode::CONFLICT,
             RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,

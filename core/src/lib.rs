@@ -15,6 +15,7 @@ pub mod index;
 pub mod invite;
 pub mod note;
 pub mod order;
+pub mod purge;
 pub mod store;
 pub mod text;
 

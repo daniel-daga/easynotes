@@ -154,6 +154,10 @@ impl Keyring for Keys {
         self.crash.write()?;
         self.inner.forget_note_key(note)
     }
+    fn forget_everything(&mut self) -> Result<()> {
+        self.crash.write()?;
+        self.inner.forget_everything()
+    }
 }
 
 type Core<D> = NoteCore<D, Store, Keys>;

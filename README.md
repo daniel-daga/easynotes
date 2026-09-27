@@ -263,6 +263,7 @@ reading the whole database at open.
 | [ADR 0023](docs/adr/0023-access-packages.md) | Share with people: account member keys and access packages |
 | [ADR 0024](docs/adr/0024-relay-storage-quota.md) | A storage quota for an anonymous relay: members compact a note's log to a base |
 | [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
+| [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
 
 ## Security, in one paragraph
 

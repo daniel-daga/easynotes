@@ -28,6 +28,7 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::crypto::Envelope;
+use easynotes_core::ids::NoteId;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -39,7 +40,11 @@ use tokio::sync::{broadcast, OwnedMutexGuard};
 /// from its last `seq`, which is exactly the reconnect path.
 pub(crate) const FANOUT_BUFFER: usize = 256;
 
-/// `(seq, envelope)` — what one note's subscribers receive.
+/// The `seq` a fan-out carries to say the topic was purged, with no envelope.
+/// No stored envelope has it: sequence numbers start at 1.
+pub(crate) const GONE_SEQ: i64 = -1;
+
+/// `(seq, envelope)` — what one note's subscribers receive, or [`GONE_SEQ`].
 type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
 
 /// Removes the channel when its last subscriber goes away, including when a
@@ -114,6 +119,11 @@ impl AppState {
             state: self.clone(),
             note: note.to_string(),
         }
+    }
+
+    /// Tell every socket subscribed to `note` that it is gone.
+    fn broadcast_gone(&self, note: &str) {
+        self.broadcast(note, GONE_SEQ, Vec::new());
     }
 
     fn broadcast(&self, note: &str, seq: i64, envelope: Vec<u8>) {
@@ -312,6 +322,7 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         )
         .route("/v1/invites/{invite}/list", post(invite::list))
         .route("/v1/invites/{invite}/withdraw", post(invite::withdraw))
+        .route("/v1/purge", post(purge))
         // Health is outside the limiter on purpose: it is what a load balancer
         // polls, it costs nothing to answer, and a relay that fails its health
         // check because it is busy gets taken out of rotation for being busy.
@@ -355,7 +366,7 @@ async fn enforce_limits(
     next: axum::middleware::Next,
 ) -> Response {
     let limit = match req.uri().path() {
-        "/v1/challenge" | "/v1/token" => &config.handshake,
+        "/v1/challenge" | "/v1/token" | "/v1/purge" => &config.handshake,
         "/v1/sync" => &config.sockets,
         path if path.starts_with("/v1/invites") => &config.invites,
         _ => return next.run(req).await,
@@ -469,7 +480,55 @@ pub(crate) async fn append(
         }
         Appended::NoteFull => Err(RelayError::NoteFull),
         Appended::RelayFull => Err(RelayError::RelayFull),
+        Appended::Gone => Err(RelayError::TopicGone),
     }
+}
+
+/// Purge topics ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+///
+/// Each under its own append lock, so an append racing a purge lands wholly
+/// before it (and is deleted) or finds the topic gone. Subscribers are told
+/// once the tombstone is written.
+async fn purge(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PurgeRequest>,
+) -> Result<Json<PurgeResponse>> {
+    if request.topics.len() > MAX_PURGE_TOPICS {
+        return Err(RelayError::BadRequest(format!(
+            "at most {MAX_PURGE_TOPICS} topics per request"
+        )));
+    }
+    let mut response = PurgeResponse::default();
+    for topic in request.topics {
+        let refuse = |reason: &str| PurgeRefused {
+            note: topic.note.clone(),
+            reason: reason.to_string(),
+        };
+        if NoteId::decode(&topic.note).is_err() {
+            response.refused.push(refuse("malformed note id"));
+            continue;
+        }
+        let key = URL_SAFE_NO_PAD
+            .decode(&topic.key)
+            .ok()
+            .and_then(|k| <[u8; 32]>::try_from(k).ok());
+        let signature = URL_SAFE_NO_PAD
+            .decode(&topic.signature)
+            .ok()
+            .and_then(|s| <[u8; easynotes_core::crypto::SIG_LEN]>::try_from(s).ok());
+        let (Some(key), Some(signature)) = (key, signature) else {
+            response
+                .refused
+                .push(refuse("a key or signature of the wrong form"));
+            continue;
+        };
+        let _append = state.append_lock(&topic.note).await;
+        match state.store.purge(&topic.note, key, signature).await? {
+            Ok(()) => state.broadcast_gone(&topic.note),
+            Err(refusal) => response.refused.push(refuse(refusal.as_str())),
+        }
+    }
+    Ok(Json(response))
 }
 
 /// Check a compaction, apply it, and fan the base out like any append.

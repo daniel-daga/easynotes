@@ -406,6 +406,101 @@ fn purging_a_local_copy_is_not_a_deletion<D: NoteDoc>() {
 }
 
 // ---------------------------------------------------------------------------
+// Deleting the account (ADR 0026)
+// ---------------------------------------------------------------------------
+
+/// What a purge plan names: the notes this person owns and then the account,
+/// never a note they joined.
+fn the_purge_plan_is_what_this_person_owns<D: NoteDoc>() {
+    let mut owner = in_memory::<D>();
+    owner.create_account().unwrap();
+    let mine = a_full_note(&mut owner);
+    let mut guest = in_memory::<D>();
+    let theirs = a_full_note(&mut guest);
+    owner
+        .import_share_blob(&guest.export_share_blob(theirs).unwrap())
+        .unwrap();
+
+    let plan = owner.purge_plan().unwrap();
+    let notes: Vec<_> = plan.iter().map(|t| t.note).collect();
+    assert_eq!(notes, vec![mine, owner.account_id().unwrap()]);
+    assert!(plan[0].request.verifies(mine));
+    assert!(plan[0].fallback.as_ref().unwrap().verifies(mine));
+    assert!(plan[1].account && plan[1].request.verifies(plan[1].note));
+
+    // Without an account, the notes are still this person's, and there is no
+    // account document on any relay.
+    let mut alone = in_memory::<D>();
+    let note = a_full_note(&mut alone);
+    let plan = alone.purge_plan().unwrap();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].note, note);
+}
+
+/// A wiped device, launched again from its files, is a new device: no notes,
+/// no account, a different key.
+fn a_wiped_device_starts_again_as_a_new_one<D: NoteDoc>() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = on_disk::<D>(dir.path());
+    core.create_account().unwrap();
+    let note = a_full_note(&mut core);
+    let before = core.device_key();
+    core.wipe().unwrap();
+    drop(core);
+
+    let mut core = on_disk::<D>(dir.path());
+    assert!(core.notes().unwrap().is_empty());
+    assert!(!core.has_account());
+    assert!(core.open_note(note).is_err());
+    assert_ne!(core.device_key(), before);
+    // What is on disk is what a fresh device writes, and nothing of before.
+    assert!(!core.store().notes().unwrap().contains(&note));
+}
+
+/// Killed at every write a wipe makes and launched again: either nothing was
+/// wiped, or all of it is.
+fn a_wipe_interrupted_anywhere_finishes_on_the_next_launch<D: NoteDoc>() {
+    for writes in 0.. {
+        let crash = Crash::default();
+        let store = Store {
+            inner: MemoryStore::new(),
+            crash: crash.clone(),
+        };
+        let keys = Keys {
+            inner: MemoryKeyring::new(),
+            crash: crash.clone(),
+        };
+        let mut core = NoteCore::<D, _, _>::open(store, keys).unwrap();
+        core.create_account().unwrap();
+        let note = a_full_note(&mut core);
+        let before = core.device_key();
+
+        crash.0.set(Some(writes));
+        let result = core.wipe();
+        crash.0.set(None);
+        let (store, keys) = core.into_parts();
+        let mut core = NoteCore::<D, _, _>::open(store, keys).unwrap();
+
+        if core.has_account() {
+            assert!(
+                result.is_err(),
+                "writes={writes}: a wipe that returned Ok is done"
+            );
+            assert_eq!(core.device_key(), before);
+            assert_eq!(core.open_note(note).unwrap().items.len(), 1);
+        } else {
+            assert!(core.notes().unwrap().is_empty(), "writes={writes}");
+            assert!(core.open_note(note).is_err(), "writes={writes}");
+            assert_ne!(core.device_key(), before, "writes={writes}");
+        }
+        if result.is_ok() {
+            break;
+        }
+        assert!(writes < 50, "a wipe should not need fifty writes");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Crashes
 // ---------------------------------------------------------------------------
 
@@ -499,6 +594,10 @@ impl<K: Keyring> Keyring for Keys<K> {
     fn forget_note_key(&mut self, note: NoteId) -> Result<()> {
         self.crash.write()?;
         self.inner.forget_note_key(note)
+    }
+    fn forget_everything(&mut self) -> Result<()> {
+        self.crash.write()?;
+        self.inner.forget_everything()
     }
 }
 
@@ -678,6 +777,18 @@ macro_rules! backend_suite {
                 super::a_deletion_interrupted_anywhere_either_never_happened_or_finishes::<
                     $backend,
                 >()
+            }
+            #[test]
+            fn the_purge_plan_is_what_this_person_owns() {
+                super::the_purge_plan_is_what_this_person_owns::<$backend>()
+            }
+            #[test]
+            fn a_wiped_device_starts_again_as_a_new_one() {
+                super::a_wiped_device_starts_again_as_a_new_one::<$backend>()
+            }
+            #[test]
+            fn a_wipe_interrupted_anywhere_finishes_on_the_next_launch() {
+                super::a_wipe_interrupted_anywhere_finishes_on_the_next_launch::<$backend>()
             }
             #[test]
             fn emptying_the_trash_interrupted_anywhere_loses_nothing() {

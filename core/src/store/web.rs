@@ -516,4 +516,25 @@ impl Keyring for WebKeyring {
         }]);
         Ok(())
     }
+
+    fn forget_everything(&mut self) -> Result<()> {
+        let mut changes: Vec<Change> = self
+            .keys
+            .keys()
+            .map(|note| Change::Delete {
+                key: note_key_key(*note),
+            })
+            .collect();
+        changes.push(Change::Delete {
+            key: DEVICE_SEED_KEY.to_string(),
+        });
+        changes.push(Change::Delete {
+            key: ACCOUNT_ROOT_KEY.to_string(),
+        });
+        self.keys.clear();
+        self.seed = None;
+        self.root = None;
+        self.sink.changed(&changes);
+        Ok(())
+    }
 }

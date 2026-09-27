@@ -35,6 +35,8 @@ pub enum Appended {
     NoteFull,
     /// The relay is at its ceiling and this would have started a new note.
     RelayFull,
+    /// The topic was purged. Nothing was stored, and nothing will be.
+    Gone,
 }
 
 /// No limits at all: what [`RelayStore::append`] applies.
@@ -142,6 +144,17 @@ pub trait RelayStore: Send + Sync + 'static {
 
     /// Remove an invite and everything on it. Not an error if it is not there.
     async fn withdraw_invite(&self, id: &str) -> Result<()>;
+
+    /// Delete every envelope of a topic and leave it gone, if `key` and
+    /// `signature` are what [`quota::authorise_purge`] accepts. A topic the
+    /// relay has never seen is left gone too: an owner's offline device must
+    /// not be able to bring back a note that was deleted before it synced.
+    async fn purge(
+        &self,
+        note: &str,
+        key: [u8; 32],
+        signature: [u8; easynotes_core::crypto::SIG_LEN],
+    ) -> Result<std::result::Result<(), Refusal>>;
 
     /// Whether the store can answer a query right now. What `/v1/ready`
     /// reports: a relay whose database has gone away still accepts
@@ -288,6 +301,9 @@ impl RelayStore for MemoryStore {
             }
         }
         let log = notes.entry(note.to_string()).or_default();
+        if log.topic.gone {
+            return Ok(Appended::Gone);
+        }
         let class = quota::classify(&log.topic, note, envelope);
         let bytes = envelope.len() as u64;
         // An owner's package goes whatever the cap says: it is how a person is
@@ -361,6 +377,24 @@ impl RelayStore for MemoryStore {
         topic.loose_envelopes = loose.clone().count() as u64;
         topic.loose_bytes = loose.map(|r| r.stored.envelope.len() as u64).sum();
         Ok(Ok(seq))
+    }
+
+    async fn purge(
+        &self,
+        note: &str,
+        key: [u8; 32],
+        signature: [u8; easynotes_core::crypto::SIG_LEN],
+    ) -> Result<std::result::Result<(), Refusal>> {
+        let mut notes = self.notes.lock().unwrap();
+        let log = notes.entry(note.to_string()).or_default();
+        if let Err(refusal) = quota::authorise_purge(&log.topic, note, key, signature) {
+            return Ok(Err(refusal));
+        }
+        *log = Log {
+            rows: Vec::new(),
+            topic: gone(log.topic.head),
+        };
+        Ok(Ok(()))
     }
 
     async fn topic(&self, note: &str) -> Result<Topic> {
@@ -603,6 +637,8 @@ impl PostgresStore {
                 "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_compaction BYTEA",
                 "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS registered BYTEA",
                 "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS covers BIGINT NOT NULL DEFAULT 0",
+                // ADR 0026: a purged topic's tombstone.
+                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS gone BOOLEAN NOT NULL DEFAULT FALSE",
             ] {
                 sqlx::query(statement).execute(&mut *conn).await?;
             }
@@ -736,6 +772,9 @@ impl RelayStore for PostgresStore {
             }
         };
 
+        if topic.gone {
+            return Ok(Appended::Gone);
+        }
         let class = quota::classify(&topic, note, envelope);
         let bytes = envelope.len() as u64;
         if !class.keep && topic.live_bytes + bytes > limits.note_bytes {
@@ -825,6 +864,39 @@ impl RelayStore for PostgresStore {
         save_topic(&mut tx, note, &topic).await?;
         tx.commit().await.map_err(pg)?;
         Ok(Ok(topic.head))
+    }
+
+    async fn purge(
+        &self,
+        note: &str,
+        key: [u8; 32],
+        signature: [u8; easynotes_core::crypto::SIG_LEN],
+    ) -> Result<std::result::Result<(), Refusal>> {
+        let mut tx = self.pool.begin().await.map_err(pg)?;
+        // The row first, so the purge holds the same lock an append does: an
+        // append queued behind it finds the topic gone rather than landing in
+        // the gap between the delete and the flag.
+        sqlx::query(
+            "INSERT INTO note_head (note_id, seq) VALUES ($1, 0) ON CONFLICT (note_id) DO NOTHING",
+        )
+        .bind(note)
+        .execute(&mut *tx)
+        .await
+        .map_err(pg)?;
+        let topic = lock_topic(&mut tx, note)
+            .await?
+            .ok_or_else(|| RelayError::Storage("topic row vanished".into()))?;
+        if let Err(refusal) = quota::authorise_purge(&topic, note, key, signature) {
+            return Ok(Err(refusal));
+        }
+        sqlx::query("DELETE FROM note_log WHERE note_id = $1")
+            .bind(note)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+        save_topic(&mut tx, note, &gone(topic.head)).await?;
+        tx.commit().await.map_err(pg)?;
+        Ok(Ok(()))
     }
 
     async fn topic(&self, note: &str) -> Result<Topic> {
@@ -1119,6 +1191,7 @@ type TopicRow = (
     Option<Vec<u8>>,
     Option<Vec<u8>>,
     i64,
+    bool,
 );
 
 /// A topic's row, locked for the rest of the transaction.
@@ -1136,7 +1209,7 @@ async fn read_topic(
 ) -> Result<Option<Topic>> {
     let sql = format!(
         "SELECT seq, live_envelopes, live_bytes, loose_envelopes, loose_bytes, owner, \
-         current_revision, current_digest, current_compaction, registered, covers \
+         current_revision, current_digest, current_compaction, registered, covers, gone \
          FROM note_head WHERE note_id = $1{}",
         if lock { " FOR UPDATE" } else { "" }
     );
@@ -1157,6 +1230,7 @@ async fn read_topic(
         compaction,
         registered,
         covers,
+        gone,
     )) = row
     else {
         return Ok(None);
@@ -1179,6 +1253,7 @@ async fn read_topic(
         current,
         registered: registered.map(key32).transpose()?,
         covers,
+        gone,
     }))
 }
 
@@ -1190,8 +1265,8 @@ async fn save_topic(
     sqlx::query(
         "UPDATE note_head SET seq = $2, live_envelopes = $3, live_bytes = $4, \
          loose_envelopes = $5, loose_bytes = $6, owner = $7, current_revision = $8, \
-         current_digest = $9, current_compaction = $10, registered = $11, covers = $12 \
-         WHERE note_id = $1",
+         current_digest = $9, current_compaction = $10, registered = $11, covers = $12, \
+         gone = $13 WHERE note_id = $1",
     )
     .bind(note)
     .bind(topic.head)
@@ -1205,10 +1280,21 @@ async fn save_topic(
     .bind(topic.current.map(|c| c.compaction.to_vec()))
     .bind(topic.registered.map(|k| k.to_vec()))
     .bind(topic.covers)
+    .bind(topic.gone)
     .execute(&mut **tx)
     .await
     .map_err(pg)?;
     Ok(())
+}
+
+/// What a purged topic keeps: its head, so that a cursor on a device that
+/// still holds it reads as behind rather than ahead, and the flag.
+fn gone(head: i64) -> Topic {
+    Topic {
+        head,
+        gone: true,
+        ..Topic::default()
+    }
 }
 
 fn key32(raw: Vec<u8>) -> Result<[u8; 32]> {

@@ -87,7 +87,14 @@ pub enum Incoming {
     /// The relay would not take this device's base. Nothing is lost: the log
     /// it would have replaced is still there.
     CompactRefused(String),
+    /// The note was purged from the relay, by its owner deleting it or their
+    /// account ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)).
+    /// Nothing more of it will be stored or sent.
+    Gone,
 }
+
+/// What the relay refuses a purged topic with, and tells its subscribers.
+pub(crate) const GONE: &str = "gone";
 
 /// What a person is told about a refusal the relay names with a code.
 fn said(message: String) -> String {
@@ -243,6 +250,10 @@ pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
         DeviceReply::CompactRefused { note: raw, reason } => {
             Routed::Note(note(&raw)?, Incoming::CompactRefused(reason))
         }
+        DeviceReply::Error {
+            note: Some(raw),
+            message,
+        } if message == GONE => Routed::Note(note(&raw)?, Incoming::Gone),
         DeviceReply::Error { note: raw, message } => {
             let message = said(message);
             match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
@@ -251,6 +262,34 @@ pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
             }
         }
     })
+}
+
+// -- purge -------------------------------------------------------------------
+//
+// The mirror of `relay::protocol`'s purge messages (ADR 0026).
+
+#[derive(Serialize)]
+pub(crate) struct PurgeRequest<'a> {
+    pub topics: Vec<PurgeTopic<'a>>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PurgeTopic<'a> {
+    pub note: &'a str,
+    pub key: String,
+    pub signature: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PurgeResponse {
+    #[serde(default)]
+    pub refused: Vec<PurgeRefused>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PurgeRefused {
+    pub note: String,
+    pub reason: String,
 }
 
 // -- invites -----------------------------------------------------------------
@@ -424,6 +463,15 @@ mod tests {
             r#"{"type":"append","note":"AAAAAAAAAAAAAAAAAAAAAA","envelope":"aGk"}"#
         );
         assert_eq!(sync_url("ws://r", "t0k"), "ws://r/v1/sync?token=t0k");
+    }
+
+    #[test]
+    fn a_purged_note_is_gone_rather_than_refused() {
+        let gone = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"gone"}"#;
+        assert!(matches!(
+            parse_routed(gone).unwrap(),
+            Routed::Note(_, Incoming::Gone)
+        ));
     }
 
     #[test]

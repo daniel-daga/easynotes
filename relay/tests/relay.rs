@@ -52,6 +52,7 @@ async fn drain(sync: &mut NoteSocket) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => return out,
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
+            Some(Incoming::Gone) => panic!("unexpectedly purged"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => return out,
@@ -72,6 +73,7 @@ async fn take(sync: &mut NoteSocket, n: usize) -> Vec<Vec<u8>> {
             Some(Incoming::Caught { .. }) => {}
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
+            Some(Incoming::Gone) => panic!("unexpectedly purged"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
@@ -777,6 +779,14 @@ impl RelayStore for Unreachable {
         gone()
     }
     async fn withdraw_invite(&self, _: &str) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn purge(
+        &self,
+        _: &str,
+        _: [u8; 32],
+        _: [u8; easynotes_core::crypto::SIG_LEN],
+    ) -> easynotes_relay::error::Result<Result<(), easynotes_relay::quota::Refusal>> {
         gone()
     }
     async fn check(&self) -> easynotes_relay::error::Result<()> {

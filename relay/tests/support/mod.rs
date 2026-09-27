@@ -158,6 +158,7 @@ impl Device {
                 Some(Incoming::Caught { .. }) => self.settle().await,
                 Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
+                Some(Incoming::Gone) => panic!("{}'s note was purged", self.name),
                 // Compaction is the engine's business, not this scaffolding's.
                 Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
                 None => {

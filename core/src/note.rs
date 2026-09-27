@@ -143,6 +143,29 @@ pub const TICKED: &str = "ticked";
 pub const INVITES: &str = "invites";
 pub const JOINS: &str = "joins";
 
+/// Set on a topic the relay has purged ([ADR
+/// 0026](../../docs/adr/0026-deleting-an-account.md)): it is never subscribed
+/// again, and its local copy is kept.
+pub const GONE: &str = "gone";
+
+/// Set, under the reserved ID, while this device is being wiped. A launch that
+/// finds it finishes the wipe before it opens anything.
+const WIPING: &str = "wiping";
+
+/// One topic to purge from the relay, and how to prove this device may.
+#[derive(Clone, Debug)]
+pub struct PurgeTarget {
+    pub note: NoteId,
+    /// This is the account document, which goes last.
+    pub account: bool,
+    /// Signed by the owner key, or for the account document by its compaction
+    /// key.
+    pub request: crate::purge::Request,
+    /// Signed by the note's compaction key, for a relay that has no owner
+    /// pinned for the topic and a compaction key registered instead.
+    pub fallback: Option<crate::purge::Request>,
+}
+
 /// An invite this device opened and has not seen answered, withdrawn or expired.
 #[derive(Clone, Debug)]
 pub struct OutgoingInvite {
@@ -416,6 +439,9 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
 impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Load the device identity from the keyring, generating one on first run.
     pub fn open(mut store: S, mut keyring: K) -> Result<Self> {
+        if store.get_meta(ACCOUNT_DOC, WIPING)?.is_some() {
+            Self::wipe_storage(&mut store, &mut keyring)?;
+        }
         let seed = match keyring.device_seed()? {
             Some(seed) => seed,
             None => {
@@ -1761,6 +1787,88 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         })?;
         self.purge_note_local(id)?;
         Ok(())
+    }
+
+    // -- deleting the account (ADR 0026) --------------------------------------
+
+    /// Whether the relay has said `note` was purged.
+    pub fn is_gone(&self, note: NoteId) -> Result<bool> {
+        Ok(self.store.get_meta(note, GONE)?.is_some())
+    }
+
+    /// Remember that the relay purged `note`. Nothing local is removed: a
+    /// guest keeps what they had, and a device of a deleted account keeps its
+    /// notes until the person removes the account there too.
+    pub fn mark_gone(&mut self, note: NoteId) -> Result<()> {
+        self.store.put_meta(note, GONE, &[1])
+    }
+
+    /// What deleting this account asks the relay to purge: every note this
+    /// person owns, then the account document, each with the key the relay
+    /// should accept and the one to try if it does not
+    /// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md) §1, §4).
+    ///
+    /// Lists this person joined are not here: they are the owner's. Nor is a
+    /// note held by a bare share-blob key, which has no owner to speak for it.
+    pub fn purge_plan(&self) -> Result<Vec<PurgeTarget>> {
+        let mut plan = Vec::new();
+        for (note, record) in account::note_access_of(self.account.doc.entries()) {
+            let Some(owner) = record.owner_identity() else {
+                continue;
+            };
+            let fallback = self
+                .keyring
+                .note_key(note)?
+                .or_else(|| record.key().cloned())
+                .map(|key| {
+                    crate::purge::Request::sign(note, &crate::compaction::identity(note, &key))
+                });
+            plan.push(PurgeTarget {
+                note,
+                account: false,
+                request: crate::purge::Request::sign(note, &owner),
+                fallback,
+            });
+        }
+        if let Some(account) = self.account_id() {
+            let compaction = crate::compaction::identity(account, &self.account.key);
+            plan.push(PurgeTarget {
+                note: account,
+                account: true,
+                request: crate::purge::Request::sign(account, &compaction),
+                fallback: None,
+            });
+        }
+        Ok(plan)
+    }
+
+    /// Remove everything this device holds: every note, the account document,
+    /// every key, the account root and the device seed. The last step of
+    /// deleting an account, once the relay has purged what it should.
+    ///
+    /// The core is unusable afterwards and must be dropped; opening the same
+    /// storage again gives an empty device with a new identity. A marker is
+    /// written first, so a wipe that is interrupted is finished by the next
+    /// [`NoteCore::open`] rather than left half done.
+    pub fn wipe(&mut self) -> Result<()> {
+        self.store.put_meta(ACCOUNT_DOC, WIPING, &[1])?;
+        self.open.clear();
+        self.index.clear();
+        self.switched.clear();
+        Self::wipe_storage(&mut self.store, &mut self.keyring)?;
+        let _ = self.library.send(Vec::new());
+        Ok(())
+    }
+
+    fn wipe_storage(store: &mut S, keyring: &mut K) -> Result<()> {
+        for note in store.notes()? {
+            if note != ACCOUNT_DOC {
+                store.forget(note)?;
+            }
+        }
+        keyring.forget_everything()?;
+        // Last, because it holds the marker.
+        store.forget(ACCOUNT_DOC)
     }
 
     /// Remove a device-local copy without recording an account deletion.

@@ -60,6 +60,11 @@ pub const NOTE_FULL: &str = "note_full";
 /// is at its ceiling.
 pub const RELAY_FULL: &str = "relay_full";
 
+/// What an append, a compaction or a subscribe is refused with once the topic
+/// has been purged, and what every subscriber is told at the moment it is
+/// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+pub const GONE: &str = "gone";
+
 /// How many notes one socket may be subscribed to at once. A device's notes,
 /// not an enumeration of the relay.
 pub const MAX_SUBSCRIPTIONS: usize = 4096;
@@ -252,4 +257,42 @@ pub struct ListedRequest {
 pub struct AnswerInvite {
     pub owner: String,
     pub grant: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Purge
+// ---------------------------------------------------------------------------
+
+/// How many topics one `POST /v1/purge` may name. A person deleting their
+/// account purges every list they own at once; this is many households' worth,
+/// and a longer list goes in several requests.
+pub const MAX_PURGE_TOPICS: usize = 512;
+
+/// `POST /v1/purge`: forget these topics for good
+/// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PurgeRequest {
+    pub topics: Vec<PurgeTopic>,
+}
+
+/// One topic to purge. All base64url. The signature is `easynotes_core::purge`'s,
+/// by the key [`crate::quota::authorise_purge`] accepts for the topic.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PurgeTopic {
+    pub note: String,
+    pub key: String,
+    pub signature: String,
+}
+
+/// Which of them were not purged, and why. Everything not listed is gone,
+/// including topics that already were.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct PurgeResponse {
+    pub refused: Vec<PurgeRefused>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PurgeRefused {
+    pub note: String,
+    pub reason: String,
 }

@@ -583,3 +583,77 @@ async fn offline_edits_are_only_published_under_the_current_key() {
         "offline updates reached the relay under the removed person's key"
     );
 }
+
+/// ADR 0026: deleting an account purges what the person owns, shared or not,
+/// leaves what they joined, and tells the guest rather than deleting their copy.
+#[tokio::test]
+async fn deleting_an_account_purges_what_it_owns_and_leaves_what_it_joined() {
+    let (relay, log) = relay().await;
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    let olga = Phone::new("Olga", &endpoint);
+    let anna = Phone::new("Anna", &endpoint);
+    let shared = olga.create_note("Groceries");
+    let private = olga.create_note("Diary");
+    let joined = anna.create_note("Anna's list");
+    let_in(&olga, &anna, shared).await;
+    let_in(&anna, &olga, joined).await;
+    anna.wait_until("the shared title", || {
+        anna.title(shared).as_deref() == Some("Groceries")
+    })
+    .await;
+    let account = olga.core.lock().unwrap().account_id().unwrap();
+    let log: Arc<dyn RelayStore> = Arc::new(log);
+    for topic in [shared, private, joined, account] {
+        head_above(&log, topic, 0).await;
+    }
+
+    let plan = olga.core.lock().unwrap().purge_plan().unwrap();
+    let planned: Vec<NoteId> = plan.iter().map(|t| t.note).collect();
+    assert!(planned.contains(&shared) && planned.contains(&private));
+    assert!(
+        !planned.contains(&joined),
+        "a joined list is not Olga's to purge"
+    );
+    assert_eq!(planned.last(), Some(&account), "the account goes last");
+    easynotes_core::sync::purge::purge_all(&olga.http, &plan)
+        .await
+        .unwrap();
+    olga.core.lock().unwrap().wipe().unwrap();
+
+    for topic in [shared, private, account] {
+        let topic = log.topic(&topic.encode()).await.unwrap();
+        assert!(topic.gone && topic.live_envelopes == 0);
+    }
+    let kept = log.topic(&joined.encode()).await.unwrap();
+    assert!(!kept.gone && kept.live_envelopes > 0);
+
+    // Anna is told, keeps her copy, and her own list still syncs.
+    anna.wait_until("told the list is gone", || {
+        anna.core.lock().unwrap().is_gone(shared).unwrap()
+    })
+    .await;
+    let status = anna.engines.lock().unwrap()[&shared].status();
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some(easynotes_core::sync::GONE_NOTE)
+    );
+    assert_eq!(anna.title(shared).as_deref(), Some("Groceries"));
+    anna.set_title(joined, "Anna's list, still here");
+    head_above(&log, joined, kept.head).await;
+
+    // Olga's device lists nothing. (That her storage holds nothing, and that
+    // reopening it gives a new device, is `core/tests/delete_account.rs`.)
+    assert!(olga.core.lock().unwrap().notes().unwrap().is_empty());
+}
+
+/// Wait until the relay holds more of `topic` than `seq`.
+async fn head_above(log: &Arc<dyn RelayStore>, topic: NoteId, seq: i64) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while log.head(&topic.encode()).await.unwrap() <= seq {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the relay never got past {seq} of {topic}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

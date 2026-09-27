@@ -74,6 +74,13 @@ pub use socket::DeviceSync;
 ))]
 pub mod invite;
 
+/// Purging topics from the relay, the last step of deleting an account.
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+pub mod purge;
+
 #[cfg(any(
     feature = "sync-native",
     all(feature = "sync-web", target_arch = "wasm32")
@@ -90,5 +97,5 @@ mod timer;
 ))]
 pub use engine::{
     Pacing, RelayEndpoint, SyncDevice, SyncEngine, SyncHandle, SyncPeer, SyncState, SyncStatus,
-    FIRST_RETRY, MAX_RETRY,
+    FIRST_RETRY, GONE_ACCOUNT, GONE_NOTE, MAX_RETRY,
 };
