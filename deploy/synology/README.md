@@ -165,3 +165,10 @@ process is up and nothing else. `/v1/ready` also asks the database and answers
 that one, since a relay whose database is gone still accepts connections and
 then fails every write. The public write and sync routes require the
 device-key handshake and use the relay's built-in rate limits.
+
+## Licence
+
+The relay is AGPL-3.0-or-later ([`COPYING.md`](../../COPYING.md)). Running it
+unmodified for other people needs nothing more. If you change it and let other
+people use your changed relay, section 13 of the licence says you must offer
+them its source — publish your fork and say where in your service notice.

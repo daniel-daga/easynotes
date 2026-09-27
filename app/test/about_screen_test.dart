@@ -41,6 +41,19 @@ void main() {
     );
   });
 
+  testWidgets('the licence and where the source is are stated', (tester) async {
+    await pump(tester, const RelayProfile(id: 'local', url: null));
+    await tester.scrollUntilVisible(find.byKey(const Key('source-url')), 100);
+    expect(
+      find.textContaining('Affero General Public License'),
+      findsOneWidget,
+    );
+    expect(
+      find.byWidgetPredicate((w) => w is SelectableText && w.data == sourceUrl),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('the licence page is given the bundled font', (tester) async {
     registerBundledLicenses();
     final licenses = await tester.runAsync(

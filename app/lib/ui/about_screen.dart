@@ -34,6 +34,13 @@ const privacyPolicyUrl = String.fromEnvironment('EASYNOTES_PRIVACY_URL');
 /// security reports and data-protection requests.
 const supportContact = String.fromEnvironment('EASYNOTES_SUPPORT');
 
+/// Where this build's source is. The AGPL obliges whoever conveys the app to
+/// offer it, so a fork that publishes its own build points this at its own.
+const sourceUrl = String.fromEnvironment(
+  'EASYNOTES_SOURCE_URL',
+  defaultValue: 'https://github.com/daniel-daga/easynotes',
+);
+
 /// The Roboto the app bundles is Apache-2.0 and is not a package, so the
 /// licence page would not list it unless told to.
 void registerBundledLicenses() {
@@ -126,6 +133,16 @@ class AboutScreen extends StatelessWidget {
               value: supportContact,
             ),
           const Divider(height: 32),
+          para(
+            'EasyNotes is free software under the GNU Affero General Public '
+            'License, version 3 or later. You may study, change and share it; '
+            'it comes with no warranty.',
+          ),
+          _Copyable(
+            key: const Key('source-url'),
+            label: 'Source code',
+            value: sourceUrl,
+          ),
           ListTile(
             key: const Key('licenses-entry'),
             contentPadding: EdgeInsets.zero,
@@ -135,6 +152,7 @@ class AboutScreen extends StatelessWidget {
               context: context,
               applicationName: 'EasyNotes',
               applicationVersion: appVersion.isEmpty ? null : appVersion,
+              applicationLegalese: 'AGPL-3.0-or-later. Source: $sourceUrl',
             ),
           ),
         ],
