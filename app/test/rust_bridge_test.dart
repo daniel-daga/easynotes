@@ -20,7 +20,7 @@ import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:easynotes/src/rust/api/notes.dart'
-    show StorageArea, StorageBatch, StorageRow;
+    show Library, NoteKindView, StorageArea, StorageBatch, StorageRow;
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -382,6 +382,36 @@ void main() {
           () => RustNoteLibrary.open(dir.path, MasterKeyStore.newKey()),
           throwsA(anything),
         );
+      });
+
+      test('a watcher started after its handle stopped still ends', () async {
+        // Dart starts a watcher and stops it in that order, but the bridge
+        // runs the two calls on different threads, and the stop can land
+        // first. Its one wake then went to nobody, the watcher parked for
+        // good, and cancelling the stream waited on it forever: a note or
+        // library disposed right after it was opened hung the dispose. Here
+        // the stop comes first on purpose, for every watcher there is.
+        final library = Library.openInBrowser(
+          notes: const [],
+          keys: const [],
+          masterKey: MasterKeyStore.newKey(),
+        );
+        addTearDown(library.close);
+        final note = await library.note(
+          id: await library.createNote(kind: NoteKindView.checklist),
+        );
+
+        await note.stopWatching();
+        await library.stopWatching();
+        for (final stream in <Stream<Object?>>[
+          note.watch(),
+          note.watchSync(),
+          library.watchNotes(),
+          library.watchSync(),
+        ]) {
+          // Each still says what it has, and then closes.
+          await expectLater(stream, emitsInOrder([anything, emitsDone]));
+        }
       });
 
       test('a warm restart retires the library it never disposed', () async {

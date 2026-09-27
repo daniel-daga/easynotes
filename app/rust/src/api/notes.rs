@@ -1636,6 +1636,11 @@ impl Library {
             if send(updates.borrow_and_update().clone()).is_err() {
                 return;
             }
+            // Before the first wait, not only after each wake: see
+            // [`watch_status`].
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             loop {
                 if updates.changed().await.is_err() {
                     return; // the library was dropped
@@ -2698,6 +2703,11 @@ impl Note {
             if sink.add(rx.borrow_and_update().clone().into()).is_err() {
                 return;
             }
+            // Before the first wait, not only after each wake: see
+            // [`watch_status`].
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             loop {
                 if rx.changed().await.is_err() {
                     return; // the library was dropped
@@ -2877,6 +2887,17 @@ async fn watch_status(
     sink: StreamSink<SyncStatus>,
 ) -> Result<(), String> {
     if sink.add(updates.borrow_and_update().clone()).is_err() {
+        return Ok(());
+    }
+    // Checked once before the first wait, and not only after each wake. Dart
+    // starts a watcher and then stops it, but the bridge runs the two calls on
+    // different threads, so `stop_watching` can finish before this receiver
+    // was subscribed. Its one wake then happened before the subscription, a
+    // receiver counts it as already seen, and `changed()` would wait for good
+    // — and so would Dart, cancelling a stream that never closes. After this
+    // point a stop cannot be missed: its wake comes after the value just
+    // taken, so `changed()` returns.
+    if stop.load(Ordering::SeqCst) {
         return Ok(());
     }
     loop {
