@@ -229,7 +229,10 @@ class _NoteScreenState extends State<NoteScreen> {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => AttachmentViewer(
-            images: images,
+            images: widget.core.watch().map(
+              (note) => _attachments(note, AttachmentKind.image),
+            ),
+            initialImages: images,
             initial: index,
             read: widget.core.readAttachment,
             onAction: _attachmentAction,
@@ -262,6 +265,11 @@ class _NoteScreenState extends State<NoteScreen> {
         );
         if (description == null) return;
         await widget.core.describeAttachment(attachment.id, description);
+      case AttachmentAction.moveEarlier || AttachmentAction.moveLater:
+        await _move(
+          attachment,
+          earlier: action == AttachmentAction.moveEarlier,
+        );
       case AttachmentAction.remove:
         final confirmed = await showDialog<bool>(
           context: context,
@@ -292,6 +300,23 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
+  /// Move an attachment past its neighbour of the same kind. The core counts
+  /// every attachment, pictures and sound files together, so the neighbour's
+  /// place among all of them is the index it is asked for: before the one
+  /// earlier, or — once this one is out of the way — where the later one was.
+  Future<void> _move(AttachmentView attachment, {required bool earlier}) async {
+    final all = widget.core.current.attachments;
+    final same = [
+      for (final a in all)
+        if (a.kind == attachment.kind) a,
+    ];
+    final at = same.indexWhere((a) => a.id == attachment.id);
+    final neighbour = earlier ? at - 1 : at + 1;
+    if (at < 0 || neighbour < 0 || neighbour >= same.length) return;
+    final target = all.indexWhere((a) => a.id == same[neighbour].id);
+    await widget.core.moveAttachment(attachment.id, target);
+  }
+
   List<AttachmentView> _attachments(NoteView note, AttachmentKind kind) => [
     for (final a in note.attachments)
       if (a.kind == kind) a,
@@ -302,9 +327,16 @@ class _NoteScreenState extends State<NoteScreen> {
   Widget _audioRows(NoteView note) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      for (final audio in _attachments(note, AttachmentKind.audio))
+      for (final (i, audio) in _attachments(note, AttachmentKind.audio).indexed)
         AttachmentAudioRow(
           audio: audio,
+          canMoveEarlier: i > 0,
+          canMoveLater:
+              i <
+              note.attachments
+                      .where((a) => a.kind == AttachmentKind.audio)
+                      .length -
+                  1,
           transfers: _transfers,
           onAction: (action) => _attachmentAction(audio, action),
           onRetry: _retryTransfers,

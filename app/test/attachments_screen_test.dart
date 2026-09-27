@@ -80,15 +80,19 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  setUp(() async {
+  /// Made inside each test rather than in `setUp`: the fake library's
+  /// streams belong to the zone that made them, and a widget test pumps only
+  /// its own.
+  Future<void> fresh() async {
     library = FakeNoteLibrary();
     id = await library.createNote(kind: NoteKind.text);
     files = FakeFiles();
-  });
+  }
 
   testWidgets('chosen images go into the note and show above the title', (
     tester,
   ) async {
+    await fresh();
     files.images = [
       PickedFile(name: 'kitchen.png', bytes: png(4000)),
       PickedFile(name: 'garden.png', bytes: png(5000)),
@@ -112,6 +116,7 @@ void main() {
   });
 
   testWidgets('cancelling the picker adds nothing', (tester) async {
+    await fresh();
     await pump(tester);
     await attach(tester, const Key('attach-images'));
     expect(library.core(id).edits, isEmpty);
@@ -121,6 +126,7 @@ void main() {
   testWidgets(
     'an import waiting to upload says so, and a failure offers Retry',
     (tester) async {
+      await fresh();
       final core = library.core(id)..holdImports = true;
       files.images = [PickedFile(name: 'later.png', bytes: png(3000))];
       await pump(tester);
@@ -141,7 +147,8 @@ void main() {
           of: 4,
         ),
       ]);
-      // The stream delivers after the frame that follows the push.
+      // The push reaches the screen a frame after it is made: through the
+      // library's stream, then the screen's setState.
       await tester.pump();
       await tester.pump();
       expect(find.text('Uploading'), findsOneWidget);
@@ -174,6 +181,7 @@ void main() {
   testWidgets(
     'a sound file is a row under the note, and removing it asks first',
     (tester) async {
+      await fresh();
       files.audio = [
         PickedFile(name: 'market directions.mp3', bytes: mp3(2048)),
       ];
@@ -209,6 +217,7 @@ void main() {
   testWidgets('a picture opens whole, and Save a copy saves its bytes', (
     tester,
   ) async {
+    await fresh();
     final photo = png(6000);
     files.images = [PickedFile(name: 'kitchen.png', bytes: photo)];
     await pump(tester);
@@ -242,6 +251,7 @@ void main() {
   testWidgets(
     'a card counts pictures and sound files, and search filters by them',
     (tester) async {
+      await fresh();
       final core = library.core(id);
       await core.setTitle('Recipe');
       await core.importAttachment('cake.png', png(100));
@@ -268,4 +278,78 @@ void main() {
       expect(find.text('Shopping'), findsNothing);
     },
   );
+
+  testWidgets(
+    'Move earlier and Move later reorder pictures, and the viewer follows',
+    (tester) async {
+      await fresh();
+      files.images = [
+        PickedFile(name: 'one.png', bytes: png(100)),
+        PickedFile(name: 'two.png', bytes: png(100)),
+      ];
+      // A sound file between them in the note's order: moving a picture past
+      // the other picture must step over it.
+      await pump(tester);
+      await attach(tester, const Key('attach-images'));
+      final core = library.core(id);
+      await core.importAttachment('between.mp3', mp3(100));
+      await core.moveAttachment(core.current.attachments.last.id, 1);
+      expect(core.current.attachments.map((a) => a.name), [
+        'one.png',
+        'between.mp3',
+        'two.png',
+      ]);
+      await tester.pumpAndSettle();
+
+      final two = core.current.attachments.last;
+      await tester.tap(find.byKey(ValueKey('attachment:${two.id}')));
+      await tester.pumpAndSettle();
+      expect(find.text('2 of 2'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('attachment-menu')));
+      await tester.pumpAndSettle();
+      expect(find.text('Move later'), findsNothing);
+      await tester.tap(find.text('Move earlier'));
+      await tester.pumpAndSettle();
+      expect(core.current.attachments.map((a) => a.name), [
+        'two.png',
+        'one.png',
+        'between.mp3',
+      ]);
+      // Still looking at the same picture, now first.
+      expect(find.text('1 of 2'), findsOneWidget);
+      expect(find.byKey(ValueKey('viewer:${two.id}')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('attachment-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Move later'));
+      await tester.pumpAndSettle();
+      expect(
+        core.current.attachments
+            .map((a) => a.name)
+            .where((n) => n.endsWith('.png')),
+        ['one.png', 'two.png'],
+      );
+      expect(find.text('2 of 2'), findsOneWidget);
+    },
+  );
+
+  testWidgets('a card shows the note\'s first picture above its title', (
+    tester,
+  ) async {
+    await fresh();
+    final core = library.core(id);
+    await core.setTitle('Recipe');
+    await core.importAttachment('cake.png', png(100), thumbnail: png(40));
+    await tester.pumpWidget(
+      MaterialApp(home: NoteListScreen(library: library)),
+    );
+    await tester.pumpAndSettle();
+    final cover = core.current.attachments.single;
+    expect(find.byKey(ValueKey('cover:$id:${cover.id}')), findsOneWidget);
+
+    // Gone with the picture.
+    await core.removeAttachment(cover.id);
+    await tester.pumpAndSettle();
+    expect(find.byKey(ValueKey('cover:$id:${cover.id}')), findsNothing);
+  });
 }

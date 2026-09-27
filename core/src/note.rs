@@ -278,6 +278,9 @@ pub struct NoteSummary {
     /// a count and a Type filter can find them without opening the note.
     pub images: usize,
     pub audio: usize,
+    /// The picture a card shows above its title, if the note has one with a
+    /// thumbnail. See [`crate::index::IndexEntry::cover`].
+    pub cover: Option<(crate::ids::AttachmentId, crate::attachment::Media)>,
 }
 
 /// One note a search found, and where it found the query.
@@ -1239,6 +1242,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             body: crate::index::body_lines(&view.body),
             checked: view.items.iter().filter(|i| i.checked).count(),
             items: view.items.into_iter().map(|i| i.text).collect(),
+            cover: view
+                .attachments
+                .iter()
+                .find(|a| {
+                    a.media.kind() == crate::attachment::AttachmentKind::Image
+                        && a.media.thumbnail.is_some()
+                })
+                .map(|a| (a.id, a.media.clone())),
             attachments: view
                 .attachments
                 .into_iter()
@@ -1358,6 +1369,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 labels: self.labels_of(*id),
                 images: entry.count(crate::attachment::AttachmentKind::Image),
                 audio: entry.count(crate::attachment::AttachmentKind::Audio),
+                cover: entry.cover.clone(),
             })
             .collect();
         // Pinned notes first, then the grid order, then the ID to break a tie —

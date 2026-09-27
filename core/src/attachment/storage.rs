@@ -17,6 +17,13 @@
 //! thumbnail is one, and how a staging record is sealed. Two stores that
 //! decided those separately would sooner or later accept different files.
 
+// The helpers below are for the stores. A build with neither — the relay's,
+// which needs only the descriptor — compiles them and calls none.
+#![cfg_attr(
+    not(any(feature = "file-store", feature = "web-store")),
+    allow(dead_code)
+)]
+
 use super::seal::{ContentKey, Variant};
 use super::{
     image_size, AttachmentKind, Media, MediaFormat, MediaRef, MAX_IMAGE_PIXELS,

@@ -298,6 +298,12 @@ abstract class Library implements RustOpaqueInterface {
   /// setting up sharing, and the same on every device of the account.
   String? profileName();
 
+  /// The thumbnail a note's card shows, decrypted, or `None` while it is not
+  /// on this device — it is then asked for, and [`Library::watch_transfers`]
+  /// says when it arrives. Read from the index, so the note is not opened
+  /// unless a download has to be.
+  Future<Uint8List?> readCover({required String note});
+
   /// Every reminder this device has decrypted from its account document.
   /// `watch_notes` is also its invalidation stream for local and remote
   /// account edits, so a scheduler does not need a second Rust watcher.
@@ -853,6 +859,13 @@ class NoteSummaryView {
   final int images;
   final int audio;
 
+  /// The picture a card shows above its title, by attachment ID, and its
+  /// thumbnail's size so the card can lay out before the bytes are here.
+  /// Its bytes come from [`Library::read_cover`].
+  final String? cover;
+  final int? coverWidth;
+  final int? coverHeight;
+
   /// What this person has done with the note. From the account document, so
   /// none of it is shared with whoever else is on the note.
   ///
@@ -883,6 +896,9 @@ class NoteSummaryView {
     required this.preview,
     required this.images,
     required this.audio,
+    this.cover,
+    this.coverWidth,
+    this.coverHeight,
     this.colour,
     required this.pinned,
     required this.archived,
@@ -901,6 +917,9 @@ class NoteSummaryView {
       preview.hashCode ^
       images.hashCode ^
       audio.hashCode ^
+      cover.hashCode ^
+      coverWidth.hashCode ^
+      coverHeight.hashCode ^
       colour.hashCode ^
       pinned.hashCode ^
       archived.hashCode ^
@@ -921,6 +940,9 @@ class NoteSummaryView {
           preview == other.preview &&
           images == other.images &&
           audio == other.audio &&
+          cover == other.cover &&
+          coverWidth == other.coverWidth &&
+          coverHeight == other.coverHeight &&
           colour == other.colour &&
           pinned == other.pinned &&
           archived == other.archived &&

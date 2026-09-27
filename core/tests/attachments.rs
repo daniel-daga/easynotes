@@ -574,6 +574,27 @@ fn media(name: &str, len: usize) -> (AttachmentId, Media) {
     )
 }
 
+/// The same, with a thumbnail, as a picture imported on a device has.
+fn media_with_thumbnail(name: &str) -> (AttachmentId, Media) {
+    let (id, mut m) = media(name, 100);
+    let (thumb, _) = seal_whole(
+        m.key.as_ref().unwrap(),
+        NoteId::random(),
+        id,
+        Variant::Thumbnail,
+        &png(4, 3, 60),
+        1 << 20,
+    )
+    .unwrap();
+    m.thumbnail = Some(easynotes_core::attachment::Thumbnail {
+        media: thumb,
+        format: MediaFormat::Png,
+        width: 4,
+        height: 3,
+    });
+    (id, m)
+}
+
 fn names(view: &NoteView) -> Vec<&str> {
     view.attachments
         .iter()
@@ -615,6 +636,41 @@ fn attachments_travel_and_survive_conversion<D: NoteDoc>() {
     let hits = b.search("two.png").unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].matched, "two.png");
+}
+
+fn a_card_shows_the_first_picture_that_has_a_thumbnail<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>(NoteKind::Checklist);
+    let cover = |core: &mut Core<D>| {
+        core.notes()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .cover
+            .map(|(attachment, media)| (attachment, media.name))
+    };
+    assert_eq!(cover(&mut b), None);
+
+    // A picture with no preview is not one a card can draw.
+    let (bare, m0) = media("bare.png", 10);
+    let (first, m1) = media_with_thumbnail("first.png");
+    let (second, m2) = media_with_thumbnail("second.png");
+    let wire = vec![
+        a.add_attachment(id, bare, m0).unwrap(),
+        a.add_attachment(id, first, m1).unwrap(),
+        a.add_attachment(id, second, m2).unwrap(),
+    ];
+    deliver(&mut b, id, &wire);
+    assert_eq!(cover(&mut b), Some((first, "first.png".into())));
+
+    // Moving the second ahead of the first makes it the cover; removing it
+    // hands the cover back.
+    deliver(&mut b, id, &[a.move_attachment(id, second, 0).unwrap()]);
+    assert_eq!(cover(&mut b), Some((second, "second.png".into())));
+    deliver(&mut b, id, &[a.remove_attachment(id, second).unwrap()]);
+    assert_eq!(cover(&mut b), Some((first, "first.png".into())));
+    deliver(&mut b, id, &[a.remove_attachment(id, first).unwrap()]);
+    assert_eq!(cover(&mut b), None);
 }
 
 fn removal_beats_a_concurrent_move_and_description<D: NoteDoc>() {
@@ -747,6 +803,7 @@ macro_rules! both_backends {
 
 both_backends!(
     attachments_travel_and_survive_conversion,
+    a_card_shows_the_first_picture_that_has_a_thumbnail,
     removal_beats_a_concurrent_move_and_description,
     concurrent_adds_both_survive,
     limits_are_held,

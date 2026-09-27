@@ -264,6 +264,12 @@ pub struct NoteSummaryView {
     /// say so and a search to filter by, without opening it.
     pub images: u32,
     pub audio: u32,
+    /// The picture a card shows above its title, by attachment ID, and its
+    /// thumbnail's size so the card can lay out before the bytes are here.
+    /// Its bytes come from [`Library::read_cover`].
+    pub cover: Option<String>,
+    pub cover_width: Option<u32>,
+    pub cover_height: Option<u32>,
     /// What this person has done with the note. From the account document, so
     /// none of it is shared with whoever else is on the note.
     ///
@@ -302,6 +308,15 @@ impl From<easynotes_core::note::NoteSummary> for NoteSummaryView {
             preview: s.preview,
             images: s.images as u32,
             audio: s.audio as u32,
+            cover: s.cover.as_ref().map(|(id, _)| id.encode()),
+            cover_width: s
+                .cover
+                .as_ref()
+                .and_then(|(_, m)| m.thumbnail.as_ref().map(|t| t.width)),
+            cover_height: s
+                .cover
+                .as_ref()
+                .and_then(|(_, m)| m.thumbnail.as_ref().map(|t| t.height)),
             colour: s.placement.colour.map(Into::into),
             pinned: s.placement.pinned,
             archived: s.placement.archived,
@@ -3207,6 +3222,42 @@ impl Library {
                 }
             }
         })
+    }
+
+    /// The thumbnail a note's card shows, decrypted, or `None` while it is not
+    /// on this device — it is then asked for, and [`Library::watch_transfers`]
+    /// says when it arrives. Read from the index, so the note is not opened
+    /// unless a download has to be.
+    pub async fn read_cover(&self, note: String) -> Result<Option<Vec<u8>>, String> {
+        let note = note_id(&note)?;
+        let cover = {
+            // `listed`, which only reads: this runs on a page's main thread
+            // in a tab, where telling the list's watchers anything may not.
+            self.shared
+                .locked()?
+                .listed()
+                .into_iter()
+                .find(|s| s.id == note)
+                .and_then(|s| s.cover)
+        };
+        let Some((id, media)) = cover else {
+            return Ok(None);
+        };
+        let Some(thumbnail) = media.thumbnail.as_ref().map(|t| &t.media) else {
+            return Ok(None);
+        };
+        let (store, queue) = self.shared.transfers().await?;
+        if store.has(note, thumbnail).await {
+            return store
+                .read(note, id, &media, Variant::Thumbnail)
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
+        if let Some(queue) = queue {
+            queue.fetch(note, id, Variant::Thumbnail);
+        }
+        Ok(None)
     }
 
     /// Try every failed attachment transfer again now.

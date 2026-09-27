@@ -88,8 +88,11 @@ function refuseAWrite() {
 /// The note IDs the database holds rows for, other than the account's.
 const account = 'AAAAAAAAAAAAAAAAAAAAAA';
 const noteIds = d => d.page.evaluate(async account => {
+  // Named per relay profile; the `-media` database beside it holds
+  // attachment bytes.
+  const name = (await indexedDB.databases()).map(d => d.name).find(n => n.startsWith('easynotes-') && !n.endsWith('-media'));
   const db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open('easynotes');
+    const request = indexedDB.open(name);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

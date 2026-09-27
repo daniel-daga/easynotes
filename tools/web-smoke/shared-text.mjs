@@ -40,8 +40,11 @@ try {
 
   async function ids() {
     return page.evaluate(async () => {
+      // Named per relay profile; the `-media` database beside it holds
+      // attachment bytes.
+      const name = (await indexedDB.databases()).map(d => d.name).find(n => n.startsWith('easynotes-') && !n.endsWith('-media'));
       const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open('easynotes');
+        const request = indexedDB.open(name);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });

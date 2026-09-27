@@ -8,6 +8,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'attachments.dart';
 import 'fake_note_core.dart';
@@ -753,6 +754,17 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   void retryTransfers() => calls.add('retryTransfers()');
 
+  AttachmentView? _cover(String id) => _cores[id]!.current.attachments
+      .where((a) => a.kind == AttachmentKind.image && a.hasThumbnail)
+      .firstOrNull;
+
+  @override
+  Future<Uint8List?> readCover(String noteId) async {
+    final cover = _cover(noteId);
+    if (cover == null) return null;
+    return _cores[noteId]!.readAttachment(cover.id, thumbnail: true);
+  }
+
   @override
   Future<void> flush() async => calls.add('flush()');
 
@@ -853,6 +865,9 @@ class FakeNoteLibrary implements NoteLibrary {
           audio: _cores[id]!.current.attachments
               .where((a) => a.kind == AttachmentKind.audio)
               .length,
+          cover: _cover(id)?.id,
+          coverWidth: _cover(id)?.thumbnailWidth,
+          coverHeight: _cover(id)?.thumbnailHeight,
           colour: _placements[id]?.colour,
           pinned: _placements[id]?.pinned ?? false,
           archived: _placements[id]?.archived ?? false,

@@ -55,8 +55,11 @@ page.on('request', r => requested.push(r.url()));
 
 /// Everything in the app's IndexedDB, as keys to byte arrays.
 const database = () => page.evaluate(async () => {
+  // Named per relay profile; the `-media` database beside it holds
+  // attachment bytes.
+  const name = (await indexedDB.databases()).map(d => d.name).find(n => n.startsWith('easynotes-') && !n.endsWith('-media'));
   const db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open('easynotes');
+    const request = indexedDB.open(name);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -83,7 +86,9 @@ async function open() {
   // The app opens its database before the first frame, so the wait is for the
   // writes that opening a device makes rather than for anything drawn.
   await page.waitForFunction(
-    () => window.indexedDB.databases().then(d => d.some(x => x.name === 'easynotes')),
+    // Named per relay profile (`easynotes-<profile>`); the `-media` one beside
+    // it holds attachment bytes and is not the one this reads.
+    () => window.indexedDB.databases().then(d => d.some(x => x.name.startsWith('easynotes-') && !x.name.endsWith('-media'))),
     { timeout: 60_000 },
   );
   await page.waitForTimeout(3000);
