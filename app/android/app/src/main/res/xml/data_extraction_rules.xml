@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and later: nothing goes to cloud backup or to a new phone.
+
+     Every note here is sealed under a master key that Keystore holds and will
+     not export, so a copy of the files arrives on another device unreadable, and
+     the key store's own preferences arrive unable to decrypt themselves. A
+     restored copy is therefore worse than none: it looks like data and opens as
+     an error. A new device gets synced notes back from the relay by entering
+     the account's recovery phrase; notes kept only on this device are not
+     recoverable, and the app has to say so rather than a backup imply it.
+     `android:allowBackup="false"` covers older Android; this covers
+     device-to-device transfer, which that flag does not. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

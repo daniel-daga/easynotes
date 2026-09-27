@@ -8,7 +8,6 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz_data;
@@ -151,22 +150,11 @@ class ReminderScheduler {
       used.add(id);
       final note = noteById[reminder.noteId];
       final title = note?.title.trim();
-      try {
-        await _schedule(
-          id: id,
-          reminder: reminder,
-          title: title == null || title.isEmpty ? 'EasyNotes reminder' : title,
-        );
-      } on PlatformException {
-        // Exact alarms need a separate Android system setting. An inexact
-        // schedule is still materially better than silently losing a reminder.
-        await _schedule(
-          id: id,
-          reminder: reminder,
-          title: title == null || title.isEmpty ? 'EasyNotes reminder' : title,
-          exact: false,
-        );
-      }
+      await _schedule(
+        id: id,
+        reminder: reminder,
+        title: title == null || title.isEmpty ? 'EasyNotes reminder' : title,
+      );
     }
   }
 
@@ -223,7 +211,6 @@ class ReminderScheduler {
     required int id,
     required Reminder reminder,
     required String title,
-    bool exact = true,
   }) async {
     final location = _location(reminder.timezone);
     final scheduled = nextOccurrence(reminder, location);
@@ -247,9 +234,12 @@ class ReminderScheduler {
         iOS: DarwinNotificationDetails(),
       ),
       payload: '$_payloadPrefix${reminder.id}',
-      androidScheduleMode: exact
-          ? AndroidScheduleMode.exactAllowWhileIdle
-          : AndroidScheduleMode.inexactAllowWhileIdle,
+      // Inexact on purpose. Exact alarms need SCHEDULE_EXACT_ALARM, which
+      // Google Play reserves for alarm-clock and calendar apps and Android 14
+      // no longer grants by default, so asking for one only ever failed over to
+      // this. The system may deliver a few minutes late in Doze; it still
+      // delivers, and it survives a reboot.
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: switch (reminder.repeat) {
         ReminderRepeat.never => null,
         ReminderRepeat.daily => DateTimeComponents.time,

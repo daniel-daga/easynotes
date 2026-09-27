@@ -1,0 +1,235 @@
+name: Release
+
+# A signed Android release, from a tag. Push `v1.2.3` and this runs the same
+# lint and tests as `ci.yml`, builds the Play bundle and an APK with pinned
+# toolchains, refuses the build if it is not what a store should get, and leaves
+# a *draft* GitHub release: a person publishes it, after reading what is here.
+#
+# It needs, under Settings → Secrets and variables → Actions:
+#
+#   secrets   EASYNOTES_KEYSTORE_BASE64    the upload keystore, `base64 -w0`
+#             EASYNOTES_KEYSTORE_PASSWORD
+#             EASYNOTES_KEY_ALIAS
+#             EASYNOTES_KEY_PASSWORD
+#   variables EASYNOTES_CERT_SHA256        the signing certificate's SHA-256, as
+#                                          `apksigner verify --print-certs` prints it
+#             EASYNOTES_PRIVACY_URL        shown in the app (lib/ui/about_screen.dart)
+#             EASYNOTES_SUPPORT            likewise
+#
+# The keystore is the app's identity on every device that installs it: an
+# update signed with another key cannot replace it. Keep it, and its passwords,
+# backed up somewhere that is not GitHub.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned, so that a release is built by the toolchain it was tested with and
+  # a rebuild of the same tag gets the same one. Move these deliberately.
+  FLUTTER_VERSION: 3.47.5
+  RUST_TOOLCHAIN: 1.94.1
+
+jobs:
+  checks:
+    name: Lint and tests
+    uses: ./.github/workflows/ci.yml
+
+  android:
+    name: Android release
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # the draft release
+      id-token: write        # build provenance
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to start without the signing key and the published details
+        env:
+          KEYSTORE: ${{ secrets.EASYNOTES_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.EASYNOTES_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.EASYNOTES_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.EASYNOTES_KEY_PASSWORD }}
+          CERT_SHA256: ${{ vars.EASYNOTES_CERT_SHA256 }}
+          PRIVACY_URL: ${{ vars.EASYNOTES_PRIVACY_URL }}
+          SUPPORT: ${{ vars.EASYNOTES_SUPPORT }}
+        run: |
+          missing=
+          for name in KEYSTORE STORE_PASSWORD KEY_ALIAS KEY_PASSWORD CERT_SHA256 PRIVACY_URL SUPPORT; do
+            eval "value=\${$name}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not configured:$missing (see the top of release.yml)"
+            exit 1
+          fi
+          case "$PRIVACY_URL" in
+            https://*) ;;
+            *) echo "::error::EASYNOTES_PRIVACY_URL must be an https:// URL"; exit 1 ;;
+          esac
+
+      # vMAJOR.MINOR.PATCH → versionName, and a versionCode that only goes up
+      # while the version does: MAJOR*1000000 + MINOR*1000 + PATCH. Derived from
+      # the tag rather than the run number, so F-Droid rebuilding the same tag
+      # arrives at the same number.
+      - name: Version from the tag
+        id: version
+        run: |
+          name="${GITHUB_REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "$name"
+          if [ "$minor" -ge 1000 ] || [ "$patch" -ge 1000 ]; then
+            echo "::error::minor and patch must be below 1000 for the versionCode scheme"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
+
+      # As in app-builds.yml: a release build of the core for three ABIs, plus
+      # Gradle's caches, does not fit in what the runner image leaves free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - run: flutter pub get
+        working-directory: app
+
+      - name: Install the signing key
+        env:
+          KEYSTORE: ${{ secrets.EASYNOTES_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          echo "EASYNOTES_KEYSTORE=$RUNNER_TEMP/upload.jks" >> "$GITHUB_ENV"
+
+      # Every ABI a phone ships with: arm64 for nearly all of them, armv7 for
+      # the older ones Play still serves, x64 for Chromebooks and emulators.
+      - name: Build the Play bundle and the APK
+        working-directory: app
+        env:
+          EASYNOTES_KEYSTORE_PASSWORD: ${{ secrets.EASYNOTES_KEYSTORE_PASSWORD }}
+          EASYNOTES_KEY_ALIAS: ${{ secrets.EASYNOTES_KEY_ALIAS }}
+          EASYNOTES_KEY_PASSWORD: ${{ secrets.EASYNOTES_KEY_PASSWORD }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          PRIVACY_URL: ${{ vars.EASYNOTES_PRIVACY_URL }}
+          SUPPORT: ${{ vars.EASYNOTES_SUPPORT }}
+        run: |
+          set -- --release \
+            --target-platform android-arm,android-arm64,android-x64 \
+            --build-name "$VERSION_NAME" \
+            --build-number "$VERSION_CODE" \
+            --dart-define=EASYNOTES_VERSION="$VERSION_NAME" \
+            --dart-define=EASYNOTES_PRIVACY_URL="$PRIVACY_URL" \
+            --dart-define=EASYNOTES_SUPPORT="$SUPPORT"
+          flutter build appbundle "$@"
+          flutter build apk "$@"
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+
+      # What a store will see, read out of the APK rather than the source: the
+      # manifest here is the *merged* one, with every plugin's contributions.
+      - name: Check the release is what a store should get
+        env:
+          CERT_SHA256: ${{ vars.EASYNOTES_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk=app/build/app/outputs/flutter-apk/app-release.apk
+          aab=app/build/app/outputs/bundle/release/app-release.aab
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          fail() { echo "::error::$*"; exit 1; }
+
+          badging=$("$tools/aapt2" dump badging "$apk")
+          echo "$badging" | grep -q "^package: name='eu.fraisl.easynotes' versionCode='${{ steps.version.outputs.code }}'" \
+            || fail "package name or versionCode is not what the tag says"
+          target=$(echo "$badging" | sed -n "s/^targetSdkVersion:'\([0-9]*\)'/\1/p")
+          [ "${target:-0}" -ge 36 ] || fail "targetSdkVersion is ${target:-unset}; Google Play needs 36"
+          ! echo "$badging" | grep -q "application-debuggable" || fail "the APK is debuggable"
+          for permission in SCHEDULE_EXACT_ALARM USE_EXACT_ALARM; do
+            ! echo "$badging" | grep -q "android.permission.$permission" \
+              || fail "$permission is requested; see AndroidManifest.xml for why it must not be"
+          done
+
+          manifest=$("$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk")
+          echo "$manifest" | grep -q 'android:allowBackup.*=false' \
+            || fail "backup is allowed; see res/xml/data_extraction_rules.xml"
+
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$apk" "lib/$abi/librust_lib_easynotes.so" > /dev/null \
+              || fail "the APK has no core for $abi"
+          done
+
+          certs=$("$tools/apksigner" verify --print-certs "$apk")
+          echo "$certs"
+          echo "$certs" | grep -qi "SHA-256 digest: ${CERT_SHA256//:/}" \
+            || fail "the APK is not signed with the certificate in EASYNOTES_CERT_SHA256"
+          ! echo "$certs" | grep -q "CN=Android Debug" || fail "the APK is debug-signed"
+          # jarsigner exits 0 for an unsigned file too, so read what it says.
+          jarsigner -verify "$aab" | grep -q '^jar verified' || fail "the bundle is not signed"
+
+      # What went into it, for licence review and for anyone auditing a release.
+      - name: Dependency and licence inventory
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Every crate that goes into the app's native library, with the
+          # licence it declares, for every target the app is built for.
+          cargo tree -p rust_lib_easynotes --locked --target all -e normal \
+            --prefix none --format '{p}	{l}' \
+            | sed 's/ (\*)$//' | sort -u > dist/rust-dependencies.tsv
+          if awk -F'\t' '$2 == "" { print; bad = 1 } END { exit !bad }' dist/rust-dependencies.tsv; then
+            echo "::warning::the crates above declare no licence; review them before publishing"
+          fi
+          cp app/pubspec.lock dist/pubspec.lock
+
+      - name: Collect and checksum
+        run: |
+          set -euo pipefail
+          name='easynotes-${{ steps.version.outputs.name }}'
+          cp app/build/app/outputs/bundle/release/app-release.aab "dist/$name.aab"
+          cp app/build/app/outputs/flutter-apk/app-release.apk "dist/$name.apk"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/easynotes-*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easynotes-${{ steps.version.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+
+      # A draft, never a published release: the store upload and the release
+      # notes are a person's decision, made after looking at the checks above.
+      - name: Draft the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --draft --verify-tag --title "EasyNotes ${{ steps.version.outputs.name }}" \
+            --notes "Test build. See SHA256SUMS and the build provenance attestation."

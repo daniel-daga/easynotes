@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,9 +7,26 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// The release signing identity: `android/key.properties` on a developer's
+// machine (never committed; see `.gitignore`), or the EASYNOTES_* variables in
+// the release workflow. With neither, a release build comes out *unsigned* —
+// never debug-signed, which is what it used to be. Unsigned is what F-Droid
+// builds and then signs itself; a store upload needs the real key.
+val keyProperties =
+    Properties().apply {
+        val file = rootProject.file("key.properties")
+        if (file.isFile) file.inputStream().use { load(it) }
+    }
+
+fun signingValue(property: String, variable: String): String? =
+    keyProperties.getProperty(property) ?: System.getenv(variable)?.takeIf { it.isNotEmpty() }
+
+val releaseStoreFile = signingValue("storeFile", "EASYNOTES_KEYSTORE")
+
 android {
     namespace = "eu.fraisl.easynotes"
-    compileSdk = flutter.compileSdkVersion
+    // At least what the pinned target needs, and whatever newer the plugins ask for.
+    compileSdk = maxOf(flutter.compileSdkVersion, 36)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -17,21 +36,32 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        // Stable once published: a store treats a different ID as a different app.
         applicationId = "eu.fraisl.easynotes"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        // Pinned rather than inherited from the Flutter SDK, so that neither an
+        // SDK upgrade changes runtime behaviour unannounced nor an older SDK
+        // drops below what Google Play accepts (API 36 since 2026-08-31). The
+        // release workflow checks the merged manifest says the same.
+        targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        releaseStoreFile?.let { path ->
+            create("release") {
+                storeFile = file(path)
+                storePassword = signingValue("storePassword", "EASYNOTES_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "EASYNOTES_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "EASYNOTES_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 }

@@ -12,6 +12,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # So that `release.yml` can require the same lint and tests before it builds.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
