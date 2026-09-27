@@ -27,7 +27,12 @@
 //! device's text is lost. That is a real difference from Yrs, and one more reason
 //! Yrs is the default ([ADR 0001](../../../docs/adr/0001-crdt.md)).
 
-use super::{sort_items, Edit, ItemView, NoteDoc, NoteKind, NoteView};
+use super::attachment_fields as field;
+use super::{
+    attachment_key, attachment_view, parse_attachment_key, sort_attachments, sort_items, Edit,
+    ItemView, NoteDoc, NoteKind, NoteView,
+};
+use crate::attachment::Media;
 use crate::error::{CoreError, Result};
 use crate::ids::ItemId;
 use automerge::transaction::Transactable;
@@ -172,6 +177,37 @@ impl NoteDoc for AutomergeNote {
                             tx.delete(ROOT, id.encode())?;
                         }
                     }
+                    Edit::AddAttachment { id, media, order } => {
+                        let obj = tx.put_object(ROOT, attachment_key(*id), ObjType::Map)?;
+                        tx.put(&obj, field::MEDIA, media.encode())?;
+                        tx.put(&obj, field::ORDER, order.as_str())?;
+                        tx.put(&obj, field::DESCRIPTION, "")?;
+                    }
+                    Edit::MoveAttachment { id, order } => {
+                        if let Some((Value::Object(_), obj)) = tx.get(ROOT, attachment_key(*id))? {
+                            tx.put(&obj, field::ORDER, order.as_str())?;
+                        }
+                    }
+                    Edit::SetAttachmentDescription { id, description } => {
+                        if let Some((Value::Object(_), obj)) = tx.get(ROOT, attachment_key(*id))? {
+                            tx.put(&obj, field::DESCRIPTION, description.as_str())?;
+                        }
+                    }
+                    Edit::RemoveAttachment { id } => {
+                        if let Some((Value::Object(_), obj)) = tx.get(ROOT, attachment_key(*id))? {
+                            tx.put(&obj, field::REMOVED, true)?;
+                            let raw = match tx.get(&obj, field::MEDIA)? {
+                                Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                    ScalarValue::Str(s) => s.to_string(),
+                                    _ => String::new(),
+                                },
+                                _ => String::new(),
+                            };
+                            if let Ok(media) = serde_json::from_str::<Media>(&raw) {
+                                tx.put(&obj, field::MEDIA, media.tombstone().encode())?;
+                            }
+                        }
+                    }
                 }
                 Ok(())
             })
@@ -209,8 +245,21 @@ impl NoteDoc for AutomergeNote {
             .unwrap_or_default();
 
         let mut items = Vec::new();
+        let mut attachments = Vec::new();
         for key in self.doc.keys(ROOT) {
             if key == TITLE || key == KIND || key == BODY {
+                continue;
+            }
+            if let Some(id) = parse_attachment_key(&key) {
+                if let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, &key) {
+                    attachments.extend(attachment_view(
+                        id,
+                        &Self::str_at(&self.doc, &obj, field::MEDIA),
+                        Self::str_at(&self.doc, &obj, field::ORDER),
+                        Self::str_at(&self.doc, &obj, field::DESCRIPTION),
+                        Self::bool_at(&self.doc, &obj, field::REMOVED),
+                    ));
+                }
                 continue;
             }
             // Anything that is not a well-formed item ID is a key from a future
@@ -229,11 +278,13 @@ impl NoteDoc for AutomergeNote {
             });
         }
         sort_items(&mut items);
+        sort_attachments(&mut attachments);
         NoteView {
             kind,
             title,
             body,
             items,
+            attachments,
         }
     }
 

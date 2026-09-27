@@ -19,7 +19,7 @@ use crate::crdt::{
 };
 use crate::crypto::{AuthorKey, DeviceIdentity, DeviceSeed, Envelope, EnvelopeKind, NoteKey};
 use crate::error::{CoreError, Result};
-use crate::ids::{ItemId, LabelId, NoteId, ReminderId};
+use crate::ids::{AttachmentId, ItemId, LabelId, NoteId, ReminderId};
 use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
@@ -274,6 +274,10 @@ pub struct NoteSummary {
     /// asking. The ID comes with it because the name is the part that can
     /// change: a screen draws the name and acts on the ID.
     pub labels: Vec<(LabelId, String)>,
+    /// How many live pictures and sound files the note has, so a card can show
+    /// a count and a Type filter can find them without opening the note.
+    pub images: usize,
+    pub audio: usize,
 }
 
 /// One note a search found, and where it found the query.
@@ -1235,6 +1239,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             body: crate::index::body_lines(&view.body),
             checked: view.items.iter().filter(|i| i.checked).count(),
             items: view.items.into_iter().map(|i| i.text).collect(),
+            attachments: view
+                .attachments
+                .into_iter()
+                .map(|a| (a.media.kind(), a.media.name))
+                .collect(),
             log_len: self.store.log_len(id)?,
         };
         let sealed = entry.seal(id, &note.key)?;
@@ -1347,6 +1356,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 preview: entry.preview().take(PREVIEW_ITEMS).cloned().collect(),
                 placement: self.placements.placement(*id),
                 labels: self.labels_of(*id),
+                images: entry.count(crate::attachment::AttachmentKind::Image),
+                audio: entry.count(crate::attachment::AttachmentKind::Audio),
             })
             .collect();
         // Pinned notes first, then the grid order, then the ID to break a tie —
@@ -2554,6 +2565,123 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         keys.remove(from);
         let order = order::key_for_index(&keys, to_index.min(keys.len()));
         self.apply_local(id, Edit::MoveItem { id: item, order })
+    }
+
+    // -- attachments --------------------------------------------------------
+
+    /// Put an attachment whose bytes are already sealed and stored into the
+    /// note, after the others. For everyone on it, like any edit.
+    ///
+    /// Refused over the per-note limits — twenty live attachments, 200 MB of
+    /// originals — counted against what this device can see. Two devices
+    /// adding at once can go over between them; the merge keeps both, because
+    /// both files were saved, and the next add here is the one refused.
+    ///
+    /// The caller decides *when*: a synced note's descriptor goes in only once
+    /// its bytes are on the relay, so that nobody is handed an attachment they
+    /// cannot fetch ([ADR 0027](../../docs/adr/0027-attachments.md) §3).
+    pub fn add_attachment(
+        &mut self,
+        id: NoteId,
+        attachment: AttachmentId,
+        media: crate::attachment::Media,
+    ) -> Result<Vec<u8>> {
+        use crate::attachment::{MAX_ATTACHMENTS_PER_NOTE, MAX_MEDIA_BYTES_PER_NOTE};
+        self.ensure_open(id)?;
+        media.check()?;
+        if media.key.is_none() {
+            return Err(CoreError::Attachment("an attachment needs its key".into()));
+        }
+        let view = self.view(id)?;
+        if view.attachment(attachment).is_some() {
+            return Err(CoreError::Attachment(
+                "that attachment is already on the note".into(),
+            ));
+        }
+        if view.attachments.len() >= MAX_ATTACHMENTS_PER_NOTE {
+            return Err(CoreError::Attachment(
+                "a note can have up to 20 attachments".into(),
+            ));
+        }
+        let bytes: u64 = view.attachments.iter().map(|a| a.media.original.len).sum();
+        if bytes + media.original.len > MAX_MEDIA_BYTES_PER_NOTE {
+            return Err(CoreError::Attachment(
+                "a note's attachments can be up to 200 MB between them".into(),
+            ));
+        }
+        let keys = view.attachment_order_keys();
+        let order = order::key_for_index(&keys, keys.len());
+        self.apply_local(
+            id,
+            Edit::AddAttachment {
+                id: attachment,
+                media: Box::new(media),
+                order,
+            },
+        )
+    }
+
+    /// Move an attachment so it lands at `to_index` among the note's attachments.
+    pub fn move_attachment(
+        &mut self,
+        id: NoteId,
+        attachment: AttachmentId,
+        to_index: usize,
+    ) -> Result<Vec<u8>> {
+        self.ensure_open(id)?;
+        let view = self.view(id)?;
+        let from = view
+            .attachments
+            .iter()
+            .position(|a| a.id == attachment)
+            .ok_or_else(|| CoreError::Attachment("no such attachment".into()))?;
+        let mut keys = view.attachment_order_keys();
+        keys.remove(from);
+        let order = order::key_for_index(&keys, to_index.min(keys.len()));
+        self.apply_local(
+            id,
+            Edit::MoveAttachment {
+                id: attachment,
+                order,
+            },
+        )
+    }
+
+    /// Set the words that describe a picture to someone who cannot see it.
+    /// Shared, like the picture.
+    pub fn set_attachment_description(
+        &mut self,
+        id: NoteId,
+        attachment: AttachmentId,
+        description: impl Into<String>,
+    ) -> Result<Vec<u8>> {
+        let description = description.into();
+        crate::attachment::check_description(&description)?;
+        self.require_attachment(id, attachment)?;
+        self.apply_local(
+            id,
+            Edit::SetAttachmentDescription {
+                id: attachment,
+                description,
+            },
+        )
+    }
+
+    /// Remove an attachment for everyone on the note. The bytes stay where
+    /// they are — on this device until its media store collects them, on the
+    /// relay until clean-up exists, and on anyone's device who already had
+    /// them — but no one reading the note from here on is handed the key.
+    pub fn remove_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<Vec<u8>> {
+        self.require_attachment(id, attachment)?;
+        self.apply_local(id, Edit::RemoveAttachment { id: attachment })
+    }
+
+    fn require_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<()> {
+        self.ensure_open(id)?;
+        if self.view(id)?.attachment(attachment).is_none() {
+            return Err(CoreError::Attachment("no such attachment".into()));
+        }
+        Ok(())
     }
 
     fn require_item(&mut self, id: NoteId, item: ItemId) -> Result<()> {

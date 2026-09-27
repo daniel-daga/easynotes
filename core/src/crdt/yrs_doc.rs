@@ -12,7 +12,12 @@
 //! their text instead of each creating one and losing the other's. Automerge has
 //! no such thing; see `automerge_doc` for what it does instead.
 
-use super::{sort_items, splice, Edit, ItemView, NoteDoc, NoteKind, NoteView};
+use super::attachment_fields as field;
+use super::{
+    attachment_key, attachment_view, parse_attachment_key, sort_attachments, sort_items, splice,
+    Edit, ItemView, NoteDoc, NoteKind, NoteView,
+};
+use crate::attachment::Media;
 use crate::error::{CoreError, Result};
 use crate::ids::ItemId;
 use std::sync::{Arc, Mutex};
@@ -202,6 +207,33 @@ impl NoteDoc for YrsNote {
                         items.remove(&mut txn, &id.encode());
                     }
                 }
+                Edit::AddAttachment { id, media, order } => {
+                    let obj = self
+                        .root
+                        .insert(&mut txn, attachment_key(*id), MapPrelim::default());
+                    obj.insert(&mut txn, field::MEDIA, media.encode());
+                    obj.insert(&mut txn, field::ORDER, order.as_str());
+                    obj.insert(&mut txn, field::DESCRIPTION, "");
+                }
+                Edit::MoveAttachment { id, order } => {
+                    if let Some(Out::YMap(obj)) = self.root.get(&txn, &attachment_key(*id)) {
+                        obj.insert(&mut txn, field::ORDER, order.as_str());
+                    }
+                }
+                Edit::SetAttachmentDescription { id, description } => {
+                    if let Some(Out::YMap(obj)) = self.root.get(&txn, &attachment_key(*id)) {
+                        obj.insert(&mut txn, field::DESCRIPTION, description.as_str());
+                    }
+                }
+                Edit::RemoveAttachment { id } => {
+                    if let Some(Out::YMap(obj)) = self.root.get(&txn, &attachment_key(*id)) {
+                        obj.insert(&mut txn, field::REMOVED, true);
+                        let raw = any_str(obj.get(&txn, field::MEDIA));
+                        if let Ok(media) = serde_json::from_str::<Media>(&raw) {
+                            obj.insert(&mut txn, field::MEDIA, media.tombstone().encode());
+                        }
+                    }
+                }
             }
         }
         self.take_pending()
@@ -236,10 +268,23 @@ impl NoteDoc for YrsNote {
         let kind = NoteKind::parse(&any_str(self.root.get(&txn, KIND)));
         let body = self.body.get_string(&txn);
         let mut items = Vec::new();
+        let mut attachments = Vec::new();
         {
             let items_map = &self.root;
-            for (key, _) in items_map.iter(&txn) {
+            for (key, value) in items_map.iter(&txn) {
                 if key == TITLE || key == KIND {
+                    continue;
+                }
+                if let Some(id) = parse_attachment_key(key) {
+                    if let Out::YMap(obj) = value {
+                        attachments.extend(attachment_view(
+                            id,
+                            &any_str(obj.get(&txn, field::MEDIA)),
+                            any_str(obj.get(&txn, field::ORDER)),
+                            any_str(obj.get(&txn, field::DESCRIPTION)),
+                            any_bool(obj.get(&txn, field::REMOVED)),
+                        ));
+                    }
                     continue;
                 }
                 let Ok(id) = ItemId::decode(key) else {
@@ -257,11 +302,13 @@ impl NoteDoc for YrsNote {
             }
         }
         sort_items(&mut items);
+        sort_attachments(&mut attachments);
         NoteView {
             kind,
             title,
             body,
             items,
+            attachments,
         }
     }
 

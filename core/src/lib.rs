@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod account;
+pub mod attachment;
 pub mod collaborators;
 pub mod compaction;
 pub mod crdt;

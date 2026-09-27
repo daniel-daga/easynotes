@@ -1,0 +1,500 @@
+//! Where a device keeps attachment bytes: a directory of sealed files.
+//!
+//! ```text
+//! <root>/objects/<note id>/<object id>   a sealed variant, exactly as it
+//!                                        travels to the relay
+//! <root>/staging/<attachment id>         a sealed record of an import whose
+//!                                        descriptor is not in the note yet
+//! <root>/tmp/                            half-written files; emptied on open
+//! ```
+//!
+//! An object is stored as the chunks [`super::seal`] made, and nothing else.
+//! The chunks are already encrypted under a key only the note's readers have,
+//! so sealing them again under the master key would buy nothing; and keeping
+//! the relay's bytes means an upload is a read and a download is a write, with
+//! no step in between that could see plaintext.
+//!
+//! What *is* sealed under the master key is the staging record, because it
+//! holds a content key that is not in any note yet. The order an import commits
+//! in is the whole of the crash story ([ADR 0027](../../../docs/adr/0027-attachments.md) §3):
+//!
+//! 1. every object is written to `tmp/`, synced, and renamed into `objects/`;
+//! 2. then the staging record is written the same way. From here the import is
+//!    "saved on this device": whatever happens next, the record names the
+//!    objects and holds their key;
+//! 3. the caller publishes the descriptor into the note, when its bytes are on
+//!    the relay or at once for a note that is not synced;
+//! 4. then [`MediaStore::settle`] deletes the record.
+//!
+//! A crash before 2 leaves objects nothing names, which
+//! [`MediaStore::collect_garbage`] removes. A crash between 2 and 4 leaves a
+//! record, which [`MediaStore::staged`] hands back on the next launch — as an
+//! attachment still waiting to be published, or, if its descriptor made it into
+//! the note after all, one to settle. There is no state in which a descriptor
+//! names bytes this device has lost.
+
+use super::seal::{seal_whole, verify_sealed, MediaOpener, MediaSealer, Variant};
+use super::{
+    image_size, AttachmentKind, ContentKey, Media, MediaFormat, MediaRef, Thumbnail, CHUNK_SIZE,
+    MAX_IMAGE_PIXELS, MAX_THUMBNAIL_BYTES, MAX_THUMBNAIL_EDGE, MEDIA_VERSION,
+};
+use crate::crypto::MasterKey;
+use crate::error::{CoreError, Result};
+use crate::ids::{AttachmentId, MediaObjectId, NoteId};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+const STAGING_CONTEXT: &[u8] = b"attachment-staging";
+
+fn io(e: std::io::Error) -> CoreError {
+    CoreError::Storage(e.to_string())
+}
+
+fn refused(why: &str) -> CoreError {
+    CoreError::Attachment(why.into())
+}
+
+/// An import that is saved on this device and not yet in its note.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Staged {
+    pub note: NoteId,
+    pub id: AttachmentId,
+    pub media: Media,
+}
+
+/// A preview the app made. Decoding and scaling are the platform's job — the
+/// core has no image decoder in it, on purpose — so what arrives here is a
+/// finished JPEG, PNG or WebP no larger than [`MAX_THUMBNAIL_EDGE`] a side.
+pub struct ThumbnailInput {
+    pub bytes: Vec<u8>,
+}
+
+/// What the app knows about a file that the core cannot read from its header.
+#[derive(Default)]
+pub struct ImportHints {
+    /// A sound file's length, as the platform's decoder reported it.
+    pub duration_ms: Option<u64>,
+}
+
+pub struct MediaStore {
+    root: PathBuf,
+    master: MasterKey,
+}
+
+impl MediaStore {
+    pub fn open(root: impl AsRef<Path>, master: MasterKey) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        for dir in ["objects", "staging"] {
+            fs::create_dir_all(root.join(dir)).map_err(io)?;
+        }
+        // Whatever is in `tmp/` was being written when the app last stopped,
+        // and nothing refers to it: step 1 renames before step 2 names.
+        let tmp = root.join("tmp");
+        if tmp.exists() {
+            fs::remove_dir_all(&tmp).map_err(io)?;
+        }
+        fs::create_dir_all(&tmp).map_err(io)?;
+        Ok(Self { root, master })
+    }
+
+    fn note_dir(&self, note: NoteId) -> PathBuf {
+        self.root.join("objects").join(note.encode())
+    }
+
+    fn object_path(&self, note: NoteId, object: MediaObjectId) -> PathBuf {
+        self.note_dir(note).join(object.encode())
+    }
+
+    fn staging_path(&self, id: AttachmentId) -> PathBuf {
+        self.root.join("staging").join(id.encode())
+    }
+
+    /// Write `fill`'s output to `tmp/`, sync it, and rename it to `to`.
+    fn write_atomic(&self, to: &Path, fill: impl FnOnce(&mut File) -> Result<()>) -> Result<()> {
+        let tmp = self.root.join("tmp").join(MediaObjectId::random().encode());
+        let result = (|| {
+            let mut file = File::create(&tmp).map_err(io)?;
+            fill(&mut file)?;
+            file.sync_all().map_err(io)?;
+            if let Some(dir) = to.parent() {
+                fs::create_dir_all(dir).map_err(io)?;
+            }
+            fs::rename(&tmp, to).map_err(io)?;
+            sync_dir(to.parent())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
+    }
+
+    /// Copy a file into this store, encrypted, and record it as staged.
+    ///
+    /// `len` is the source's size, and the source must deliver exactly that
+    /// many bytes: every chunk commits to it, so a file that grows or shrinks
+    /// while it is read is refused rather than half-attached. The format is
+    /// read from the bytes; `name` is only what to call it.
+    pub fn import(
+        &self,
+        note: NoteId,
+        name: &str,
+        mut source: impl Read,
+        len: u64,
+        thumbnail: Option<ThumbnailInput>,
+        hints: ImportHints,
+    ) -> Result<Staged> {
+        if len == 0 {
+            return Err(refused("the file is empty"));
+        }
+        let id = AttachmentId::random();
+        let key = ContentKey::random();
+
+        let mut sealer = MediaSealer::new(&key, note, id, Variant::Original, len, CHUNK_SIZE)?;
+        let first_len = sealer.next_len().expect("a non-empty file has a chunk");
+        let mut chunk = vec![0u8; first_len];
+        source
+            .read_exact(&mut chunk)
+            .map_err(|_| refused("the file ended early"))?;
+
+        let format = MediaFormat::sniff(&chunk).ok_or_else(|| {
+            refused(
+                "only JPEG, PNG and WebP images and MP3, M4A and WAV sound files can be attached",
+            )
+        })?;
+        if len > format.max_bytes() {
+            return Err(refused(match format.kind() {
+                AttachmentKind::Image => "images can be up to 20 MB",
+                AttachmentKind::Audio => "sound files can be up to 50 MB",
+            }));
+        }
+        let (width, height) = match format.kind() {
+            AttachmentKind::Image => match image_size(format, &chunk)? {
+                Some((w, h)) if w as u64 * h as u64 > MAX_IMAGE_PIXELS => {
+                    return Err(refused("images can be up to 40 megapixels"))
+                }
+                Some((w, h)) => (Some(w), Some(h)),
+                None => (None, None),
+            },
+            AttachmentKind::Audio => (None, None),
+        };
+
+        let thumbnail = match thumbnail {
+            Some(t) if format.kind() == AttachmentKind::Image => {
+                Some(self.write_thumbnail(note, id, &key, &t.bytes)?)
+            }
+            Some(_) => return Err(refused("only an image has a thumbnail")),
+            None => None,
+        };
+
+        let original_object;
+        let original = {
+            // The object's name is the sealer's, so it is only known at the end;
+            // write to a temporary path and let `finish` say where it goes.
+            let tmp = self.root.join("tmp").join(MediaObjectId::random().encode());
+            let written = (|| {
+                let mut file = File::create(&tmp).map_err(io)?;
+                file.write_all(&sealer.seal_chunk(&chunk)?).map_err(io)?;
+                while let Some(n) = sealer.next_len() {
+                    chunk.resize(n, 0);
+                    source
+                        .read_exact(&mut chunk)
+                        .map_err(|_| refused("the file changed while it was being added"))?;
+                    file.write_all(&sealer.seal_chunk(&chunk)?).map_err(io)?;
+                }
+                if source.read(&mut [0u8; 1]).map_err(io)? != 0 {
+                    return Err(refused("the file changed while it was being added"));
+                }
+                file.sync_all().map_err(io)?;
+                let media = sealer.finish()?;
+                let to = self.object_path(note, media.object);
+                fs::create_dir_all(self.note_dir(note)).map_err(io)?;
+                fs::rename(&tmp, &to).map_err(io)?;
+                sync_dir(Some(&self.note_dir(note)))?;
+                Ok(media)
+            })();
+            if written.is_err() {
+                let _ = fs::remove_file(&tmp);
+                if let Some(t) = &thumbnail {
+                    let _ = fs::remove_file(self.object_path(note, t.media.object));
+                }
+            }
+            let media = written?;
+            original_object = media.object;
+            media
+        };
+
+        let media = Media {
+            v: MEDIA_VERSION,
+            format,
+            name: name.trim().to_owned(),
+            width,
+            height,
+            duration_ms: hints.duration_ms,
+            key: Some(key),
+            original,
+            thumbnail,
+        };
+        let staged = Staged { note, id, media };
+        if let Err(e) = staged
+            .media
+            .check()
+            .and_then(|()| self.write_record(&staged))
+        {
+            let _ = fs::remove_file(self.object_path(note, original_object));
+            if let Some(t) = &staged.media.thumbnail {
+                let _ = fs::remove_file(self.object_path(note, t.media.object));
+            }
+            return Err(e);
+        }
+        Ok(staged)
+    }
+
+    fn write_thumbnail(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+        key: &ContentKey,
+        bytes: &[u8],
+    ) -> Result<Thumbnail> {
+        let bad = || refused("a thumbnail must be an image of at most 512 pixels a side");
+        if bytes.is_empty() || bytes.len() as u64 > MAX_THUMBNAIL_BYTES {
+            return Err(bad());
+        }
+        let format = MediaFormat::sniff(bytes)
+            .filter(|f| f.kind() == AttachmentKind::Image)
+            .ok_or_else(bad)?;
+        let (width, height) = image_size(format, bytes)?.ok_or_else(bad)?;
+        if width > MAX_THUMBNAIL_EDGE || height > MAX_THUMBNAIL_EDGE {
+            return Err(bad());
+        }
+        let (media, sealed) = seal_whole(key, note, id, Variant::Thumbnail, bytes, CHUNK_SIZE)?;
+        self.write_atomic(&self.object_path(note, media.object), |f| {
+            f.write_all(&sealed).map_err(io)
+        })?;
+        Ok(Thumbnail {
+            media,
+            format,
+            width,
+            height,
+        })
+    }
+
+    fn write_record(&self, staged: &Staged) -> Result<()> {
+        let plain = serde_json::to_vec(staged)
+            .map_err(|e| CoreError::Storage(format!("unwritable staging record: {e}")))?;
+        let sealed = self
+            .master
+            .seal(&[STAGING_CONTEXT, staged.id.as_bytes()], &plain)?;
+        self.write_atomic(&self.staging_path(staged.id), |f| {
+            f.write_all(&sealed).map_err(io)
+        })
+    }
+
+    /// Every import still waiting to be published into its note, oldest
+    /// first. A record that no longer opens — another master key, a torn
+    /// write that somehow survived the rename — is not one this device can do
+    /// anything with, and is skipped rather than failing the rest.
+    pub fn staged(&self) -> Result<Vec<Staged>> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(self.root.join("staging")).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let Some(id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| AttachmentId::decode(n).ok())
+            else {
+                continue;
+            };
+            let sealed = fs::read(entry.path()).map_err(io)?;
+            let Ok(plain) = self.master.open(&[STAGING_CONTEXT, id.as_bytes()], &sealed) else {
+                continue;
+            };
+            let Ok(staged) = serde_json::from_slice::<Staged>(&plain) else {
+                continue;
+            };
+            if staged.id == id {
+                let modified = entry.metadata().and_then(|m| m.modified()).ok();
+                out.push((modified, staged));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        Ok(out.into_iter().map(|(_, s)| s).collect())
+    }
+
+    /// The descriptor is in the note: forget the record, keep the objects.
+    pub fn settle(&self, id: AttachmentId) -> Result<()> {
+        match fs::remove_file(self.staging_path(id)) {
+            Ok(()) => sync_dir(Some(&self.root.join("staging"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io(e)),
+        }
+    }
+
+    /// Cancel an import: its objects, then its record. Objects first, so a
+    /// crash in between leaves a record naming missing objects — which
+    /// [`MediaStore::staged`] still returns, and which a second discard
+    /// finishes — rather than objects nothing names.
+    pub fn discard(&self, staged: &Staged) -> Result<()> {
+        self.remove(staged.note, &staged.media)?;
+        self.settle(staged.id)
+    }
+
+    /// Whether a variant is here, whole. Only the length is checked: the digest
+    /// was checked when it arrived, and every chunk is checked when it is read.
+    pub fn has(&self, note: NoteId, media: &MediaRef) -> bool {
+        fs::metadata(self.object_path(note, media.object))
+            .is_ok_and(|m| m.len() == media.sealed_len())
+    }
+
+    /// A variant's sealed bytes, for the relay.
+    pub fn read_sealed(&self, note: NoteId, media: &MediaRef) -> Result<Vec<u8>> {
+        fs::read(self.object_path(note, media.object)).map_err(io)
+    }
+
+    /// Keep a variant that was downloaded, once it has proved to be the one the
+    /// descriptor names. Idempotent: the same bytes arriving twice are one file.
+    pub fn put_sealed(&self, note: NoteId, media: &MediaRef, sealed: &[u8]) -> Result<()> {
+        verify_sealed(media, sealed)?;
+        self.write_atomic(&self.object_path(note, media.object), |f| {
+            f.write_all(sealed).map_err(io)
+        })
+    }
+
+    /// Verify and decrypt one chunk of a variant, reading only that chunk.
+    pub fn read_chunk(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+        media: &Media,
+        variant: Variant,
+        index: u32,
+    ) -> Result<Vec<u8>> {
+        let (key, media_ref) = variant_of(media, variant)?;
+        let opener = MediaOpener::new(key, note, id, variant, media_ref)?;
+        if index >= opener.chunks() {
+            return Err(CoreError::Crypto("no such chunk"));
+        }
+        let (at, len) = opener.sealed_range(index);
+        let mut file = File::open(self.object_path(note, media_ref.object)).map_err(io)?;
+        file.seek(SeekFrom::Start(at)).map_err(io)?;
+        let mut sealed = vec![0u8; len];
+        file.read_exact(&mut sealed)
+            .map_err(|_| CoreError::Crypto("an attachment cut short"))?;
+        opener.open_chunk(index, &sealed)
+    }
+
+    /// A whole variant, decrypted. For a thumbnail, or a picture being shown;
+    /// a player reads [`MediaStore::read_chunk`] as it goes.
+    pub fn read(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+        media: &Media,
+        variant: Variant,
+    ) -> Result<Vec<u8>> {
+        let (key, media_ref) = variant_of(media, variant)?;
+        let opener = MediaOpener::new(key, note, id, variant, media_ref)?;
+        opener.open_whole(&self.read_sealed(note, media_ref)?)
+    }
+
+    /// Delete an attachment's objects from this device. Not from the relay,
+    /// and not from anyone else's device.
+    pub fn remove(&self, note: NoteId, media: &Media) -> Result<()> {
+        for object in objects_of(media) {
+            match fs::remove_file(self.object_path(note, object)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io(e)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete every object this device holds for a note, and every import into
+    /// it still staged. What forgetting or purging the note does.
+    pub fn purge_note(&self, note: NoteId) -> Result<()> {
+        for staged in self.staged()? {
+            if staged.note == note {
+                self.settle(staged.id)?;
+            }
+        }
+        match fs::remove_dir_all(self.note_dir(note)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io(e)),
+        }
+    }
+
+    /// Delete a note's objects that neither `live` nor a staged import names:
+    /// what a crash before a record was written leaves, and what a removal
+    /// leaves on a device that was not the one to remove it. Returns how many.
+    pub fn collect_garbage(&self, note: NoteId, live: &[&Media]) -> Result<usize> {
+        let staged = self.staged()?;
+        let keep: HashSet<MediaObjectId> = live
+            .iter()
+            .flat_map(|m| objects_of(m))
+            .chain(
+                staged
+                    .iter()
+                    .filter(|s| s.note == note)
+                    .flat_map(|s| objects_of(&s.media)),
+            )
+            .collect();
+        let dir = self.note_dir(note);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(io(e)),
+        };
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry.map_err(io)?;
+            let named = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| MediaObjectId::decode(n).ok());
+            if named.is_some_and(|object| !keep.contains(&object)) {
+                fs::remove_file(entry.path()).map_err(io)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+fn variant_of(media: &Media, variant: Variant) -> Result<(&ContentKey, &MediaRef)> {
+    let key = media
+        .key
+        .as_ref()
+        .ok_or_else(|| refused("this attachment was removed"))?;
+    let media_ref = match variant {
+        Variant::Original => &media.original,
+        Variant::Thumbnail => {
+            &media
+                .thumbnail
+                .as_ref()
+                .ok_or_else(|| refused("this attachment has no thumbnail"))?
+                .media
+        }
+    };
+    Ok((key, media_ref))
+}
+
+fn objects_of(media: &Media) -> impl Iterator<Item = MediaObjectId> + '_ {
+    std::iter::once(media.original.object).chain(media.thumbnail.as_ref().map(|t| t.media.object))
+}
+
+/// Make a rename durable. A directory cannot be opened for syncing on Windows,
+/// and NTFS journals the rename itself, so there it is a no-op.
+fn sync_dir(dir: Option<&Path>) -> Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = dir {
+        File::open(dir).and_then(|d| d.sync_all()).map_err(io)?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}

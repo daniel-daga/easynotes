@@ -17,8 +17,9 @@
 //!   * a move writes one field, so concurrent moves resolve to one winner;
 //!   * a concurrent move and rename touch different fields and both survive.
 
+use crate::attachment::{AttachmentView, Media};
 use crate::error::Result;
-use crate::ids::ItemId;
+use crate::ids::{AttachmentId, ItemId};
 use serde::{Deserialize, Serialize};
 
 pub mod account;
@@ -107,6 +108,10 @@ pub struct NoteView {
     pub title: String,
     pub body: String,
     pub items: Vec<ItemView>,
+    /// Live attachments, sorted by `(order, id)` like items. Removed ones are
+    /// in the document as tombstones and not here. Neither kind of note owns
+    /// them, so converting one never touches this.
+    pub attachments: Vec<AttachmentView>,
 }
 
 impl NoteView {
@@ -124,6 +129,16 @@ impl NoteView {
     /// setting, per the design doc, so it belongs to the UI and not to the data.
     pub fn checked_count(&self) -> usize {
         self.items.iter().filter(|i| i.checked).count()
+    }
+
+    pub fn attachment(&self, id: AttachmentId) -> Option<&AttachmentView> {
+        self.attachments.iter().find(|a| a.id == id)
+    }
+
+    /// The order keys of the live attachments, for
+    /// [`crate::order::key_for_index`].
+    pub fn attachment_order_keys(&self) -> Vec<String> {
+        self.attachments.iter().map(|a| a.order.clone()).collect()
     }
 }
 
@@ -172,6 +187,29 @@ pub enum Edit {
     ToText {
         body: String,
         remove: Vec<ItemId>,
+    },
+    /// Attach a file whose bytes are already sealed and stored. The descriptor
+    /// is written once and never again, except by [`Edit::RemoveAttachment`].
+    AddAttachment {
+        id: AttachmentId,
+        /// Boxed: a descriptor is several times the size of every other edit.
+        media: Box<Media>,
+        order: String,
+    },
+    MoveAttachment {
+        id: AttachmentId,
+        order: String,
+    },
+    SetAttachmentDescription {
+        id: AttachmentId,
+        description: String,
+    },
+    /// Remove an attachment for everyone on the note. Leaves a tombstone: the
+    /// descriptor stays, marked removed and without its key, so a delayed
+    /// update cannot bring it back and the relay's clean-up can still find
+    /// where its bytes were.
+    RemoveAttachment {
+        id: AttachmentId,
     },
 }
 
@@ -273,6 +311,59 @@ pub trait NoteDoc: Sized {
     fn missing_from(&self, base: &[u8]) -> Result<Option<Vec<u8>>>;
 
     fn backend_name() -> &'static str;
+}
+
+/// The root key an attachment's map hangs off. The `a:` prefix cannot occur in
+/// an item ID — `:` is not base64url — so an item and an attachment can share
+/// the root without either being mistaken for the other, and a build that
+/// predates attachments skips these keys as it skips any it cannot decode.
+pub(crate) fn attachment_key(id: AttachmentId) -> String {
+    format!("a:{}", id.encode())
+}
+
+pub(crate) fn parse_attachment_key(key: &str) -> Option<AttachmentId> {
+    AttachmentId::decode(key.strip_prefix("a:")?).ok()
+}
+
+/// The fields of an attachment's map. Shared so the two backends cannot spell
+/// them differently.
+pub(crate) mod attachment_fields {
+    /// The descriptor, as [`crate::attachment::Media::encode`] writes it.
+    pub const MEDIA: &str = "media";
+    pub const ORDER: &str = "order";
+    pub const DESCRIPTION: &str = "description";
+    /// `true` once removed, and never written `false`: removal is monotonic,
+    /// so it wins over a concurrent move or description on another device.
+    pub const REMOVED: &str = "removed";
+}
+
+/// Turn one attachment's fields into what a screen sees, or `None` for one it
+/// should not: removed, or with a descriptor this build cannot read or trust.
+pub(crate) fn attachment_view(
+    id: AttachmentId,
+    media: &str,
+    order: String,
+    description: String,
+    removed: bool,
+) -> Option<AttachmentView> {
+    if removed {
+        return None;
+    }
+    let media = Media::decode(media)?;
+    // A live descriptor without a key is one nobody can open; drawing it would
+    // be a placeholder that never fills.
+    media.key.as_ref()?;
+    Some(AttachmentView {
+        id,
+        order,
+        description,
+        media,
+    })
+}
+
+#[cfg(any(feature = "automerge-backend", feature = "yrs-backend"))]
+pub(crate) fn sort_attachments(attachments: &mut [AttachmentView]) {
+    attachments.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// Sort items into display order. Both backends share this so a difference

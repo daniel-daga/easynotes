@@ -46,6 +46,26 @@ macro_rules! id_type {
             }
         }
 
+        // As the same base64url string `encode` makes, so an ID reads the
+        // same in a JSON descriptor as it does everywhere else.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                s: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                s.serialize_str(&self.encode())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                d: D,
+            ) -> std::result::Result<Self, D::Error> {
+                let s = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+                Self::decode(&s).map_err(serde::de::Error::custom)
+            }
+        }
+
         impl std::fmt::Debug for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}({})", $what, self.encode())
@@ -82,3 +102,13 @@ id_type!(LabelId, "LabelId");
 // A reminder is not identified by its note: one note may have several of
 // them, and an ID lets one be edited or removed without rewriting the others.
 id_type!(ReminderId, "ReminderId");
+
+// One attached file, and it never changes: replacing a photo is a new
+// attachment with a new ID, so a descriptor is written once and read forever
+// ([ADR 0027](../../docs/adr/0027-attachments.md)).
+id_type!(AttachmentId, "AttachmentId");
+
+// Where one variant of an attachment's ciphertext lives — this device's media
+// store, and later the relay's. Random, never a hash of what it holds, so the
+// relay learns nothing from it but its size.
+id_type!(MediaObjectId, "MediaObjectId");

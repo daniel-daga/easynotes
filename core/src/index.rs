@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 4;
+pub const ENTRY_VERSION: u8 = 5;
 
 /// One note, as the list and the search read it.
 ///
@@ -66,6 +66,10 @@ pub struct IndexEntry {
     /// Every item's text, in display order.
     pub items: Vec<String>,
     pub checked: usize,
+    /// Each live attachment's kind and file name, in display order. Names are
+    /// searched; what is in a picture or a recording is not, since reading it
+    /// would take OCR or transcription this device does not do.
+    pub attachments: Vec<(crate::attachment::AttachmentKind, String)>,
     /// How many envelopes the note's log held when this was written. The whole
     /// of the staleness check; see the module docs.
     pub log_len: usize,
@@ -100,7 +104,13 @@ impl IndexEntry {
         self.body.iter().chain(self.items.iter())
     }
 
-    /// The first line — the title, the body, then the items in display order — that
+    /// How many live attachments of `kind` the note has.
+    pub fn count(&self, kind: crate::attachment::AttachmentKind) -> usize {
+        self.attachments.iter().filter(|(k, _)| *k == kind).count()
+    }
+
+    /// The first line — the title, the body, the items in display order, then
+    /// the attachments' file names — that
     /// contains any of `terms`, if every term appears somewhere in the note.
     ///
     /// This is the whole of the matching rule, and it is deliberately the
@@ -118,7 +128,11 @@ impl IndexEntry {
         if terms.is_empty() {
             return None;
         }
-        let lines = || std::iter::once(&self.title).chain(self.preview());
+        let lines = || {
+            std::iter::once(&self.title)
+                .chain(self.preview())
+                .chain(self.attachments.iter().map(|(_, name)| name))
+        };
         let holds = |line: &str, term: &String| line.to_lowercase().contains(term.as_str());
         if !terms
             .iter()

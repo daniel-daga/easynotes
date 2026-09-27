@@ -39,6 +39,10 @@ pub enum CoreError {
     Crdt(String),
     #[error("storage: {0}")]
     Storage(String),
+    /// An attachment refused, in words a person can be shown: too big, not a
+    /// format this release takes, too many on one note.
+    #[error("{0}")]
+    Attachment(String),
     #[error("envelope exceeds the {limit} byte cap")]
     TooLarge { limit: usize },
 }
