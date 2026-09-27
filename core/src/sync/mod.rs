@@ -79,6 +79,12 @@ pub mod invite;
 #[cfg(feature = "sync-native")]
 pub mod media;
 
+/// The queue that runs those transfers: staged imports uploaded and published
+/// once their note is caught up, and downloads the app asks for. Native only,
+/// with [`media`].
+#[cfg(all(feature = "sync-native", feature = "file-store"))]
+pub mod transfers;
+
 /// Purging topics from the relay, the last step of deleting an account.
 #[cfg(any(
     feature = "sync-native",
