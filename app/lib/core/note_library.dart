@@ -468,6 +468,15 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// pocket is on the other phone too.
   void sendHeldEdits();
 
+  /// Wait until everything written so far is kept on this device.
+  ///
+  /// On a device with a disk that is already true when a write returns, and
+  /// this returns at once. In a browser it waits for IndexedDB to take the
+  /// queued writes. A refusal does not throw: it is reported by
+  /// [storageError], which is what a caller checks after awaiting this.
+  /// Nothing here waits for the relay.
+  Future<void> flush();
+
   /// Where this device stands with the relay, over all its notes.
   SyncStatus get syncStatus;
 

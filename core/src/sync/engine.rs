@@ -250,6 +250,12 @@ where
 ///
 /// The handshake is HTTP and the notes are WebSocket, and a user should not have
 /// to know that: they give one address and this derives the other.
+///
+/// `http_base` is also the relay's *canonical* address: two spellings of one
+/// relay give the same one, and two relays never do. The app keeps a separate
+/// profile per relay, looked up by that address, so this and the app's
+/// `canonicalRelayUrl` must agree about it exactly. Both are held to the cases
+/// in `core/tests/fixtures/relay_addresses.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayEndpoint {
     pub http_base: String,
@@ -259,22 +265,80 @@ pub struct RelayEndpoint {
 impl RelayEndpoint {
     /// Accept either scheme and derive the other. `https` maps to `wss`, so a
     /// relay reached over TLS cannot be silently downgraded by the pairing.
+    ///
+    /// The scheme and host are lowercased, a port that is the scheme's default
+    /// is dropped, and so are trailing slashes; the rest of a path is kept, so
+    /// relays behind one host at different paths stay different relays.
+    /// Credentials, a query and a fragment are refused rather than dropped:
+    /// each would mean the address is not what the person thinks it is.
+    /// So are `%` escapes and `.` or `..` path segments, which the app would
+    /// otherwise resolve differently from this.
     pub fn parse(url: &str) -> Result<Self> {
-        let url = url.trim().trim_end_matches('/');
+        let url = url.trim();
         let bad = || CoreError::Storage(format!("not a relay address: {url:?}"));
-        let (http, ws) = match url.split_once("://") {
-            Some(("http", rest)) => (format!("http://{rest}"), format!("ws://{rest}")),
-            Some(("https", rest)) => (format!("https://{rest}"), format!("wss://{rest}")),
-            Some(("ws", rest)) => (format!("http://{rest}"), format!("ws://{rest}")),
-            Some(("wss", rest)) => (format!("https://{rest}"), format!("wss://{rest}")),
+        let (scheme, rest) = url.split_once("://").ok_or_else(bad)?;
+        let (tls, default_port) = match scheme.to_ascii_lowercase().as_str() {
+            "http" | "ws" => (false, 80),
+            "https" | "wss" => (true, 443),
             _ => return Err(bad()),
         };
-        if url
-            .split_once("://")
-            .is_none_or(|(_, rest)| rest.is_empty())
+        // `%` escapes and dot segments are refused rather than resolved: the
+        // app's `Uri` would rewrite them, and then the two would disagree.
+        if rest.contains(['?', '#', '%']) || rest.chars().any(char::is_whitespace) {
+            return Err(bad());
+        }
+        let (authority, path) = match rest.find('/') {
+            Some(slash) => rest.split_at(slash),
+            None => (rest, ""),
+        };
+        if path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
         {
             return Err(bad());
         }
+        if authority.contains('@') {
+            return Err(bad());
+        }
+        // A bracketed IPv6 literal has colons of its own, so the port is
+        // whatever follows the closing bracket.
+        let (host, port) = if let Some(literal) = authority.strip_prefix('[') {
+            let (inside, after) = literal.split_once(']').ok_or_else(bad)?;
+            let port = match after {
+                "" => None,
+                _ => Some(after.strip_prefix(':').ok_or_else(bad)?),
+            };
+            (format!("[{}]", inside.to_ascii_lowercase()), port)
+        } else {
+            match authority.split_once(':') {
+                Some((host, port)) => (host.to_ascii_lowercase(), Some(port)),
+                None => (authority.to_ascii_lowercase(), None),
+            }
+        };
+        if host.is_empty() || host == "[]" {
+            return Err(bad());
+        }
+        let port = match port {
+            None | Some("") => None,
+            Some(digits) => {
+                let port: u16 = digits
+                    .parse()
+                    .ok()
+                    .filter(|p| *p != 0 && digits.bytes().all(|b| b.is_ascii_digit()))
+                    .ok_or_else(bad)?;
+                (port != default_port).then_some(port)
+            }
+        };
+        let path = path.trim_end_matches('/');
+        let address = match port {
+            Some(port) => format!("{host}:{port}{path}"),
+            None => format!("{host}{path}"),
+        };
+        let (http, ws) = if tls {
+            (format!("https://{address}"), format!("wss://{address}"))
+        } else {
+            (format!("http://{address}"), format!("ws://{address}"))
+        };
         Ok(Self {
             http_base: http,
             ws_base: ws,

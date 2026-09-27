@@ -19,10 +19,14 @@ import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
+import 'package:easynotes/core/profile_library.dart';
+import 'package:easynotes/core/relay_profiles.dart';
+import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Long enough that a loaded machine is slow rather than red.
@@ -37,36 +41,31 @@ void main() {
 
   Process? relay;
   late String relayUrl;
+  // A second relay, for the relay-profile tests: a person who switches relay
+  // must find the first one's notes neither sent to it nor lost.
+  Process? otherRelay;
+  late String otherRelayUrl;
 
   setUpAll(() async {
     if (skip != null) return;
     await RustNoteCore.ensureInitialized(
       library: ExternalLibrary.open(libPath!),
     );
-    // Port 0: the OS picks, the relay logs what it got, and tests can run in
-    // parallel without fighting over a port.
-    final started = await Process.start(
-      relayPath!,
-      const [],
-      environment: {
-        'RELAY_ADDR': '127.0.0.1:0',
-        'RUST_LOG': 'easynotes_relay=info',
-        'NO_COLOR': '1',
-      },
-    );
-    relay = started;
-    relayUrl = 'http://${await _listeningAddress(started)}';
+    (relay, relayUrl) = await _startRelay(relayPath!);
+    (otherRelay, otherRelayUrl) = await _startRelay(relayPath);
   });
 
   tearDownAll(() {
-    // Not guarded by `skip`: if `setUpAll` failed after starting the relay, this
+    // Not guarded by `skip`: if `setUpAll` failed after starting a relay, this
     // is the only thing that will stop it.
     relay?.kill();
+    otherRelay?.kill();
   });
 
   /// A device: its own directory, its own library, connected to the relay the
-  /// way the app connects one.
-  Future<RustNoteLibrary> device() async {
+  /// way the app connects one — or to [relay] instead, when a test wants
+  /// another.
+  Future<RustNoteLibrary> device({String? relay}) async {
     final dir = await Directory.systemTemp.createTemp('easynotes-relay-test');
     final library = await RustNoteLibrary.open(
       dir.path,
@@ -76,13 +75,13 @@ void main() {
       await library.dispose();
       await dir.delete(recursive: true);
     });
-    await library.connect(relayUrl);
+    await library.connect(relay ?? relayUrl);
     return library;
   }
 
   /// A device with one new note on it, which is what most of these want.
-  Future<(RustNoteLibrary, NoteCore)> open() async {
-    final library = await device();
+  Future<(RustNoteLibrary, NoteCore)> open({String? relay}) async {
+    final library = await device(relay: relay);
     final core = await library.openNote(await library.createNote());
     addTearDown(core.dispose);
     return (library, core);
@@ -212,9 +211,8 @@ void main() {
     );
 
     test('an unreachable relay leaves the app working and says so', () async {
-      final (library, a) = await open();
       // Nothing listens on this port; the app must carry on regardless.
-      await library.connect('http://127.0.0.1:1');
+      final (_, a) = await open(relay: 'http://127.0.0.1:1');
       await a.addItem('milk');
 
       await _untilStatus(
@@ -379,6 +377,145 @@ void main() {
           throwsA(anything),
         );
         expect(library.hasAccount, isFalse);
+      },
+    );
+  }, skip: skip);
+
+  group('relay profiles', () {
+    // `docs/plan-relay-settings.md`, step 5: every relay has a profile of its
+    // own, and moving between them moves nothing. `relay_session_test.dart`
+    // holds the order of a switch against fakes; this runs it with real
+    // stores, real keys and two real relays, opened the way the app opens
+    // them.
+    late String base;
+    late RelayProfiles profiles;
+
+    setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
+      final dir = await Directory.systemTemp.createTemp('easynotes-profiles');
+      base = dir.path;
+      addTearDown(() => dir.delete(recursive: true));
+      profiles = RelayProfiles();
+      await profiles.load();
+    });
+
+    Future<NoteLibrary> openIn(
+      RelayProfile profile, {
+      bool connect = true,
+      bool allowEphemeral = true,
+    }) => openProfileLibrary(base, profile, connect: connect);
+
+    Future<RelaySession> start(String relay) async {
+      await profiles.select(relay);
+      final session = RelaySession(
+        profiles: profiles,
+        library: await openIn(profiles.selected),
+        profile: profiles.selected,
+        open: openIn,
+      );
+      addTearDown(() => session.library.dispose());
+      return session;
+    }
+
+    Future<void> synced(NoteLibrary library, String complaint) => _untilStatus(
+      library.watchSync(),
+      () => library.syncStatus,
+      (status) => status.state == SyncState.synced && status.pending == 0,
+      complaint,
+    );
+
+    test('switching relay and back keeps each relay\'s notes and account to '
+        'itself', () async {
+      final session = await start(relayUrl);
+      final first = session.library;
+      final phrase = await first.createAccount();
+      final groceriesId = await first.createNote();
+      final groceries = await first.openNote(groceriesId);
+      await groceries.setTitle('Groceries');
+      await groceries.addItem('milk');
+      await synced(first, 'the first relay never took the note');
+      // Made just before the switch, with no wait for the relay: it has to
+      // reach the first relay in the end, and only that one.
+      await groceries.addItem('bread');
+      await groceries.dispose();
+
+      await session.switchTo(otherRelayUrl);
+      final second = session.library;
+      expect(second, isNot(same(first)));
+      expect(session.profile.url, otherRelayUrl);
+      expect(second.notes, isEmpty);
+      expect(second.hasAccount, isFalse);
+      final hardwareId = await second.createNote();
+      final hardware = await second.openNote(hardwareId);
+      await hardware.setTitle('Hardware');
+      await hardware.dispose();
+      await synced(second, 'the second relay never took its own note');
+
+      // The second relay was given nothing of the first profile's: the phrase
+      // restores nothing there, not even the account.
+      final stranger = await device(relay: otherRelayUrl);
+      await stranger.adoptAccount(phrase.join(' '));
+      await synced(stranger, 'the stranger never caught up');
+      expect(stranger.notes, isEmpty);
+
+      await session.switchTo('$relayUrl/');
+      final back = session.library;
+      expect(session.profile.url, relayUrl);
+      expect(back.hasAccount, isTrue);
+      expect(back.notes.map((n) => n.id), [groceriesId]);
+      await synced(back, 'the first profile never caught up after the switch');
+
+      // And the first relay has all of it, the line made before the switch
+      // included, and nothing of the second profile's.
+      final restored = await device();
+      await restored.adoptAccount(phrase.join(' '));
+      await _untilNotes(
+        restored.watchNotes(),
+        (notes) => notes.any((n) => n.id == groceriesId),
+        'the first relay never gave the note back',
+      );
+      final copy = await restored.openNote(groceriesId);
+      addTearDown(copy.dispose);
+      await _until(
+        copy.watch(),
+        (view) => view.items.map((i) => i.text).toSet().containsAll({
+          'milk',
+          'bread',
+        }),
+        'the line made before the switch never reached the first relay',
+      );
+      expect(restored.notes.map((n) => n.id), isNot(contains(hardwareId)));
+    });
+
+    test('a restart opens the relay that was selected last', () async {
+      final session = await start(relayUrl);
+      final id = await session.library.createNote();
+      await session.switchTo(otherRelayUrl);
+      await session.switchTo(relayUrl);
+      await session.library.dispose();
+
+      final relaunched = RelayProfiles();
+      await relaunched.load();
+      expect(relaunched.selected.url, relayUrl);
+      final library = await openIn(relaunched.selected);
+      addTearDown(library.dispose);
+      expect(library.notes.map((n) => n.id), [id]);
+    });
+
+    test(
+      'a library will not be connected to a relay that is not its own',
+      () async {
+        final (library, _) = await open();
+        await synced(library, 'the device never reached its relay');
+        await expectLater(
+          library.connect(otherRelayUrl),
+          throwsA(contains('belong to the relay at $relayUrl')),
+        );
+        // Refused without being disconnected, and its own relay, however it is
+        // spelt, is still fine.
+        expect(library.syncStatus.state, SyncState.synced);
+        await library.connect('${relayUrl.replaceFirst('http', 'ws')}/');
+        await synced(library, 'the device never reconnected to its own relay');
       },
     );
   }, skip: skip);
@@ -630,16 +767,44 @@ Future<void> _untilNotes(
   }
 }
 
+/// Start a relay on a port the OS picks, and return it with its address.
+///
+/// Port 0: the OS picks, the relay logs what it got, and tests can run in
+/// parallel without fighting over a port.
+Future<(Process, String)> _startRelay(String path) async {
+  final started = await Process.start(
+    path,
+    const [],
+    environment: {
+      'RELAY_ADDR': '127.0.0.1:0',
+      // Every device here is 127.0.0.1, and a public relay's per-address
+      // limits are sized for one person, not for a whole suite of them.
+      'RELAY_RATE_LIMIT': 'off',
+      'RUST_LOG': 'easynotes_relay=info',
+      'NO_COLOR': '1',
+    },
+  );
+  return (started, 'http://${await _listeningAddress(started)}');
+}
+
 /// The address the relay logged. Reading it beats guessing a port, and lets the
 /// OS pick one so tests never collide.
 Future<String> _listeningAddress(Process relay) async {
-  final line = await relay.stdout
+  // Read to the end, not to the line wanted: a pipe nobody reads fills up, and
+  // then the relay blocks on its next log line with every test still waiting.
+  final listening = Completer<String>();
+  relay.stdout
       .transform(utf8.decoder)
       .transform(const LineSplitter())
       // The log is decorated for a terminal; strip that before matching.
       .map((l) => l.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), ''))
-      .firstWhere((l) => l.contains('relay listening'))
-      .timeout(patience);
+      .listen((l) {
+        if (!listening.isCompleted && l.contains('relay listening')) {
+          listening.complete(l);
+        }
+      });
+  relay.stderr.drain<void>();
+  final line = await listening.future.timeout(patience);
   final addr = RegExp(r'addr=([\d.]+:\d+)').firstMatch(line);
   if (addr == null) {
     throw StateError('could not read the relay address from: $line');

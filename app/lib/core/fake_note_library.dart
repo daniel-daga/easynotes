@@ -719,6 +719,9 @@ class FakeNoteLibrary implements NoteLibrary {
   void sendHeldEdits() => calls.add('sendHeldEdits()');
 
   @override
+  Future<void> flush() async => calls.add('flush()');
+
+  @override
   SyncStatus get syncStatus => _status;
 
   @override

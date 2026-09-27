@@ -28,6 +28,7 @@ import 'package:flutter/services.dart';
 
 import '../core/content_sharing.dart';
 import '../core/invite_links.dart';
+import '../core/relay_profiles.dart';
 import '../core/invites.dart';
 import 'account_screen.dart';
 
@@ -781,10 +782,19 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 /// pasted. The name is the account's: the button says it, and there is no
 /// field for it.
 class JoinDialog extends StatefulWidget {
-  const JoinDialog({super.key, required this.invites, this.initialLink});
+  const JoinDialog({
+    super.key,
+    required this.invites,
+    this.initialLink,
+    this.profile,
+  });
 
   final Invites invites;
   final String? initialLink;
+
+  /// The relay the join goes through. A link carries no relay, so it only
+  /// works when both people have chosen the same one, and this says which.
+  final RelayProfile? profile;
 
   @override
   State<JoinDialog> createState() => _JoinDialogState();
@@ -848,6 +858,20 @@ class _JoinDialogState extends State<JoinDialog> {
                 hintText: 'Paste the link you were sent',
               ),
               onSubmitted: (_) => _ask(),
+            ),
+          if (widget.profile case final profile?)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(
+                profile.url == null
+                    ? 'This device is not using a relay, so it cannot join. '
+                          'Choose the relay the link came from in Relay '
+                          'settings.'
+                    : 'Joining through ${profile.url}. The person who sent '
+                          'the link has to use the same relay.',
+                key: const Key('join-relay'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
           if (_error != null)
             Padding(

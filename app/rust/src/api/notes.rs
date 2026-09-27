@@ -880,6 +880,13 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
+    /// The relay this library belongs to: the canonical address of the first
+    /// one it was connected to. It is kept across [`Library::disconnect`] and
+    /// never changes, because everything in the store — the account, the
+    /// device identity, the note keys, the cursors — was made with that relay,
+    /// and another relay must get a library of its own
+    /// (`docs/plan-relay-settings.md`).
+    bound: Mutex<Option<String>>,
     /// The engine for that relay: one socket, every note on it.
     device: Mutex<Option<Device>>,
     connections: Mutex<HashMap<NoteId, Connection>>,
@@ -1575,6 +1582,7 @@ impl Library {
             Shared {
                 core: Peer::new(core, device.clone()),
                 relay: Mutex::new(None),
+                bound: Mutex::new(None),
                 device: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
                 statuses: Arc::new(Statuses::new()),
@@ -2520,11 +2528,32 @@ impl Library {
     ///
     /// Returns as soon as the engines are started, not when they are connected:
     /// there may be no network, and the app is not allowed to care. Watch
-    /// [`Library::watch_sync`] to find out how it goes. Calling this again moves
-    /// the device to a different relay.
+    /// [`Library::watch_sync`] to find out how it goes.
+    ///
+    /// The first relay a library is connected to is the only one it will ever
+    /// connect to. Calling this again with another spelling of that relay
+    /// reconnects; naming a different relay is refused, and the connection it
+    /// already has is left as it was. Moving to another relay is opening
+    /// another library, which is what the app's relay profiles do.
     pub fn connect(&self, relay: String) -> Result<(), String> {
-        // A new engine every time, as each note used to get a new connection:
-        // this is also how a device is moved to a different relay.
+        let relay = easynotes_core::sync::RelayEndpoint::parse(&relay)
+            .map_err(|e| e.to_string())?
+            .http_base;
+        {
+            let mut bound =
+                crate::lock::lock(&self.shared.bound).map_err(|_| "relay lock poisoned")?;
+            match bound.as_deref() {
+                Some(own) if own != relay => {
+                    return Err(format!(
+                        "These notes belong to the relay at {own}, not {relay}. \
+                         Each relay keeps its own notes: switch relay in Settings."
+                    ))
+                }
+                Some(_) => {}
+                None => *bound = Some(relay.clone()),
+            }
+        }
+        // A new engine every time, as each note used to get a new connection.
         self.disconnect()?;
         let device = Device::open(self.shared.core.clone(), &relay)?;
         *crate::lock::lock(&self.shared.device).map_err(|_| "sync lock poisoned".to_string())? =

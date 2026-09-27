@@ -480,6 +480,7 @@ class RustNoteLibrary implements NoteLibrary {
   /// refusal goes to [storageError] rather than out of here: the timer is what
   /// calls this most of the time and there is nobody at the other end of that
   /// call to throw to.
+  @override
   Future<void> flush() {
     _writeOut();
     return _writing;

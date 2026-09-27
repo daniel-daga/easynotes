@@ -419,8 +419,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (!await ensureSharingSetUp(context, widget.library) || !mounted) return;
     final join = await showDialog<PendingJoin>(
       context: context,
-      builder: (context) =>
-          JoinDialog(invites: widget.library, initialLink: initialLink),
+      builder: (context) => JoinDialog(
+        invites: widget.library,
+        initialLink: initialLink,
+        profile: widget.profile,
+      ),
     );
     if (join == null || !mounted) return;
     final id = await showDialog<String>(
@@ -470,7 +473,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _openAccount() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => AccountScreen(library: widget.library),
+        builder: (context) =>
+            AccountScreen(library: widget.library, profile: widget.profile),
       ),
     );
     if (mounted) setState(() {});

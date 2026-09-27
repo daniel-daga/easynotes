@@ -102,8 +102,13 @@ abstract class Library implements RustOpaqueInterface {
   ///
   /// Returns as soon as the engines are started, not when they are connected:
   /// there may be no network, and the app is not allowed to care. Watch
-  /// [`Library::watch_sync`] to find out how it goes. Calling this again moves
-  /// the device to a different relay.
+  /// [`Library::watch_sync`] to find out how it goes.
+  ///
+  /// The first relay a library is connected to is the only one it will ever
+  /// connect to. Calling this again with another spelling of that relay
+  /// reconnects; naming a different relay is refused, and the connection it
+  /// already has is left as it was. Moving to another relay is opening
+  /// another library, which is what the app's relay profiles do.
   Future<void> connect({required String relay});
 
   /// Mint an account for this device and return its recovery phrase, once.

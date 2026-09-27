@@ -38,10 +38,18 @@ class RelayProfiles {
       ];
       _selectedId = json['selected'] as String?;
     }
-    if (_profiles.isEmpty || !_profiles.any((p) => p.id == _selectedId)) {
+    if (_profiles.isEmpty) {
       final local = RelayProfile(id: _newId(), url: null);
       _profiles = [local];
       _selectedId = local.id;
+      await _save();
+    } else if (!_profiles.any((p) => p.id == _selectedId)) {
+      // A selection that names no profile is repaired by choosing one that
+      // exists, never by starting over: every profile listed here has a store
+      // and a key, and forgetting the list would hide them all.
+      _selectedId =
+          (_profiles.where((p) => p.url == null).firstOrNull ?? _profiles.first)
+              .id;
       await _save();
     }
   }
@@ -89,8 +97,25 @@ class RelayProfiles {
   }
 }
 
+/// The address a relay's profile is stored and found under.
+///
+/// Two spellings of one relay give the same address and two relays never do:
+/// the scheme and host are lowercased, `ws` and `wss` become `http` and
+/// `https`, a default port and trailing slashes are dropped, and the rest of
+/// the path is kept. What `Uri` would quietly rewrite — spaces, `%` escapes,
+/// `.` and `..` segments — is refused instead, as are credentials, a query and
+/// a fragment. The core's `RelayEndpoint::parse` must agree with this exactly,
+/// and both are held to `core/tests/fixtures/relay_addresses.json`.
 String canonicalRelayUrl(String input) {
   final raw = input.trim();
+  final afterScheme = raw.indexOf('://');
+  final rawPath = afterScheme < 0
+      ? ''
+      : raw.substring(afterScheme + 3).replaceFirst(RegExp(r'^[^/]*'), '');
+  if (raw.contains(RegExp(r'[\s%]')) ||
+      rawPath.split('/').any((segment) => segment == '.' || segment == '..')) {
+    throw FormatException('Enter a relay URL such as https://relay.example.');
+  }
   final uri = Uri.tryParse(raw);
   if (uri == null ||
       !const {

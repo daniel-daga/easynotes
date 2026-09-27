@@ -1,18 +1,30 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
 
+/// Whether the page this app was served from is HTTPS, in which case a browser
+/// will refuse it a plain `http://` or `ws://` relay (mixed content).
+bool get _servedOverHttps => kIsWeb && Uri.base.scheme == 'https';
+
 class RelaySettingsScreen extends StatefulWidget {
-  const RelaySettingsScreen({
+  RelaySettingsScreen({
     super.key,
     required this.profile,
     required this.profiles,
     required this.onSwitchRelay,
-  });
+    bool? servedOverHttps,
+  }) : servedOverHttps = servedOverHttps ?? _servedOverHttps;
 
   final RelayProfile profile;
   final List<RelayProfile> profiles;
   final Future<void> Function(String?) onSwitchRelay;
+
+  /// A browser page served over HTTPS cannot open a connection to a relay
+  /// without TLS, so such an address is explained rather than accepted. A
+  /// device app has no such rule, and a relay on the local network is how it
+  /// is developed.
+  final bool servedOverHttps;
 
   @override
   State<RelaySettingsScreen> createState() => _RelaySettingsScreenState();
@@ -67,19 +79,24 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       final message = error is StateError
           ? error.message.toString()
           : error.toString();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Could not switch relay: $message')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not switch relay: $message')),
+      );
     }
   }
 
   String? _validate(String? value) {
+    final String url;
     try {
-      canonicalRelayUrl(value ?? '');
-      return null;
+      url = canonicalRelayUrl(value ?? '');
     } on FormatException catch (error) {
       return error.message;
     }
+    if (widget.servedOverHttps && url.startsWith('http://')) {
+      return 'This page is served over HTTPS, so the browser will only reach '
+          'a relay whose address starts with https://.';
+    }
+    return null;
   }
 
   @override

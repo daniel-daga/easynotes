@@ -17,9 +17,10 @@ import 'core/invite_links.dart';
 import 'core/local_notifications.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
+import 'core/profile_library.dart';
 import 'core/reminder_scheduler.dart';
 import 'core/relay_profiles.dart';
-import 'core/rust_note_core.dart';
+import 'core/relay_session.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
 import 'ui/invites.dart' show joinAlerts;
@@ -112,9 +113,12 @@ Future<void> main() async {
   }
   runApp(
     EasyNotesApp(
-      library: await openLibrary(profiles.selected),
-      profiles: profiles,
-      profile: profiles.selected,
+      session: RelaySession(
+        profiles: profiles,
+        library: await openLibrary(profiles.selected),
+        profile: profiles.selected,
+        open: openLibrary,
+      ),
       initialInviteLink: initialInvite,
       initialSharedText: initialShare,
     ),
@@ -134,27 +138,11 @@ Future<NoteLibrary> openLibrary(
       allowEphemeral: allowEphemeral,
     );
   }
-  final directory = (await getApplicationSupportDirectory()).path;
-  // The bridge up front. Not load-bearing any more — every entry point below
-  // brings it up itself, including [MasterKeyStore.forDirectory], which is the
-  // one that crashed a real device's first launch by crossing the bridge before
-  // anything had opened it. Kept because this is where the app would rather
-  // find out that the native library is missing than three calls later.
-  await RustNoteCore.ensureInitialized();
-  // The keychain first, because it is what says whether this device has a key
-  // at all — and because a device that updated into this version has one in a
-  // file that has to be adopted rather than replaced.
-  final profileDirectory = '$directory/easynotes-${profile.id}';
-  final masterKey = await MasterKeyStore().forDirectory(
-    profileDirectory,
-    profileId: profile.id,
+  return openProfileLibrary(
+    (await getApplicationSupportDirectory()).path,
+    profile,
+    connect: connect,
   );
-  final library = await RustNoteLibrary.open(profileDirectory, masterKey);
-  // Connecting cannot fail loudly enough to matter: with no relay the app is a
-  // local notes app, which is what it is designed to be when the network is
-  // gone.
-  if (connect && profile.url != null) await library.connect(profile.url!);
-  return library;
 }
 
 /// Open this browser's notes out of IndexedDB, and start syncing them.
@@ -198,16 +186,12 @@ const browserDatabase = 'easynotes';
 class EasyNotesApp extends StatefulWidget {
   const EasyNotesApp({
     super.key,
-    required this.library,
-    required this.profiles,
-    required this.profile,
+    required this.session,
     this.initialInviteLink,
     this.initialSharedText,
   });
 
-  final NoteLibrary library;
-  final RelayProfiles profiles;
-  final RelayProfile profile;
+  final RelaySession session;
   final String? initialInviteLink;
   final SharedText? initialSharedText;
 
@@ -221,116 +205,65 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   /// three are `hidden` to Flutter, and it is the last state the app is sure
   /// to reach with its sockets still up.
   AppLifecycleListener? _lifecycle;
-  late ReminderScheduler _reminders;
-  late NoteLibrary _library;
-  late RelayProfile _profile;
-  bool _switching = false;
+  ReminderScheduler? _reminders;
   bool _launchPayloadsDelivered = false;
+
+  RelaySession get _session => widget.session;
 
   @override
   void initState() {
     super.initState();
-    _library = widget.library;
-    _profile = widget.profile;
-    _installSession();
+    _session
+      ..onRelease = _releaseSession
+      ..onInstall = _installSession
+      ..addListener(_changed);
+    _installSession(_session.library);
   }
 
-  void _installSession() {
-    _reminders = ReminderScheduler(_library);
-    unawaited(_reminders.start());
-    joinAlerts = SystemJoinAlerts(_library);
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  void _installSession(NoteLibrary library) {
+    // Anything a failed release left behind goes first, so that a library
+    // handed back after one never has two of each.
+    _lifecycle?.dispose();
+    unawaited(_reminders?.dispose());
+    final reminders = ReminderScheduler(library);
+    _reminders = reminders;
+    unawaited(reminders.start());
+    joinAlerts = SystemJoinAlerts(library);
     _lifecycle = AppLifecycleListener(
-      onHide: _library.sendHeldEdits,
-      onResume: () => unawaited(_reminders.reconcile()),
+      onHide: library.sendHeldEdits,
+      onResume: () => unawaited(reminders.reconcile()),
     );
   }
 
-  Future<void> _switchRelay(String? url) async {
-    if (_switching || url == _profile.url) return;
-    setState(() => _switching = true);
-    final previousProfile = _profile;
-    NoteLibrary? next;
-    var oldDisposed = false;
-    try {
-      final target = await widget.profiles.prepare(url);
-      next = await openLibrary(
-        target,
-        connect: false,
-        allowEphemeral: false,
-      );
-      if (_library is RustNoteLibrary &&
-          !(_library as RustNoteLibrary).canJoin) {
-        throw StateError(
-          'This tab has no persistent storage. Keep it open and switch on a tab with storage enabled.',
-        );
-      }
-      if (_library is RustNoteLibrary) {
-        await (_library as RustNoteLibrary).flush();
-      }
-      if (_library.storageError != null) {
-        await next.dispose();
-        next = null;
-        throw StateError('This profile has unsaved local changes.');
-      }
-      final old = _library;
-      _lifecycle?.dispose();
-      await _reminders.dispose(cancelScheduled: true);
-      final oldJoinAlerts = joinAlerts;
-      if (oldJoinAlerts is SystemJoinAlerts) {
-        await oldJoinAlerts.dispose(cancelScheduled: true);
-      }
-      await old.dispose();
-      oldDisposed = true;
-      await widget.profiles.activate(target);
-      final opened = next;
-      if (target.url != null) await opened.connect(target.url!);
-      if (!mounted) {
-        await opened.dispose();
-        return;
-      }
-      setState(() {
-        _library = opened;
-        _profile = target;
-      });
-      _installSession();
-      next = null;
-    } on Object catch (error) {
-      if (next != null) await next.dispose();
-      if (oldDisposed && mounted) {
-        try {
-          if (next == null) await _library.dispose();
-          await widget.profiles.activate(previousProfile);
-          final restored = await openLibrary(previousProfile);
-          setState(() {
-            _library = restored;
-            _profile = previousProfile;
-          });
-          _installSession();
-        } on Object catch (restoreError) {
-          debugPrint(
-            'could not reopen the previous relay profile: $restoreError',
-          );
-        }
-      }
-      if (mounted) {
-        setState(() => _switching = false);
-      }
-      Error.throwWithStackTrace(error, StackTrace.current);
-    } finally {
-      if (mounted) setState(() => _switching = false);
-    }
+  /// Nothing of the outgoing profile may fire once another is showing: its
+  /// reminders and join alerts would name notes the new profile does not have.
+  Future<void> _releaseSession(NoteLibrary library) async {
+    _lifecycle?.dispose();
+    _lifecycle = null;
+    await _reminders?.dispose(cancelScheduled: true);
+    _reminders = null;
+    final alerts = joinAlerts;
+    if (alerts is SystemJoinAlerts) await alerts.dispose(cancelScheduled: true);
   }
 
   @override
   void dispose() {
+    _session
+      ..removeListener(_changed)
+      ..onRelease = null
+      ..onInstall = null;
     _lifecycle?.dispose();
-    unawaited(_reminders.dispose());
+    unawaited(_reminders?.dispose());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final library = _library;
+    final library = _session.library;
     return MaterialApp(
       title: 'EasyNotes',
       debugShowCheckedModeBanner: false,
@@ -346,17 +279,19 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   }
 
   Widget _noteList(NoteLibrary library) {
-    final initialInvite =
-        _launchPayloadsDelivered ? null : widget.initialInviteLink;
-    final initialShare =
-        _launchPayloadsDelivered ? null : widget.initialSharedText;
+    final initialInvite = _launchPayloadsDelivered
+        ? null
+        : widget.initialInviteLink;
+    final initialShare = _launchPayloadsDelivered
+        ? null
+        : widget.initialSharedText;
     _launchPayloadsDelivered = true;
     return NoteListScreen(
-      key: ValueKey(_profile.id),
+      key: ValueKey(_session.profile.id),
       library: library,
-      profile: _profile,
-      profiles: widget.profiles,
-      onSwitchRelay: _switchRelay,
+      profile: _session.profile,
+      profiles: _session.profiles,
+      onSwitchRelay: _session.switchTo,
       initialInviteLink: initialInvite,
       inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
       initialSharedText: initialShare,

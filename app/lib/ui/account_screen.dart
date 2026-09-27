@@ -18,6 +18,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../core/invites.dart';
+import '../core/relay_profiles.dart';
 
 /// How many words the backup check asks for.
 ///
@@ -29,9 +30,18 @@ const backupCheckWords = 3;
 
 /// Whether this device belongs to an account, and the two ways to make it.
 class AccountScreen extends StatefulWidget {
-  const AccountScreen({super.key, required this.library, this.ask});
+  const AccountScreen({
+    super.key,
+    required this.library,
+    this.ask,
+    this.profile,
+  });
 
   final Accounts library;
+
+  /// The relay profile this account belongs to. Every relay has an account of
+  /// its own, so restoring one elsewhere means choosing the same relay first.
+  final RelayProfile? profile;
 
   /// Which words the backup check asks for, 1-based. Random when null, which
   /// is always outside a test.
@@ -73,7 +83,10 @@ class _AccountScreenState extends State<AccountScreen> {
   Future<void> _adopt() async {
     final adopted = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
-        builder: (context) => AdoptAccountScreen(library: widget.library),
+        builder: (context) => AdoptAccountScreen(
+          library: widget.library,
+          profile: widget.profile,
+        ),
       ),
     );
     if (!mounted) return;
@@ -117,71 +130,91 @@ class _AccountScreenState extends State<AccountScreen> {
       appBar: AppBar(title: const Text('Your devices')),
       body: ListView(
         padding: const EdgeInsets.all(24),
-        children: has
-            ? [
-                Icon(Icons.devices, size: 48),
-                SizedBox(height: 16),
-                Text(
-                  'This device belongs to your account.',
-                  key: Key('account-yes'),
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                SizedBox(height: 12),
-                // It cannot offer to show the words again, and says why, so
-                // that nobody goes looking for the button.
-                Text(
-                  'Your notes, colours, labels and pins follow you to any '
-                  'device you set up with your recovery phrase. The phrase is '
-                  'not kept anywhere, so it cannot be shown again — the copy '
-                  'you wrote down is the only one.',
-                ),
-                SizedBox(height: 16),
-                ListTile(
-                  key: const Key('profile-name'),
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.badge_outlined),
-                  title: Text(widget.library.profileName ?? 'No name yet'),
-                  subtitle: const Text('What people you share notes with see'),
-                  trailing: TextButton(
-                    key: const Key('change-name'),
-                    onPressed: _changeName,
-                    child: Text(
-                      widget.library.profileName == null ? 'Set' : 'Change',
+        children: [
+          ...has
+              ? [
+                  Icon(Icons.devices, size: 48),
+                  SizedBox(height: 16),
+                  Text(
+                    'This device belongs to your account.',
+                    key: Key('account-yes'),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  SizedBox(height: 12),
+                  // It cannot offer to show the words again, and says why, so
+                  // that nobody goes looking for the button.
+                  Text(
+                    'Your notes, colours, labels and pins follow you to any '
+                    'device you set up with your recovery phrase. The phrase is '
+                    'not kept anywhere, so it cannot be shown again — the copy '
+                    'you wrote down is the only one.',
+                  ),
+                  SizedBox(height: 16),
+                  ListTile(
+                    key: const Key('profile-name'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.badge_outlined),
+                    title: Text(widget.library.profileName ?? 'No name yet'),
+                    subtitle: const Text(
+                      'What people you share notes with see',
+                    ),
+                    trailing: TextButton(
+                      key: const Key('change-name'),
+                      onPressed: _changeName,
+                      child: Text(
+                        widget.library.profileName == null ? 'Set' : 'Change',
+                      ),
                     ),
                   ),
-                ),
-              ]
-            : [
-                const Icon(Icons.phone_android, size: 48),
-                const SizedBox(height: 16),
-                Text(
-                  'This device is on its own.',
-                  key: Key('account-no'),
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Set up an account to have your notes on your other devices '
-                  'too. There is no password and no email: your account is '
-                  'twelve words, which you write down once. Anyone with the '
-                  'words has your notes, and without them nobody can get them '
-                  'back — not even us.',
-                ),
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  key: const Key('create-account-button'),
-                  icon: const Icon(Icons.key),
-                  label: const Text('Set up an account'),
-                  onPressed: _busy ? null : _create,
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  key: const Key('adopt-account-button'),
-                  icon: const Icon(Icons.edit_note),
-                  label: const Text('I already have twelve words'),
-                  onPressed: _busy ? null : _adopt,
-                ),
-              ],
+                ]
+              : [
+                  const Icon(Icons.phone_android, size: 48),
+                  const SizedBox(height: 16),
+                  Text(
+                    'This device is on its own.',
+                    key: Key('account-no'),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Set up an account to have your notes on your other devices '
+                    'too. There is no password and no email: your account is '
+                    'twelve words, which you write down once. Anyone with the '
+                    'words has your notes, and without them nobody can get them '
+                    'back — not even us.',
+                  ),
+                  const SizedBox(height: 24),
+                  FilledButton.icon(
+                    key: const Key('create-account-button'),
+                    icon: const Icon(Icons.key),
+                    label: const Text('Set up an account'),
+                    onPressed: _busy ? null : _create,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    key: const Key('adopt-account-button'),
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('I already have twelve words'),
+                    onPressed: _busy ? null : _adopt,
+                  ),
+                ],
+          if (widget.profile case final profile?) ...[
+            const SizedBox(height: 24),
+            ListTile(
+              key: const Key('account-relay'),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.dns_outlined),
+              title: Text(profile.label),
+              subtitle: Text(
+                profile.url == null
+                    ? 'Not using a relay. An account here stays on this '
+                          'device until you choose a relay in Relay settings.'
+                    : 'This account is kept on this relay. To use it on '
+                          'another device, choose the same relay there first.',
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -434,9 +467,13 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
 /// field serves both. The core is the judge of whether the words are a phrase —
 /// it knows the wordlist and the checksum — so all this counts is how many.
 class AdoptAccountScreen extends StatefulWidget {
-  const AdoptAccountScreen({super.key, required this.library});
+  const AdoptAccountScreen({super.key, required this.library, this.profile});
 
   final Accounts library;
+
+  /// Where the account's notes come from: the relay this profile uses, and
+  /// only that one.
+  final RelayProfile? profile;
 
   @override
   State<AdoptAccountScreen> createState() => _AdoptAccountScreenState();
@@ -496,6 +533,19 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
             'Type the twelve words you wrote down when you set up your '
             'account, in order. The notes already on this device are kept.',
           ),
+          if (widget.profile case final profile?) ...[
+            const SizedBox(height: 12),
+            Text(
+              profile.url == null
+                  ? 'This device is not using a relay, so your notes cannot '
+                        'come back until you choose the relay you used before '
+                        'in Relay settings.'
+                  : 'Your notes come back from ${profile.url}. If you used a '
+                        'different relay before, choose it in Relay settings '
+                        'first: a phrase restores nothing from another relay.',
+              key: const Key('adopt-relay'),
+            ),
+          ],
           const SizedBox(height: 20),
           TextField(
             key: const Key('adopt-phrase-field'),

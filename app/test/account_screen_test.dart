@@ -7,7 +7,9 @@
 library;
 
 import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/ui/account_screen.dart';
+import 'package:easynotes/ui/invites.dart' show JoinDialog;
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -259,5 +261,74 @@ void main() {
     expect(find.byKey(const Key('account-yes')), findsOneWidget);
     expect(find.byKey(const Key('create-account-button')), findsNothing);
     expect(find.byKey(const Key('adopt-account-button')), findsNothing);
+  });
+
+  group('the relay the account belongs to', () {
+    // Each relay has an account of its own, so a phrase restores only from
+    // the relay it was made on. The screens say which that is.
+    const relay = RelayProfile(id: 'relay', url: 'https://relay.example');
+    const local = RelayProfile(id: 'local', url: null);
+
+    testWidgets('the account screen names it', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AccountScreen(library: FakeNoteLibrary(), profile: relay),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('account-relay')),
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('https://relay.example'), findsOneWidget);
+      expect(find.textContaining('choose the same relay'), findsOneWidget);
+    });
+
+    testWidgets('restoring says where the notes come from', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AccountScreen(library: FakeNoteLibrary(), profile: relay),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tapKey(tester, 'adopt-account-button');
+      expect(
+        find.textContaining('Your notes come back from https://relay.example'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('restoring with no relay says it cannot bring notes back', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AdoptAccountScreen(library: FakeNoteLibrary(), profile: local),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('This device is not using a relay'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('joining by link names the relay both people need', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: JoinDialog(invites: FakeNoteLibrary(), profile: relay),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Joining through https://relay.example'),
+        findsOneWidget,
+      );
+    });
   });
 }
