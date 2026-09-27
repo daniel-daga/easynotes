@@ -265,6 +265,12 @@ void main() {
         expect(shown.name, 'market.png');
         expect(shown.thumbnailWidth, 320);
 
+        // The card's cover comes from the index, without opening the note.
+        final card = bLibrary.notes.single;
+        expect(card.cover, added.id);
+        expect([card.coverWidth, card.coverHeight], [320, 240]);
+        expect(await bLibrary.readCover(card.id), thumb);
+
         await a.removeAttachment(added.id);
         await _until(
           b.watch(),

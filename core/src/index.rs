@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 5;
+pub const ENTRY_VERSION: u8 = 6;
 
 /// One note, as the list and the search read it.
 ///
@@ -70,6 +70,13 @@ pub struct IndexEntry {
     /// searched; what is in a picture or a recording is not, since reading it
     /// would take OCR or transcription this device does not do.
     pub attachments: Vec<(crate::attachment::AttachmentKind, String)>,
+    /// The first live picture that has a thumbnail, whole: what a card shows
+    /// above its title. The descriptor, key and all, is here so that a grid
+    /// can fetch and open a thumbnail without replaying the note; the entry
+    /// is sealed under the note's key, which already opens that descriptor,
+    /// and it is rewritten whenever the note changes, so a removal takes it
+    /// out.
+    pub cover: Option<(crate::ids::AttachmentId, crate::attachment::Media)>,
     /// How many envelopes the note's log held when this was written. The whole
     /// of the staleness check; see the module docs.
     pub log_len: usize,

@@ -154,6 +154,9 @@ class NoteSummary {
     this.preview = const [],
     this.images = 0,
     this.audio = 0,
+    this.cover,
+    this.coverWidth,
+    this.coverHeight,
     this.colour,
     this.pinned = false,
     this.archived = false,
@@ -178,6 +181,12 @@ class NoteSummary {
   /// Live pictures and sound files on the note.
   final int images;
   final int audio;
+
+  /// The attachment a card shows above the title, and its thumbnail's size.
+  /// Its bytes are [NoteLibrary.readCover].
+  final String? cover;
+  final int? coverWidth;
+  final int? coverHeight;
 
   /// What this person has done with the note. Personal: it comes from the
   /// account document and is not on the note, so it is not shared with whoever
@@ -209,6 +218,9 @@ class NoteSummary {
       other.checked == checked &&
       other.images == images &&
       other.audio == audio &&
+      other.cover == cover &&
+      other.coverWidth == coverWidth &&
+      other.coverHeight == coverHeight &&
       other.colour == colour &&
       other.pinned == pinned &&
       other.archived == archived &&
@@ -226,6 +238,7 @@ class NoteSummary {
     checked,
     images,
     audio,
+    Object.hash(cover, coverWidth, coverHeight),
     Object.hashAll(preview),
     colour,
     pinned,
@@ -499,6 +512,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   /// Try every failed attachment transfer again now.
   void retryTransfers();
+
+  /// A note's cover thumbnail ([NoteSummary.cover]), or null while it is not
+  /// on this device: it is then asked for, and [watchTransfers] moves when it
+  /// arrives.
+  Future<Uint8List?> readCover(String noteId);
 
   Future<void> dispose();
 }

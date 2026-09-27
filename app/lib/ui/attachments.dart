@@ -348,7 +348,7 @@ class _StatusChip extends StatelessWidget {
 }
 
 /// What an attachment's menu can do.
-enum AttachmentAction { saveCopy, describe, remove }
+enum AttachmentAction { saveCopy, describe, moveEarlier, moveLater, remove }
 
 /// One sound file below the note's content. Playback is not built yet, so
 /// this names the file and offers its menu.
@@ -359,9 +359,13 @@ class AttachmentAudioRow extends StatelessWidget {
     required this.transfers,
     required this.onAction,
     required this.onRetry,
+    this.canMoveEarlier = false,
+    this.canMoveLater = false,
   });
 
   final AttachmentView audio;
+  final bool canMoveEarlier;
+  final bool canMoveLater;
   final List<AttachmentTransfer> transfers;
   final ValueChanged<AttachmentAction> onAction;
   final VoidCallback onRetry;
@@ -391,6 +395,8 @@ class AttachmentAudioRow extends StatelessWidget {
             pending: audio.pending,
             onAction: onAction,
             describe: false,
+            canMoveEarlier: canMoveEarlier,
+            canMoveLater: canMoveLater,
           ),
         ],
       ),
@@ -406,10 +412,14 @@ class AttachmentMenu extends StatelessWidget {
     required this.pending,
     required this.onAction,
     this.describe = true,
+    this.canMoveEarlier = false,
+    this.canMoveLater = false,
   });
 
   final bool pending;
   final bool describe;
+  final bool canMoveEarlier;
+  final bool canMoveLater;
   final ValueChanged<AttachmentAction> onAction;
 
   @override
@@ -435,6 +445,23 @@ class AttachmentMenu extends StatelessWidget {
             title: Text('Describe'),
           ),
         ),
+      // Order is shared too, and a pending import has no place in it yet.
+      if (!pending && canMoveEarlier)
+        const PopupMenuItem(
+          value: AttachmentAction.moveEarlier,
+          child: ListTile(
+            leading: Icon(Icons.arrow_upward),
+            title: Text('Move earlier'),
+          ),
+        ),
+      if (!pending && canMoveLater)
+        const PopupMenuItem(
+          value: AttachmentAction.moveLater,
+          child: ListTile(
+            leading: Icon(Icons.arrow_downward),
+            title: Text('Move later'),
+          ),
+        ),
       const PopupMenuItem(
         value: AttachmentAction.remove,
         child: ListTile(
@@ -447,17 +474,21 @@ class AttachmentMenu extends StatelessWidget {
 }
 
 /// Pictures one at a time, whole: swipe or use the arrows between them, pinch
-/// or scroll to zoom.
+/// or scroll to zoom. It follows [images] rather than keeping a copy, so a
+/// move, a description or a removal — from here or from someone else — shows
+/// at once, and the picture on screen stays the one that was being looked at.
 class AttachmentViewer extends StatefulWidget {
   const AttachmentViewer({
     super.key,
     required this.images,
+    required this.initialImages,
     required this.initial,
     required this.read,
     required this.onAction,
   });
 
-  final List<AttachmentView> images;
+  final Stream<List<AttachmentView>> images;
+  final List<AttachmentView> initialImages;
   final int initial;
   final AttachmentReader read;
 
@@ -470,7 +501,7 @@ class AttachmentViewer extends StatefulWidget {
 
 class _AttachmentViewerState extends State<AttachmentViewer> {
   late final _pages = PageController(initialPage: widget.initial);
-  late int _index = widget.initial;
+  late String _current = widget.initialImages[widget.initial].id;
 
   @override
   void dispose() {
@@ -485,85 +516,102 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
   );
 
   @override
-  Widget build(BuildContext context) {
-    final images = widget.images;
-    final current = images[_index];
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          images.length == 1
-              ? current.name
-              : '${_index + 1} of ${images.length}',
-          overflow: TextOverflow.ellipsis,
+  Widget build(BuildContext context) => StreamBuilder<List<AttachmentView>>(
+    stream: widget.images,
+    initialData: widget.initialImages,
+    builder: (context, snapshot) {
+      final images = snapshot.data ?? widget.initialImages;
+      final index = images.indexWhere((a) => a.id == _current);
+      if (index < 0) {
+        // Removed, here or elsewhere: nothing left to show.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) Navigator.of(context).maybePop();
+        });
+        return const Scaffold();
+      }
+      // A move put the picture somewhere else: follow it.
+      if (_pages.hasClients && _pages.page?.round() != index) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _pages.hasClients) _pages.jumpToPage(index);
+        });
+      }
+      final current = images[index];
+      return Scaffold(
+        appBar: AppBar(
+          title: Text(
+            images.length == 1
+                ? current.name
+                : '${index + 1} of ${images.length}',
+            overflow: TextOverflow.ellipsis,
+          ),
+          actions: [
+            IconButton(
+              key: const Key('attachment-save'),
+              tooltip: 'Save a copy',
+              icon: const Icon(Icons.download_outlined),
+              onPressed: () =>
+                  widget.onAction(current, AttachmentAction.saveCopy),
+            ),
+            AttachmentMenu(
+              pending: current.pending,
+              canMoveEarlier: index > 0 && !images[index - 1].pending,
+              canMoveLater:
+                  index < images.length - 1 && !images[index + 1].pending,
+              onAction: (action) => widget.onAction(current, action),
+            ),
+          ],
         ),
-        actions: [
-          IconButton(
-            key: const Key('attachment-save'),
-            tooltip: 'Save a copy',
-            icon: const Icon(Icons.download_outlined),
-            onPressed: () =>
-                widget.onAction(current, AttachmentAction.saveCopy),
-          ),
-          AttachmentMenu(
-            pending: current.pending,
-            onAction: (action) async {
-              await widget.onAction(current, action);
-              if (action == AttachmentAction.remove && context.mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          PageView.builder(
-            controller: _pages,
-            itemCount: images.length,
-            onPageChanged: (index) => setState(() => _index = index),
-            itemBuilder: (context, index) {
-              final image = images[index];
-              return Semantics(
-                image: true,
-                label: image.description.isNotEmpty
-                    ? image.description
-                    : image.name,
-                child: InteractiveViewer(
-                  maxScale: 8,
-                  child: SizedBox.expand(
-                    child: AttachmentImage(
-                      key: ValueKey('viewer:${image.id}'),
-                      id: image.id,
-                      read: widget.read,
-                      thumbnail: false,
+        body: Stack(
+          children: [
+            PageView.builder(
+              controller: _pages,
+              itemCount: images.length,
+              onPageChanged: (page) =>
+                  setState(() => _current = images[page].id),
+              itemBuilder: (context, page) {
+                final image = images[page];
+                return Semantics(
+                  image: true,
+                  label: image.description.isNotEmpty
+                      ? image.description
+                      : image.name,
+                  child: InteractiveViewer(
+                    maxScale: 8,
+                    child: SizedBox.expand(
+                      child: AttachmentImage(
+                        key: ValueKey('viewer:${image.id}'),
+                        id: image.id,
+                        read: widget.read,
+                        thumbnail: false,
+                      ),
                     ),
                   ),
+                );
+              },
+            ),
+            if (index > 0)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: IconButton(
+                  tooltip: 'Previous image',
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => _go(index - 1),
                 ),
-              );
-            },
-          ),
-          if (_index > 0)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                tooltip: 'Previous image',
-                icon: const Icon(Icons.chevron_left),
-                onPressed: () => _go(_index - 1),
               ),
-            ),
-          if (_index < images.length - 1)
-            Align(
-              alignment: Alignment.centerRight,
-              child: IconButton(
-                tooltip: 'Next image',
-                icon: const Icon(Icons.chevron_right),
-                onPressed: () => _go(_index + 1),
+            if (index < images.length - 1)
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Next image',
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => _go(index + 1),
+                ),
               ),
-            ),
-        ],
-      ),
-    );
-  }
+          ],
+        ),
+      );
+    },
+  );
 }
 
 String formatSize(int bytes) {
@@ -577,4 +625,114 @@ String formatDuration(int ms) {
   final m = seconds ~/ 60;
   final s = (seconds % 60).toString().padLeft(2, '0');
   return '$m:$s';
+}
+
+/// Where the cards below it get their cover pictures: a way to read a note's
+/// cover thumbnail, and a revision that moves whenever a transfer does, so a
+/// card waiting for its picture asks again.
+class CoverScope extends StatefulWidget {
+  const CoverScope({
+    super.key,
+    required this.read,
+    required this.transfers,
+    required this.child,
+  });
+
+  /// A note's cover thumbnail, or null while it is not here.
+  final Future<Uint8List?> Function(String noteId) read;
+  final Stream<List<AttachmentTransfer>> transfers;
+  final Widget child;
+
+  static CoverScopeData? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<CoverScopeData>();
+
+  @override
+  State<CoverScope> createState() => _CoverScopeState();
+}
+
+class _CoverScopeState extends State<CoverScope> {
+  StreamSubscription<List<AttachmentTransfer>>? _watch;
+  int _revision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _watch = widget.transfers.listen((transfers) {
+      if (mounted) setState(() => _revision = Object.hashAll(transfers));
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_watch?.cancel());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CoverScopeData(
+    read: widget.read,
+    revision: _revision,
+    child: widget.child,
+  );
+}
+
+/// What a [CoverScope] hands the cards under it.
+class CoverScopeData extends InheritedWidget {
+  const CoverScopeData({
+    super.key,
+    required this.read,
+    required this.revision,
+    required super.child,
+  });
+
+  final Future<Uint8List?> Function(String noteId) read;
+  final int revision;
+
+  @override
+  bool updateShouldNotify(CoverScopeData old) =>
+      old.revision != revision || old.read != read;
+}
+
+/// A note's cover above its card's title, cropped to a band so a portrait
+/// photo does not make one card a screen tall. Nothing without a
+/// [CoverScope] above it.
+class NoteCover extends StatelessWidget {
+  const NoteCover({
+    super.key,
+    required this.noteId,
+    required this.attachment,
+    this.width,
+    this.height,
+  });
+
+  final String noteId;
+  final String attachment;
+  final int? width;
+  final int? height;
+
+  @override
+  Widget build(BuildContext context) {
+    final scope = CoverScope.of(context);
+    if (scope == null) return const SizedBox.shrink();
+    final w = width, h = height;
+    final ratio = w == null || h == null || h == 0
+        ? 4 / 3
+        : (w / h).clamp(1.0, 2.0);
+    return AspectRatio(
+      aspectRatio: ratio,
+      child: ColoredBox(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: AttachmentImage(
+          // Keyed on the attachment, so a new cover is a new picture rather
+          // than the old one left on screen.
+          key: ValueKey('cover:$noteId:$attachment'),
+          id: noteId,
+          read: (id, {thumbnail = true}) => scope.read(id),
+          thumbnail: true,
+          fit: BoxFit.cover,
+          revision: scope.revision,
+        ),
+      ),
+    );
+  }
 }

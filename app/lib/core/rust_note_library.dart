@@ -503,6 +503,10 @@ class RustNoteLibrary implements NoteLibrary {
   @override
   void retryTransfers() => _library.retryTransfers();
 
+  @override
+  Future<Uint8List?> readCover(String noteId) =>
+      _library.readCover(note: noteId);
+
   static AttachmentTransfer _toTransfer(rust.TransferView t) =>
       AttachmentTransfer(
         note: t.note,
@@ -638,6 +642,9 @@ class RustNoteLibrary implements NoteLibrary {
     preview: s.preview,
     images: s.images,
     audio: s.audio,
+    cover: s.cover,
+    coverWidth: s.coverWidth,
+    coverHeight: s.coverHeight,
     colour: _fromRustColour(s.colour),
     pinned: s.pinned,
     archived: s.archived,
