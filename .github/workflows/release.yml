@@ -168,10 +168,10 @@ jobs:
           target=$(echo "$badging" | sed -n "s/^targetSdkVersion:'\([0-9]*\)'/\1/p")
           [ "${target:-0}" -ge 36 ] || fail "targetSdkVersion is ${target:-unset}; Google Play needs 36"
           ! echo "$badging" | grep -q "application-debuggable" || fail "the APK is debuggable"
-          for permission in SCHEDULE_EXACT_ALARM USE_EXACT_ALARM; do
-            ! echo "$badging" | grep -q "android.permission.$permission" \
-              || fail "$permission is requested; see AndroidManifest.xml for why it must not be"
-          done
+          # SCHEDULE_EXACT_ALARM is declared to Play (docs/android-release.md);
+          # USE_EXACT_ALARM is for alarm clocks and calendars only.
+          ! echo "$badging" | grep -q "android.permission.USE_EXACT_ALARM" \
+            || fail "USE_EXACT_ALARM is requested; see AndroidManifest.xml for why it must not be"
 
           manifest=$("$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk")
           echo "$manifest" | grep -q 'android:allowBackup.*=false' \

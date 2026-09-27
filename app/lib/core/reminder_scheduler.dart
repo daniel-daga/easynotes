@@ -8,6 +8,8 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz_data;
@@ -25,6 +27,7 @@ class ReminderScheduler {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
   StreamSubscription<List<Reminder>>? _updates;
+  AppLifecycleListener? _lifecycle;
   final Map<String, Timer> _inProcessTimers = {};
   bool _started = false;
   Future<void>? _reconciling;
@@ -45,6 +48,10 @@ class ReminderScheduler {
     }
     await initializeLocalNotifications();
     _updates = _library.watchReminders().listen((_) => unawaited(reconcile()));
+    // Exact-alarm access is granted in a system settings page, not a dialog,
+    // so the only sign a person has granted (or revoked) it is coming back to
+    // the app. Rescheduling then moves every reminder to the matching mode.
+    _lifecycle = AppLifecycleListener(onResume: () => unawaited(reconcile()));
     await reconcile();
   }
 
@@ -136,6 +143,16 @@ class ReminderScheduler {
           request.payload!.substring(_payloadPrefix.length): request.id,
     };
     final wantedIds = {for (final reminder in wanted) reminder.id};
+    // Exact when the person has allowed it (Settings → Alarms & reminders,
+    // which "Add reminder" opens); otherwise inexact, which Doze may delay by
+    // some minutes. Null is iOS, where there is no such distinction.
+    final exact =
+        await _notifications
+            .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin
+            >()
+            ?.canScheduleExactNotifications() ??
+        true;
     for (final request in pending) {
       final payload = request.payload;
       if ((payload?.startsWith(_payloadPrefix) ?? false) &&
@@ -150,11 +167,16 @@ class ReminderScheduler {
       used.add(id);
       final note = noteById[reminder.noteId];
       final title = note?.title.trim();
-      await _schedule(
-        id: id,
-        reminder: reminder,
-        title: title == null || title.isEmpty ? 'EasyNotes reminder' : title,
-      );
+      final label = title == null || title.isEmpty
+          ? 'EasyNotes reminder'
+          : title;
+      try {
+        await _schedule(id: id, reminder: reminder, title: label, exact: exact);
+      } on PlatformException {
+        // Access withdrawn between the check and this call. A late reminder
+        // is still materially better than a lost one.
+        await _schedule(id: id, reminder: reminder, title: label, exact: false);
+      }
     }
   }
 
@@ -211,6 +233,7 @@ class ReminderScheduler {
     required int id,
     required Reminder reminder,
     required String title,
+    required bool exact,
   }) async {
     final location = _location(reminder.timezone);
     final scheduled = nextOccurrence(reminder, location);
@@ -234,12 +257,9 @@ class ReminderScheduler {
         iOS: DarwinNotificationDetails(),
       ),
       payload: '$_payloadPrefix${reminder.id}',
-      // Inexact on purpose. Exact alarms need SCHEDULE_EXACT_ALARM, which
-      // Google Play reserves for alarm-clock and calendar apps and Android 14
-      // no longer grants by default, so asking for one only ever failed over to
-      // this. The system may deliver a few minutes late in Doze; it still
-      // delivers, and it survives a reboot.
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode: exact
+          ? AndroidScheduleMode.exactAllowWhileIdle
+          : AndroidScheduleMode.inexactAllowWhileIdle,
       matchDateTimeComponents: switch (reminder.repeat) {
         ReminderRepeat.never => null,
         ReminderRepeat.daily => DateTimeComponents.time,
@@ -399,6 +419,8 @@ class ReminderScheduler {
 
   Future<void> dispose({bool cancelScheduled = false}) async {
     _started = false;
+    _lifecycle?.dispose();
+    _lifecycle = null;
     await _updates?.cancel();
     await _reconciling;
     for (final timer in _inProcessTimers.values) {

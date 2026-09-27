@@ -6,10 +6,13 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <!-- No SCHEDULE_EXACT_ALARM: Google Play allows it only for apps whose core
-         function is an alarm clock or calendar, and Android 14 no longer grants
-         it by default anyway. Reminders are scheduled inexactly while idle; see
-         lib/core/reminder_scheduler.dart. -->
+    <!-- Precise reminders. Since Android 14 this is not granted on install:
+         "Add reminder" opens the system page that grants it, and without it
+         reminders are scheduled inexactly (lib/core/reminder_scheduler.dart).
+         Google Play requires a permissions declaration for it; the reason is
+         in docs/android-release.md. Not USE_EXACT_ALARM, which Play reserves
+         for alarm-clock and calendar apps. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
     <!-- No backup, cloud or device-to-device: see res/xml/data_extraction_rules.xml. -->
     <application

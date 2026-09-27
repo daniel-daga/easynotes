@@ -20,9 +20,7 @@ For Google Play, enrol in Play App Signing: Play keeps the key that signs what
 users install, and this one only proves an upload came from you, so it can be
 reset through Play support if it is lost.
 
-Decide how F-Droid builds are signed **before** the first public release. The
-main F-Droid repository normally signs with its own key, and a copy signed by
-F-Droid cannot update a copy from Play or vice versa. Say so in both listings.
+F-Droid signs its own builds with its own key (see [F-Droid](#f-droid) below).
 
 ## A local signed build
 
@@ -55,6 +53,38 @@ The two URLs are what *About and privacy* shows (`lib/ui/about_screen.dart`).
 A build without them says it was not published with a policy, which is right
 for a test build and wrong for a store.
 
+## Exact alarms and the Play declaration
+
+The app asks for `SCHEDULE_EXACT_ALARM` so a reminder set for 09:00 fires at
+09:00. Android 14 and later do not grant it on install. "Add reminder" opens
+the system page that does, and until it is granted, or if it is withdrawn,
+reminders are scheduled inexactly and may fire some minutes late while the
+phone is idle. Coming back to the app reschedules every reminder in whichever
+mode is now allowed.
+
+Google Play asks every app that declares this permission to justify it in the
+Play Console (**App content → Sensitive app permissions → Exact alarms**). The
+case to make: time-based reminders on notes are a core, user-initiated
+function, each one set by the person for a time they chose, like a calendar
+entry; nothing is scheduled that the person did not ask for. Play may still
+decide that a notes app does not qualify. If it does, remove the permission
+from `AndroidManifest.xml` and the release check will want nothing else: the
+scheduler already falls back to inexact reminders on its own.
+
+## F-Droid
+
+F-Droid builds the tagged source itself and signs with its own key, under the
+same application ID. So a copy installed from F-Droid and one from Play cannot
+update each other: switching stores means uninstalling, which on a
+local-only profile deletes its notes. Both listings, and the website, have to
+say so. The build F-Droid needs is the unsigned release this Gradle file makes
+when no key is configured:
+
+```sh
+flutter build apk --release --build-name 1.2.3 --build-number 1002003 \
+    --dart-define=EASYNOTES_VERSION=1.2.3 …
+```
+
 ## Versions
 
 `versionCode` is `MAJOR*1000000 + MINOR*1000 + PATCH`, from the tag, so that it
@@ -70,7 +100,7 @@ pinned Flutter and Rust, and then refuses the result unless the APK:
 
 - is `eu.fraisl.easynotes` with the tag's `versionCode`, targeting API 36 or
   later, and not debuggable;
-- requests neither `SCHEDULE_EXACT_ALARM` nor `USE_EXACT_ALARM`;
+- does not request `USE_EXACT_ALARM`;
 - disallows backup (`res/xml/data_extraction_rules.xml` says why);
 - carries the core for all three ABIs;
 - is signed with the certificate whose SHA-256 is in `EASYNOTES_CERT_SHA256`.
