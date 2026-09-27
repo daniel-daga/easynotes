@@ -396,6 +396,39 @@ impl MediaStore {
         Ok(())
     }
 
+    /// Every note this device holds objects for, so that a launch can find
+    /// the ones whose note has gone.
+    pub fn held_notes(&self) -> Result<Vec<NoteId>> {
+        let mut notes = Vec::new();
+        for entry in fs::read_dir(self.root.join("objects")).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            if let Some(note) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| NoteId::decode(n).ok())
+            {
+                notes.push(note);
+            }
+        }
+        Ok(notes)
+    }
+
+    /// Delete everything: every object and every staged import. What wiping
+    /// the device does.
+    pub fn wipe(&self) -> Result<()> {
+        let _commit = self.lock();
+        for dir in ["objects", "staging"] {
+            let path = self.root.join(dir);
+            match fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io(e)),
+            }
+            fs::create_dir_all(&path).map_err(io)?;
+        }
+        Ok(())
+    }
+
     /// Delete every object this device holds for a note, and every import into
     /// it still staged. What forgetting or purging the note does.
     pub fn purge_note(&self, note: NoteId) -> Result<()> {

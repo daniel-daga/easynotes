@@ -63,7 +63,7 @@ pub trait MediaRows: Send + Sync + 'static {
 
 /// Shared rows: what lets a test open a second store over the first one's
 /// database, as a reload does.
-impl<R: MediaRows> MediaRows for Arc<R> {
+impl<R: MediaRows + ?Sized> MediaRows for Arc<R> {
     fn get<'a>(&'a self, key: &'a str) -> Fut<'a, Result<Option<Vec<u8>>>> {
         (**self).get(key)
     }
@@ -96,7 +96,18 @@ impl MemoryRows {
         self.refuse.store(refuse, Ordering::SeqCst);
     }
 
+    /// Taken by asking until it is free in a browser, where a lock that
+    /// waits throws on the page's main thread (`app/rust/src/lock.rs`).
     fn locked(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Vec<u8>>> {
+        #[cfg(target_arch = "wasm32")]
+        loop {
+            match self.rows.try_lock() {
+                Ok(guard) => return guard,
+                Err(std::sync::TryLockError::Poisoned(e)) => return e.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         self.rows.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -564,6 +575,32 @@ impl<R: MediaRows> WebMediaStore<R> {
 
     /// Delete every object this tab holds for a note, and every import into it
     /// still staged, in one transaction.
+    /// Every note this tab holds whole objects for, so that a launch can find
+    /// the ones whose note has gone.
+    pub async fn held_notes(&self) -> Result<Vec<NoteId>> {
+        let mut notes: Vec<NoteId> = self
+            .rows
+            .keys("w/")
+            .await?
+            .iter()
+            .filter_map(|k| k.strip_prefix("w/")?.split('/').next())
+            .filter_map(|n| NoteId::decode(n).ok())
+            .collect();
+        notes.dedup();
+        Ok(notes)
+    }
+
+    /// Delete everything: every object and every staged import. What wiping
+    /// the device does.
+    pub async fn wipe(&self) -> Result<()> {
+        let _commit = self.commit.lock().await;
+        self.rows
+            .apply(vec![Change::DeletePrefix {
+                prefix: String::new(),
+            }])
+            .await
+    }
+
     pub async fn purge_note(&self, note: NoteId) -> Result<()> {
         let _commit = self.commit.lock().await;
         let mut changes = vec![

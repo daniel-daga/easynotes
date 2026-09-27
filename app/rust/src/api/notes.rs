@@ -31,6 +31,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
+use crate::media::{Home, Store};
+use easynotes_core::attachment::storage::{ImportHints, MediaStorage, Staged, ThumbnailInput};
+use easynotes_core::attachment::{AttachmentKind, AttachmentState, Media, Variant};
+use easynotes_core::ids::AttachmentId;
+use easynotes_core::sync::transfers::{
+    Direction, Reach, TransferPeer, TransferQueue, TransferRunner, TransferState,
+};
+
 /// The store and keyring are boxed so one `Library` type serves every platform:
 /// SQLite on desktop and mobile, IndexedDB in a browser, and memory for a test
 /// or a tab that has neither, without this file changing.
@@ -66,6 +74,128 @@ pub struct NoteView {
     pub title: String,
     pub body: String,
     pub items: Vec<ItemView>,
+    /// Live attachments, in display order. An import of this device's that is
+    /// still waiting to be published is not here: see
+    /// [`Note::pending_attachments`].
+    pub attachments: Vec<AttachmentView>,
+}
+
+/// Whether an attachment is drawn or played.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentKindView {
+    Image,
+    Audio,
+}
+
+/// One attachment, as Dart sees it: enough to lay out a gallery or a player
+/// before any bytes are here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentView {
+    pub id: String,
+    pub kind: AttachmentKindView,
+    /// The person's file name. For showing, searching and saving a copy; never
+    /// what decides what the bytes are.
+    pub name: String,
+    /// `image/jpeg`, `audio/mp4` and so on, read from the bytes.
+    pub mime: String,
+    /// The original's size in bytes.
+    pub size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub description: String,
+    pub thumbnail_width: Option<u32>,
+    pub thumbnail_height: Option<u32>,
+    /// Saved on this device and not yet in the note: still to be uploaded, or
+    /// uploading. Nobody else can see it yet.
+    pub pending: bool,
+}
+
+impl AttachmentView {
+    fn of(id: AttachmentId, media: &Media, description: String, pending: bool) -> Self {
+        Self {
+            id: id.encode(),
+            kind: match media.kind() {
+                AttachmentKind::Image => AttachmentKindView::Image,
+                AttachmentKind::Audio => AttachmentKindView::Audio,
+            },
+            name: media.name.clone(),
+            mime: media.format.mime().to_string(),
+            size: media.original.len,
+            width: media.width,
+            height: media.height,
+            duration_ms: media.duration_ms,
+            description,
+            thumbnail_width: media.thumbnail.as_ref().map(|t| t.width),
+            thumbnail_height: media.thumbnail.as_ref().map(|t| t.height),
+            pending,
+        }
+    }
+}
+
+/// Where one attachment transfer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferStateView {
+    /// Saved here and waiting for its note to catch up with the relay —
+    /// "Waiting to upload" — or, for a download, for a connection.
+    Waiting,
+    /// `done` of `of` chunks moved in this attempt.
+    Running,
+    /// Failed for a reason the network explains; it will be tried again.
+    Retrying,
+    /// Refused, and waiting for [`Library::retry_transfers`]. An upload's
+    /// local copy is kept.
+    Failed,
+}
+
+/// One transfer that has not finished. A finished one is not listed: an
+/// upload is then in the note, and a download is on this device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferView {
+    pub note: String,
+    pub attachment: String,
+    /// Up (an import going to the relay) or down.
+    pub upload: bool,
+    /// For a download: the thumbnail rather than the original.
+    pub thumbnail: bool,
+    pub state: TransferStateView,
+    pub done: u32,
+    pub of: u32,
+    pub error: Option<String>,
+}
+
+fn transfer_views(map: &easynotes_core::sync::transfers::TransferMap) -> Vec<TransferView> {
+    let mut views: Vec<TransferView> = map
+        .iter()
+        .map(|(transfer, state)| {
+            let (state, done, of, error) = match state {
+                TransferState::Waiting => (TransferStateView::Waiting, 0, 0, None),
+                TransferState::Running { done, of } => {
+                    (TransferStateView::Running, *done, *of, None)
+                }
+                TransferState::Retrying { error } => {
+                    (TransferStateView::Retrying, 0, 0, Some(error.clone()))
+                }
+                TransferState::Failed { error } => {
+                    (TransferStateView::Failed, 0, 0, Some(error.clone()))
+                }
+            };
+            TransferView {
+                note: transfer.note.encode(),
+                attachment: transfer.id.encode(),
+                upload: transfer.direction == Direction::Up,
+                thumbnail: transfer.direction == Direction::Down(Variant::Thumbnail),
+                state,
+                done,
+                of,
+                error,
+            }
+        })
+        .collect();
+    views.sort_by(|a, b| {
+        (&a.note, &a.attachment, a.upload).cmp(&(&b.note, &b.attachment, b.upload))
+    });
+    views
 }
 
 /// Whether a note is prose or a checklist. Shared: it is in the note's own
@@ -109,6 +239,11 @@ impl From<easynotes_core::crdt::NoteView> for NoteView {
                     checked: i.checked,
                     order: i.order,
                 })
+                .collect(),
+            attachments: v
+                .attachments
+                .into_iter()
+                .map(|a| AttachmentView::of(a.id, &a.media, a.description, false))
                 .collect(),
         }
     }
@@ -577,6 +712,15 @@ struct NoteStatus {
 pub(crate) struct Statuses {
     per_note: Mutex<HashMap<NoteId, NoteStatus>>,
     overall: StatusCell,
+    /// The attachment queue, and the relay it runs with (`None` for a library
+    /// that has never been connected, whose notes are local). Here rather than
+    /// in [`Shared`] because a status change is what moves a waiting upload:
+    /// every report kicks it.
+    transfers: Mutex<Option<(Option<String>, TransferQueue)>>,
+    /// What the queue says, as Dart sees it. A channel of its own rather than
+    /// the queue's, so that a watcher outlives the queue being replaced when
+    /// the library is connected.
+    transfer_views: watch::Sender<Vec<TransferView>>,
 }
 
 impl Statuses {
@@ -588,7 +732,20 @@ impl Statuses {
             // library that never refreshes (because it never gets a note) keeps
             // reporting a relay problem it does not have.
             overall: StatusCell::new(SyncStatus::nothing_to_sync()),
+            transfers: Mutex::new(None),
+            transfer_views: watch::channel(Vec::new()).0,
         }
+    }
+
+    fn queue(&self) -> Option<TransferQueue> {
+        crate::lock::lock(&self.transfers)
+            .ok()
+            .and_then(|held| held.as_ref().map(|(_, queue)| queue.clone()))
+    }
+
+    /// One note's state now, or `None` if it has no channel.
+    fn state(&self, note: NoteId) -> Option<SyncState> {
+        self.existing(note, |status| status.tx.get().state)
     }
 
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
@@ -641,6 +798,9 @@ impl Statuses {
         });
         if current == Some(epoch) {
             self.refresh();
+            if let Some(queue) = self.queue() {
+                queue.kick();
+            }
         }
     }
 
@@ -891,6 +1051,10 @@ pub(crate) struct Shared {
     device: Mutex<Option<Device>>,
     connections: Mutex<HashMap<NoteId, Connection>>,
     statuses: Arc<Statuses>,
+    /// Where attachment bytes are kept, opened on first use.
+    media_home: Home,
+    media_key: easynotes_core::crypto::MasterKey,
+    media: tokio::sync::OnceCell<Arc<Store>>,
 }
 
 impl Shared {
@@ -1049,6 +1213,208 @@ impl Shared {
             }
         }
     }
+
+    /// Hand an edit to the relay — unless a removal is waiting to be made, when
+    /// it stays in the log: it is under the key the person being removed holds,
+    /// and it reaches everyone else inside the removal's package instead
+    /// (ADR 0023 §6).
+    fn send_edit(&self, note: NoteId, envelope: Vec<u8>, soon: bool) {
+        let holding = self
+            .locked()
+            .ok()
+            .and_then(|core| core.holds_back(note).ok())
+            .unwrap_or(false);
+        if holding {
+            return;
+        }
+        if soon {
+            self.publish_soon(note, envelope);
+        } else {
+            self.publish(note, envelope);
+        }
+    }
+
+    // -- attachments ----------------------------------------------------------
+
+    /// This library's attachment store, opened on first use.
+    ///
+    /// Opening it tidies up after whatever happened while it was shut: a note
+    /// that has gone — forgotten, deleted on another device, or taken away by
+    /// its owner — has its bytes purged, and a note that is still here loses
+    /// the bytes of attachments nobody draws any more. Best effort: a store
+    /// that cannot be tidied is still a store.
+    async fn media_store(&self) -> Result<Arc<Store>, String> {
+        self.media
+            .get_or_try_init(|| async {
+                let store = self
+                    .media_home
+                    .open(self.media_key.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                for note in store.held_notes().await.unwrap_or_default() {
+                    let live = {
+                        let Ok(mut core) = self.locked() else { break };
+                        match core.attachment_state(note, AttachmentId::random()) {
+                            Ok(AttachmentState::NoNote) => None,
+                            Ok(_) => core
+                                .view(note)
+                                .ok()
+                                .map(|v| v.attachments.into_iter().map(|a| a.media).collect()),
+                            Err(_) => continue,
+                        }
+                    };
+                    let _ = match live {
+                        None => store.purge_note(note).await,
+                        Some(live) => {
+                            let live: Vec<Media> = live;
+                            let refs: Vec<&Media> = live.iter().collect();
+                            store.collect_garbage(note, &refs).await.map(|_| ())
+                        }
+                    };
+                }
+                Ok(Arc::new(store))
+            })
+            .await
+            .cloned()
+    }
+
+    /// Run the attachment queue with `relay`, replacing one that runs with
+    /// another — or with none, which is how a library that has never been
+    /// connected runs it, publishing every import at once.
+    fn start_transfers(self: &Arc<Self>, store: Arc<Store>, relay: Option<String>) {
+        let mut held = match crate::lock::lock(&self.statuses.transfers) {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if held.as_ref().is_some_and(|(running, _)| *running == relay) {
+            return;
+        }
+        let peer = MediaPeer {
+            shared: Arc::downgrade(self),
+            local: relay.is_none(),
+        };
+        let (runner, queue) = TransferRunner::new(peer, store, relay.clone());
+        let mut states = queue.watch();
+        let statuses = self.statuses.clone();
+        // Ends with the runner, whose end drops the sender `states` reads.
+        let _ = crate::relay::spawn(async move {
+            loop {
+                let views = transfer_views(&states.borrow_and_update());
+                statuses.transfer_views.send_replace(views);
+                if states.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+        if crate::relay::spawn(runner.run()).is_ok() {
+            // The one it replaces ends when its last handle is dropped, here;
+            // what it was doing is in the staging records and starts again.
+            *held = Some((relay, queue));
+        }
+    }
+
+    /// The queue, started now if this library has never been connected — the
+    /// one moment it would not have been. A library that has been waits for
+    /// [`Library::connect`] to start it with its relay: an import made before
+    /// then waits, rather than being published before its bytes can be sent.
+    async fn transfers(self: &Arc<Self>) -> Result<(Arc<Store>, Option<TransferQueue>), String> {
+        let store = self.media_store().await?;
+        let unbound = crate::lock::lock(&self.bound)
+            .map_err(|_| "relay lock poisoned")?
+            .is_none();
+        if unbound && self.statuses.queue().is_none() {
+            self.start_transfers(store.clone(), None);
+        }
+        Ok((store, self.statuses.queue()))
+    }
+
+    /// Stop the queue. What closing and wiping do; staged imports stay staged.
+    fn stop_transfers(&self) {
+        if let Ok(mut held) = crate::lock::lock(&self.statuses.transfers) {
+            held.take();
+        }
+    }
+
+    /// Drop a note's attachment bytes from this device, in the background.
+    fn purge_media(self: &Arc<Self>, note: NoteId) {
+        let shared = self.clone();
+        let _ = crate::relay::spawn(async move {
+            if let Ok(store) = shared.media_store().await {
+                let _ = store.purge_note(note).await;
+            }
+        });
+    }
+}
+
+/// What the attachment queue asks of the library. Weak, because the library
+/// holds the queue and the queue holds this.
+struct MediaPeer {
+    shared: Weak<Shared>,
+    local: bool,
+}
+
+impl MediaPeer {
+    fn shared(&self) -> easynotes_core::error::Result<Arc<Shared>> {
+        self.shared
+            .upgrade()
+            .ok_or_else(|| CoreError::Storage(closed()))
+    }
+}
+
+impl easynotes_core::crypto::DeviceSigner for MediaPeer {
+    fn device_key(&self) -> easynotes_core::error::Result<easynotes_core::crypto::AuthorKey> {
+        self.shared()?.core.device_key()
+    }
+
+    fn sign_challenge(
+        &self,
+        nonce: &[u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN],
+    ) -> easynotes_core::error::Result<[u8; easynotes_core::crypto::SIG_LEN]> {
+        self.shared()?.core.sign_challenge(nonce)
+    }
+}
+
+impl TransferPeer for MediaPeer {
+    fn attachment_state(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+    ) -> easynotes_core::error::Result<AttachmentState> {
+        self.shared()?.core.open()?.attachment_state(note, id)
+    }
+
+    fn attachment(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+    ) -> easynotes_core::error::Result<Option<Media>> {
+        let shared = self.shared()?;
+        let core = shared.core.open()?;
+        Ok(core.view(note)?.attachment(id).map(|a| a.media.clone()))
+    }
+
+    fn reach(&self, note: NoteId) -> Reach {
+        if self.local {
+            return Reach::LocalOnly;
+        }
+        match self.shared().ok().and_then(|s| s.statuses.state(note)) {
+            Some(SyncState::Synced) => Reach::Synced,
+            Some(SyncState::Connecting | SyncState::Online) => Reach::Connected,
+            _ => Reach::Offline,
+        }
+    }
+
+    fn publish(
+        &self,
+        note: NoteId,
+        id: AttachmentId,
+        media: Media,
+    ) -> easynotes_core::error::Result<()> {
+        let shared = self.shared()?;
+        let envelope = shared.core.open()?.add_attachment(note, id, media)?;
+        shared.send_edit(note, envelope, false);
+        Ok(())
+    }
 }
 
 fn boxed_store(s: impl OpStore + Send + 'static) -> Box<dyn OpStore + Send> {
@@ -1073,6 +1439,17 @@ fn on_disk(root: &std::path::Path, master: Vec<u8>) -> Result<Backing, String> {
     let (store, keyring) =
         easynotes_core::store::open_local(root, master).map_err(|e| e.to_string())?;
     Ok((boxed_store(store), boxed_keyring(keyring)))
+}
+
+/// Attachment bytes live in a directory beside the database.
+#[cfg(not(target_arch = "wasm32"))]
+fn media_on_disk(root: &std::path::Path) -> Home {
+    Home::Dir(root.join("media"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn media_on_disk(_root: &std::path::Path) -> Home {
+    Home::Memory
 }
 
 /// The master key a device wrote beside its database before the app could reach
@@ -1206,6 +1583,10 @@ impl From<&easynotes_core::store::Change> for StorageWrite {
 // is outside this module for the reason `crate::relay` is: everything in here
 // becomes Dart, and a queue of batches is not something Dart has any business
 // holding a handle to.
+
+fn attachment_id(s: &str) -> Result<AttachmentId, String> {
+    AttachmentId::decode(s).map_err(|e| e.to_string())
+}
 
 fn item_id(s: &str) -> Result<ItemId, String> {
     ItemId::decode(s).map_err(|e| e.to_string())
@@ -1466,8 +1847,15 @@ impl Library {
     pub fn open(dir: String, master_key: Vec<u8>) -> Result<Library, String> {
         let root = std::path::PathBuf::from(dir);
         let claim = OpenLibraries::claim(&root);
+        let media_key = easynotes_core::crypto::MasterKey::from_slice(&master_key)
+            .map_err(|e| e.to_string())?;
         let (store, keyring) = on_disk(&root, master_key)?;
-        let library = Self::wrap(NoteCore::open(store, keyring).map_err(|e| e.to_string())?)?;
+        let library = Self::wrap_with(
+            NoteCore::open(store, keyring).map_err(|e| e.to_string())?,
+            Arc::new(Pending::default()),
+            media_on_disk(&root),
+            media_key,
+        )?;
         claim.hold(&library);
         Ok(library)
     }
@@ -1481,12 +1869,15 @@ impl Library {
     /// than a mock.
     #[frb(sync)]
     pub fn open_ephemeral() -> Result<Library, String> {
-        Self::wrap(
+        Self::wrap_with(
             NoteCore::open(
                 boxed_store(MemoryStore::new()),
                 boxed_keyring(MemoryKeyring::new()),
             )
             .map_err(|e| e.to_string())?,
+            Arc::new(Pending::default()),
+            Home::Memory,
+            easynotes_core::crypto::MasterKey::random(),
         )
     }
 
@@ -1500,6 +1891,11 @@ impl Library {
     /// from memory and leaves its writes in a queue for
     /// [`Library::take_storage_batches`].
     ///
+    /// `media_database` names the IndexedDB database attachment bytes are kept
+    /// in, apart from the one `notes` and `keys` came from: that one is read
+    /// whole at launch and a photo must never be. A native build, which opens
+    /// this only in tests, keeps them in memory.
+    ///
     /// Not `#[cfg(target_arch = "wasm32")]`, deliberately. There is no browser
     /// in any of this — it is a store, a queue and some rows — so the native
     /// build can open one too, and `app/test/rust_bridge_test.dart` drives the
@@ -1510,6 +1906,7 @@ impl Library {
         notes: Vec<StorageRow>,
         keys: Vec<StorageRow>,
         master_key: Vec<u8>,
+        media_database: String,
     ) -> Result<Library, String> {
         use easynotes_core::store::{WebKeyring, WebStore};
         let master = easynotes_core::crypto::MasterKey::from_slice(&master_key)
@@ -1524,12 +1921,21 @@ impl Library {
         };
         let store = WebStore::from_rows(master.clone(), queue(StorageArea::Notes), rows(notes))
             .map_err(|e| e.to_string())?;
-        let keyring = WebKeyring::from_rows(master, queue(StorageArea::Keys), rows(keys))
+        let keyring = WebKeyring::from_rows(master.clone(), queue(StorageArea::Keys), rows(keys))
             .map_err(|e| e.to_string())?;
+        #[cfg(target_arch = "wasm32")]
+        let home = Home::Browser(media_database);
+        #[cfg(not(target_arch = "wasm32"))]
+        let home = {
+            let _ = media_database;
+            Home::Memory
+        };
         Self::wrap_with(
             NoteCore::open(boxed_store(store), boxed_keyring(keyring))
                 .map_err(|e| e.to_string())?,
             pending,
+            home,
+            master,
         )
     }
 
@@ -1558,11 +1964,12 @@ impl Library {
         self.pending.len()
     }
 
-    fn wrap(core: Core) -> Result<Library, String> {
-        Self::wrap_with(core, Arc::new(Pending::default()))
-    }
-
-    fn wrap_with(mut core: Core, pending: Arc<Pending>) -> Result<Library, String> {
+    fn wrap_with(
+        mut core: Core,
+        pending: Arc<Pending>,
+        media_home: Home,
+        media_key: easynotes_core::crypto::MasterKey,
+    ) -> Result<Library, String> {
         // Everything on the disk, read once, so that the list is populated
         // before the first frame asks for it.
         core.notes().map_err(|e| e.to_string())?;
@@ -1586,6 +1993,9 @@ impl Library {
                 device: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
                 statuses: Arc::new(Statuses::new()),
+                media_home,
+                media_key,
+                media: tokio::sync::OnceCell::new(),
             }
         });
         Ok(Library {
@@ -2031,7 +2441,8 @@ impl Library {
         // for a note this device no longer has.
         self.disconnect()?;
         let Some(http) = http else {
-            return self.shared.locked()?.wipe().map_err(|e| e.to_string());
+            self.shared.locked()?.wipe().map_err(|e| e.to_string())?;
+            return self.wipe_media().await;
         };
         for outgoing in invites {
             let http = http.clone();
@@ -2054,7 +2465,20 @@ impl Library {
                  from this device; try again when you are online."
             ));
         }
-        self.shared.locked()?.wipe().map_err(|e| e.to_string())
+        self.shared.locked()?.wipe().map_err(|e| e.to_string())?;
+        self.wipe_media().await
+    }
+
+    /// Every attachment byte on this device, staged or not, after the notes
+    /// that named them.
+    async fn wipe_media(&self) -> Result<(), String> {
+        self.shared.stop_transfers();
+        self.shared
+            .media_store()
+            .await?
+            .wipe()
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// The notes this device was just removed from, each once, for the
@@ -2110,7 +2534,11 @@ impl Library {
         self.shared
             .locked()?
             .forget_note(id)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // After the note, so that an upload finishing in between finds the
+        // note gone and discards itself rather than being published.
+        self.shared.purge_media(id);
+        Ok(())
     }
 
     /// Whether the grid is a masonry or one column, as this person last left it.
@@ -2626,6 +3054,18 @@ impl Library {
         for document in documents {
             self.shared.connect_note(document)?;
         }
+        // The attachment queue, with this relay. Started once the store is
+        // open, which in a tab has to be waited for; an import made before
+        // then is in the store and the queue finds it when it starts.
+        let shared = self.shared.clone();
+        let relay = crate::lock::lock(&self.shared.bound)
+            .map_err(|_| "relay lock poisoned")?
+            .clone();
+        crate::relay::spawn(async move {
+            if let Ok(store) = shared.media_store().await {
+                shared.start_transfers(store, relay);
+            }
+        })?;
         Ok(())
     }
 
@@ -2691,6 +3131,7 @@ impl Library {
     pub fn stop_watching(&self) -> Result<(), String> {
         self.stop.store(true, Ordering::SeqCst);
         self.shared.statuses.overall.resend();
+        self.shared.statuses.transfer_views.send_modify(|_| {});
         // The note list watcher is parked on its own channel and needs the same
         // wake. Re-sending the list it already has changes nothing and moves it.
         //
@@ -2725,7 +3166,48 @@ impl Library {
     /// `dispose()` does — closing does not wait for an engine mid-flight, it
     /// only makes sure the engine finds nothing to write to.
     pub fn close(&self) -> Result<(), String> {
+        self.shared.stop_transfers();
         self.shared.core.close()
+    }
+
+    // -- attachment transfers -------------------------------------------------
+
+    /// Every attachment transfer that has not finished.
+    ///
+    /// Not `#[frb(sync)]`: reading the channel takes a lock the queue's
+    /// forwarder may hold, which the page's main thread may not wait on.
+    pub fn transfers(&self) -> Vec<TransferView> {
+        self.shared.statuses.transfer_views.borrow().clone()
+    }
+
+    /// The transfers now and at every change, until [`Library::stop_watching`].
+    pub fn watch_transfers(&self, sink: StreamSink<Vec<TransferView>>) -> Result<(), String> {
+        let mut updates = self.shared.statuses.transfer_views.subscribe();
+        let stop = self.stop.clone();
+        crate::relay::spawn(async move {
+            if sink.add(updates.borrow_and_update().clone()).is_err() {
+                return;
+            }
+            // Before the first wait as well: see [`watch_status`].
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            loop {
+                if updates.changed().await.is_err() || stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                if sink.add(updates.borrow_and_update().clone()).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// Try every failed attachment transfer again now.
+    pub fn retry_transfers(&self) {
+        if let Some(queue) = self.shared.statuses.queue() {
+            queue.retry();
+        }
     }
 }
 
@@ -2840,20 +3322,7 @@ impl Note {
     /// and it reaches everyone else inside the removal's package instead
     /// (ADR 0023 §6).
     fn send(&self, envelope: Vec<u8>, soon: bool) {
-        let holding = self
-            .shared
-            .locked()
-            .ok()
-            .and_then(|core| core.holds_back(self.id).ok())
-            .unwrap_or(false);
-        if holding {
-            return;
-        }
-        if soon {
-            self.shared.publish_soon(self.id, envelope);
-        } else {
-            self.shared.publish(self.id, envelope);
-        }
+        self.shared.send_edit(self.id, envelope, soon);
     }
     //
     // Each one applies the edit locally and hands the sealed envelope to the
@@ -2956,6 +3425,258 @@ impl Note {
                 .map_err(|e| e.to_string())?
         };
         self.send(envelope, false);
+        Ok(())
+    }
+
+    // -- attachments --------------------------------------------------------
+    //
+    // An import is sealed into this device's store and staged; it is not in
+    // the note until the transfer queue publishes it — at once in a note that
+    // does not sync, and once its bytes are on the relay in one that does
+    // (ADR 0027 §4). Until then it is one of [`Note::pending_attachments`],
+    // and nobody else can see it.
+
+    /// Attach a file handed over whole: a tab's picked file, or a photo in
+    /// memory. `thumbnail` is a preview the app made, of at most 512 pixels a
+    /// side; `duration_ms` is a sound file's length, if the platform knows it.
+    pub async fn import_attachment(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        thumbnail: Option<Vec<u8>>,
+        duration_ms: Option<u64>,
+    ) -> Result<AttachmentView, String> {
+        let (store, queue) = self.shared.transfers().await?;
+        self.check_room(&store, bytes.len() as u64).await?;
+        let staged = store
+            .import(
+                self.id,
+                &name,
+                &bytes,
+                thumbnail.map(|bytes| ThumbnailInput { bytes }),
+                ImportHints { duration_ms },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(queue) = queue {
+            queue.kick();
+        }
+        Ok(AttachmentView::of(
+            staged.id,
+            &staged.media,
+            String::new(),
+            true,
+        ))
+    }
+
+    /// Attach a file on this device's disk, read a chunk at a time rather than
+    /// handed across whole. A browser has no path to give, and is refused.
+    pub async fn import_attachment_file(
+        &self,
+        path: String,
+        name: String,
+        thumbnail: Option<Vec<u8>>,
+        duration_ms: Option<u64>,
+    ) -> Result<AttachmentView, String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, name, thumbnail, duration_ms);
+            Err("a browser attaches files by their bytes, not a path".to_string())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (store, queue) = self.shared.transfers().await?;
+            let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            self.check_room(&store, len).await?;
+            let staged = store
+                .import_file(
+                    self.id,
+                    &name,
+                    std::path::Path::new(&path),
+                    thumbnail.map(|bytes| ThumbnailInput { bytes }),
+                    ImportHints { duration_ms },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(queue) = queue {
+                queue.kick();
+            }
+            Ok(AttachmentView::of(
+                staged.id,
+                &staged.media,
+                String::new(),
+                true,
+            ))
+        }
+    }
+
+    /// Refuse an import the note has no room for before sealing a byte of it,
+    /// counting this device's own unpublished imports as the note's.
+    async fn check_room(&self, store: &Store, adding: u64) -> Result<(), String> {
+        use easynotes_core::attachment::{MAX_ATTACHMENTS_PER_NOTE, MAX_MEDIA_BYTES_PER_NOTE};
+        let live: Vec<u64> = {
+            let core = self.shared.locked()?;
+            core.view(self.id)
+                .map_err(|e| e.to_string())?
+                .attachments
+                .iter()
+                .map(|a| a.media.original.len)
+                .collect()
+        };
+        let pending: Vec<u64> = self
+            .staged(store)
+            .await?
+            .iter()
+            .map(|s| s.media.original.len)
+            .collect();
+        if live.len() + pending.len() >= MAX_ATTACHMENTS_PER_NOTE {
+            return Err("a note can have up to 20 attachments".into());
+        }
+        let total: u64 = live.iter().chain(&pending).sum();
+        if total + adding > MAX_MEDIA_BYTES_PER_NOTE {
+            return Err("a note's attachments can be up to 200 MB between them".into());
+        }
+        Ok(())
+    }
+
+    async fn staged(&self, store: &Store) -> Result<Vec<Staged>, String> {
+        Ok(store
+            .staged()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|s| s.note == self.id)
+            .collect())
+    }
+
+    /// This device's imports into this note that are not in it yet, oldest
+    /// first. The queue's [`Library::transfers`] says where each one is.
+    pub async fn pending_attachments(&self) -> Result<Vec<AttachmentView>, String> {
+        let store = self.shared.media_store().await?;
+        Ok(self
+            .staged(&store)
+            .await?
+            .iter()
+            .map(|s| AttachmentView::of(s.id, &s.media, String::new(), true))
+            .collect())
+    }
+
+    /// An attachment's bytes, decrypted: its thumbnail, or the whole file.
+    ///
+    /// `None` when they are not on this device yet. They are then asked for,
+    /// and [`Library::transfers`] follows them; ask again when they arrive.
+    /// A pending import is always here.
+    pub async fn read_attachment(
+        &self,
+        attachment: String,
+        thumbnail: bool,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let id = attachment_id(&attachment)?;
+        let variant = if thumbnail {
+            Variant::Thumbnail
+        } else {
+            Variant::Original
+        };
+        let (store, queue) = self.shared.transfers().await?;
+        let live = {
+            let core = self.shared.locked()?;
+            core.view(self.id)
+                .map_err(|e| e.to_string())?
+                .attachment(id)
+                .map(|a| a.media.clone())
+        };
+        let media = match &live {
+            Some(media) => media.clone(),
+            None => self
+                .staged(&store)
+                .await?
+                .into_iter()
+                .find(|s| s.id == id)
+                .map(|s| s.media)
+                .ok_or("This attachment is not on the note.")?,
+        };
+        let part = easynotes_core::attachment::storage::variant_ref(&media, variant)
+            .ok_or("This attachment has no thumbnail.")?;
+        if store.has(self.id, part).await {
+            return store
+                .read(self.id, id, &media, variant)
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
+        if let (Some(_), Some(queue)) = (live, queue) {
+            queue.fetch(self.id, id, variant);
+        }
+        Ok(None)
+    }
+
+    /// Remove an attachment for everyone on the note, or give up on an import
+    /// of this device's that is not in it yet. The bytes on this device go
+    /// too; nobody else's, and not the relay's (ADR 0027 §5).
+    pub async fn remove_attachment(&self, attachment: String) -> Result<(), String> {
+        let id = attachment_id(&attachment)?;
+        let removed = {
+            let mut core = self.shared.locked()?;
+            let live = core
+                .view(self.id)
+                .map_err(|e| e.to_string())?
+                .attachment(id)
+                .map(|a| a.media.clone());
+            match live {
+                Some(media) => Some((
+                    core.remove_attachment(self.id, id)
+                        .map_err(|e| e.to_string())?,
+                    media,
+                )),
+                None => None,
+            }
+        };
+        if let Some((envelope, media)) = removed {
+            self.send(envelope, false);
+            let store = self.shared.media_store().await?;
+            return store
+                .remove(self.id, &media)
+                .await
+                .map_err(|e| e.to_string());
+        }
+        let (store, queue) = self.shared.transfers().await?;
+        match queue {
+            // The queue, and not the store directly, so that an upload it is
+            // running is not published when it finishes.
+            Some(queue) => queue.cancel(id),
+            None => {
+                if let Some(staged) = self.staged(&store).await?.into_iter().find(|s| s.id == id) {
+                    store.discard(&staged).await.map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Move an attachment so it lands at `to_index` among the note's.
+    pub fn move_attachment(&self, attachment: String, to_index: u32) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.move_attachment(self.id, attachment_id(&attachment)?, to_index as usize)
+                .map_err(|e| e.to_string())?
+        };
+        self.send(envelope, false);
+        Ok(())
+    }
+
+    /// Set the shared words that describe an attachment to someone who cannot
+    /// see or hear it.
+    pub fn describe_attachment(
+        &self,
+        attachment: String,
+        description: String,
+    ) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.set_attachment_description(self.id, attachment_id(&attachment)?, description)
+                .map_err(|e| e.to_string())?
+        };
+        self.send(envelope, true);
         Ok(())
     }
 }

@@ -9,6 +9,7 @@ library;
 
 import 'dart:async';
 
+import 'attachments.dart';
 import 'fake_note_core.dart';
 import 'note_core.dart';
 import 'note_library.dart';
@@ -733,6 +734,25 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   void sendHeldEdits() => calls.add('sendHeldEdits()');
 
+  List<AttachmentTransfer> _transferList = const [];
+  final _transferStream =
+      StreamController<List<AttachmentTransfer>>.broadcast();
+
+  @override
+  Stream<List<AttachmentTransfer>> watchTransfers() async* {
+    yield _transferList;
+    yield* _transferStream.stream;
+  }
+
+  /// Say what the transfer queue would say, without a relay to transfer to.
+  void pushTransfers(List<AttachmentTransfer> transfers) {
+    _transferList = transfers;
+    _transferStream.add(transfers);
+  }
+
+  @override
+  void retryTransfers() => calls.add('retryTransfers()');
+
   @override
   Future<void> flush() async => calls.add('flush()');
 
@@ -779,6 +799,7 @@ class FakeNoteLibrary implements NoteLibrary {
     await _notes.close();
     await _sync.close();
     await _storageErrors.close();
+    await _transferStream.close();
   }
 
   void _add(String id, FakeNoteCore core) {

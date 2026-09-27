@@ -69,6 +69,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_StreamSink_list_note_summary_view_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<List<TransferView>>
+  dco_decode_StreamSink_list_transfer_view_Sse(dynamic raw);
+
+  @protected
   RustStreamSink<NoteView> dco_decode_StreamSink_note_view_Sse(dynamic raw);
 
   @protected
@@ -78,10 +82,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AttachmentKindView dco_decode_attachment_kind_view(dynamic raw);
+
+  @protected
+  AttachmentView dco_decode_attachment_view(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
   NoteColour dco_decode_box_autoadd_note_colour(dynamic raw);
+
+  @protected
+  int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
   CollaboratorView dco_decode_collaborator_view(dynamic raw);
@@ -112,6 +128,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<AttachmentView> dco_decode_list_attachment_view(dynamic raw);
 
   @protected
   List<CollaboratorView> dco_decode_list_collaborator_view(dynamic raw);
@@ -162,6 +181,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TagView> dco_decode_list_tag_view(dynamic raw);
 
   @protected
+  List<TransferView> dco_decode_list_transfer_view(dynamic raw);
+
+  @protected
   NoteColour dco_decode_note_colour(dynamic raw);
 
   @protected
@@ -181,6 +203,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   NoteColour? dco_decode_opt_box_autoadd_note_colour(dynamic raw);
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
@@ -231,7 +259,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TagView dco_decode_tag_view(dynamic raw);
 
   @protected
+  TransferStateView dco_decode_transfer_state_view(dynamic raw);
+
+  @protected
+  TransferView dco_decode_transfer_view(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
+
+  @protected
+  BigInt dco_decode_u_64(dynamic raw);
 
   @protected
   int dco_decode_u_8(dynamic raw);
@@ -288,6 +325,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<List<TransferView>>
+  sse_decode_StreamSink_list_transfer_view_Sse(SseDeserializer deserializer);
+
+  @protected
   RustStreamSink<NoteView> sse_decode_StreamSink_note_view_Sse(
     SseDeserializer deserializer,
   );
@@ -301,10 +342,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AttachmentKindView sse_decode_attachment_kind_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AttachmentView sse_decode_attachment_view(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   NoteColour sse_decode_box_autoadd_note_colour(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
   CollaboratorView sse_decode_collaborator_view(SseDeserializer deserializer);
@@ -335,6 +390,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<AttachmentView> sse_decode_list_attachment_view(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<CollaboratorView> sse_decode_list_collaborator_view(
@@ -399,6 +459,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<TagView> sse_decode_list_tag_view(SseDeserializer deserializer);
 
   @protected
+  List<TransferView> sse_decode_list_transfer_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   NoteColour sse_decode_note_colour(SseDeserializer deserializer);
 
   @protected
@@ -420,6 +485,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   NoteColour? sse_decode_opt_box_autoadd_note_colour(
     SseDeserializer deserializer,
   );
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -470,7 +541,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TagView sse_decode_tag_view(SseDeserializer deserializer);
 
   @protected
+  TransferStateView sse_decode_transfer_state_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  TransferView sse_decode_transfer_view(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
+
+  @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_8(SseDeserializer deserializer);
@@ -536,6 +618,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_list_transfer_view_Sse(
+    RustStreamSink<List<TransferView>> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_note_view_Sse(
     RustStreamSink<NoteView> self,
     SseSerializer serializer,
@@ -551,6 +639,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_attachment_kind_view(
+    AttachmentKindView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_attachment_view(
+    AttachmentView self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
@@ -558,6 +658,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     NoteColour self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_collaborator_view(
@@ -594,6 +700,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_attachment_view(
+    List<AttachmentView> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_collaborator_view(
@@ -683,6 +795,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_tag_view(List<TagView> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_transfer_view(
+    List<TransferView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_note_colour(NoteColour self, SseSerializer serializer);
 
   @protected
@@ -708,6 +826,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     NoteColour? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
@@ -770,7 +894,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_tag_view(TagView self, SseSerializer serializer);
 
   @protected
+  void sse_encode_transfer_state_view(
+    TransferStateView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transfer_view(TransferView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);

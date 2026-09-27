@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'note_core.dart';
 import 'note_view.dart';
@@ -145,6 +146,125 @@ class FakeNoteCore implements NoteCore {
     _emit();
   }
 
+  // -- attachments: live at once, as in a note that does not sync ----------
+
+  final List<AttachmentView> _attachments = [];
+  final Map<String, Uint8List> _bytes = {};
+  final Map<String, Uint8List> _thumbnails = {};
+
+  /// Imports that stay pending, for a test of what a screen shows while an
+  /// upload waits. Pending imports are not published until [publishPending].
+  bool holdImports = false;
+  final List<AttachmentView> _pending = [];
+
+  @override
+  Future<AttachmentView> importAttachment(
+    String name,
+    Uint8List bytes, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  }) async {
+    edits.add('importAttachment($name)');
+    final image =
+        bytes.length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 ||
+        bytes.length >= 4 && bytes[0] == 0x89 && bytes[1] == 0x50;
+    final view = AttachmentView(
+      id: 'attachment-${_counter++}',
+      kind: image ? AttachmentKind.image : AttachmentKind.audio,
+      name: name,
+      mime: image ? 'image/png' : 'audio/mpeg',
+      size: bytes.length,
+      durationMs: durationMs,
+      thumbnailWidth: thumbnail == null ? null : 64,
+      thumbnailHeight: thumbnail == null ? null : 64,
+      pending: holdImports,
+    );
+    _bytes[view.id] = bytes;
+    if (thumbnail != null) _thumbnails[view.id] = thumbnail;
+    if (holdImports) {
+      _pending.add(view);
+    } else {
+      _attachments.add(view);
+      _emit();
+    }
+    return view;
+  }
+
+  /// Publish every held import, as the queue does once they are uploaded.
+  void publishPending() {
+    for (final view in _pending) {
+      _attachments.add(_copy(view, pending: false));
+    }
+    _pending.clear();
+    _emit();
+  }
+
+  @override
+  Future<AttachmentView> importAttachmentFile(
+    String path,
+    String name, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  }) => throw UnsupportedError('the fake has no disk');
+
+  @override
+  Future<List<AttachmentView>> pendingAttachments() async =>
+      List.unmodifiable(_pending);
+
+  @override
+  Future<Uint8List?> readAttachment(
+    String id, {
+    bool thumbnail = false,
+  }) async => thumbnail ? _thumbnails[id] : _bytes[id];
+
+  @override
+  Future<void> removeAttachment(String id) async {
+    edits.add('removeAttachment($id)');
+    _attachments.removeWhere((a) => a.id == id);
+    _pending.removeWhere((a) => a.id == id);
+    _bytes.remove(id);
+    _thumbnails.remove(id);
+    _emit();
+  }
+
+  @override
+  Future<void> moveAttachment(String id, int toIndex) async {
+    edits.add('moveAttachment($id, $toIndex)');
+    final index = _attachments.indexWhere((a) => a.id == id);
+    if (index < 0) return;
+    final moved = _attachments.removeAt(index);
+    _attachments.insert(toIndex.clamp(0, _attachments.length), moved);
+    _emit();
+  }
+
+  @override
+  Future<void> describeAttachment(String id, String description) async {
+    edits.add('describeAttachment($id, $description)');
+    final index = _attachments.indexWhere((a) => a.id == id);
+    if (index < 0) return;
+    _attachments[index] = _copy(_attachments[index], description: description);
+    _emit();
+  }
+
+  static AttachmentView _copy(
+    AttachmentView a, {
+    bool? pending,
+    String? description,
+  }) => AttachmentView(
+    id: a.id,
+    kind: a.kind,
+    name: a.name,
+    mime: a.mime,
+    size: a.size,
+    width: a.width,
+    height: a.height,
+    durationMs: a.durationMs,
+    description: description ?? a.description,
+    thumbnailWidth: a.thumbnailWidth,
+    thumbnailHeight: a.thumbnailHeight,
+    pending: pending ?? a.pending,
+  );
+
   @override
   Stream<SyncStatus> watchSync() async* {
     yield _status;
@@ -180,6 +300,7 @@ class FakeNoteCore implements NoteCore {
         for (final i in _items)
           ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
       ],
+      attachments: List.unmodifiable(_attachments),
     );
     _controller.add(_view);
   }

@@ -395,6 +395,7 @@ void main() {
           notes: const [],
           keys: const [],
           masterKey: MasterKeyStore.newKey(),
+          mediaDatabase: 'unused',
         );
         addTearDown(library.close);
         final note = await library.note(
@@ -1111,6 +1112,9 @@ class _RefusingStore implements BrowserStore {
 
   @override
   Future<List<StorageRow>> rows(StorageArea area) => _inner.rows(area);
+
+  @override
+  String get mediaDatabase => _inner.mediaDatabase;
 
   @override
   Future<void> apply(StorageBatch batch) async {

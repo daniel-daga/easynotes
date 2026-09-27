@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_replace`, `send`, `settle`, `spawn_watch_status`, `subscribe`, `turn_away`, `waiting`, `watch_status`, `with_connection`, `wrap_with`, `wrap`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `StatusCell`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `save_cursor`, `settled`, `sign_challenge`, `unsent`
+// These functions are ignored because they are not marked as `pub`: `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `StatusCell`, `Statuses`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -265,6 +265,11 @@ abstract class Library implements RustOpaqueInterface {
   /// from memory and leaves its writes in a queue for
   /// [`Library::take_storage_batches`].
   ///
+  /// `media_database` names the IndexedDB database attachment bytes are kept
+  /// in, apart from the one `notes` and `keys` came from: that one is read
+  /// whole at launch and a photo must never be. A native build, which opens
+  /// this only in tests, keeps them in memory.
+  ///
   /// Not `#[cfg(target_arch = "wasm32")]`, deliberately. There is no browser
   /// in any of this — it is a store, a queue and some rows — so the native
   /// build can open one too, and `app/test/rust_bridge_test.dart` drives the
@@ -274,10 +279,12 @@ abstract class Library implements RustOpaqueInterface {
     required List<StorageRow> notes,
     required List<StorageRow> keys,
     required List<int> masterKey,
+    required String mediaDatabase,
   }) => RustLib.instance.api.crateApiNotesLibraryOpenInBrowser(
     notes: notes,
     keys: keys,
     masterKey: masterKey,
+    mediaDatabase: mediaDatabase,
   );
 
   /// The join requests this device is waiting on.
@@ -326,6 +333,9 @@ abstract class Library implements RustOpaqueInterface {
   /// asked. Asking again — a retry, or another device of this account — is
   /// the same request.
   Future<PendingJoinView> requestJoin({required String link});
+
+  /// Try every failed attachment transfer again now.
+  Future<void> retryTransfers();
 
   /// Every note whose text contains all of the query's words.
   ///
@@ -418,6 +428,12 @@ abstract class Library implements RustOpaqueInterface {
   /// Whether a checklist shows its ticked items, as this person last left it.
   bool tickedShown();
 
+  /// Every attachment transfer that has not finished.
+  ///
+  /// Not `#[frb(sync)]`: reading the channel takes a lock the queue's
+  /// forwarder may hold, which the page's main thread may not wait on.
+  Future<List<TransferView>> transfers();
+
   /// How many batches are waiting. Zero on a device with a disk, always.
   int unwrittenBatches();
 
@@ -429,6 +445,9 @@ abstract class Library implements RustOpaqueInterface {
 
   Stream<SyncStatus> watchSync();
 
+  /// The transfers now and at every change, until [`Library::stop_watching`].
+  Stream<List<TransferView>> watchTransfers();
+
   /// Take an invite down, on the relay and here. Anyone holding the link is
   /// told it does not exist.
   Future<void> withdrawInvite({required String invite});
@@ -438,6 +457,13 @@ abstract class Library implements RustOpaqueInterface {
 abstract class Note implements RustOpaqueInterface {
   Future<String> addItem({required String text});
 
+  /// Set the shared words that describe an attachment to someone who cannot
+  /// see or hear it.
+  Future<void> describeAttachment({
+    required String attachment,
+    required String description,
+  });
+
   /// Say that this person changed the body from `from` to `to`. The core
   /// replays that change onto the body as it now stands, so a peer's edit
   /// that arrived after the screen last drew is kept rather than typed over.
@@ -445,7 +471,51 @@ abstract class Note implements RustOpaqueInterface {
 
   String id();
 
+  /// Attach a file handed over whole: a tab's picked file, or a photo in
+  /// memory. `thumbnail` is a preview the app made, of at most 512 pixels a
+  /// side; `duration_ms` is a sound file's length, if the platform knows it.
+  Future<AttachmentView> importAttachment({
+    required String name,
+    required List<int> bytes,
+    Uint8List? thumbnail,
+    BigInt? durationMs,
+  });
+
+  /// Attach a file on this device's disk, read a chunk at a time rather than
+  /// handed across whole. A browser has no path to give, and is refused.
+  Future<AttachmentView> importAttachmentFile({
+    required String path,
+    required String name,
+    Uint8List? thumbnail,
+    BigInt? durationMs,
+  });
+
+  /// Move an attachment so it lands at `to_index` among the note's.
+  Future<void> moveAttachment({
+    required String attachment,
+    required int toIndex,
+  });
+
   Future<void> moveItem({required String item, required int toIndex});
+
+  /// This device's imports into this note that are not in it yet, oldest
+  /// first. The queue's [`Library::transfers`] says where each one is.
+  Future<List<AttachmentView>> pendingAttachments();
+
+  /// An attachment's bytes, decrypted: its thumbnail, or the whole file.
+  ///
+  /// `None` when they are not on this device yet. They are then asked for,
+  /// and [`Library::transfers`] follows them; ask again when they arrive.
+  /// A pending import is always here.
+  Future<Uint8List?> readAttachment({
+    required String attachment,
+    required bool thumbnail,
+  });
+
+  /// Remove an attachment for everyone on the note, or give up on an import
+  /// of this device's that is not in it yet. The bytes on this device go
+  /// too; nobody else's, and not the relay's (ADR 0027 §5).
+  Future<void> removeAttachment({required String attachment});
 
   Future<void> removeItem({required String item});
 
@@ -480,6 +550,84 @@ abstract class Note implements RustOpaqueInterface {
   Stream<NoteView> watch();
 
   Stream<SyncStatus> watchSync();
+}
+
+/// Whether an attachment is drawn or played.
+enum AttachmentKindView { image, audio }
+
+/// One attachment, as Dart sees it: enough to lay out a gallery or a player
+/// before any bytes are here.
+class AttachmentView {
+  final String id;
+  final AttachmentKindView kind;
+
+  /// The person's file name. For showing, searching and saving a copy; never
+  /// what decides what the bytes are.
+  final String name;
+
+  /// `image/jpeg`, `audio/mp4` and so on, read from the bytes.
+  final String mime;
+
+  /// The original's size in bytes.
+  final BigInt size;
+  final int? width;
+  final int? height;
+  final BigInt? durationMs;
+  final String description;
+  final int? thumbnailWidth;
+  final int? thumbnailHeight;
+
+  /// Saved on this device and not yet in the note: still to be uploaded, or
+  /// uploading. Nobody else can see it yet.
+  final bool pending;
+
+  const AttachmentView({
+    required this.id,
+    required this.kind,
+    required this.name,
+    required this.mime,
+    required this.size,
+    this.width,
+    this.height,
+    this.durationMs,
+    required this.description,
+    this.thumbnailWidth,
+    this.thumbnailHeight,
+    required this.pending,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      kind.hashCode ^
+      name.hashCode ^
+      mime.hashCode ^
+      size.hashCode ^
+      width.hashCode ^
+      height.hashCode ^
+      durationMs.hashCode ^
+      description.hashCode ^
+      thumbnailWidth.hashCode ^
+      thumbnailHeight.hashCode ^
+      pending.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AttachmentView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          kind == other.kind &&
+          name == other.name &&
+          mime == other.mime &&
+          size == other.size &&
+          width == other.width &&
+          height == other.height &&
+          durationMs == other.durationMs &&
+          description == other.description &&
+          thumbnailWidth == other.thumbnailWidth &&
+          thumbnailHeight == other.thumbnailHeight &&
+          pending == other.pending;
 }
 
 class CollaboratorView {
@@ -780,16 +928,26 @@ class NoteView {
   final String body;
   final List<ItemView> items;
 
+  /// Live attachments, in display order. An import of this device's that is
+  /// still waiting to be published is not here: see
+  /// [`Note::pending_attachments`].
+  final List<AttachmentView> attachments;
+
   const NoteView({
     required this.kind,
     required this.title,
     required this.body,
     required this.items,
+    required this.attachments,
   });
 
   @override
   int get hashCode =>
-      kind.hashCode ^ title.hashCode ^ body.hashCode ^ items.hashCode;
+      kind.hashCode ^
+      title.hashCode ^
+      body.hashCode ^
+      items.hashCode ^
+      attachments.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -799,7 +957,8 @@ class NoteView {
           kind == other.kind &&
           title == other.title &&
           body == other.body &&
-          items == other.items;
+          items == other.items &&
+          attachments == other.attachments;
 }
 
 /// A join request this device is waiting on.
@@ -1166,4 +1325,74 @@ class TagView {
           id == other.id &&
           name == other.name &&
           notes == other.notes;
+}
+
+/// Where one attachment transfer is.
+enum TransferStateView {
+  /// Saved here and waiting for its note to catch up with the relay —
+  /// "Waiting to upload" — or, for a download, for a connection.
+  waiting,
+
+  /// `done` of `of` chunks moved in this attempt.
+  running,
+
+  /// Failed for a reason the network explains; it will be tried again.
+  retrying,
+
+  /// Refused, and waiting for [`Library::retry_transfers`]. An upload's
+  /// local copy is kept.
+  failed,
+}
+
+/// One transfer that has not finished. A finished one is not listed: an
+/// upload is then in the note, and a download is on this device.
+class TransferView {
+  final String note;
+  final String attachment;
+
+  /// Up (an import going to the relay) or down.
+  final bool upload;
+
+  /// For a download: the thumbnail rather than the original.
+  final bool thumbnail;
+  final TransferStateView state;
+  final int done;
+  final int of;
+  final String? error;
+
+  const TransferView({
+    required this.note,
+    required this.attachment,
+    required this.upload,
+    required this.thumbnail,
+    required this.state,
+    required this.done,
+    required this.of,
+    this.error,
+  });
+
+  @override
+  int get hashCode =>
+      note.hashCode ^
+      attachment.hashCode ^
+      upload.hashCode ^
+      thumbnail.hashCode ^
+      state.hashCode ^
+      done.hashCode ^
+      of.hashCode ^
+      error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransferView &&
+          runtimeType == other.runtimeType &&
+          note == other.note &&
+          attachment == other.attachment &&
+          upload == other.upload &&
+          thumbnail == other.thumbnail &&
+          state == other.state &&
+          done == other.done &&
+          of == other.of &&
+          error == other.error;
 }

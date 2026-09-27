@@ -8,6 +8,10 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'attachments.dart';
+
+export 'attachments.dart';
+
 @immutable
 class ItemView {
   const ItemView({
@@ -55,13 +59,15 @@ class NoteView {
     required this.items,
     this.kind = NoteKind.checklist,
     this.body = '',
+    this.attachments = const [],
   });
 
   const NoteView.empty()
     : title = '',
       items = const [],
       kind = NoteKind.checklist,
-      body = '';
+      body = '',
+      attachments = const [];
 
   final NoteKind kind;
   final String title;
@@ -75,6 +81,10 @@ class NoteView {
   /// devices showing the same data show it in the same sequence.
   final List<ItemView> items;
 
+  /// Live attachments, in display order, whatever [kind] says. This device's
+  /// imports that are not in the note yet are [NoteCore.pendingAttachments].
+  final List<AttachmentView> attachments;
+
   int get checkedCount => items.where((i) => i.checked).length;
 
   @override
@@ -83,8 +93,15 @@ class NoteView {
       other.kind == kind &&
       other.title == title &&
       other.body == body &&
-      listEquals(other.items, items);
+      listEquals(other.items, items) &&
+      listEquals(other.attachments, attachments);
 
   @override
-  int get hashCode => Object.hash(kind, title, body, Object.hashAll(items));
+  int get hashCode => Object.hash(
+    kind,
+    title,
+    body,
+    Object.hashAll(items),
+    Object.hashAll(attachments),
+  );
 }

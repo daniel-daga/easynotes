@@ -111,6 +111,57 @@ class RustNoteCore implements NoteCore {
   Future<void> removeItem(String itemId) => _note.removeItem(item: itemId);
 
   @override
+  Future<AttachmentView> importAttachment(
+    String name,
+    Uint8List bytes, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  }) async => toAttachment(
+    await _note.importAttachment(
+      name: name,
+      bytes: bytes,
+      thumbnail: thumbnail,
+      durationMs: durationMs == null ? null : BigInt.from(durationMs),
+    ),
+  );
+
+  @override
+  Future<AttachmentView> importAttachmentFile(
+    String path,
+    String name, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  }) async => toAttachment(
+    await _note.importAttachmentFile(
+      path: path,
+      name: name,
+      thumbnail: thumbnail,
+      durationMs: durationMs == null ? null : BigInt.from(durationMs),
+    ),
+  );
+
+  @override
+  Future<List<AttachmentView>> pendingAttachments() async => [
+    for (final a in await _note.pendingAttachments()) toAttachment(a),
+  ];
+
+  @override
+  Future<Uint8List?> readAttachment(String id, {bool thumbnail = false}) =>
+      _note.readAttachment(attachment: id, thumbnail: thumbnail);
+
+  @override
+  Future<void> removeAttachment(String id) =>
+      _note.removeAttachment(attachment: id);
+
+  @override
+  Future<void> moveAttachment(String id, int toIndex) =>
+      _note.moveAttachment(attachment: id, toIndex: toIndex);
+
+  @override
+  Future<void> describeAttachment(String id, String description) =>
+      _note.describeAttachment(attachment: id, description: description);
+
+  @override
   SyncStatus get syncStatus => toStatus(_note.syncStatus());
 
   @override
@@ -178,5 +229,26 @@ class RustNoteCore implements NoteCore {
       for (final i in v.items)
         ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
     ],
+    attachments: [for (final a in v.attachments) toAttachment(a)],
+  );
+
+  /// Sizes and durations are `u64` in Rust and a `BigInt` across the bridge;
+  /// narrowed here, the one layer that knows. Safe: a file is at most 50 MB.
+  static AttachmentView toAttachment(rust.AttachmentView a) => AttachmentView(
+    id: a.id,
+    kind: switch (a.kind) {
+      rust.AttachmentKindView.image => AttachmentKind.image,
+      rust.AttachmentKindView.audio => AttachmentKind.audio,
+    },
+    name: a.name,
+    mime: a.mime,
+    size: a.size.toInt(),
+    width: a.width,
+    height: a.height,
+    durationMs: a.durationMs?.toInt(),
+    description: a.description,
+    thumbnailWidth: a.thumbnailWidth,
+    thumbnailHeight: a.thumbnailHeight,
+    pending: a.pending,
   );
 }
