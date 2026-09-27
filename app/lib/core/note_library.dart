@@ -482,5 +482,13 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   Stream<SyncStatus> watchSync();
 
+  /// Every attachment transfer that has not finished, now and at every
+  /// change: uploads of this device's imports, and downloads a screen asked
+  /// for by reading an attachment that was not here.
+  Stream<List<AttachmentTransfer>> watchTransfers();
+
+  /// Try every failed attachment transfer again now.
+  void retryTransfers();
+
   Future<void> dispose();
 }

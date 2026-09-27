@@ -138,6 +138,160 @@ void main() {
     return (guest, core);
   }
 
+  group('attachments', () {
+    /// Ask for an attachment's bytes until they are here, as a screen asks
+    /// again when the transfers say they arrived.
+    Future<Uint8List> fetched(
+      NoteCore core,
+      String id, {
+      bool thumbnail = false,
+    }) async {
+      final deadline = DateTime.now().add(patience);
+      while (true) {
+        final bytes = await core.readAttachment(id, thumbnail: thumbnail);
+        if (bytes != null) return bytes;
+        if (DateTime.now().isAfter(deadline)) {
+          fail('the attachment never arrived');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    test(
+      'a photo on a device with no relay is attached at once and kept',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('easynotes-media');
+        addTearDown(() => dir.delete(recursive: true));
+        final key = MasterKeyStore.newKey();
+        final photo = _png(640, 480, (1 << 20) + 77);
+        final thumb = _png(64, 48, 600);
+
+        var library = await RustNoteLibrary.open(dir.path, key);
+        final id = await library.createNote();
+        var core = await library.openNote(id);
+        final added = await core.importAttachment(
+          'kitchen.png',
+          photo,
+          thumbnail: thumb,
+        );
+        expect(added.pending, isTrue);
+        expect(added.kind, AttachmentKind.image);
+        expect(added.width, 640);
+        // No relay to wait for: the queue publishes it straight away.
+        await _until(
+          core.watch(),
+          (view) => view.attachments.any((a) => a.id == added.id),
+          'the import was never published into the note',
+        );
+        expect(await core.pendingAttachments(), isEmpty);
+        expect(await core.readAttachment(added.id), photo);
+        expect(await core.readAttachment(added.id, thumbnail: true), thumb);
+        await core.dispose();
+        await library.dispose();
+
+        library = await RustNoteLibrary.open(dir.path, key);
+        core = await library.openNote(id);
+        expect(core.current.attachments.single.name, 'kitchen.png');
+        expect(await core.readAttachment(added.id), photo);
+
+        // Anything that is not a picture or a sound file is refused before a
+        // byte of it is kept.
+        await expectLater(
+          core.importAttachment(
+            'notes.txt',
+            Uint8List.fromList(utf8.encode('plain words')),
+          ),
+          throwsA(anything),
+        );
+        await core.removeAttachment(added.id);
+        await _until(
+          core.watch(),
+          (view) => view.attachments.isEmpty,
+          'the attachment was never removed',
+        );
+        await core.dispose();
+        await library.dispose();
+      },
+      skip: skip,
+    );
+
+    test(
+      'a photo reaches the other person once uploaded, and leaves with its removal',
+      () async {
+        final (aLibrary, a) = await open();
+        final (bLibrary, b) = await share(aLibrary, aLibrary.notes.single.id);
+        final photo = _png(1600, 1200, (2 << 20) + 5);
+        final thumb = _png(320, 240, 4000);
+
+        final uploads = <AttachmentTransfer>[];
+        final watching = aLibrary.watchTransfers().listen(
+          (transfers) => uploads.addAll(transfers.where((t) => t.upload)),
+        );
+        addTearDown(watching.cancel);
+
+        final added = await a.importAttachment(
+          'market.png',
+          photo,
+          thumbnail: thumb,
+        );
+        await _until(
+          b.watch(),
+          (view) => view.attachments.any((x) => x.id == added.id),
+          'B never saw the photo',
+        );
+        await _until(
+          a.watch(),
+          (view) => view.attachments.any((x) => x.id == added.id),
+          'A never published its own photo',
+        );
+        expect(await a.pendingAttachments(), isEmpty);
+        expect(uploads, isNotEmpty, reason: 'the queue said nothing');
+
+        // B has the descriptor and not the bytes; asking fetches them.
+        expect(await fetched(b, added.id, thumbnail: true), thumb);
+        expect(await fetched(b, added.id), photo);
+        final shown = b.current.attachments.single;
+        expect(shown.name, 'market.png');
+        expect(shown.thumbnailWidth, 320);
+
+        await a.removeAttachment(added.id);
+        await _until(
+          b.watch(),
+          (view) => view.attachments.isEmpty,
+          'B still shows a removed photo',
+        );
+        await bLibrary
+            .watchTransfers()
+            .firstWhere((transfers) => transfers.isEmpty)
+            .timeout(patience);
+      },
+      skip: skip,
+    );
+    test(
+      'an import made offline waits for the relay rather than being published',
+      () async {
+        final (aLibrary, a) = await open();
+        final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+        await aLibrary.disconnect();
+
+        final added = await a.importAttachment('later.png', _png(8, 8, 3000));
+        // Long enough for a queue that wrongly treated this as a note with no
+        // relay to have published it.
+        await Future<void>.delayed(const Duration(seconds: 1));
+        expect(a.current.attachments, isEmpty);
+        expect((await a.pendingAttachments()).single.id, added.id);
+
+        await aLibrary.connect(relayUrl);
+        await _until(
+          b.watch(),
+          (view) => view.attachments.any((x) => x.id == added.id),
+          'B never saw the photo made offline',
+        );
+      },
+      skip: skip,
+    );
+  });
+
   group('two devices through a relay', () {
     test(
       'a device that joins sees the list, and edits flow both ways',
@@ -883,4 +1037,19 @@ Future<void> _untilStatus(
   } on TimeoutException {
     fail('$complaint (last status: ${current()})');
   }
+}
+
+/// A PNG header claiming [w] × [h], then filler to [len] bytes. Nothing on
+/// this path decodes pixels, so a header is all a picture has to be.
+Uint8List _png(int w, int h, int len) {
+  final bytes = Uint8List(len);
+  const head = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D];
+  bytes.setAll(0, [...head, ...ascii.encode('IHDR')]);
+  final data = ByteData.sublistView(bytes);
+  data.setUint32(16, w);
+  data.setUint32(20, h);
+  for (var i = 24; i < len; i++) {
+    bytes[i] = (i * 13) % 251;
+  }
+  return bytes;
 }

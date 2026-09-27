@@ -13,6 +13,8 @@
 /// [NoteLibrary].
 library;
 
+import 'dart:typed_data';
+
 import 'note_view.dart';
 import 'sync_status.dart';
 
@@ -47,6 +49,46 @@ abstract class NoteCore {
   Future<void> moveItem(String itemId, int toIndex);
 
   Future<void> removeItem(String itemId);
+
+  // -- attachments ----------------------------------------------------------
+
+  /// Attach a file handed over whole: a tab's picked file, or a photo in
+  /// memory. [thumbnail] is a preview of at most 512 pixels a side that the
+  /// app made; [durationMs] is a sound file's length, if the platform knows
+  /// it. The file is saved on this device when this returns, and is one of
+  /// [pendingAttachments] until it is in the note.
+  Future<AttachmentView> importAttachment(
+    String name,
+    Uint8List bytes, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  });
+
+  /// The same for a file on this device's disk, read a chunk at a time. Not
+  /// on the web, which has no paths.
+  Future<AttachmentView> importAttachmentFile(
+    String path,
+    String name, {
+    Uint8List? thumbnail,
+    int? durationMs,
+  });
+
+  /// This device's imports into this note that are not in it yet.
+  Future<List<AttachmentView>> pendingAttachments();
+
+  /// An attachment's bytes — its thumbnail, or the whole file — or null while
+  /// they are not on this device, in which case they are asked for and
+  /// [NoteLibrary.watchTransfers] follows them.
+  Future<Uint8List?> readAttachment(String id, {bool thumbnail = false});
+
+  /// Remove an attachment for everyone on the note, or give up on an import
+  /// that is not in it yet.
+  Future<void> removeAttachment(String id);
+
+  /// Move an attachment so it lands at [toIndex] among the note's.
+  Future<void> moveAttachment(String id, int toIndex);
+
+  Future<void> describeAttachment(String id, String description);
 
   /// The sync status of this note now, and every change to it.
   ///

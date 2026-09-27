@@ -38,6 +38,12 @@ abstract interface class BrowserStore {
   /// writes are issued, because the caller uses that to know the edit is kept.
   Future<void> apply(rust.StorageBatch batch);
 
+  /// The IndexedDB database attachment bytes are kept in, beside this one.
+  /// Rust opens it itself: it is never read whole, and a photo has no business
+  /// crossing into Dart to be stored. Held by whoever holds this store, since
+  /// only that tab has the library open.
+  String get mediaDatabase;
+
   Future<void> close();
 }
 
@@ -82,6 +88,11 @@ class MemoryBrowserStore implements BrowserStore {
       }
     }
   }
+
+  /// A native build keeps a memory library's attachments in memory and
+  /// ignores this; a tab with no IndexedDB never reaches Rust with it.
+  @override
+  String get mediaDatabase => 'easynotes-media-memory';
 
   @override
   Future<void> close() async {}

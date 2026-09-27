@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../src/rust/api/notes.dart' as rust;
+import 'attachments.dart';
 import 'browser_store.dart';
 import 'note_core.dart';
 import 'note_library.dart';
@@ -34,6 +35,10 @@ class RustNoteLibrary implements NoteLibrary {
       (status) => _sync.add(RustNoteCore.toStatus(status)),
       onError: _sync.addError,
     );
+    _transfersUpstream = _library.watchTransfers().listen((transfers) {
+      _lastTransfers = [for (final t in transfers) _toTransfer(t)];
+      _transfers.add(_lastTransfers);
+    }, onError: _transfers.addError);
     if (_db != null) {
       _drain = Timer.periodic(writeInterval, (_) => _writeOut());
       // And once more the moment the tab goes away, because [writeInterval] is
@@ -80,6 +85,7 @@ class RustNoteLibrary implements NoteLibrary {
         notes: await db.rows(rust.StorageArea.notes),
         keys: await db.rows(rust.StorageArea.keys),
         masterKey: masterKey,
+        mediaDatabase: db.mediaDatabase,
       ),
       canJoin: true,
       db: db,
@@ -158,6 +164,9 @@ class RustNoteLibrary implements NoteLibrary {
   late final StreamSubscription<List<rust.NoteSummaryView>> _upstream;
   final _sync = StreamController<SyncStatus>.broadcast();
   late final StreamSubscription<rust.SyncStatus> _syncUpstream;
+  final _transfers = StreamController<List<AttachmentTransfer>>.broadcast();
+  late final StreamSubscription<List<rust.TransferView>> _transfersUpstream;
+  List<AttachmentTransfer> _lastTransfers = const [];
 
   @override
   final bool canJoin;
@@ -486,6 +495,32 @@ class RustNoteLibrary implements NoteLibrary {
   void sendHeldEdits() => _library.sendHeldEdits();
 
   @override
+  Stream<List<AttachmentTransfer>> watchTransfers() async* {
+    yield _lastTransfers;
+    yield* _transfers.stream;
+  }
+
+  @override
+  void retryTransfers() => _library.retryTransfers();
+
+  static AttachmentTransfer _toTransfer(rust.TransferView t) =>
+      AttachmentTransfer(
+        note: t.note,
+        attachment: t.attachment,
+        upload: t.upload,
+        thumbnail: t.thumbnail,
+        state: switch (t.state) {
+          rust.TransferStateView.waiting => TransferState.waiting,
+          rust.TransferStateView.running => TransferState.running,
+          rust.TransferStateView.retrying => TransferState.retrying,
+          rust.TransferStateView.failed => TransferState.failed,
+        },
+        done: t.done,
+        of: t.of,
+        error: t.error,
+      );
+
+  @override
   SyncStatus get syncStatus => RustNoteCore.toStatus(_library.syncStatus());
 
   @override
@@ -579,8 +614,10 @@ class RustNoteLibrary implements NoteLibrary {
     await _library.stopWatching();
     await _upstream.cancel();
     await _syncUpstream.cancel();
+    await _transfersUpstream.cancel();
     await _notes.close();
     await _sync.close();
+    await _transfers.close();
     await _storage.close();
     // And last, the store itself. This has to be asked for: the bridge frees
     // the Rust object when Dart collects it, which is not a moment this app

@@ -58,7 +58,7 @@ Future<BrowserStore> openIndexedDb(String name) async {
   }
 
   try {
-    return IndexedDbStore._(await _open(name), unlock);
+    return IndexedDbStore._(await _open(name), unlock, '$name-media');
   } on Object {
     await unlock();
     rethrow;
@@ -66,10 +66,13 @@ Future<BrowserStore> openIndexedDb(String name) async {
 }
 
 class IndexedDbStore implements BrowserStore {
-  IndexedDbStore._(this._db, this._unlock);
+  IndexedDbStore._(this._db, this._unlock, this.mediaDatabase);
 
   final web.IDBDatabase _db;
   final Future<void> Function() _unlock;
+
+  @override
+  final String mediaDatabase;
 
   @override
   Future<List<rust.StorageRow>> rows(rust.StorageArea area) async {
