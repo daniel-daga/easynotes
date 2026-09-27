@@ -646,6 +646,144 @@ async fn the_health_check_is_never_rate_limited() {
     }
 }
 
+/// Readiness answers with the relay's version while the store is there.
+#[tokio::test]
+async fn ready_reports_the_version_while_the_store_answers() {
+    let (relay, _) = relay().await;
+    let r = reqwest::get(format!("{}/v1/ready", relay.http_base()))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// And refuses, while health still says the process is up, once it is not:
+/// the one state monitoring has to tell apart from a healthy relay.
+#[tokio::test]
+async fn ready_fails_when_the_store_does_not_answer() {
+    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let ready = reqwest::get(format!("{}/v1/ready", relay.http_base()))
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let text = ready.text().await.unwrap();
+    assert!(
+        !text.contains("database is gone"),
+        "the store's error reached a public response: {text}"
+    );
+    let health = reqwest::get(format!("{}/v1/health", relay.http_base()))
+        .await
+        .unwrap();
+    assert!(health.status().is_success());
+}
+
+/// A store whose database has gone away: every call fails.
+struct Unreachable;
+
+fn gone<T>() -> easynotes_relay::error::Result<T> {
+    Err(easynotes_relay::error::RelayError::Storage(
+        "database is gone".into(),
+    ))
+}
+
+#[async_trait::async_trait]
+impl RelayStore for Unreachable {
+    async fn append_within(
+        &self,
+        _: &str,
+        _: &[u8],
+        _: &easynotes_relay::Limits,
+    ) -> easynotes_relay::error::Result<easynotes_relay::Appended> {
+        gone()
+    }
+    async fn compact(
+        &self,
+        _: &str,
+        _: &easynotes_relay::quota::Proposal<'_>,
+    ) -> easynotes_relay::error::Result<Result<i64, easynotes_relay::quota::Refusal>> {
+        gone()
+    }
+    async fn topic(
+        &self,
+        _: &str,
+    ) -> easynotes_relay::error::Result<easynotes_relay::quota::Topic> {
+        gone()
+    }
+    async fn since(
+        &self,
+        _: &str,
+        _: i64,
+    ) -> easynotes_relay::error::Result<Vec<easynotes_relay::store::Stored>> {
+        gone()
+    }
+    async fn page(
+        &self,
+        _: &str,
+        _: i64,
+        _: usize,
+    ) -> easynotes_relay::error::Result<Vec<easynotes_relay::store::Stored>> {
+        gone()
+    }
+    async fn head(&self, _: &str) -> easynotes_relay::error::Result<i64> {
+        gone()
+    }
+    async fn save_auth_challenge(
+        &self,
+        _: &[u8],
+        _: &[u8; 32],
+        _: i64,
+    ) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn consume_auth_challenge(
+        &self,
+        _: &[u8],
+        _: i64,
+    ) -> easynotes_relay::error::Result<Option<[u8; 32]>> {
+        gone()
+    }
+    async fn create_invite(
+        &self,
+        _: easynotes_relay::store::NewInvite<'_>,
+        _: i64,
+    ) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn invite(
+        &self,
+        _: &str,
+    ) -> easynotes_relay::error::Result<Option<easynotes_relay::store::Invite>> {
+        gone()
+    }
+    async fn add_invite_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[u8],
+        _: i64,
+    ) -> easynotes_relay::error::Result<easynotes_relay::store::AddRequest> {
+        gone()
+    }
+    async fn answer_invite_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&[u8]>,
+        _: i64,
+    ) -> easynotes_relay::error::Result<easynotes_relay::store::Answered> {
+        gone()
+    }
+    async fn withdraw_invite(&self, _: &str) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn check(&self) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+}
+
 #[test]
 fn caps_match_the_core() {
     // The relay's cap and the core's must agree, or one of them silently becomes

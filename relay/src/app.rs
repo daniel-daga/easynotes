@@ -316,12 +316,31 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         // polls, it costs nothing to answer, and a relay that fails its health
         // check because it is busy gets taken out of rotation for being busy.
         .route("/v1/health", get(|| async { StatusCode::OK }))
+        // Readiness, unlike health, asks the database. It is what monitoring
+        // should alert on: a relay that is up with its store gone accepts
+        // sockets and then fails every write. Outside the limiter for the same
+        // reason as health.
+        .route("/v1/ready", get(ready))
         .layer(axum::middleware::from_fn(move |req, next| {
             let limits = limits.clone();
             async move { enforce_limits(limits, req, next).await }
         }))
         .layer(cors)
         .with_state(state)
+}
+
+/// `200` with the relay's version when the store answers, `503` when it does
+/// not. The reason is logged rather than returned: the endpoint is public, and
+/// a database error can name hosts and users.
+async fn ready(State(state): State<Arc<AppState>>) -> Response {
+    let version = serde_json::json!({ "version": env!("CARGO_PKG_VERSION") });
+    match state.store.check().await {
+        Ok(()) => Json(version).into_response(),
+        Err(error) => {
+            tracing::warn!(%error, "readiness check failed: the store did not answer");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(version)).into_response()
+        }
+    }
 }
 
 /// Refuse a caller that is asking too often, before the handler does any work.

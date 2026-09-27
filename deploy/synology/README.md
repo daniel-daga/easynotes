@@ -65,7 +65,9 @@ Your router should forward public TCP 443 to the NAS. Do not forward port 18080
 or Postgres port 5432. Keep the relay URL as `wss://your-relay-hostname` in
 clients; the app changes it to `https://` for its HTTP handshake requests.
 
-Check `https://your-relay-hostname/v1/health` returns HTTP 200. Then point a
+Check `https://your-relay-hostname/v1/health` returns HTTP 200, and that
+`https://your-relay-hostname/v1/ready` returns HTTP 200 with the relay's
+version. Then point a
 client at `https://your-relay-hostname` and verify it can sync; the websocket
 endpoint is `/v1/sync`.
 
@@ -80,11 +82,30 @@ Docker. Use this script as the command:
 ```
 
 Change the path if your repository is elsewhere. It writes a compressed
-Postgres dump under `/volume1/docker/easynotes-backups`. Configure Hyper Backup
-to copy that folder to a different device or cloud storage: a backup stored
-only on the NAS will not protect against NAS failure. Test restoring a dump
-before relying on it. To restore into an empty database, gunzip a dump and pipe
-it to `docker exec -i easynotes-db psql -U easynotes easynotes`.
+Postgres dump under `/volume1/docker/easynotes-backups`, checks that pg_dump
+finished and the archive is intact, and only then deletes dumps older than
+`BACKUP_KEEP_DAYS` (30 by default). It exits non-zero when any of that fails:
+tick **Send run details by email → only when the script terminates abnormally**
+in the task's settings, so a failed backup is an email rather than a surprise.
+Configure Hyper Backup to copy that folder to a different device or cloud
+storage, with encryption and a retention of its own: a backup stored only on
+the NAS will not protect against NAS failure.
+
+A backup nobody has restored is a hope. Schedule a second task, monthly, that
+restores the newest dump into a throwaway database and checks it holds the
+relay's tables — it never touches the live one:
+
+```sh
+/volume1/docker/easynotes/deploy/synology/restore-check.sh
+```
+
+To restore for real, into an empty database, gunzip a dump and pipe it to
+`docker exec -i easynotes-db psql -U easynotes easynotes`. Devices that synced
+after the dump was taken notice the relay went backwards, replay it and resend
+what they still hold ([ADR 0004](../../docs/adr/0004-sync-engine.md), "Relay
+restore recovery"); history they have already compacted away is not resent. So
+treat a real restore as an incident, and check that two devices converge before
+calling it over.
 
 To update, copy/pull the new repository version, then use **Project → Action →
 Build** and **Start** in Container Manager. The database directory is separate
@@ -138,6 +159,9 @@ keys the relay never holds.
 - **Relay does not start:** check that Postgres is healthy and inspect the
   relay logs for a database URL or origin configuration error.
 
-The relay currently has no authentication on `/v1/health`; it returns only a
-plain success status. Its public write and sync routes require the device-key
-handshake and use the relay's built-in rate limits.
+Two unauthenticated status routes exist for monitoring. `/v1/health` says the
+process is up and nothing else. `/v1/ready` also asks the database and answers
+503 when it does not reply, with only the relay's version in the body; alert on
+that one, since a relay whose database is gone still accepts connections and
+then fails every write. The public write and sync routes require the
+device-key handshake and use the relay's built-in rate limits.

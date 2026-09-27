@@ -32,6 +32,12 @@ fn note() -> String {
 }
 
 #[tokio::test]
+async fn answers_the_readiness_check() {
+    let store = store_or_skip!();
+    store.check().await.unwrap();
+}
+
+#[tokio::test]
 async fn assigns_dense_increasing_sequence_numbers() {
     let store = store_or_skip!();
     let note = note();

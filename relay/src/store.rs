@@ -142,6 +142,13 @@ pub trait RelayStore: Send + Sync + 'static {
 
     /// Remove an invite and everything on it. Not an error if it is not there.
     async fn withdraw_invite(&self, id: &str) -> Result<()>;
+
+    /// Whether the store can answer a query right now. What `/v1/ready`
+    /// reports: a relay whose database has gone away still accepts
+    /// connections, and only this says it cannot keep what they send.
+    async fn check(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct NewInvite<'a> {
@@ -678,6 +685,14 @@ impl PostgresStore {
 
 #[async_trait]
 impl RelayStore for PostgresStore {
+    async fn check(&self) -> Result<()> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(pg)
+    }
+
     async fn append_within(
         &self,
         note: &str,
