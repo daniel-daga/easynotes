@@ -9,7 +9,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show PlatformException;
-import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tz_data;
@@ -27,7 +26,6 @@ class ReminderScheduler {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
   StreamSubscription<List<Reminder>>? _updates;
-  AppLifecycleListener? _lifecycle;
   final Map<String, Timer> _inProcessTimers = {};
   bool _started = false;
   Future<void>? _reconciling;
@@ -48,10 +46,6 @@ class ReminderScheduler {
     }
     await initializeLocalNotifications();
     _updates = _library.watchReminders().listen((_) => unawaited(reconcile()));
-    // Exact-alarm access is granted in a system settings page, not a dialog,
-    // so the only sign a person has granted (or revoked) it is coming back to
-    // the app. Rescheduling then moves every reminder to the matching mode.
-    _lifecycle = AppLifecycleListener(onResume: () => unawaited(reconcile()));
     await reconcile();
   }
 
@@ -419,8 +413,6 @@ class ReminderScheduler {
 
   Future<void> dispose({bool cancelScheduled = false}) async {
     _started = false;
-    _lifecycle?.dispose();
-    _lifecycle = null;
     await _updates?.cancel();
     await _reconciling;
     for (final timer in _inProcessTimers.values) {

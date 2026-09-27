@@ -221,4 +221,21 @@ void main() {
     expect(again.selected.id, previous.id);
     expect(opened.first.disposed, isTrue);
   });
+
+  test('reopening after an account is deleted replaces the library in place, '
+      'on the same profile', () async {
+    final first = _Library('local');
+    final s = session(first);
+    final profile = s.profile;
+    await s.reopen();
+    expect(s.profile.id, profile.id);
+    expect(first.disposed, isTrue);
+    expect(s.library, same(opened.single));
+    expect(s.generation, 1);
+    expect(events, [
+      'release(local)',
+      'open(null, connect: true)',
+      'install(local)',
+    ]);
+  });
 }

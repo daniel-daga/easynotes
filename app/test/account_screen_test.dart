@@ -331,4 +331,140 @@ void main() {
       );
     });
   });
+
+  group('deleting the account', () {
+    const relay = RelayProfile(id: 'relay', url: 'https://relay.example');
+
+    Future<void> pumpWith(
+      WidgetTester tester,
+      FakeNoteLibrary library, {
+      RelayProfile profile = relay,
+      Future<void> Function()? onDeleted,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => AccountScreen(
+                      library: library,
+                      profile: profile,
+                      onDeleted: onDeleted,
+                    ),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openDelete(WidgetTester tester) async {
+      final tile = find.byKey(const Key('delete-account'));
+      await tester.scrollUntilVisible(
+        tile,
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.ensureVisible(tile);
+      await tester.pumpAndSettle();
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('says what goes and what cannot, and needs the word typed', (
+      tester,
+    ) async {
+      final library = FakeNoteLibrary()..setUpSharing();
+      await pumpWith(tester, library);
+      await openDelete(tester);
+      expect(find.textContaining('https://relay.example'), findsWidgets);
+      expect(
+        find.textContaining('keep what is already on their devices'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('stay theirs'), findsOneWidget);
+      expect(find.textContaining('up to 30 days'), findsOneWidget);
+
+      final confirm = find.byKey(const Key('delete-account-confirm'));
+      expect(tester.widget<FilledButton>(confirm).onPressed, isNull);
+      await tester.enterText(
+        find.byKey(const Key('delete-account-word')),
+        'del',
+      );
+      await tester.pump();
+      expect(tester.widget<FilledButton>(confirm).onPressed, isNull);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(library.calls, isNot(contains('deleteAccount()')));
+    });
+
+    testWidgets('deletes, returns to the start and reopens the profile', (
+      tester,
+    ) async {
+      final library = FakeNoteLibrary()..setUpSharing();
+      var reopened = 0;
+      await pumpWith(tester, library, onDeleted: () async => reopened++);
+      await openDelete(tester);
+      await tester.enterText(
+        find.byKey(const Key('delete-account-word')),
+        'Delete',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('delete-account-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(library.calls, contains('deleteAccount()'));
+      expect(library.hasAccount, isFalse);
+      expect(reopened, 1);
+      expect(find.byType(AccountScreen), findsNothing);
+      expect(find.byKey(const Key('account-deleted')), findsOneWidget);
+    });
+
+    testWidgets('a relay that refuses leaves the person where they were, '
+        'told why', (tester) async {
+      final library = FakeNoteLibrary()
+        ..setUpSharing()
+        ..deleteAccountFails = 'The relay could not delete this account';
+      var reopened = 0;
+      await pumpWith(tester, library, onDeleted: () async => reopened++);
+      await openDelete(tester);
+      await tester.enterText(
+        find.byKey(const Key('delete-account-word')),
+        'delete',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('delete-account-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(library.hasAccount, isTrue);
+      expect(reopened, 0);
+      expect(find.byType(AccountScreen), findsOneWidget);
+      expect(
+        find.textContaining('could not delete this account'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a profile with no relay says nothing was ever on one', (
+      tester,
+    ) async {
+      await pumpWith(
+        tester,
+        FakeNoteLibrary(),
+        profile: const RelayProfile(id: 'local', url: null),
+      );
+      await openDelete(tester);
+      expect(
+        find.textContaining('Nothing here was ever on a relay'),
+        findsOneWidget,
+      );
+    });
+  });
 }

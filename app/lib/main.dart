@@ -237,6 +237,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     joinAlerts = SystemJoinAlerts(library);
     _lifecycle = AppLifecycleListener(
       onHide: library.sendHeldEdits,
+      // Also how a grant of exact alarms takes effect: it is made on a system
+      // settings page, and coming back is the only sign of it.
       onResume: () => unawaited(reminders.reconcile()),
     );
   }
@@ -289,11 +291,12 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
         : widget.initialSharedText;
     _launchPayloadsDelivered = true;
     return NoteListScreen(
-      key: ValueKey(_session.profile.id),
+      key: ValueKey('${_session.profile.id}/${_session.generation}'),
       library: library,
       profile: _session.profile,
       profiles: _session.profiles,
       onSwitchRelay: _session.switchTo,
+      onAccountDeleted: _session.reopen,
       initialInviteLink: initialInvite,
       inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
       initialSharedText: initialShare,

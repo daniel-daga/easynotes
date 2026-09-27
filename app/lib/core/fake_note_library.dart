@@ -676,6 +676,21 @@ class FakeNoteLibrary implements NoteLibrary {
     return phrase;
   }
 
+  /// What [deleteAccount] throws, when a test wants the relay to refuse.
+  Object? deleteAccountFails;
+
+  @override
+  Future<void> deleteAccount() async {
+    calls.add('deleteAccount()');
+    if (deleteAccountFails case final error?) throw error;
+    for (final id in _cores.keys.toList()) {
+      await forgetNote(id);
+    }
+    _hasAccount = false;
+    _profileName = null;
+    _emit();
+  }
+
   @override
   Future<void> adoptAccount(String words) async {
     calls.add('adoptAccount($words)');

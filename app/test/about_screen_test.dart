@@ -35,6 +35,10 @@ void main() {
       'showing blanks', (tester) async {
     await pump(tester, const RelayProfile(id: 'local', url: null));
     expect(find.text('Development build'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.textContaining('not published with a privacy policy'),
+      100,
+    );
     expect(
       find.textContaining('not published with a privacy policy'),
       findsOneWidget,

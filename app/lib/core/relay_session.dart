@@ -54,6 +54,11 @@ class RelaySession extends ChangeNotifier {
 
   NoteLibrary get library => _library;
   RelayProfile get profile => _profile;
+
+  /// How many times this profile's library has been opened again in place,
+  /// so that whatever shows it can tell a fresh library from the one before.
+  int get generation => _generation;
+  int _generation = 0;
   bool get switching => _switching != null;
 
   /// Close this profile's library and open the one for [address] — a relay
@@ -128,6 +133,19 @@ class RelaySession extends ChangeNotifier {
     _library = next;
     _profile = target;
     onInstall?.call(next);
+  }
+
+  /// Close this profile's library and open it again, as after deleting the
+  /// account: the storage is empty, and opening it makes a new device.
+  Future<void> reopen() async {
+    final old = _library;
+    await onRelease?.call(old);
+    await old.dispose();
+    final next = await _open(_profile);
+    _library = next;
+    _generation++;
+    onInstall?.call(next);
+    notifyListeners();
   }
 
   /// Put [previous] back after a switch failed part-way. Its library has been

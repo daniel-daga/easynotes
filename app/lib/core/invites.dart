@@ -219,6 +219,15 @@ abstract class Accounts {
   String? get profileName;
 
   Future<void> setProfileName(String name);
+
+  /// Delete this person's account from the relay and everything from this
+  /// device ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)): the
+  /// lists they own leave the relay, the ones they joined stay their owners',
+  /// and this profile is left empty, to be opened again as a new device.
+  ///
+  /// Throws, having changed nothing here, when the relay cannot be reached or
+  /// refuses; trying again is safe.
+  Future<void> deleteAccount();
 }
 
 /// What a device can do about sharing, on either side of it.

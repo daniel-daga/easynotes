@@ -457,7 +457,27 @@ class RustNoteLibrary implements NoteLibrary {
       _library.setProfileName(name: name);
 
   @override
-  Future<void> connect(String url) => _library.connect(relay: url);
+  Future<void> deleteAccount() async {
+    try {
+      await _library.deleteAccount();
+    } catch (_) {
+      // Deleting disconnected first, so that nothing the relay said during the
+      // purge was recorded; a deletion that did not happen reconnects.
+      final relay = _relay;
+      if (relay != null) await connect(relay);
+      rethrow;
+    }
+  }
+
+  /// The relay this library was last connected to, for [deleteAccount] to
+  /// reconnect to when it fails.
+  String? _relay;
+
+  @override
+  Future<void> connect(String url) {
+    _relay = url;
+    return _library.connect(relay: url);
+  }
 
   @override
   Future<void> disconnect() => _library.disconnect();

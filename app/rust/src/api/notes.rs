@@ -2004,6 +2004,59 @@ impl Library {
         Ok(())
     }
 
+    /// Delete this person's account from the relay and everything from this
+    /// device ([ADR 0026](../../../../docs/adr/0026-deleting-an-account.md)).
+    ///
+    /// Withdraws this device's open invites, purges from the relay every note
+    /// this person owns and then the account document, and wipes this
+    /// profile's notes, keys and device identity. Lists this person joined are
+    /// left to their owners. A profile with no relay has nothing to purge.
+    ///
+    /// If the relay cannot be reached, or refuses, nothing local has changed
+    /// and the error says so; it is safe to try again. On success the library
+    /// is empty and must be closed and opened again, which gives a new device.
+    pub async fn delete_account(&self) -> Result<(), String> {
+        let http = crate::lock::lock(&self.shared.bound)
+            .map_err(|_| "relay lock poisoned")?
+            .clone();
+        let (plan, invites) = {
+            let core = self.shared.locked()?;
+            (
+                core.purge_plan().map_err(|e| e.to_string())?,
+                core.invites().map_err(|e| e.to_string())?,
+            )
+        };
+        // Every socket first. A relay that purges a topic tells whoever is
+        // subscribed, and a `gone` recorded after the wipe would write a row
+        // for a note this device no longer has.
+        self.disconnect()?;
+        let Some(http) = http else {
+            return self.shared.locked()?.wipe().map_err(|e| e.to_string());
+        };
+        for outgoing in invites {
+            let http = http.clone();
+            let _ = on_network(async move {
+                invite::withdraw(&http, &outgoing.secret, &outgoing.owner)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+        }
+        let purged = on_network(async move {
+            easynotes_core::sync::purge::purge_all(&http, &plan)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await;
+        if let Err(e) = purged {
+            return Err(format!(
+                "The relay could not delete this account ({e}). Nothing was removed \
+                 from this device; try again when you are online."
+            ));
+        }
+        self.shared.locked()?.wipe().map_err(|e| e.to_string())
+    }
+
     /// The notes this device was just removed from, each once, for the
     /// message “You no longer have access to ‘Groceries’”.
     #[frb(sync)]

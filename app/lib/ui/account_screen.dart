@@ -35,9 +35,14 @@ class AccountScreen extends StatefulWidget {
     required this.library,
     this.ask,
     this.profile,
+    this.onDeleted,
   });
 
   final Accounts library;
+
+  /// What the app does once the account is deleted: open this profile again,
+  /// empty. Called after this screen has closed itself.
+  final Future<void> Function()? onDeleted;
 
   /// The relay profile this account belongs to. Every relay has an account of
   /// its own, so restoring one elsewhere means choosing the same relay first.
@@ -98,6 +103,40 @@ class _AccountScreenState extends State<AccountScreen> {
         'This device is now yours. Your notes arrive when it reaches the relay.',
       );
     }
+  }
+
+  /// Delete the account, if this person says so twice: once in a dialog that
+  /// says exactly what goes and what cannot, and once by typing the word.
+  Future<void> _delete() async {
+    final relay = widget.profile?.url;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => DeleteAccountDialog(
+        relay: relay,
+        hasAccount: widget.library.hasAccount,
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.library.deleteAccount();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _say('$e');
+      return;
+    }
+    if (!mounted) return;
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    navigator.popUntil((route) => route.isFirst);
+    await widget.onDeleted?.call();
+    messenger.showSnackBar(
+      const SnackBar(
+        key: Key('account-deleted'),
+        content: Text('Your account and everything on this device is deleted.'),
+      ),
+    );
   }
 
   void _say(String message) {
@@ -214,6 +253,28 @@ class _AccountScreenState extends State<AccountScreen> {
               ),
             ),
           ],
+          const Divider(height: 48),
+          ListTile(
+            key: const Key('delete-account'),
+            contentPadding: EdgeInsets.zero,
+            enabled: !_busy,
+            leading: Icon(
+              Icons.delete_forever_outlined,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: Text(
+              has ? 'Delete account' : 'Delete everything on this device',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            subtitle: Text(
+              widget.profile?.url == null
+                  ? 'Removes every note from this device'
+                  : 'Removes the lists you made from the relay and every '
+                        'note from this device',
+            ),
+            onTap: _delete,
+          ),
+          if (_busy) const LinearProgressIndicator(),
         ],
       ),
     );
@@ -631,6 +692,116 @@ class _NameDialogState extends State<NameDialog> {
             onPressed: _name.text.trim().isEmpty ? null : _save,
             child: const Text('Continue'),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// What deleting an account does, said before it is done, and the word that
+/// has to be typed to do it. The word is there because nothing else in the app
+/// is this final: a tap that was meant for Cancel must not be enough.
+class DeleteAccountDialog extends StatefulWidget {
+  const DeleteAccountDialog({
+    super.key,
+    required this.relay,
+    required this.hasAccount,
+  });
+
+  /// The relay this profile syncs through, or null for one that stays here.
+  final String? relay;
+  final bool hasAccount;
+
+  /// What has to be typed.
+  static const word = 'delete';
+
+  /// How long a relay's backups may keep what it purges (ADR 0026): the
+  /// default of `deploy/synology/backup.sh`.
+  static const backupDays = 30;
+
+  @override
+  State<DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
+  final _typed = TextEditingController();
+
+  @override
+  void dispose() {
+    _typed.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final relay = widget.relay;
+    final ready = _typed.text.trim().toLowerCase() == DeleteAccountDialog.word;
+    return AlertDialog(
+      title: Text(
+        widget.hasAccount ? 'Delete your account?' : 'Delete everything here?',
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (relay == null)
+              const Text(
+                'Every note on this device is removed, and it cannot be '
+                'undone. Nothing here was ever on a relay.',
+              )
+            else ...[
+              Text(
+                'Every list you made is removed from the relay at $relay, '
+                'including ones you shared. The people you shared them with '
+                'keep what is already on their devices, but it stops syncing.',
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Lists other people shared with you stay theirs. They are '
+                'removed from this device only.',
+              ),
+              if (widget.hasAccount) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Your other devices keep their copies until you delete the '
+                  'account there too.',
+                ),
+              ],
+              const SizedBox(height: 8),
+              const Text(
+                'The relay\'s backups may keep encrypted copies for up to '
+                '${DeleteAccountDialog.backupDays} days.',
+              ),
+              const SizedBox(height: 8),
+              const Text('This device is then emptied. It cannot be undone.'),
+            ],
+            const SizedBox(height: 16),
+            TextField(
+              key: const Key('delete-account-word'),
+              controller: _typed,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                labelText: 'Type ${DeleteAccountDialog.word} to confirm',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('delete-account-confirm'),
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(context).colorScheme.error,
+            foregroundColor: Theme.of(context).colorScheme.onError,
+          ),
+          onPressed: ready ? () => Navigator.pop(context, true) : null,
+          child: const Text('Delete'),
         ),
       ],
     );

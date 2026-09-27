@@ -121,6 +121,7 @@ class NoteListScreen extends StatefulWidget {
     this.profile = const RelayProfile(id: 'default', url: null),
     RelayProfiles? profiles,
     this.onSwitchRelay = _ignoreRelaySwitch,
+    this.onAccountDeleted,
     this.initialInviteLink,
     this.inviteLinks,
     this.initialSharedText,
@@ -131,6 +132,10 @@ class NoteListScreen extends StatefulWidget {
   final RelayProfile profile;
   final RelayProfiles profiles;
   final Future<void> Function(String?) onSwitchRelay;
+
+  /// Opens this profile again once its account is deleted. Null in tests that
+  /// do not go there.
+  final Future<void> Function()? onAccountDeleted;
   final String? initialInviteLink;
   final Stream<String>? inviteLinks;
 
@@ -474,8 +479,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _openAccount() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) =>
-            AccountScreen(library: widget.library, profile: widget.profile),
+        builder: (context) => AccountScreen(
+          library: widget.library,
+          profile: widget.profile,
+          onDeleted: widget.onAccountDeleted,
+        ),
       ),
     );
     if (mounted) setState(() {});

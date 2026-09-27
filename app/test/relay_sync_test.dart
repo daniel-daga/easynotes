@@ -622,6 +622,54 @@ void main() {
       },
     );
 
+    test(
+      'deleting an account purges the lists it owns: the guest keeps '
+      'a copy that no longer syncs, and the device starts again empty',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('easynotes-delete');
+        final key = MasterKeyStore.newKey();
+        var owner = await RustNoteLibrary.open(dir.path, key);
+        addTearDown(() async {
+          await owner.dispose();
+          await dir.delete(recursive: true);
+        });
+        await owner.connect(relayUrl);
+        await owner.createAccount();
+        await owner.setProfileName('Olga');
+        final noteId = await owner.createNote();
+        final a = await owner.openNote(noteId);
+        await a.setTitle('Groceries');
+        await a.dispose();
+        final (guest, b) = await share(owner, noteId);
+        await _until(
+          b.watch(),
+          (view) => view.title == 'Groceries',
+          'the guest never received the list',
+        );
+
+        await owner.deleteAccount();
+
+        bool told(SyncStatus s) =>
+            s.lastError?.contains('deleted by its owner') ?? false;
+        if (!told(b.syncStatus)) {
+          await _untilStatus(
+            b.watchSync(),
+            () => b.syncStatus,
+            told,
+            'the guest was never told the list was deleted',
+          );
+        }
+        expect(b.current.title, 'Groceries', reason: 'the guest keeps a copy');
+        expect(guest.notes.map((n) => n.id), contains(noteId));
+
+        // Opened again, as the app does: a new, empty device.
+        await owner.dispose();
+        owner = await RustNoteLibrary.open(dir.path, key);
+        expect(owner.hasAccount, isFalse);
+        expect(owner.notes, isEmpty);
+      },
+    );
+
     test("joining adds a note, and not the owner's colour or labels", () async {
       // A colour and a label are one person's filing, kept in their account
       // document; the note everyone shares is not where they go. And a guest
