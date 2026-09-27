@@ -1,0 +1,6 @@
+First test build.
+
+- Encrypted notes and checklists, local first, synced through a relay you choose
+- Sharing by link, with live editing and removing people
+- Recovery phrase accounts, and deleting an account from Your devices
+- Reminders, labels, colours, pins, archive, trash and offline search

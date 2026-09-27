@@ -226,10 +226,20 @@ jobs:
 
       # A draft, never a published release: the store upload and the release
       # notes are a person's decision, made after looking at the checks above.
+      # The notes are the store changelog for this versionCode, the same file
+      # F-Droid reads, so the two cannot say different things.
       - name: Draft the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |
+          changelog="fastlane/metadata/android/en-US/changelogs/$VERSION_CODE.txt"
+          if [ ! -f "$changelog" ]; then
+            echo "::error::no $changelog: write this release's store changelog first"
+            exit 1
+          fi
+          { cat "$changelog"; echo; echo "Checksums are in SHA256SUMS, and the build provenance is attested."; } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/* \
-            --draft --verify-tag --title "EasyNotes ${{ steps.version.outputs.name }}" \
-            --notes "Test build. See SHA256SUMS and the build provenance attestation."
+            --draft --verify-tag --title "EasyNotes $VERSION_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"

@@ -85,6 +85,19 @@ flutter build apk --release --build-name 1.2.3 --build-number 1002003 \
     --dart-define=EASYNOTES_VERSION=1.2.3 …
 ```
 
+## Store text
+
+`fastlane/metadata/android/en-US/` holds the listing F-Droid reads — title,
+summary, description, icon — and one changelog per release, named by its
+versionCode (`changelogs/1002003.txt` for 1.2.3). The release workflow uses the
+same file for the GitHub release notes and refuses a tag that has none, so a
+release is described once. Play's listing is entered in the Play Console; copy
+it from here so the two stores say the same thing.
+
+Google Play also needs an account-deletion URL.
+[`docs/public/account-deletion.md`](public/account-deletion.md) is written to be
+that page: publish it beside the privacy policy.
+
 ## Versions
 
 `versionCode` is `MAJOR*1000000 + MINOR*1000 + PATCH`, from the tag, so that it
