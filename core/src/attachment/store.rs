@@ -33,7 +33,7 @@
 //! the note after all, one to settle. There is no state in which a descriptor
 //! names bytes this device has lost.
 
-use super::seal::{seal_whole, verify_sealed, MediaOpener, MediaSealer, Variant};
+use super::seal::{seal_whole, verify_sealed, MediaOpener, MediaSealer, Variant, CHUNK_OVERHEAD};
 use super::{
     image_size, AttachmentKind, ContentKey, Media, MediaFormat, MediaRef, Thumbnail, CHUNK_SIZE,
     MAX_IMAGE_PIXELS, MAX_THUMBNAIL_BYTES, MAX_THUMBNAIL_EDGE, MEDIA_VERSION,
@@ -42,6 +42,7 @@ use crate::crypto::MasterKey;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, MediaObjectId, NoteId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -371,6 +372,38 @@ impl MediaStore {
         fs::read(self.object_path(note, media.object)).map_err(io)
     }
 
+    /// One sealed chunk of a variant, as it goes to the relay. An upload reads
+    /// these one at a time, so a 50 MB recording is never in memory whole.
+    pub fn read_sealed_chunk(&self, note: NoteId, media: &MediaRef, index: u32) -> Result<Vec<u8>> {
+        if index >= media.chunks() {
+            return Err(CoreError::Crypto("no such chunk"));
+        }
+        let full = media.chunk_size as u64 + CHUNK_OVERHEAD as u64;
+        let at = index as u64 * full;
+        let len = full.min(media.sealed_len() - at);
+        let mut file = File::open(self.object_path(note, media.object)).map_err(io)?;
+        file.seek(SeekFrom::Start(at)).map_err(io)?;
+        let mut sealed = vec![0u8; len as usize];
+        file.read_exact(&mut sealed)
+            .map_err(|_| CoreError::Crypto("an attachment cut short"))?;
+        Ok(sealed)
+    }
+
+    /// Start keeping a variant that is being downloaded a chunk at a time.
+    /// Nothing is in `objects/` until [`Incoming::finish`] has checked the
+    /// whole of it against the descriptor.
+    pub fn incoming(&self, note: NoteId, media: &MediaRef) -> Result<Incoming> {
+        let tmp = self.root.join("tmp").join(MediaObjectId::random().encode());
+        Ok(Incoming {
+            file: File::create(&tmp).map_err(io)?,
+            tmp,
+            to: self.object_path(note, media.object),
+            media: media.clone(),
+            written: 0,
+            digest: Sha256::new(),
+        })
+    }
+
     /// Keep a variant that was downloaded, once it has proved to be the one the
     /// descriptor names. Idempotent: the same bytes arriving twice are one file.
     pub fn put_sealed(&self, note: NoteId, media: &MediaRef, sealed: &[u8]) -> Result<()> {
@@ -481,6 +514,63 @@ impl MediaStore {
             }
         }
         Ok(removed)
+    }
+}
+
+/// A variant arriving in order, written to `tmp/` and hashed as it goes.
+/// Dropped unfinished, it leaves a file the next open empties.
+pub struct Incoming {
+    file: File,
+    tmp: PathBuf,
+    to: PathBuf,
+    media: MediaRef,
+    written: u64,
+    digest: Sha256,
+}
+
+impl Incoming {
+    pub fn write(&mut self, sealed: &[u8]) -> Result<()> {
+        if self.written + sealed.len() as u64 > self.media.sealed_len() {
+            return Err(CoreError::Crypto("an attachment of the wrong length"));
+        }
+        self.file.write_all(sealed).map_err(io)?;
+        self.digest.update(sealed);
+        self.written += sealed.len() as u64;
+        Ok(())
+    }
+
+    /// Check the length and the digest, then move the file into place. The
+    /// same checks [`MediaStore::put_sealed`] makes on a whole buffer.
+    pub fn finish(self) -> Result<()> {
+        let Incoming {
+            file,
+            tmp,
+            to,
+            media,
+            written,
+            digest,
+        } = self;
+        let checked = (|| {
+            if written != media.sealed_len() {
+                return Err(CoreError::Crypto("an attachment of the wrong length"));
+            }
+            if <[u8; 32]>::from(digest.finalize()) != media.digest {
+                return Err(CoreError::Crypto(
+                    "an attachment that is not the one attached",
+                ));
+            }
+            file.sync_all().map_err(io)?;
+            drop(file);
+            if let Some(dir) = to.parent() {
+                fs::create_dir_all(dir).map_err(io)?;
+            }
+            fs::rename(&tmp, &to).map_err(io)?;
+            sync_dir(to.parent())
+        })();
+        if checked.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        checked
     }
 }
 

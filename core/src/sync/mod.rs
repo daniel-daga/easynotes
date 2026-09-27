@@ -74,6 +74,11 @@ pub use socket::DeviceSync;
 ))]
 pub mod invite;
 
+/// Attachment bytes to and from the relay. Native only until the browser's
+/// transport has a `call` and a media store to put what it fetches in.
+#[cfg(feature = "sync-native")]
+pub mod media;
+
 /// Purging topics from the relay, the last step of deleting an account.
 #[cfg(any(
     feature = "sync-native",

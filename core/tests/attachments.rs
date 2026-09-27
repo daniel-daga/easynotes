@@ -424,6 +424,65 @@ fn a_download_is_kept_only_if_it_is_the_file_attached() {
 }
 
 #[test]
+fn a_download_arriving_in_chunks_is_checked_before_it_is_kept() {
+    let (_d1, sender) = store();
+    let (d2, receiver) = store();
+    let note = NoteId::random();
+    let plain = png(2, 2, (2 << 20) + 9);
+    let staged = sender
+        .import(
+            note,
+            "x.png",
+            plain.as_slice(),
+            plain.len() as u64,
+            None,
+            ImportHints::default(),
+        )
+        .unwrap();
+    let original = &staged.media.original;
+    let chunks: Vec<Vec<u8>> = (0..original.chunks())
+        .map(|i| sender.read_sealed_chunk(note, original, i).unwrap())
+        .collect();
+    assert_eq!(chunks.concat(), sender.read_sealed(note, original).unwrap());
+    assert!(sender
+        .read_sealed_chunk(note, original, original.chunks())
+        .is_err());
+
+    // A flipped bit, a missing chunk, and one chunk too many: none is kept,
+    // and nothing is left behind in the store.
+    let mut altered = chunks.clone();
+    altered[1][7] ^= 1;
+    let short = chunks[..2].to_vec();
+    let mut long = chunks.clone();
+    long.push(vec![0; 10]);
+    for bad in [altered, short, long] {
+        let mut incoming = receiver.incoming(note, original).unwrap();
+        let written: Result<(), _> = bad.iter().try_for_each(|c| incoming.write(c));
+        if written.is_ok() {
+            assert!(incoming.finish().is_err());
+        }
+        assert!(!receiver.has(note, original));
+    }
+    drop(receiver);
+    assert!(walk(d2.path())
+        .iter()
+        .all(|p| !p.starts_with(d2.path().join("objects"))));
+
+    let receiver = MediaStore::open(d2.path(), MasterKey::random()).unwrap();
+    let mut incoming = receiver.incoming(note, original).unwrap();
+    for chunk in &chunks {
+        incoming.write(chunk).unwrap();
+    }
+    incoming.finish().unwrap();
+    assert_eq!(
+        receiver
+            .read(note, staged.id, &staged.media, Variant::Original)
+            .unwrap(),
+        plain
+    );
+}
+
+#[test]
 fn purging_a_note_takes_its_media_and_its_staged_imports() {
     let (_dir, store) = store();
     let (a, b) = (NoteId::random(), NoteId::random());

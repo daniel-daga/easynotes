@@ -88,6 +88,38 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
     Ok((status, text))
 }
 
+/// A call made as a device — its token as a bearer — and the status and body
+/// that came back, whatever the status. What the attachment calls are made of:
+/// a `409` or a `404` there is an answer the caller acts on.
+pub(crate) async fn call(
+    method: &str,
+    url: &str,
+    token: &str,
+    request: super::media::Request,
+) -> Result<(u16, Vec<u8>)> {
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| crate::error::CoreError::Storage(format!("no method {method}")))?;
+    let mut call = reqwest::Client::new()
+        .request(method, url)
+        .bearer_auth(token);
+    call = match request {
+        super::media::Request::Empty => call,
+        super::media::Request::Json(body) => {
+            call.header("content-type", "application/json").body(body)
+        }
+        super::media::Request::Bytes(body) => call
+            .header("content-type", "application/octet-stream")
+            .body(body),
+        super::media::Request::Range(at, len) => {
+            call.header("range", format!("bytes={at}-{}", at + len - 1))
+        }
+    };
+    let response = call.send().await.map_err(net)?;
+    let status = response.status().as_u16();
+    let body = response.bytes().await.map_err(net)?;
+    Ok((status, body.to_vec()))
+}
+
 /// A WebSocket that carries text, and nothing that knows what the text means.
 ///
 /// What is said over it — every note a device syncs, at `/v1/sync` — is
