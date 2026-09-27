@@ -145,6 +145,21 @@ checklist shared out and back in comes back as a checklist. The details are in
 [`docs/plan-text-interchange.md`](docs/plan-text-interchange.md); the
 Google Keep Takeout importer is deferred.
 
+A note can hold photos and sound files ([ADR
+0027](docs/adr/0027-attachments.md), [the plan](docs/plan-attachments.md)).
+Each file is encrypted in chunks under a key of its own. That key is carried in
+the note's encrypted updates, like its text, and the bytes travel to the relay
+separately, over HTTP. A file reaches anyone else on the note only after the
+relay holds all of it, and an import made offline waits for the relay. The
+same transfer queue runs on a device, over a directory, and in a tab, over an
+IndexedDB database of its own.
+
+The editor has **Add attachment**, a picture gallery above the title with a
+full-screen viewer, and rows for sound files. Upload and download states show
+on each item, and a card shows the note's first picture. Not built yet: an
+audio player, the camera, paste and drop, and anything that frees relay space
+when an attachment is removed.
+
 `just web-shared-text` verifies the browser's incoming share route: text and
 checklists keep their content and checked state after reload, and a consumed
 share URL does not create a duplicate note. It needs a web build, but no relay.
@@ -270,7 +285,7 @@ reading the whole database at open.
 | [ADR 0024](docs/adr/0024-relay-storage-quota.md) | A storage quota for an anonymous relay: members compact a note's log to a base |
 | [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
 | [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
-| [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (proposed; core built) |
+| [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
 
 ## Security, in one paragraph
 
