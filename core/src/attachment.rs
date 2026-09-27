@@ -21,9 +21,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+/// The browser's rows under [`web`]: IndexedDB, reached from Rust.
+#[cfg(all(feature = "web-store", feature = "sync-web", target_arch = "wasm32"))]
+pub mod idb;
 pub mod seal;
+pub mod storage;
 #[cfg(feature = "file-store")]
 pub mod store;
+#[cfg(feature = "web-store")]
+pub mod web;
 
 pub use seal::{ContentKey, MediaOpener, MediaSealer, Variant};
 

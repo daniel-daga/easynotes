@@ -1,0 +1,19 @@
+<!doctype html>
+<!--
+  The page `just web-media` loads. No UI: `media.mjs` drives it through the
+  module it imports here, and what it checks is in that module and IndexedDB.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>EasyNotes — attachments in a browser</title>
+  </head>
+  <body>
+    <p>Nothing to see. Run <code>just web-media</code>.</p>
+    <script type="module">
+      import init, { store_checks, import_one, plaintext_sample, round_trip } from './easynotes_web_media.js';
+      await init();
+      window.media = { store_checks, import_one, plaintext_sample, round_trip };
+    </script>
+  </body>
+</html>

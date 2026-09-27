@@ -34,14 +34,15 @@
 //! names bytes this device has lost.
 
 use super::seal::{seal_whole, verify_sealed, MediaOpener, MediaSealer, Variant, CHUNK_OVERHEAD};
-use super::{
-    image_size, AttachmentKind, ContentKey, Media, MediaFormat, MediaRef, Thumbnail, CHUNK_SIZE,
-    MAX_IMAGE_PIXELS, MAX_THUMBNAIL_BYTES, MAX_THUMBNAIL_EDGE, MEDIA_VERSION,
+use super::storage::{
+    inspect_original, inspect_thumbnail, objects_of, open_record, refused, seal_record, variant_of,
+    Fut, IncomingMedia, MediaStorage,
 };
+pub use super::storage::{ImportHints, Staged, ThumbnailInput};
+use super::{AttachmentKind, ContentKey, Media, MediaRef, Thumbnail, CHUNK_SIZE, MEDIA_VERSION};
 use crate::crypto::MasterKey;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, MediaObjectId, NoteId};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -49,36 +50,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-const STAGING_CONTEXT: &[u8] = b"attachment-staging";
-
 fn io(e: std::io::Error) -> CoreError {
     CoreError::Storage(e.to_string())
-}
-
-fn refused(why: &str) -> CoreError {
-    CoreError::Attachment(why.into())
-}
-
-/// An import that is saved on this device and not yet in its note.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Staged {
-    pub note: NoteId,
-    pub id: AttachmentId,
-    pub media: Media,
-}
-
-/// A preview the app made. Decoding and scaling are the platform's job — the
-/// core has no image decoder in it, on purpose — so what arrives here is a
-/// finished JPEG, PNG or WebP no larger than [`MAX_THUMBNAIL_EDGE`] a side.
-pub struct ThumbnailInput {
-    pub bytes: Vec<u8>,
-}
-
-/// What the app knows about a file that the core cannot read from its header.
-#[derive(Default)]
-pub struct ImportHints {
-    /// A sound file's length, as the platform's decoder reported it.
-    pub duration_ms: Option<u64>,
 }
 
 pub struct MediaStore {
@@ -177,27 +150,7 @@ impl MediaStore {
             .read_exact(&mut chunk)
             .map_err(|_| refused("the file ended early"))?;
 
-        let format = MediaFormat::sniff(&chunk).ok_or_else(|| {
-            refused(
-                "only JPEG, PNG and WebP images and MP3, M4A and WAV sound files can be attached",
-            )
-        })?;
-        if len > format.max_bytes() {
-            return Err(refused(match format.kind() {
-                AttachmentKind::Image => "images can be up to 20 MB",
-                AttachmentKind::Audio => "sound files can be up to 50 MB",
-            }));
-        }
-        let (width, height) = match format.kind() {
-            AttachmentKind::Image => match image_size(format, &chunk)? {
-                Some((w, h)) if w as u64 * h as u64 > MAX_IMAGE_PIXELS => {
-                    return Err(refused("images can be up to 40 megapixels"))
-                }
-                Some((w, h)) => (Some(w), Some(h)),
-                None => (None, None),
-            },
-            AttachmentKind::Audio => (None, None),
-        };
+        let (format, width, height) = inspect_original(&chunk, len)?;
 
         let thumbnail = match thumbnail {
             Some(t) if format.kind() == AttachmentKind::Image => {
@@ -277,17 +230,7 @@ impl MediaStore {
         key: &ContentKey,
         bytes: &[u8],
     ) -> Result<Thumbnail> {
-        let bad = || refused("a thumbnail must be an image of at most 512 pixels a side");
-        if bytes.is_empty() || bytes.len() as u64 > MAX_THUMBNAIL_BYTES {
-            return Err(bad());
-        }
-        let format = MediaFormat::sniff(bytes)
-            .filter(|f| f.kind() == AttachmentKind::Image)
-            .ok_or_else(bad)?;
-        let (width, height) = image_size(format, bytes)?.ok_or_else(bad)?;
-        if width > MAX_THUMBNAIL_EDGE || height > MAX_THUMBNAIL_EDGE {
-            return Err(bad());
-        }
+        let (format, width, height) = inspect_thumbnail(bytes)?;
         let (media, sealed) = seal_whole(key, note, id, Variant::Thumbnail, bytes, CHUNK_SIZE)?;
         self.write_atomic(&self.object_path(note, media.object), |f| {
             f.write_all(&sealed).map_err(io)
@@ -301,11 +244,7 @@ impl MediaStore {
     }
 
     fn write_record(&self, staged: &Staged) -> Result<()> {
-        let plain = serde_json::to_vec(staged)
-            .map_err(|e| CoreError::Storage(format!("unwritable staging record: {e}")))?;
-        let sealed = self
-            .master
-            .seal(&[STAGING_CONTEXT, staged.id.as_bytes()], &plain)?;
+        let sealed = seal_record(&self.master, staged)?;
         self.write_atomic(&self.staging_path(staged.id), |f| {
             f.write_all(&sealed).map_err(io)
         })
@@ -327,13 +266,7 @@ impl MediaStore {
                 continue;
             };
             let sealed = fs::read(entry.path()).map_err(io)?;
-            let Ok(plain) = self.master.open(&[STAGING_CONTEXT, id.as_bytes()], &sealed) else {
-                continue;
-            };
-            let Ok(staged) = serde_json::from_slice::<Staged>(&plain) else {
-                continue;
-            };
-            if staged.id == id {
+            if let Some(staged) = open_record(&self.master, id, &sealed) {
                 let modified = entry.metadata().and_then(|m| m.modified()).ok();
                 out.push((modified, staged));
             }
@@ -574,26 +507,55 @@ impl Incoming {
     }
 }
 
-fn variant_of(media: &Media, variant: Variant) -> Result<(&ContentKey, &MediaRef)> {
-    let key = media
-        .key
-        .as_ref()
-        .ok_or_else(|| refused("this attachment was removed"))?;
-    let media_ref = match variant {
-        Variant::Original => &media.original,
-        Variant::Thumbnail => {
-            &media
-                .thumbnail
-                .as_ref()
-                .ok_or_else(|| refused("this attachment has no thumbnail"))?
-                .media
-        }
-    };
-    Ok((key, media_ref))
+/// The directory answers at once; the trait is asynchronous for the browser's
+/// sake, and these are its answers wrapped in ready futures.
+impl MediaStorage for MediaStore {
+    type Incoming = Incoming;
+
+    fn staged(&self) -> Fut<'_, Result<Vec<Staged>>> {
+        Box::pin(std::future::ready(MediaStore::staged(self)))
+    }
+
+    fn settle(&self, id: AttachmentId) -> Fut<'_, Result<()>> {
+        Box::pin(std::future::ready(MediaStore::settle(self, id)))
+    }
+
+    fn discard<'a>(&'a self, staged: &'a Staged) -> Fut<'a, Result<()>> {
+        Box::pin(std::future::ready(MediaStore::discard(self, staged)))
+    }
+
+    fn has<'a>(&'a self, note: NoteId, media: &'a MediaRef) -> Fut<'a, bool> {
+        Box::pin(std::future::ready(MediaStore::has(self, note, media)))
+    }
+
+    fn read_sealed_chunk<'a>(
+        &'a self,
+        note: NoteId,
+        media: &'a MediaRef,
+        index: u32,
+    ) -> Fut<'a, Result<Vec<u8>>> {
+        Box::pin(std::future::ready(MediaStore::read_sealed_chunk(
+            self, note, media, index,
+        )))
+    }
+
+    fn incoming<'a>(
+        &'a self,
+        note: NoteId,
+        media: &'a MediaRef,
+    ) -> Fut<'a, Result<Self::Incoming>> {
+        Box::pin(std::future::ready(MediaStore::incoming(self, note, media)))
+    }
 }
 
-fn objects_of(media: &Media) -> impl Iterator<Item = MediaObjectId> + '_ {
-    std::iter::once(media.original.object).chain(media.thumbnail.as_ref().map(|t| t.media.object))
+impl IncomingMedia for Incoming {
+    fn write<'a>(&'a mut self, sealed: &'a [u8]) -> Fut<'a, Result<()>> {
+        Box::pin(std::future::ready(Incoming::write(self, sealed)))
+    }
+
+    fn finish(self) -> Fut<'static, Result<()>> {
+        Box::pin(std::future::ready(Incoming::finish(self)))
+    }
 }
 
 /// Make a rename durable. A directory cannot be opened for syncing on Windows,

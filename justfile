@@ -180,6 +180,33 @@ web-shared-text port="8099":
     until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
     node shared-text.mjs http://127.0.0.1:{{port}}/
 
+# Do a tab's attachment store and transfer queue work in a browser?
+#
+# IndexedDB, `fetch` with a bearer token and a `Range` header across origins,
+# and the queue on the page's event loop: what `cargo test` cannot reach. No
+# Flutter in it, like `bench-web`, so it needs only the `wasm32-unknown-unknown`
+# target, `wasm-bindgen-cli` and a Chromium (`CHROME_EXECUTABLE`). Starts a
+# relay of its own on the address the app defaults to.
+web-media port="8101":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{justfile_directory()}}/target/web-media'
+    cargo build -p easynotes-relay
+    cargo build --release -p easynotes-web-media --target wasm32-unknown-unknown
+    wasm-bindgen --target web --no-typescript --out-dir "$out" \
+        '{{justfile_directory()}}/target/wasm32-unknown-unknown/release/easynotes_web_media.wasm'
+    cp '{{justfile_directory()}}/tools/web-media/index.html' "$out/"
+    cd '{{justfile_directory()}}/tools/web-media'
+    [ -d node_modules ] || PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit playwright-core
+    '{{relay_bin}}' &
+    relay=$!
+    python3 '{{justfile_directory()}}/tools/web-smoke/serve.py' "$out" {{port}} &
+    server=$!
+    trap 'kill $relay $server 2>/dev/null || true' EXIT
+    until curl -sfo /dev/null http://127.0.0.1:8080/v1/health; do sleep 0.2; done
+    until curl -sfo /dev/null http://127.0.0.1:{{port}}/; do sleep 0.2; done
+    node media.mjs http://127.0.0.1:{{port}}/ http://127.0.0.1:8080
+
 lint: lint-wasm
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
@@ -194,6 +221,7 @@ lint-wasm:
     rustup target add wasm32-unknown-unknown
     CLIPPY_CONF_DIR='{{justfile_directory()}}/tools/wasm-lint' cargo clippy --target wasm32-unknown-unknown -p easynotes-core --lib --no-default-features --features automerge-backend,yrs-backend,web-store,sync-web -- -D warnings
     CLIPPY_CONF_DIR='{{justfile_directory()}}/tools/wasm-lint' cargo clippy --target wasm32-unknown-unknown -p rust_lib_easynotes --lib -- -D warnings
+    CLIPPY_CONF_DIR='{{justfile_directory()}}/tools/wasm-lint' cargo clippy --target wasm32-unknown-unknown -p easynotes-web-media -- -D warnings
 
 fmt:
     cargo fmt --all
