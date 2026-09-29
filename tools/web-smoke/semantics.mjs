@@ -23,6 +23,9 @@ export async function configureRelay(d, url) {
   await fill(d, 'Relay URL', url);
   await tap(d, /^Switch relay$/);
   await tap(d, /^Switch$/);
+  // Replacing the keyed home screen can leave Settings as the visible route
+  // after the switch. Return to notes explicitly before continuing the smoke.
+  await tap(d, /^Back$/);
   await find(d, n => n.text.trim() === 'New checklist', { timeout: 30_000 });
 }
 
