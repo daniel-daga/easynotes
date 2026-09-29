@@ -14,6 +14,18 @@ export async function load(d, to) {
   await accessible(d);
 }
 
+/// Select a relay for a fresh browser profile through the same Settings flow a
+/// person uses. Local-only is the default; tests must opt into the relay they
+/// exercise instead of relying on a build-time address.
+export async function configureRelay(d, url) {
+  await tap(d, /navigation menu/i);
+  await tap(d, /Relay settings/);
+  await fill(d, 'Relay URL', url);
+  await tap(d, /^Switch relay$/);
+  await tap(d, /^Switch$/);
+  await find(d, n => n.text.trim() === 'New checklist', { timeout: 30_000 });
+}
+
 /// Turn the semantics tree on. The placeholder is deliberately off-screen, so
 /// the click is dispatched rather than performed. A tab can drop the tree again
 /// when another one takes the foreground, so [find] asks for it again whenever

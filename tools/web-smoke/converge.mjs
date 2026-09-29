@@ -16,7 +16,7 @@
 //
 //     node tools/web-smoke/converge.mjs <app url>
 import { chromium } from 'playwright-core';
-import { fill, find, load, nodes, tap, texts } from './semantics.mjs';
+import { configureRelay, fill, find, load, nodes, tap, texts } from './semantics.mjs';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
 const executablePath = process.env.CHROME_EXECUTABLE;
@@ -126,6 +126,11 @@ async function switchKind(d, to) {
 
 const a = await device('A');
 const b = await device('B');
+
+// Each browser context is a fresh device profile and starts local-only.
+step('both choose the test relay');
+await configureRelay(a, 'http://127.0.0.1:8080');
+await configureRelay(b, 'http://127.0.0.1:8080');
 
 // --- A makes a list and shares it --------------------------------------------
 await tap(a, /^New checklist$/);

@@ -15,6 +15,7 @@
 //
 //     node tools/web-smoke/sync.mjs <app url>
 import { chromium } from 'playwright-core';
+import { configureRelay } from './semantics.mjs';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
 const executablePath = process.env.CHROME_EXECUTABLE;
@@ -52,6 +53,10 @@ await page.evaluate(() =>
   document.querySelector('flt-semantics-placeholder')
     ?.dispatchEvent(new PointerEvent('click', { bubbles: true })));
 await page.waitForTimeout(2500);
+
+// A fresh install is local-only. Choose the test relay through Settings so the
+// smoke covers the current profile behavior as well as the WebSocket transport.
+await configureRelay({ name: 'sync', page }, 'http://127.0.0.1:8080');
 
 // The floating button, then the title field and the item field. Positions come
 // from the semantics tree so a change in layout moves them with it.

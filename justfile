@@ -113,7 +113,7 @@ web-smoke port="8099":
 #
 # The other half of `web-smoke`: that one asks whether a browser keeps what it
 # is given, this one whether it can share it. Needs `just build-web` first, and
-# starts a relay of its own on the address the app defaults to.
+# starts a relay of its own; the smoke selects it in Relay settings.
 web-sync-smoke port="8099":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -135,7 +135,7 @@ web-sync-smoke port="8099":
 #
 # Two browser contexts — two devices, two accounts — share a list by invite
 # link, edit it online, then both offline, and must end up with the same list.
-# Needs `just build-web` first, and starts a relay like `web-sync-smoke`.
+# Needs `just build-web` first, and starts a relay like `web-sync-smoke`; each browser profile selects it in Relay settings.
 web-converge port="8099":
     #!/usr/bin/env bash
     set -euo pipefail
