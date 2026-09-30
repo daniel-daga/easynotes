@@ -751,6 +751,56 @@ async fn ready_fails_when_the_store_does_not_answer() {
 /// A store whose database has gone away: every call fails.
 struct Unreachable;
 
+/// A stop closes every sync socket cleanly, so that each device hears it and
+/// reconnects rather than waiting to time out, and then stops listening. The
+/// sockets are what axum would not wait for on its own: once upgraded, they are
+/// no longer its connections.
+#[tokio::test]
+async fn a_stop_closes_every_socket_and_then_the_listener() {
+    let (relay, _store) = relay().await;
+    let (addr, http, ws) = (relay.addr, relay.http_base(), relay.ws_base());
+    let mut sockets = Vec::new();
+    for _ in 0..3 {
+        let token = easynotes_core::sync::authenticate(&http, &DeviceIdentity::generate())
+            .await
+            .unwrap();
+        let mut socket = NoteSocket::connect(&ws, &token, NoteId::random(), 0)
+            .await
+            .unwrap();
+        assert!(drain(&mut socket).await.is_empty());
+        sockets.push(socket);
+    }
+
+    let stop = tokio::spawn(relay.shutdown(std::time::Duration::from_secs(5)));
+    for mut socket in sockets {
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("the socket was told the relay is stopping");
+        assert!(
+            matches!(closed, Ok(None)),
+            "expected a clean close, not a message or an error"
+        );
+    }
+    assert!(
+        stop.await.unwrap(),
+        "the relay did not drain inside its window"
+    );
+    assert!(
+        tokio::net::TcpStream::connect(addr).await.is_err(),
+        "the relay is still listening after it stopped"
+    );
+}
+
+/// A stop with nothing connected is over at once, not at the end of the drain
+/// window: a redeploy should not wait out a timer for nobody.
+#[tokio::test]
+async fn an_idle_relay_stops_at_once() {
+    let (relay, _store) = relay().await;
+    let started = std::time::Instant::now();
+    assert!(relay.shutdown(std::time::Duration::from_secs(30)).await);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
 fn gone<T>() -> easynotes_relay::error::Result<T> {
     Err(easynotes_relay::error::RelayError::Storage(
         "database is gone".into(),

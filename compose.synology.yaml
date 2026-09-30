@@ -38,6 +38,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # The relay's own readiness: up, and its database answering. The runtime
+    # image has no curl, so the binary asks itself.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/easynotes-relay", "check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    # On a stop the relay closes its sync sockets and lets requests in flight
+    # finish for up to RELAY_DRAIN_SECONDS (8 by default). This leaves it room
+    # to do that before Docker kills it.
+    stop_grace_period: 15s
     environment:
       RELAY_ADDR: 0.0.0.0:8080
       DATABASE_URL: postgres://easynotes:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/easynotes

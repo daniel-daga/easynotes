@@ -9,6 +9,7 @@ pub mod limit;
 pub mod media;
 pub mod protocol;
 pub mod quota;
+pub mod shutdown;
 pub mod store;
 pub mod sync;
 
@@ -20,6 +21,7 @@ pub use store::{Appended, MemoryStore, PostgresStore, RelayStore};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A running relay, bound to an address. `serve` returns as soon as the listener
 /// is up, so a test can connect without racing the server.
@@ -55,6 +57,10 @@ impl Relay {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let app = router_with(state.clone(), config);
+        // The listener's stop is the sessions' stop: taken from the same
+        // signal, and let go of as soon as it fires, so that it is not counted
+        // among the sessions `shutdown` waits for.
+        let stopping = state.shutdown.watch();
         let handle = tokio::spawn(async move {
             // With connect info, because the rate limiter is keyed on the
             // address the connection came from and there is nowhere else to
@@ -62,7 +68,14 @@ impl Relay {
             // everything through, which is the failure direction chosen in
             // `enforce_limits` but not the one to ship.
             let service = app.into_make_service_with_connect_info::<SocketAddr>();
-            if let Err(e) = axum::serve(listener, service).await {
+            let stop = async move {
+                let mut stopping = stopping;
+                stopping.begun().await;
+            };
+            if let Err(e) = axum::serve(listener, service)
+                .with_graceful_shutdown(stop)
+                .await
+            {
                 tracing::error!(error = %e, "relay stopped");
             }
         });
@@ -71,6 +84,22 @@ impl Relay {
             state,
             handle,
         })
+    }
+
+    /// Stop: take no new connections, let the requests in flight finish, and
+    /// close every sync socket cleanly so its device reconnects elsewhere or
+    /// later. Waits up to `drain` for all of that, then cuts off whatever is
+    /// left. True if everything finished in time.
+    pub async fn shutdown(mut self, drain: Duration) -> bool {
+        self.state.shutdown.begin();
+        let state = self.state.clone();
+        let handle = &mut self.handle;
+        tokio::time::timeout(drain, async move {
+            let _ = handle.await;
+            state.shutdown.drained().await;
+        })
+        .await
+        .is_ok()
     }
 
     pub fn http_base(&self) -> String {

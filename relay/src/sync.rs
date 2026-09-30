@@ -53,8 +53,14 @@ pub(crate) async fn sync_ws(
     if state.auth.device_for(&q.token).is_none() {
         return Err(RelayError::Unauthorized);
     }
+    // Taken before the upgrade, so that a stop that begins in between still
+    // waits for this session, which will see it and close at once.
+    let stopping = state.shutdown.watch();
+    if state.shutdown.is_draining() {
+        return Err(RelayError::Unavailable("stopping"));
+    }
     Ok(ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run(socket, state).await {
+        if let Err(e) = run(socket, state, stopping).await {
             tracing::debug!(error = %e, "device session ended");
         }
     }))
@@ -106,7 +112,11 @@ impl Drop for Subscriptions {
 /// reading costs the relay this much memory and no more.
 const OUTGOING: usize = 4 * BACKLOG_CHUNK;
 
-async fn run(socket: WebSocket, state: Arc<AppState>) -> anyhow::Result<()> {
+async fn run(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    mut stopping: crate::shutdown::Watch,
+) -> anyhow::Result<()> {
     let (tx, mut rx) = socket.split();
 
     // Writing is a task of its own, so that reading never waits for it. A
@@ -117,10 +127,12 @@ async fn run(socket: WebSocket, state: Arc<AppState>) -> anyhow::Result<()> {
     // while the relay waited on it.
     let (out, outgoing) = mpsc::channel::<SyncServerMessage>(OUTGOING);
     let writer = tokio::spawn(write(tx, outgoing));
-    let result = serve(&state, &mut rx, out).await;
+    let result = serve(&state, &mut rx, out, &mut stopping).await;
     // The sender went with `serve`, so the writer sends what is queued and
-    // finishes.
+    // finishes, closing the socket. `stopping` is held until then: the relay
+    // has not drained while a queue is still being written.
     let _ = writer.await;
+    drop(stopping);
     result
 }
 
@@ -140,6 +152,7 @@ async fn serve(
     state: &Arc<AppState>,
     rx: &mut futures_util::stream::SplitStream<WebSocket>,
     out: mpsc::Sender<SyncServerMessage>,
+    stopping: &mut crate::shutdown::Watch,
 ) -> anyhow::Result<()> {
     // Bounded, so that a session that cannot keep up backs up into the note's
     // broadcast buffer, which lags, which is replayed from the store.
@@ -150,6 +163,14 @@ async fn serve(
 
     loop {
         tokio::select! {
+            // The relay is stopping. Returning drops `out`, so the writer sends
+            // what is already queued and closes the socket, and the client
+            // reconnects — to this relay's replacement — as it would after any
+            // clean close. Nothing half-done is lost: an append is answered or
+            // it was never taken, and a client resends what it has not had
+            // acknowledged.
+            () = stopping.begun() => return Ok(()),
+
             Some(event) = fanned.recv() => match event {
                 Fanned::Update { note, seq, envelope } => {
                     let Some(sub) = subs.0.get_mut(&note) else { continue };
