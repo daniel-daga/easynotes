@@ -90,6 +90,23 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
 
+      # ADR 0029 §6: a release is tagged with the record of what it writes,
+      # which every later build's tests read back. Written by `just
+      # compat-fixtures` and committed before the tag; the Rust version is
+      # checked too, because it is what the fixtures are named after.
+      - name: Compatibility fixtures for this version
+        run: |
+          name='${{ steps.version.outputs.name }}'
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$crate" != "$name" ]; then
+            echo "::error::the workspace version is $crate, the tag says $name"
+            exit 1
+          fi
+          if ! grep -q "\"version\": \"$name\"" "compat/v$name/expect.json" 2>/dev/null; then
+            echo "::error::compat/v$name/ is missing: run \`just compat-fixtures\` and commit it before tagging"
+            exit 1
+          fi
+
       # As in app-builds.yml: a release build of the core for three ABIs, plus
       # Gradle's caches, does not fit in what the runner image leaves free.
       - name: Free disk space
