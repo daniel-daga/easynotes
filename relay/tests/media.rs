@@ -64,7 +64,7 @@ struct Upload {
 impl Upload {
     async fn new(relay: &Relay, len: usize) -> Self {
         let base = relay.http_base();
-        let token = easynotes_core::sync::authenticate(&base, &DeviceIdentity::generate())
+        let token = easynotes_core::sync::authenticate(&base, None, &DeviceIdentity::generate())
             .await
             .unwrap();
         let (note, id, key) = (
@@ -617,10 +617,13 @@ async fn a_directory_holds_only_ciphertext_and_survives_a_restart() {
             },
         )
         .await;
-        let token =
-            easynotes_core::sync::authenticate(&relay.http_base(), &DeviceIdentity::generate())
-                .await
-                .unwrap();
+        let token = easynotes_core::sync::authenticate(
+            &relay.http_base(),
+            None,
+            &DeviceIdentity::generate(),
+        )
+        .await
+        .unwrap();
         let up = Upload {
             base: relay.http_base(),
             token,

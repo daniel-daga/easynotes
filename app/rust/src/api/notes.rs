@@ -35,6 +35,7 @@ use crate::media::{Home, Store};
 use easynotes_core::attachment::storage::{ImportHints, MediaStorage, Staged, ThumbnailInput};
 use easynotes_core::attachment::{AttachmentKind, AttachmentState, Media, Variant};
 use easynotes_core::ids::AttachmentId;
+use easynotes_core::relay_access::RelayAccess;
 use easynotes_core::sync::transfers::{
     Direction, Reach, TransferPeer, TransferQueue, TransferRunner, TransferState,
 };
@@ -163,6 +164,10 @@ pub struct TransferView {
     pub of: u32,
     pub error: Option<String>,
 }
+
+/// The attachment queue that is running: the relay it runs with (`None` for
+/// none), that relay's access key, and the queue.
+type RunningTransfers = (Option<String>, Option<RelayAccess>, TransferQueue);
 
 fn transfer_views(map: &easynotes_core::sync::transfers::TransferMap) -> Vec<TransferView> {
     let mut views: Vec<TransferView> = map
@@ -737,7 +742,7 @@ pub(crate) struct Statuses {
     /// that has never been connected, whose notes are local). Here rather than
     /// in [`Shared`] because a status change is what moves a waiting upload:
     /// every report kicks it.
-    transfers: Mutex<Option<(Option<String>, TransferQueue)>>,
+    transfers: Mutex<Option<RunningTransfers>>,
     /// What the queue says, as Dart sees it. A channel of its own rather than
     /// the queue's, so that a watcher outlives the queue being replaced when
     /// the library is connected.
@@ -761,7 +766,7 @@ impl Statuses {
     fn queue(&self) -> Option<TransferQueue> {
         crate::lock::lock(&self.transfers)
             .ok()
-            .and_then(|held| held.as_ref().map(|(_, queue)| queue.clone()))
+            .and_then(|held| held.as_ref().map(|(_, _, queue)| queue.clone()))
     }
 
     /// One note's state now, or `None` if it has no channel.
@@ -1061,6 +1066,11 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
+    /// The relay's access key, if its operator gave this device one ([ADR
+    /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)). Named
+    /// with the relay by [`Library::connect`], and not part of its address:
+    /// changing it is the same relay, reconnected.
+    access: Mutex<Option<RelayAccess>>,
     /// The relay this library belongs to: the canonical address of the first
     /// one it was connected to. It is kept across [`Library::disconnect`] and
     /// never changes, because everything in the store — the account, the
@@ -1109,15 +1119,20 @@ impl Shared {
         Ok(())
     }
 
-    /// The relay's HTTP address, for the calls that are not a socket.
-    fn http_base(&self) -> Result<String, String> {
+    /// The relay's HTTP address, for the calls that are not a socket, and
+    /// its access key if it has one.
+    fn http_base(&self) -> Result<(String, Option<RelayAccess>), String> {
         let relay = crate::lock::lock(&self.relay).map_err(|_| "relay lock poisoned")?;
         let relay = relay
             .as_ref()
             .ok_or("Sharing needs a relay, and this device is not connected to one.")?;
-        easynotes_core::sync::RelayEndpoint::parse(relay)
+        let http = easynotes_core::sync::RelayEndpoint::parse(relay)
             .map(|e| e.http_base)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        let access = crate::lock::lock(&self.access)
+            .map_err(|_| "relay lock poisoned")?
+            .clone();
+        Ok((http, access))
     }
 
     /// An invite this device has open, by the ID the screen was given.
@@ -1302,12 +1317,20 @@ impl Shared {
     /// Run the attachment queue with `relay`, replacing one that runs with
     /// another — or with none, which is how a library that has never been
     /// connected runs it, publishing every import at once.
-    fn start_transfers(self: &Arc<Self>, store: Arc<Store>, relay: Option<String>) {
+    fn start_transfers(
+        self: &Arc<Self>,
+        store: Arc<Store>,
+        relay: Option<String>,
+        access: Option<RelayAccess>,
+    ) {
         let mut held = match crate::lock::lock(&self.statuses.transfers) {
             Ok(held) => held,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if held.as_ref().is_some_and(|(running, _)| *running == relay) {
+        if held
+            .as_ref()
+            .is_some_and(|(running, key, _)| *running == relay && *key == access)
+        {
             return;
         }
         let peer = MediaPeer {
@@ -1315,6 +1338,7 @@ impl Shared {
             local: relay.is_none(),
         };
         let (runner, queue) = TransferRunner::new(peer, store, relay.clone());
+        let runner = runner.with_access(access.clone());
         let mut states = queue.watch();
         let statuses = self.statuses.clone();
         // Ends with the runner, whose end drops the sender `states` reads.
@@ -1330,7 +1354,7 @@ impl Shared {
         if crate::relay::spawn(runner.run()).is_ok() {
             // The one it replaces ends when its last handle is dropped, here;
             // what it was doing is in the staging records and starts again.
-            *held = Some((relay, queue));
+            *held = Some((relay, access, queue));
         }
     }
 
@@ -1344,7 +1368,7 @@ impl Shared {
             .map_err(|_| "relay lock poisoned")?
             .is_none();
         if unbound && self.statuses.queue().is_none() {
-            self.start_transfers(store.clone(), None);
+            self.start_transfers(store.clone(), None, None);
         }
         Ok((store, self.statuses.queue()))
     }
@@ -2010,6 +2034,7 @@ impl Library {
             Shared {
                 core: Peer::new(core, device.clone()),
                 relay: Mutex::new(None),
+                access: Mutex::new(None),
                 bound: Mutex::new(None),
                 device: Mutex::new(None),
                 connections: Mutex::new(HashMap::new()),
@@ -2421,10 +2446,10 @@ impl Library {
         self.shared.settle(note);
         let http = self.shared.http_base().ok();
         for outgoing in invites {
-            if let Some(http) = http.clone() {
+            if let Some((http, access)) = http.clone() {
                 let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
                 let _ = on_network(async move {
-                    invite::withdraw(&http, &secret, &owner)
+                    invite::withdraw(&http, access.as_ref(), &secret, &owner)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -2450,6 +2475,9 @@ impl Library {
         let http = crate::lock::lock(&self.shared.bound)
             .map_err(|_| "relay lock poisoned")?
             .clone();
+        let access = crate::lock::lock(&self.shared.access)
+            .map_err(|_| "relay lock poisoned")?
+            .clone();
         let (plan, invites) = {
             let core = self.shared.locked()?;
             (
@@ -2466,9 +2494,9 @@ impl Library {
             return self.wipe_media().await;
         };
         for outgoing in invites {
-            let http = http.clone();
+            let (http, access) = (http.clone(), access.clone());
             let _ = on_network(async move {
-                invite::withdraw(&http, &outgoing.secret, &outgoing.owner)
+                invite::withdraw(&http, access.as_ref(), &outgoing.secret, &outgoing.owner)
                     .await
                     .map_err(|e| e.to_string())
             })
@@ -2676,14 +2704,14 @@ impl Library {
     /// Needs a relay: the invite lives on it until somebody asks to join.
     pub async fn create_invite(&self, note: String) -> Result<InviteView, String> {
         let note = note_id(&note)?;
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let mut invite = {
             let core = self.shared.locked()?;
             core.new_invite(note).map_err(|e| e.to_string())?
         };
         let (secret, owner) = (invite.secret.clone(), invite.owner.clone());
         let granted = on_network(async move {
-            invite::open(&http, &secret, &owner, INVITE_TTL_SECS)
+            invite::open(&http, access.as_ref(), &secret, &owner, INVITE_TTL_SECS)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2741,12 +2769,12 @@ impl Library {
         let mut outgoing = self.shared.outgoing(&invite)?;
         let mut expires_in = (outgoing.expires_at - now()).max(0) as u64;
         if outgoing.approval.is_none() {
-            let http = self.shared.http_base()?;
+            let (http, access) = self.shared.http_base()?;
             let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
             // The relay saying no is an answer and a network failing is not,
             // and only the first means the invite is gone.
             let listed = on_network(async move {
-                Ok(invite::list(&http, &secret, &owner)
+                Ok(invite::list(&http, access.as_ref(), &secret, &owner)
                     .await
                     .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
             })
@@ -2821,10 +2849,10 @@ impl Library {
 
     /// Answer a request with nothing, and forget its invite.
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
         on_network(async move {
-            invite::decline(&http, &secret, &owner, &request)
+            invite::decline(&http, access.as_ref(), &secret, &owner, &request)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2852,12 +2880,14 @@ impl Library {
             self.shared.settle(outgoing.note);
             return Ok(false);
         };
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
         let answered = on_network(async move {
-            Ok(invite::approve(&http, &secret, &owner, &request, &answer)
-                .await
-                .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
+            Ok(
+                invite::approve(&http, access.as_ref(), &secret, &owner, &request, &answer)
+                    .await
+                    .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())),
+            )
         })
         .await?;
         match answered {
@@ -2875,10 +2905,10 @@ impl Library {
     /// told it does not exist.
     pub async fn withdraw_invite(&self, invite: String) -> Result<(), String> {
         let outgoing = self.shared.outgoing(&invite)?;
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
         let withdrawn = on_network(async move {
-            Ok(invite::withdraw(&http, &secret, &owner)
+            Ok(invite::withdraw(&http, access.as_ref(), &secret, &owner)
                 .await
                 .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())))
         })
@@ -2896,7 +2926,7 @@ impl Library {
     /// the same request.
     pub async fn request_join(&self, link: String) -> Result<PendingJoinView, String> {
         let secret = InviteSecret::from_link(&link).map_err(|e| e.to_string())?;
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let (sealed_request, member, name) = {
             let core = self.shared.locked()?;
             let sealed = core.seal_join_request(&secret).map_err(|e| e.to_string())?;
@@ -2905,7 +2935,7 @@ impl Library {
         };
         let (s, payload) = (secret.clone(), sealed_request);
         let request = on_network(async move {
-            invite::request(&http, &s, &member, &payload)
+            invite::request(&http, access.as_ref(), &s, &member, &payload)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2949,10 +2979,10 @@ impl Library {
                 .ok_or("This device is not waiting on that invite.")?;
             (join, core.member().map_err(|e| e.to_string())?)
         };
-        let http = self.shared.http_base()?;
+        let (http, access) = self.shared.http_base()?;
         let (secret, request) = (join.secret.clone(), join.request.clone());
         let answer = on_network(async move {
-            match invite::poll(&http, &secret, &member, &request).await {
+            match invite::poll(&http, access.as_ref(), &secret, &member, &request).await {
                 Ok(answer) => Ok(Ok(answer)),
                 Err(CoreError::Invite(message)) => Ok(Err(message)),
                 Err(other) => Err(other.to_string()),
@@ -3037,10 +3067,23 @@ impl Library {
     /// reconnects; naming a different relay is refused, and the connection it
     /// already has is left as it was. Moving to another relay is opening
     /// another library, which is what the app's relay profiles do.
-    pub fn connect(&self, relay: String) -> Result<(), String> {
+    ///
+    /// `access` is the relay's access key, base64url, for a relay whose
+    /// operator lets in only the people they gave it to ([ADR
+    /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
+    /// for an open relay. Connecting again with another key is how a changed
+    /// key takes effect.
+    pub fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
         let relay = easynotes_core::sync::RelayEndpoint::parse(&relay)
             .map_err(|e| e.to_string())?
             .http_base;
+        let access = match access.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(raw) => Some(
+                RelayAccess::decode(raw)
+                    .map_err(|_| "That is not a relay access key.".to_string())?,
+            ),
+        };
         {
             let mut bound =
                 crate::lock::lock(&self.shared.bound).map_err(|_| "relay lock poisoned")?;
@@ -3057,11 +3100,13 @@ impl Library {
         }
         // A new engine every time, as each note used to get a new connection.
         self.disconnect()?;
-        let device = Device::open(self.shared.core.clone(), &relay)?;
+        let device = Device::open(self.shared.core.clone(), &relay, access.clone())?;
         *crate::lock::lock(&self.shared.device).map_err(|_| "sync lock poisoned".to_string())? =
             Some(device);
         *crate::lock::lock(&self.shared.relay).map_err(|_| "relay lock poisoned".to_string())? =
             Some(relay);
+        *crate::lock::lock(&self.shared.access).map_err(|_| "relay lock poisoned".to_string())? =
+            access.clone();
         // `syncable` rather than the note list: the list is the grid, and a
         // note this device holds only a key for — one that arrived in the
         // account document and whose log has never been fetched — has no card
@@ -3084,7 +3129,7 @@ impl Library {
             .clone();
         crate::relay::spawn(async move {
             if let Ok(store) = shared.media_store().await {
-                shared.start_transfers(store, relay);
+                shared.start_transfers(store, relay, access);
             }
         })?;
         Ok(())

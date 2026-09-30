@@ -31,6 +31,9 @@ pub(crate) struct TokenRequest<'a> {
     pub device: &'a str,
     pub nonce: &'a str,
     pub signature: &'a str,
+    /// The relay access proof (ADR 0028), when this device holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,10 +94,18 @@ pub enum Incoming {
     /// account ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)).
     /// Nothing more of it will be stored or sent.
     Gone,
+    /// This device has written more than the relay takes from one address in
+    /// a while ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)
+    /// §3). The relay closes the socket after saying so; what was refused is
+    /// still in the outbox, and goes again once the engine has backed off.
+    RateLimited,
 }
 
 /// What the relay refuses a purged topic with, and tells its subscribers.
 pub(crate) const GONE: &str = "gone";
+
+/// What the relay refuses an append with past its write budget.
+pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
 /// What a person is told about a refusal the relay names with a code.
 fn said(message: String) -> String {
@@ -174,6 +185,27 @@ pub(crate) fn outdated(status: u16, body: &[u8]) -> Option<CoreError> {
     })
 }
 
+/// The relay's code for a request without a valid access proof (ADR 0028).
+pub(crate) const ACCESS_REQUIRED: &str = "access_required";
+
+#[derive(Deserialize)]
+struct Coded {
+    code: String,
+}
+
+/// A refusal that is not about the request itself but about who may make it:
+/// a protocol this relay does not speak ([`outdated`]), or a relay that wants
+/// an access key this device does not hold. A `403` without the relay's code
+/// is left to the caller, since a proxy's own 403 is not this.
+pub(crate) fn refused(status: u16, body: &[u8]) -> Option<CoreError> {
+    if status == 403
+        && serde_json::from_slice::<Coded>(body).is_ok_and(|coded| coded.code == ACCESS_REQUIRED)
+    {
+        return Some(CoreError::AccessRequired);
+    }
+    outdated(status, body)
+}
+
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
@@ -212,6 +244,35 @@ mod protocol_tests {
             outdated(426, body.as_bytes()),
             Some(CoreError::RelayOutdated)
         ));
+    }
+
+    #[test]
+    fn a_relay_that_wants_a_key_says_so() {
+        assert!(matches!(
+            refused(403, br#"{"code":"access_required"}"#),
+            Some(CoreError::AccessRequired)
+        ));
+        // Somebody else's 403 is not the relay asking for its key.
+        assert!(refused(403, b"<html>Forbidden</html>").is_none());
+        assert!(refused(401, br#"{"code":"access_required"}"#).is_none());
+    }
+
+    #[test]
+    fn a_token_request_names_its_proof_only_when_it_has_one() {
+        let open = TokenRequest {
+            device: "d",
+            nonce: "n",
+            signature: "s",
+            access: None,
+        };
+        assert!(!serde_json::to_string(&open).unwrap().contains("access"));
+        let gated = TokenRequest {
+            access: Some("p".into()),
+            ..open
+        };
+        assert!(serde_json::to_string(&gated)
+            .unwrap()
+            .contains(r#""access":"p""#));
     }
 
     #[test]
@@ -388,6 +449,10 @@ pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
             note: Some(raw),
             message,
         } if message == GONE => Routed::Note(note(&raw)?, Incoming::Gone),
+        DeviceReply::Error {
+            note: Some(raw),
+            message,
+        } if message == RATE_LIMITED => Routed::Note(note(&raw)?, Incoming::RateLimited),
         DeviceReply::Error { note: raw, message } => {
             let message = said(message);
             match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
@@ -439,6 +504,10 @@ pub(crate) struct CreateInvite<'a> {
     pub token_hash: &'a str,
     pub owner_hash: &'a str,
     pub expires_in: u64,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -451,6 +520,10 @@ pub(crate) struct JoinInvite<'a> {
     pub token: &'a str,
     pub request: &'a str,
     pub payload: &'a str,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -461,6 +534,10 @@ pub(crate) struct JoinedInvite {
 #[derive(Serialize)]
 pub(crate) struct PollInvite<'a> {
     pub token: &'a str,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 /// Where a join request stands.
@@ -482,6 +559,10 @@ pub(crate) struct PolledRequest {
 #[derive(Serialize)]
 pub(crate) struct OwnInvite<'a> {
     pub owner: &'a str,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -502,6 +583,10 @@ pub(crate) struct ListedRequest {
 pub(crate) struct AnswerInvite<'a> {
     pub owner: &'a str,
     pub grant: Option<&'a str>,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 /// Turn an invite call's status into an answer a person can be shown.
@@ -518,7 +603,7 @@ pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
             body.to_string()
         }
     };
-    if let Some(outdated) = outdated(status, body.as_bytes()) {
+    if let Some(outdated) = refused(status, body.as_bytes()) {
         return Err(outdated);
     }
     match status {
@@ -637,6 +722,15 @@ mod tests {
         assert!(matches!(
             routed(gone).unwrap(),
             Routed::Note(_, Incoming::Gone)
+        ));
+    }
+
+    #[test]
+    fn a_write_budget_refusal_is_a_reason_to_back_off() {
+        let slow = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"rate_limited"}"#;
+        assert!(matches!(
+            routed(slow).unwrap(),
+            Routed::Note(_, Incoming::RateLimited)
         ));
     }
 

@@ -721,8 +721,8 @@ class FakeNoteLibrary implements NoteLibrary {
   final Map<String, FakeNoteCore> restoredWithAccount = {};
 
   @override
-  Future<void> connect(String url) async {
-    calls.add('connect($url)');
+  Future<void> connect(String url, {String? access}) async {
+    calls.add(access == null ? 'connect($url)' : 'connect($url, $access)');
     pushStatus(const SyncStatus(state: SyncState.connecting));
   }
 

@@ -37,6 +37,8 @@ Future<RustNoteLibrary> openProfileLibrary(
   // Connecting cannot fail loudly enough to matter: with no relay the app is a
   // local notes app, which is what it is designed to be when the network is
   // gone.
-  if (connect && profile.url != null) await library.connect(profile.url!);
+  if (connect && profile.url != null) {
+    await library.connect(profile.url!, access: profile.access);
+  }
   return library;
 }

@@ -717,11 +717,18 @@ pub(crate) async fn reserve(
 pub(crate) async fn put_chunk(
     State(state): State<Arc<AppState>>,
     Path((note, object, index)): Path<(String, String, u32)>,
+    client: Option<axum::Extension<crate::app::Client>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode> {
     authorise(&state, &headers)?;
     ids(&note, &object)?;
+    // Charged before anything is written, and for a retry of a chunk already
+    // stored too: the budget is on what a client sends, which is what a flood
+    // costs whether or not it is new.
+    state
+        .spend_writes(client.map(|c| c.0), body.len())
+        .map_err(RelayError::RateLimited)?;
     let blobs = blobs(&state)?;
     let _object = state.append_lock(&lock_key(&note, &object)).await;
     let row = row(&state, &note, &object).await?;

@@ -40,7 +40,7 @@ async fn owner_with_invite(http: &str, expires_in: u64) -> (Core, OutgoingInvite
     let mut owner = person("Olga");
     let note = owner.create_note(NoteKind::Checklist).unwrap();
     let mut outgoing = owner.new_invite(note).unwrap();
-    let granted = invite::open(http, &outgoing.secret, &outgoing.owner, expires_in)
+    let granted = invite::open(http, None, &outgoing.secret, &outgoing.owner, expires_in)
         .await
         .unwrap();
     outgoing.expires_at = granted as i64;
@@ -69,7 +69,7 @@ async fn ask_as(
 ) -> Result<PendingJoin, CoreError> {
     let secret = InviteSecret::from_link(link)?;
     let sealed = easynotes_core::invite::seal_request(&secret, member, name)?;
-    let request = invite::request(http, &secret, &member.id(), &sealed).await?;
+    let request = invite::request(http, None, &secret, &member.id(), &sealed).await?;
     Ok(PendingJoin {
         secret,
         request,
@@ -106,7 +106,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
     let secret = InviteSecret::from_link(&link).unwrap();
     let sealed = guest.seal_join_request(&secret).unwrap();
     let member = guest.member().unwrap();
-    let request_id = invite::request(&http, &secret, &member.id(), &sealed)
+    let request_id = invite::request(&http, None, &secret, &member.id(), &sealed)
         .await
         .unwrap();
     let join = PendingJoin {
@@ -117,7 +117,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
     guest.remember_join(&join).unwrap();
 
     // Nothing yet: the owner's device has not seen it.
-    match invite::poll(&http, &join.secret, &member, &join.request)
+    match invite::poll(&http, None, &join.secret, &member, &join.request)
         .await
         .unwrap()
     {
@@ -127,7 +127,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
 
     // The owner's device finds the request, with the name the guest's
     // account shares under.
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert!(listing.open);
@@ -154,6 +154,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
         .expect("the package is on the relay");
     invite::approve(
         &http,
+        None,
         &outgoing.secret,
         &outgoing.owner,
         &listed.request,
@@ -164,7 +165,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
     owner.core.forget_invite(outgoing.secret.id()).unwrap();
 
     // The guest opens the answer, follows the note, and reads it.
-    let (got, owner_key) = match invite::poll(&http, &join.secret, &member, &join.request)
+    let (got, owner_key) = match invite::poll(&http, None, &join.secret, &member, &join.request)
         .await
         .unwrap()
     {
@@ -204,13 +205,14 @@ async fn an_invite_admits_one_person() {
     let again = ask_as(&http, &link, &anna_member, "Anna").await.unwrap();
     assert_eq!(again.request, anna.request);
 
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert_eq!(listing.requests.len(), 1);
     let answer = answer_for(&outgoing, listing.requests[0].join.as_ref().unwrap());
     invite::approve(
         &http,
+        None,
         &outgoing.secret,
         &outgoing.owner,
         &anna.request,
@@ -218,7 +220,7 @@ async fn an_invite_admits_one_person() {
     )
     .await
     .unwrap();
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert!(!listing.open);
@@ -228,6 +230,7 @@ async fn an_invite_admits_one_person() {
     is_invite_error(
         invite::approve(
             &http,
+            None,
             &outgoing.secret,
             &outgoing.owner,
             &anna.request,
@@ -239,7 +242,7 @@ async fn an_invite_admits_one_person() {
     // Anna can still find her answer.
     let again = ask_as(&http, &link, &anna_member, "Anna").await.unwrap();
     assert!(matches!(
-        invite::poll(&http, &again.secret, &anna_member, &again.request)
+        invite::poll(&http, None, &again.secret, &anna_member, &again.request)
             .await
             .unwrap(),
         Answer::Approved { .. }
@@ -257,11 +260,11 @@ async fn a_request_filed_under_someone_elses_name_is_not_let_in() {
     let anna = RecoveryPhrase::generate().root().member();
     let squatter = RecoveryPhrase::generate().root().member();
     let sealed = easynotes_core::invite::seal_request(&outgoing.secret, &squatter, "Anna").unwrap();
-    invite::request(&http, &outgoing.secret, &anna.id(), &sealed)
+    invite::request(&http, None, &outgoing.secret, &anna.id(), &sealed)
         .await
         .unwrap();
 
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert_eq!(listing.requests.len(), 1);
@@ -279,12 +282,13 @@ async fn an_answer_meant_for_one_person_does_not_open_for_another() {
     let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
     let (anna, _) = ask(&http, &outgoing.secret.link(), "Anna").await.unwrap();
 
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     let answer = answer_for(&outgoing, listing.requests[0].join.as_ref().unwrap());
     invite::approve(
         &http,
+        None,
         &outgoing.secret,
         &outgoing.owner,
         &anna.request,
@@ -295,7 +299,7 @@ async fn an_answer_meant_for_one_person_does_not_open_for_another() {
 
     let eavesdropper = RecoveryPhrase::generate().root().member();
     assert!(
-        invite::poll(&http, &anna.secret, &eavesdropper, &anna.request)
+        invite::poll(&http, None, &anna.secret, &eavesdropper, &anna.request)
             .await
             .is_err(),
         "an answer opened for someone it was not sealed to"
@@ -310,11 +314,17 @@ async fn a_declined_request_is_told_and_spends_the_link() {
     let link = outgoing.secret.link();
     let (stranger, member) = ask(&http, &link, "Not who you think").await.unwrap();
 
-    invite::decline(&http, &outgoing.secret, &outgoing.owner, &stranger.request)
-        .await
-        .unwrap();
+    invite::decline(
+        &http,
+        None,
+        &outgoing.secret,
+        &outgoing.owner,
+        &stranger.request,
+    )
+    .await
+    .unwrap();
     assert!(matches!(
-        invite::poll(&http, &stranger.secret, &member, &stranger.request)
+        invite::poll(&http, None, &stranger.secret, &member, &stranger.request)
             .await
             .unwrap(),
         Answer::Declined
@@ -333,11 +343,11 @@ async fn a_guest_cannot_answer_their_own_request() {
     // Everything a guest has, tried as the owner's secret.
     for forged in [OwnerSecret::random()] {
         is_invite_error(
-            invite::list(&http, &guest.secret, &forged).await,
+            invite::list(&http, None, &guest.secret, &forged).await,
             "does not exist",
         );
         is_invite_error(
-            invite::decline(&http, &guest.secret, &forged, &guest.request).await,
+            invite::decline(&http, None, &guest.secret, &forged, &guest.request).await,
             "does not exist",
         );
     }
@@ -355,11 +365,11 @@ async fn a_wrong_link_learns_nothing() {
     let member = RecoveryPhrase::generate().root().member();
     let sealed = easynotes_core::invite::seal_request(&nobody, &member, "x").unwrap();
     is_invite_error(
-        invite::request(&http, &nobody, &member.id(), &sealed).await,
+        invite::request(&http, None, &nobody, &member.id(), &sealed).await,
         "does not exist",
     );
     is_invite_error(
-        invite::poll(&http, &nobody, &member, "whatever").await,
+        invite::poll(&http, None, &nobody, &member, "whatever").await,
         "does not exist",
     );
 }
@@ -371,7 +381,7 @@ async fn a_withdrawn_invite_is_gone() {
     let (_owner, outgoing) = owner_with_invite(&http, 3600).await;
     let (waiting, member) = ask(&http, &outgoing.secret.link(), "Anna").await.unwrap();
 
-    invite::withdraw(&http, &outgoing.secret, &outgoing.owner)
+    invite::withdraw(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     is_invite_error(
@@ -379,7 +389,7 @@ async fn a_withdrawn_invite_is_gone() {
         "does not exist",
     );
     is_invite_error(
-        invite::poll(&http, &waiting.secret, &member, &waiting.request).await,
+        invite::poll(&http, None, &waiting.secret, &member, &waiting.request).await,
         "does not exist",
     );
 }
@@ -395,7 +405,7 @@ async fn an_invite_expires() {
 
     is_invite_error(ask(&http, &outgoing.secret.link(), "Late").await, "expired");
     // Nor can a request made in time be approved after it.
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     assert!(!listing.open);
@@ -404,6 +414,7 @@ async fn an_invite_expires() {
     is_invite_error(
         invite::approve(
             &http,
+            None,
             &outgoing.secret,
             &outgoing.owner,
             &early.request,
@@ -420,6 +431,7 @@ async fn an_invite_cannot_be_asked_to_last_for_ever() {
     let secret = InviteSecret::random();
     let granted = invite::open(
         &relay.http_base(),
+        None,
         &secret,
         &OwnerSecret::random(),
         u64::MAX,
@@ -447,21 +459,29 @@ async fn an_invite_names_no_device_no_note_and_no_person() {
     let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
     let request = invite::request(
         &http,
+        None,
         &outgoing.secret,
         &guest.member().unwrap().id(),
         &sealed,
     )
     .await
     .unwrap();
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     let answer = answer_for(&outgoing, listing.requests[0].join.as_ref().unwrap());
-    invite::approve(&http, &outgoing.secret, &outgoing.owner, &request, &answer)
-        .await
-        .unwrap();
+    invite::approve(
+        &http,
+        None,
+        &outgoing.secret,
+        &outgoing.owner,
+        &request,
+        &answer,
+    )
+    .await
+    .unwrap();
     let member = guest.member().unwrap();
-    let Answer::Approved { .. } = invite::poll(&http, &outgoing.secret, &member, &request)
+    let Answer::Approved { .. } = invite::poll(&http, None, &outgoing.secret, &member, &request)
         .await
         .unwrap()
     else {

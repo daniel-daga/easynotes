@@ -17,6 +17,7 @@ pub mod invite;
 pub mod note;
 pub mod order;
 pub mod purge;
+pub mod relay_access;
 pub mod store;
 pub mod text;
 

@@ -70,12 +70,21 @@ class RelaySession extends ChangeNotifier {
   /// if its notes cannot be kept: a tab with no storage, or a store that has
   /// refused a write. Once this profile's library is closed, a failure
   /// reopens it, so a switch either completes or leaves the app where it was.
-  Future<void> switchTo(String? address) {
+  ///
+  /// [access] is the relay's access key, from a relay link or typed in; it is
+  /// kept with the target's profile. Given for the relay already open, it is
+  /// [setAccess] rather than a switch.
+  Future<void> switchTo(String? address, {String? access}) {
     final running = _switching;
     if (running != null) return running;
     final url = address == null ? null : canonicalRelayUrl(address);
-    if (url == _profile.url) return Future.value();
-    final done = _switch(url).whenComplete(() {
+    if (url == _profile.url) {
+      if (access != null && url != null && access != _profile.access) {
+        return setAccess(access);
+      }
+      return Future.value();
+    }
+    final done = _switch(url, access).whenComplete(() {
       _switching = null;
       notifyListeners();
     });
@@ -84,7 +93,7 @@ class RelaySession extends ChangeNotifier {
     return done;
   }
 
-  Future<void> _switch(String? url) async {
+  Future<void> _switch(String? url, String? access) async {
     final old = _library;
     final previous = _profile;
     if (!old.canJoin) {
@@ -99,7 +108,7 @@ class RelaySession extends ChangeNotifier {
         'Some changes here could not be saved. Switching would lose them.',
       );
     }
-    final target = await profiles.prepare(url);
+    final target = await profiles.prepare(url, access: access);
     // Opened before anything is closed: a store that cannot be opened is
     // found out while the old one is still there to go back to.
     final next = await _open(target, connect: false, allowEphemeral: false);
@@ -119,7 +128,9 @@ class RelaySession extends ChangeNotifier {
         );
       }
       await profiles.activate(target);
-      if (target.url != null) await next.connect(target.url!);
+      if (target.url != null) {
+        await next.connect(target.url!, access: target.access);
+      }
     } on Object catch (error, stack) {
       await next.dispose();
       if (closed) {
@@ -133,6 +144,20 @@ class RelaySession extends ChangeNotifier {
     _library = next;
     _profile = target;
     onInstall?.call(next);
+  }
+
+  /// Keep [access] as this relay's access key, or forget it when null, and
+  /// reconnect with it: how a person enters the key a relay asked for, or the
+  /// new one after its operator changed it. The same relay and the same
+  /// notes; nothing is closed.
+  Future<void> setAccess(String? access) async {
+    final url = _profile.url;
+    if (url == null) {
+      throw StateError('Notes on this device have no relay to give a key to.');
+    }
+    _profile = await profiles.setAccess(_profile, access);
+    await _library.connect(url, access: _profile.access);
+    notifyListeners();
   }
 
   /// Close this profile's library and open it again, as after deleting the

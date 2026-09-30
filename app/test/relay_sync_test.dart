@@ -47,6 +47,9 @@ void main() {
   // must find the first one's notes neither sent to it nor lost.
   Process? otherRelay;
   late String otherRelayUrl;
+  // A relay that lets in only holders of its access key (ADR 0028).
+  Process? gatedRelay;
+  late String gatedRelayUrl;
 
   setUpAll(() async {
     if (skip != null) return;
@@ -55,6 +58,10 @@ void main() {
     );
     (relay, relayUrl) = await _startRelay(relayPath!);
     (otherRelay, otherRelayUrl) = await _startRelay(relayPath);
+    (gatedRelay, gatedRelayUrl) = await _startRelay(
+      relayPath,
+      access: _relayKey,
+    );
   });
 
   tearDownAll(() {
@@ -62,12 +69,13 @@ void main() {
     // is the only thing that will stop it.
     relay?.kill();
     otherRelay?.kill();
+    gatedRelay?.kill();
   });
 
   /// A device: its own directory, its own library, connected to the relay the
   /// way the app connects one — or to [relay] instead, when a test wants
   /// another.
-  Future<RustNoteLibrary> device({String? relay}) async {
+  Future<RustNoteLibrary> device({String? relay, String? access}) async {
     final dir = await Directory.systemTemp.createTemp('easynotes-relay-test');
     final library = await RustNoteLibrary.open(
       dir.path,
@@ -77,7 +85,7 @@ void main() {
       await library.dispose();
       await dir.delete(recursive: true);
     });
-    await library.connect(relay ?? relayUrl);
+    await library.connect(relay ?? relayUrl, access: access);
     return library;
   }
 
@@ -691,6 +699,59 @@ void main() {
     );
   }, skip: skip);
 
+  group('a relay with an access key', () {
+    test(
+      'asks a device without the key for it, and syncs one with it',
+      () async {
+        final stranger = await device(relay: gatedRelayUrl);
+        final note = await stranger.openNote(await stranger.createNote());
+        addTearDown(note.dispose);
+        await _untilStatus(
+          stranger.watchSync(),
+          () => stranger.syncStatus,
+          (status) => status.lastError?.contains('access key') ?? false,
+          'a device without the key was not told the relay needs one',
+        );
+        expect(stranger.syncStatus.state, isNot(SyncState.synced));
+
+        // Given the key, the same device and the same notes connect.
+        await stranger.connect(gatedRelayUrl, access: _relayKey);
+        await _untilStatus(
+          stranger.watchSync(),
+          () => stranger.syncStatus,
+          (status) => status.state == SyncState.synced && status.pending == 0,
+          'the device never synced once it had the key',
+        );
+      },
+    );
+
+    test('lets two people who hold the key share a list by invite', () async {
+      Future<RustNoteLibrary> person(String name) async {
+        final library = await device(relay: gatedRelayUrl, access: _relayKey);
+        await library.createAccount();
+        await library.setProfileName(name);
+        return library;
+      }
+
+      final owner = await person('Olga');
+      final noteId = await owner.createNote();
+      final invite = await owner.createInvite(noteId);
+      final guest = await person('Anna');
+      final waiting = await guest.requestJoin(invite.link);
+      expect(await letIn(owner, invite), 'Anna');
+      expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
+
+      // Without the key the relay does not take an invite at all.
+      final outsider = await device(relay: gatedRelayUrl);
+      await outsider.createAccount();
+      await outsider.setProfileName('Eve');
+      await expectLater(
+        outsider.createInvite(await outsider.createNote()),
+        throwsA(contains('access key')),
+      );
+    });
+  }, skip: skip);
+
   group('sharing with another person by invite', () {
     /// A device that can share: an account, and a name.
     Future<RustNoteLibrary> person(String name) async {
@@ -986,16 +1047,22 @@ Future<void> _untilNotes(
   }
 }
 
+/// The gated relay's access key: 32 bytes, base64url, as an operator would
+/// generate one with `easynotes-relay access-key`.
+final _relayKey = base64Url.encode(List<int>.filled(32, 7)).replaceAll('=', '');
+
 /// Start a relay on a port the OS picks, and return it with its address.
 ///
 /// Port 0: the OS picks, the relay logs what it got, and tests can run in
 /// parallel without fighting over a port.
-Future<(Process, String)> _startRelay(String path) async {
+/// [access] makes it a relay that lets in only holders of that key.
+Future<(Process, String)> _startRelay(String path, {String? access}) async {
   final started = await Process.start(
     path,
     const [],
     environment: {
       'RELAY_ADDR': '127.0.0.1:0',
+      'RELAY_ACCESS_KEYS': access ?? 'open',
       // Every device here is 127.0.0.1, and a public relay's per-address
       // limits are sized for one person, not for a whole suite of them.
       'RELAY_RATE_LIMIT': 'off',

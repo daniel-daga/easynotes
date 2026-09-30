@@ -223,6 +223,15 @@ instance and kept across restarts so signed device tokens remain valid; the
 Synology setup documents key generation, storage and rotation. Without it, the relay uses
 a temporary process key intended only for local development.
 
+A relay lets in only devices holding one of its access keys when
+`RELAY_ACCESS_KEYS` names any ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)).
+Its operator hands out a relay link, `https://relay.example/#access=<key>`, which
+goes in Settings → Relay. Set it to `open` to let anyone write; unset is open,
+with a warning, and the Synology setup refuses to start without it.
+`easynotes-relay access-key` prints a new key. Every relay also holds each client
+address to a write budget, 200 MiB at once and 200 MiB an hour by default
+(`RELAY_WRITE_BURST`, `RELAY_WRITE_PER_HOUR`).
+
 A relay stops taking *new* notes once every note together holds 16 GiB. Notes it
 already has keep working. `RELAY_STORAGE_CEILING` sets that ceiling in bytes, or
 `off` removes it. Each note's live log is capped at 32 MiB. Members keep far
@@ -308,7 +317,7 @@ reading the whole database at open.
 | [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
 | [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
 | [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
-| [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet (proposed) |
+| [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet |
 | [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
 
 ## Security, in one paragraph

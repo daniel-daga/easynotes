@@ -253,7 +253,9 @@ async fn a_photo_goes_up_is_published_and_comes_down_on_its_own() {
         b.state(staged.id) == AttachmentState::Live
     })
     .await;
-    let token = authenticate(&endpoint.http_base, &b.peer).await.unwrap();
+    let token = authenticate(&endpoint.http_base, None, &b.peer)
+        .await
+        .unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let scratch = MediaStore::open(scratch.path(), MasterKey::random()).unwrap();
     download_into(

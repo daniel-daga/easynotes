@@ -227,7 +227,7 @@ async fn subscribers_are_told_and_later_ones_refused() {
         .unwrap();
     let mut note = Note::new();
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let mut socket = NoteSocket::connect(&relay.ws_base(), &token, note.id, 0)

@@ -58,7 +58,7 @@ fn url(http_base: &str, note: NoteId, media: &MediaRef, rest: &str) -> String {
 /// What a status the caller did not expect means, in words a person can be
 /// shown where there are any.
 fn refused(status: u16, body: &[u8]) -> CoreError {
-    if let Some(outdated) = wire::outdated(status, body) {
+    if let Some(outdated) = wire::refused(status, body) {
         return outdated;
     }
     match status {

@@ -414,7 +414,8 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
         const Text(
           'Write these twelve words down, in order, on paper. They are the '
           'only way to put your notes on another device, and they will not be '
-          'shown again.',
+          'shown again. That device also needs your relay, and its access '
+          'key if it has one, which are not part of the words.',
         ),
         const SizedBox(height: 20),
         // Two columns of six, numbered, so that a word copied into the wrong
@@ -603,7 +604,8 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
                         'in Relay settings.'
                   : 'Your notes come back from ${profile.url}. If you used a '
                         'different relay before, choose it in Relay settings '
-                        'first: a phrase restores nothing from another relay.',
+                        'first: a phrase restores nothing from another relay. '
+                        '${profile.access == null ? 'If this relay has an access key, add it there too: the phrase does not include it.' : 'This relay\'s access key is saved; the phrase does not include it.'}',
               key: const Key('adopt-relay'),
             ),
           ],

@@ -13,6 +13,7 @@
 //! judge authorship, and a relay that rejected "bad" updates would be a relay that
 //! could censor good ones.
 
+use crate::access::Access;
 use crate::auth::Auth;
 use crate::error::{RelayError, Result};
 use crate::invite;
@@ -93,6 +94,11 @@ pub struct AppState {
     pub shutdown: crate::shutdown::Shutdown,
     /// Running counts for `/metrics` ([`crate::metrics`]).
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Who may get a token or use an invite ([`crate::access`]).
+    pub access: Access,
+    /// Bytes written per client address, appends and attachment chunks
+    /// together ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+    pub writes: RateLimit,
 }
 
 impl AppState {
@@ -119,6 +125,38 @@ impl AppState {
         limits: Limits,
         media: crate::media::MediaConfig,
     ) -> Arc<Self> {
+        Self::build(
+            store,
+            token_signing_key,
+            limits,
+            media,
+            Access::Open,
+            RateLimit::unlimited(),
+        )
+    }
+
+    /// Everything of `config` the handlers read, as opposed to the limits the
+    /// middleware applies. Takes the write budget out of it: a bucket has one
+    /// owner.
+    pub fn configured(store: Arc<dyn RelayStore>, config: &mut RelayConfig) -> Arc<Self> {
+        Self::build(
+            store,
+            config.token_signing_key,
+            config.storage,
+            config.media.clone(),
+            config.access.clone(),
+            std::mem::replace(&mut config.writes, RateLimit::unlimited()),
+        )
+    }
+
+    fn build(
+        store: Arc<dyn RelayStore>,
+        token_signing_key: [u8; 32],
+        limits: Limits,
+        media: crate::media::MediaConfig,
+        access: Access,
+        writes: RateLimit,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
             auth: Auth::new(token_signing_key),
@@ -128,6 +166,8 @@ impl AppState {
             append_locks: Mutex::new(HashMap::new()),
             shutdown: crate::shutdown::Shutdown::default(),
             metrics: Arc::default(),
+            access,
+            writes,
         })
     }
 
@@ -273,6 +313,11 @@ pub struct RelayConfig {
     /// The peers whose `X-Forwarded-For` names the client the rate limits are
     /// keyed on: the relay's own reverse proxy, and nothing else.
     pub trusted_proxies: TrustedProxies,
+    /// Who may get a token or use an invite
+    /// ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    pub access: Access,
+    /// Bytes written per address, appends and attachment chunks together.
+    pub writes: RateLimit,
 }
 
 impl Default for RelayConfig {
@@ -291,6 +336,8 @@ impl Default for RelayConfig {
             media_rate: RateLimit::unlimited(),
             media: crate::media::MediaConfig::default(),
             trusted_proxies: TrustedProxies::default(),
+            access: Access::Open,
+            writes: RateLimit::unlimited(),
         }
     }
 }
@@ -333,9 +380,21 @@ impl RelayConfig {
                 ..crate::media::MediaConfig::default()
             },
             trusted_proxies: TrustedProxies::default(),
+            // `main` sets this from `RELAY_ACCESS_KEYS`. Unset stays open, with
+            // a warning; the Synology Compose file will not start without it.
+            access: Access::Open,
+            // A household's evening of holiday photos from behind one router
+            // goes through at once; a flood slows to 200 MiB an hour.
+            writes: RateLimit::new(WRITES_PER_HOUR / 60, WRITES_BURST),
         }
     }
 }
+
+/// The write budget's burst: bytes one address may write at once.
+pub const WRITES_BURST: u32 = 200 << 20;
+
+/// The write budget's sustained rate, in bytes an hour.
+pub const WRITES_PER_HOUR: u32 = 200 << 20;
 
 /// Where a public relay stops starting new notes unless told otherwise:
 /// 16 GiB of live logs. ADR 0006's largest measured note compacts to under
@@ -490,6 +549,32 @@ async fn speak(
     }
 }
 
+/// The client a request is from, as the rate limits key it: its peer, or the
+/// address a trusted proxy says it had. Absent on a router with no connect
+/// info, which limits nothing, as [`enforce_limits`] says.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Client(pub std::net::IpAddr);
+
+impl AppState {
+    /// Spend `bytes` of `client`'s write budget. `Err` with the seconds to wait
+    /// when it is spent; always `Ok` for a client nobody could name.
+    pub(crate) fn spend_writes(
+        &self,
+        client: Option<Client>,
+        bytes: usize,
+    ) -> std::result::Result<(), u64> {
+        let Some(Client(client)) = client else {
+            return Ok(());
+        };
+        if self.writes.spend(client, bytes as u64) {
+            return Ok(());
+        }
+        tracing::debug!(%client, bytes, "write budget spent");
+        self.metrics.rate_limited(crate::metrics::Bucket::Writes);
+        Err(self.writes.retry_after_for(bytes as u64).as_secs())
+    }
+}
+
 /// Refuse a caller that is asking too often, before the handler does any work.
 ///
 /// The peer address comes out of the request extensions rather than through the
@@ -527,6 +612,9 @@ async fn enforce_limits(
             .map(|v| v.to_str().unwrap_or("unreadable")),
     );
     if limit.allow(client) {
+        // The handlers that spend the write budget need to know whose.
+        let mut req = req;
+        req.extensions_mut().insert(Client(client));
         return next.run(req).await;
     }
     tracing::debug!(%client, %peer, path = %req.uri().path(), "rate limited");
@@ -565,6 +653,27 @@ async fn token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<TokenResponse>> {
+    if state.access.gated() {
+        // Before the challenge is spent, so a device that is asked for the key
+        // and is given it can try again without starting over; a nonce is good
+        // for a minute and for one token either way.
+        let bytes = |raw: &str| URL_SAFE_NO_PAD.decode(raw).ok();
+        let (Some(nonce), Some(device)) = (bytes(&req.nonce), bytes(&req.device)) else {
+            return Err(RelayError::BadRequest(
+                "nonce or device is not base64url".into(),
+            ));
+        };
+        let device: [u8; 32] = device
+            .try_into()
+            .map_err(|_| RelayError::BadRequest("device key is not 32 bytes".into()))?;
+        if let Err(refused) = state
+            .access
+            .check_token(&nonce, &device, req.access.as_deref())
+        {
+            state.metrics.access_refused();
+            return Err(refused);
+        }
+    }
     let token = state
         .auth
         .redeem(

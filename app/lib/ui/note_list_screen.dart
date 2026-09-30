@@ -123,6 +123,7 @@ class NoteListScreen extends StatefulWidget {
     this.profile = const RelayProfile(id: 'default', url: null),
     RelayProfiles? profiles,
     this.onSwitchRelay = _ignoreRelaySwitch,
+    this.onSetAccess,
     this.onAccountDeleted,
     this.initialInviteLink,
     this.inviteLinks,
@@ -133,7 +134,11 @@ class NoteListScreen extends StatefulWidget {
   final NoteLibrary library;
   final RelayProfile profile;
   final RelayProfiles profiles;
-  final Future<void> Function(String?) onSwitchRelay;
+  final Future<void> Function(String?, {String? access}) onSwitchRelay;
+
+  /// Keep a new access key for the relay in use and reconnect with it. Null
+  /// in tests that do not go there.
+  final Future<void> Function(String?)? onSetAccess;
 
   /// Opens this profile again once its account is deleted. Null in tests that
   /// do not go there.
@@ -147,7 +152,7 @@ class NoteListScreen extends StatefulWidget {
   final Stream<SharedText>? sharedTexts;
 
   // Standalone screen tests do not need profile management.
-  static Future<void> _ignoreRelaySwitch(String? _) async {}
+  static Future<void> _ignoreRelaySwitch(String? _, {String? access}) async {}
 
   @override
   State<NoteListScreen> createState() => _NoteListScreenState();
@@ -288,6 +293,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
           library: widget.library,
           noteId: id,
           invites: widget.library,
+          relayLink: widget.profile.relayLink,
           onLabels: () async {
             final note = widget.library.notes
                 .where((note) => note.id == id)
@@ -449,8 +455,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   /// Answer whoever asked to join one of this device's lists.
-  Future<void> _review(String noteId) =>
-      showCollaborators(context, invites: widget.library, noteId: noteId);
+  Future<void> _review(String noteId) => showCollaborators(
+    context,
+    invites: widget.library,
+    noteId: noteId,
+    relayLink: widget.profile.relayLink,
+  );
 
   /// A request that was waiting in the background was let in.
   void _joinedInBackground(String noteId) {
@@ -497,6 +507,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
         profile: widget.profile,
         profiles: widget.profiles.profiles,
         onSwitchRelay: widget.onSwitchRelay,
+        onSetAccess: widget.onSetAccess,
       ),
     ),
   );

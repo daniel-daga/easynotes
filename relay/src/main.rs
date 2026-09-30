@@ -28,6 +28,16 @@
 //!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
 //!   64 GiB.
 //!
+//! * `RELAY_ACCESS_KEYS` — who may write here ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)):
+//!   one or more base64url access keys, comma separated, or `open` for anyone.
+//!   More than one so a rotation can overlap. Unset is `open`, with a warning.
+//!   `easynotes-relay access-key` prints a new key.
+//! * `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR` — the write budget: bytes
+//!   one client address may write at once, and sustained, appends and
+//!   attachments together. Unset means 200 MiB and 200 MiB an hour
+//!   ([`easynotes_relay::app::WRITES_BURST`]); `RELAY_WRITE_PER_HOUR=off`
+//!   turns it off.
+//!
 //! `easynotes-relay check` does not serve: it asks the relay at `RELAY_ADDR`
 //! whether it is ready (`/v1/ready`) and exits 0 if so, 1 if not. It is the
 //! container health check, which the slim runtime image has no `curl` for.
@@ -43,8 +53,10 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{
-    DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore, TrustedProxies,
+    Access, DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
+    TrustedProxies,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -67,6 +79,14 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = std::env::var("RELAY_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
+
+    if std::env::args().nth(1).as_deref() == Some("access-key") {
+        println!(
+            "{}",
+            easynotes_core::relay_access::RelayAccess::random().encode()
+        );
+        return Ok(());
+    }
 
     if std::env::args().nth(1).as_deref() == Some("check") {
         std::process::exit(match check(addr).await {
@@ -161,6 +181,42 @@ async fn main() -> anyhow::Result<()> {
         _ => tracing::info!(
             "RELAY_TRUSTED_PROXIES is unset: rate limits are per connecting address, so a reverse proxy is one client"
         ),
+    }
+
+    match std::env::var("RELAY_ACCESS_KEYS").as_deref().map(str::trim) {
+        Ok(raw) if !raw.is_empty() => {
+            // A list that cannot be read fails to start rather than falling
+            // back to open: an operator who set a key believes the relay is
+            // closed to strangers.
+            config.access = Access::parse(raw)
+                .map_err(|e| anyhow::anyhow!("RELAY_ACCESS_KEYS could not be understood: {e}"))?;
+            match &config.access {
+                Access::Keys(keys) => tracing::info!(
+                    keys = keys.len(),
+                    "only devices holding an access key may write here"
+                ),
+                Access::Open => tracing::warn!(
+                    "RELAY_ACCESS_KEYS=open: anyone who can reach this relay may write to it"
+                ),
+            }
+        }
+        _ => tracing::warn!(
+            "RELAY_ACCESS_KEYS is unset: anyone who can reach this relay may write to it. \
+             Set it to a key from `easynotes-relay access-key`, or to `open` to say so on purpose"
+        ),
+    }
+    let burst = bytes_or_off("RELAY_WRITE_BURST", false)?.flatten();
+    let per_hour = bytes_or_off("RELAY_WRITE_PER_HOUR", true)?;
+    if per_hour == Some(None) {
+        tracing::warn!("RELAY_WRITE_PER_HOUR=off: no limit on how much one address writes");
+        config.writes = RateLimit::unlimited();
+    } else if burst.is_some() || per_hour.is_some() {
+        use easynotes_relay::app::{WRITES_BURST, WRITES_PER_HOUR};
+        let per_hour = per_hour.flatten().unwrap_or(WRITES_PER_HOUR.into());
+        let burst = burst.unwrap_or(WRITES_BURST.into());
+        let fit = |bytes: u64| u32::try_from(bytes).unwrap_or(u32::MAX);
+        config.writes = RateLimit::new(fit(per_hour / 60).max(1), fit(burst));
+        tracing::info!(burst, per_hour, "write budget per address");
     }
 
     match std::env::var("RELAY_MEDIA_DIR").as_deref().map(str::trim) {

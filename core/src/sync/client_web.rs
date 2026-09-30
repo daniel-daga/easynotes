@@ -24,6 +24,7 @@
 use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
+use crate::relay_access::RelayAccess;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -68,7 +69,7 @@ async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Re
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
     let (status, text) = post(url, body).await?;
-    if let Some(outdated) = wire::outdated(status, text.as_bytes()) {
+    if let Some(outdated) = wire::refused(status, text.as_bytes()) {
         return Err(outdated);
     }
     if !(200..300).contains(&status) {
@@ -165,8 +166,13 @@ pub(crate) async fn call(
 /// The same two calls the native client makes, and the same order; only the HTTP
 /// client differs. Note that the device key never leaves the signer: what is
 /// sent is a public key and a signature over the relay's nonce.
-pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result<String> {
-    let device = signer.device_key()?.encode();
+pub async fn authenticate(
+    http_base: &str,
+    access: Option<&RelayAccess>,
+    signer: &impl DeviceSigner,
+) -> Result<String> {
+    let device_key = signer.device_key()?;
+    let device = device_key.encode();
 
     let challenge: ChallengeResponse = post_json(
         &wire::api(http_base, "/challenge"),
@@ -183,6 +189,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
             device: &device,
             nonce: &challenge.nonce,
             signature: &signature,
+            access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
         },
     )
     .await?;

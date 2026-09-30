@@ -31,13 +31,17 @@ pub(crate) enum Bucket {
     Sockets,
     Invites,
     Media,
+    /// Bytes written, appends and chunks together ([ADR
+    /// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+    Writes,
 }
 
-const BUCKETS: [(Bucket, &str); 4] = [
+const BUCKETS: [(Bucket, &str); 5] = [
     (Bucket::Handshake, "handshake"),
     (Bucket::Sockets, "sockets"),
     (Bucket::Invites, "invites"),
     (Bucket::Media, "media"),
+    (Bucket::Writes, "writes"),
 ];
 
 /// Which budget refused a write ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md),
@@ -64,7 +68,7 @@ const REFUSALS: [(Refused, &str, &str); 4] = [
 pub struct Metrics {
     sockets_open: AtomicU64,
     sockets_opened: AtomicU64,
-    rate_limited: [AtomicU64; 4],
+    rate_limited: [AtomicU64; 5],
     refused: [AtomicU64; 4],
     /// By status class, 1xx to 5xx. A socket's upgrade is a 1xx.
     responses: [AtomicU64; 5],
@@ -72,6 +76,8 @@ pub struct Metrics {
     spoken: [AtomicU64; SPOKEN],
     /// Requests refused with `426`.
     outdated: AtomicU64,
+    /// Requests refused for want of the relay's access key.
+    access_refused: AtomicU64,
 }
 
 /// How many protocol versions this relay speaks, and so counts.
@@ -98,6 +104,10 @@ impl Metrics {
 
     pub(crate) fn outdated(&self) {
         self.outdated.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn access_refused(&self) {
+        self.access_refused.fetch_add(1, Relaxed);
     }
 
     /// Count a sync socket as open for as long as the guard lives.
@@ -290,6 +300,18 @@ pub async fn render(state: &AppState) -> String {
         "counter",
         "Requests refused with 426 because the client's protocol is not spoken.",
         &one(m.outdated.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_access_gated",
+        "gauge",
+        "1 if the relay lets in only holders of its access key (ADR 0028).",
+        &one(state.access.gated() as u64),
+    );
+    family(
+        "easynotes_relay_access_refused_total",
+        "counter",
+        "Token and invite requests refused with 403 for want of the access key.",
+        &one(m.access_refused.load(Relaxed)),
     );
     family(
         "easynotes_relay_http_responses_total",

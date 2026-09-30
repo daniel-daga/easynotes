@@ -25,6 +25,15 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   tr -d '=\n'`, store it in `.env`, and keep a protected backup. Every relay
   instance must use the same key. Changing it immediately invalidates active
   device tokens; retaining it lets them remain usable until expiry.
+- Set `RELAY_ACCESS_KEYS` to a second key, made the same way as the signing
+  key (a different value). Only devices holding it can use the relay; everyone
+  you let in gets it as part of the relay link in step 7. Set it to `open`
+  instead only if you mean anyone who finds the hostname to be able to fill
+  the relay. Compose refuses to start with neither.
+- Optionally set `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR`, the bytes one
+  client address may write at once and in an hour, notes and attachments
+  together (200 MiB each by default). A household uploading an evening's
+  photos fits inside that; raise it if yours does not.
 - Optionally set `RELAY_STORAGE_CEILING` to the number of bytes the relay
   may hold before it refuses to start new notes. Notes it already has keep
   working. Leave it empty for the default of 16 GiB, or set it to `off`.
@@ -238,6 +247,58 @@ be, or a backup lost) and whenever someone who had it no longer should. There
 is no need to rotate on a schedule: the key protects tokens that last fifteen
 minutes, and it protects no note content. Notes are end-to-end encrypted under
 keys the relay never holds.
+
+## 7. Let people in
+
+With `RELAY_ACCESS_KEYS` set, the relay issues tokens and takes invites only
+from devices that prove they hold one of its keys
+([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The key is
+never sent: a device proves it with an HMAC over the handshake, so neither the
+reverse proxy nor anyone reading its logs learns it. The relay's log says at
+start how many keys it has:
+
+```text
+only devices holding an access key may write here keys=1
+```
+
+**Hand out a relay link**, the relay's address with the key after a `#`:
+
+```text
+https://your-relay-hostname/#access=<the key from .env>
+```
+
+Everything after the `#` stays in the app or the browser and never reaches a
+server, so the link can be pasted into a chat without the key landing in an
+access log. In the app it goes in **Settings → Relay**, in the relay field; the
+key can also be typed into the field beside it. A device already using the relay
+enters it with **Enter access key**, and one that has it can **Copy relay
+link** there to pass it on. When a list is shared, the owner can have the
+relay link sent with the invite; an invite names no relay of its own.
+
+Anyone holding the link can use the relay for as long as the key is valid, the
+same as today's relay lets anyone who finds it. What it cannot do is read a
+note: those are encrypted under keys the relay never holds.
+
+**Rotating** takes the key away from people who should no longer have it:
+
+1. Add a new key beside the old one, comma separated, and restart the relay.
+   Both work.
+2. Hand the new relay link to everyone who should keep using the relay. Each
+   device enters it under **Settings → Relay → Change access key**.
+3. Once they have, remove the old key and restart. A device still on it is
+   told the relay needs an access key, and its notes stay on the device.
+
+Tokens already issued last up to fifteen minutes, so a removed key stops
+working within that. Rotating the signing key (step 6) at the same time ends it
+at once.
+
+Deleting an account ([ADR 0026](../../docs/adr/0026-deleting-an-account.md))
+needs no access key: someone whose access was taken away can still remove what
+they put here.
+
+`/metrics` reports `easynotes_relay_access_gated` and
+`easynotes_relay_access_refused_total`. A steady stream of refusals is a device
+with an old key, or a stranger who found the hostname.
 
 ## Troubleshooting
 

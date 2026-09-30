@@ -8,9 +8,10 @@
 //! thing that proves a key and it is the handshake being flooded.
 //!
 //! So the limit is on the two unauthenticated doors — `/v1/challenge` and
-//! `/v1/token` — and on opening a socket. It is not on publishing: a device that
-//! got through the handshake holds a key, and the envelope cap plus the store is
-//! what bounds it.
+//! `/v1/token` — and on opening a socket. Publishing has a budget of its own,
+//! in bytes rather than requests: appends and attachment chunks together, per
+//! address ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+//! Device keys are free, so a budget per key would be a budget per nothing.
 //!
 //! ## Why a token bucket, and why it is keyed on the socket's peer
 //!
@@ -97,6 +98,18 @@ impl RateLimit {
     /// The whole of [`RateLimit::allow`], with the clock passed in so that a
     /// test can assert on the refill without sleeping for a minute.
     pub fn allow_at(&self, who: IpAddr, now: Instant) -> bool {
+        self.spend_at(who, 1, now)
+    }
+
+    /// Spend `cost` units at once — bytes, for the write budget. A cost larger
+    /// than the whole burst is charged against a full bucket rather than
+    /// refused for ever, so that no single write the relay otherwise accepts
+    /// can never go through.
+    pub fn spend(&self, who: IpAddr, cost: u64) -> bool {
+        self.spend_at(who, cost, Instant::now())
+    }
+
+    pub fn spend_at(&self, who: IpAddr, cost: u64, now: Instant) -> bool {
         if self.disabled() {
             return true;
         }
@@ -118,11 +131,23 @@ impl RateLimit {
         let elapsed = now.duration_since(bucket.last).as_secs_f64();
         bucket.tokens = (bucket.tokens + elapsed * (self.per_minute / 60.0)).min(self.burst);
         bucket.last = now;
-        if bucket.tokens < 1.0 {
+        let cost = (cost as f64).clamp(1.0, self.burst);
+        if bucket.tokens < cost {
             return false;
         }
-        bucket.tokens -= 1.0;
+        bucket.tokens -= cost;
         true
+    }
+
+    /// How long a caller refused `cost` units should wait for them to refill:
+    /// the write budget's `Retry-After`. Never zero, for the reason
+    /// [`RateLimit::retry_after`] is not.
+    pub fn retry_after_for(&self, cost: u64) -> Duration {
+        if self.disabled() {
+            return Duration::ZERO;
+        }
+        let cost = (cost as f64).clamp(1.0, self.burst);
+        Duration::from_secs((cost * 60.0 / self.per_minute).ceil().max(1.0) as u64)
     }
 
     /// How long a refused caller should wait, for the `Retry-After` header. One
@@ -268,6 +293,19 @@ mod tests {
             assert!(limit.allow_at(ip(1), now), "request {i} should be allowed");
         }
         assert!(!limit.allow_at(ip(1), now), "the sixth is over the burst");
+    }
+
+    #[test]
+    fn a_byte_budget_spends_what_each_write_costs() {
+        let limit = RateLimit::new(60, 1000);
+        let now = Instant::now();
+        assert!(limit.spend_at(ip(1), 600, now));
+        assert!(!limit.spend_at(ip(1), 600, now), "only 400 are left");
+        assert!(limit.spend_at(ip(1), 400, now));
+        // A write larger than the whole burst waits for a full bucket rather
+        // than never going through.
+        assert!(limit.spend_at(ip(2), 5000, now));
+        assert!(!limit.spend_at(ip(2), 1, now));
     }
 
     #[test]
