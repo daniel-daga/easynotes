@@ -68,8 +68,11 @@ In **Container Manager → Project → Create**:
 
 The first build compiles Rust and can take a while on the NAS. The relay runs
 database schema migrations when it starts. Check the relay container log for
-`relay listening`. After configuring the reverse proxy in the next step, check
-that its health endpoint returns HTTP 200.
+`relay listening`. Container Manager should then show the relay as
+**healthy**: the Compose file checks `/v1/ready` from inside the container every
+30 seconds, which means the relay is up and its database answers. After
+configuring the reverse proxy in the next step, check that its health endpoint
+returns HTTP 200.
 
 ## 3. Add the DSM reverse proxy
 
@@ -139,7 +142,12 @@ calling it over.
 
 To update, copy/pull the new repository version, then use **Project → Action →
 Build** and **Start** in Container Manager. The database directory is separate
-from the containers and survives normal rebuilds. Do not remove the project's
+from the containers and survives normal rebuilds. A stop is graceful: the relay
+stops taking connections, closes every device's sync socket cleanly so the app
+reconnects on its own, and gives uploads in flight up to eight seconds
+(`RELAY_DRAIN_SECONDS`) to finish before it exits. The log says `stopped
+cleanly`, or that the drain period ran out; the second costs a device a resumed
+upload, not data. Do not remove the project's
 data directory when cleaning up containers.
 
 ## 5. Check and rotate the token signing key

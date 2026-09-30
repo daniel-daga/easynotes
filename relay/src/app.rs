@@ -89,6 +89,8 @@ pub struct AppState {
     /// assigns sequence numbers, so the corresponding fan-out must keep that
     /// same order even when concurrent websocket handlers append at once.
     append_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    /// Tells the sync sessions to close when the relay is stopping.
+    pub shutdown: crate::shutdown::Shutdown,
 }
 
 impl AppState {
@@ -122,6 +124,7 @@ impl AppState {
             media,
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
+            shutdown: crate::shutdown::Shutdown::default(),
         })
     }
 

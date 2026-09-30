@@ -27,6 +27,16 @@
 //! * `RELAY_MEDIA_CEILING` — bytes every note's attachments may hold together,
 //!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
 //!   64 GiB.
+//!
+//! `easynotes-relay check` does not serve: it asks the relay at `RELAY_ADDR`
+//! whether it is ready (`/v1/ready`) and exits 0 if so, 1 if not. It is the
+//! container health check, which the slim runtime image has no `curl` for.
+//!
+//! * `RELAY_DRAIN_SECONDS` — on `SIGTERM` or Ctrl-C, how long to let requests
+//!   in flight finish and sync sockets close before exiting anyway. Unset means
+//!   [`DEFAULT_DRAIN`]. Keep it under the grace period whatever stops the
+//!   container allows (`stop_grace_period` in compose, ten seconds by default),
+//!   or the process is killed before it is done.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -35,6 +45,12 @@ use easynotes_relay::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long a stop waits for the relay to drain, unless told otherwise. Long
+/// enough for a chunk upload in flight on a slow line to finish; short enough
+/// to fit inside Docker's default ten-second grace period.
+const DEFAULT_DRAIN: Duration = Duration::from_secs(8);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,6 +64,16 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = std::env::var("RELAY_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
+
+    if std::env::args().nth(1).as_deref() == Some("check") {
+        std::process::exit(match check(addr).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("not ready: {e}");
+                1
+            }
+        });
+    }
 
     let durable = std::env::var("DATABASE_URL").is_ok();
     let store: Arc<dyn RelayStore> = match std::env::var("DATABASE_URL") {
@@ -164,10 +190,79 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let drain = match std::env::var("RELAY_DRAIN_SECONDS")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => DEFAULT_DRAIN,
+        Ok(raw) => Duration::from_secs(raw.parse().map_err(|_| {
+            anyhow::anyhow!("RELAY_DRAIN_SECONDS must be a whole number of seconds")
+        })?),
+    };
+
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
-    // Hold the relay until the process is killed.
-    std::future::pending::<()>().await;
+
+    stopped().await?;
+    tracing::info!(
+        seconds = drain.as_secs(),
+        "stopping: closing sockets and finishing requests in flight"
+    );
+    if relay.shutdown(drain).await {
+        tracing::info!("stopped cleanly");
+    } else {
+        tracing::warn!("stopped with work still in flight: the drain period ran out");
+    }
+    Ok(())
+}
+
+/// Ask the relay listening on `addr` whether it is ready. By hand over one
+/// socket, because an HTTP client is a lot of dependency for one request to
+/// localhost. The relay speaks HTTP/1.1 and closes when asked to, so reading to
+/// the end is bounded.
+async fn check(addr: SocketAddr) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Listening on every interface means reachable on this one.
+    let mut addr = addr;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(match addr {
+            SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+            SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    let asked = async {
+        let mut socket = tokio::net::TcpStream::connect(addr).await?;
+        socket
+            .write_all(b"GET /v1/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut answer = Vec::new();
+        socket.read_to_end(&mut answer).await?;
+        anyhow::Ok(answer)
+    };
+    let answer = tokio::time::timeout(Duration::from_secs(5), asked)
+        .await
+        .map_err(|_| anyhow::anyhow!("no answer from {addr} in five seconds"))??;
+    let status = answer.split(|&b| b == b'\r').next().unwrap_or_default();
+    let status = String::from_utf8_lossy(status);
+    match status.split(' ').nth(1) {
+        Some("200") => Ok(()),
+        _ => anyhow::bail!("{addr} answered {status:?}"),
+    }
+}
+
+/// Resolves on `SIGTERM` — what `docker stop` and systemd send — or on Ctrl-C.
+async fn stopped() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = term.recv() => {}
+            result = tokio::signal::ctrl_c() => result?,
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
     Ok(())
 }
 
