@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/relay_profiles.dart';
 
@@ -24,6 +25,7 @@ class RelaySettingsScreen extends StatefulWidget {
     required this.profile,
     required this.profiles,
     required this.onSwitchRelay,
+    this.onSetAccess,
     bool? servedOverHttps,
     bool? mobileRelease,
   }) : servedOverHttps = servedOverHttps ?? _servedOverHttps,
@@ -31,7 +33,15 @@ class RelaySettingsScreen extends StatefulWidget {
 
   final RelayProfile profile;
   final List<RelayProfile> profiles;
-  final Future<void> Function(String?) onSwitchRelay;
+
+  /// Switch to the relay at a canonical URL, or to notes on this device for
+  /// null, keeping [access] as that relay's access key when given.
+  final Future<void> Function(String?, {String? access}) onSwitchRelay;
+
+  /// Keep a new access key for the relay in use, or forget it for null, and
+  /// reconnect with it ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)).
+  /// Null where there is nothing to reconnect, as in some tests.
+  final Future<void> Function(String?)? onSetAccess;
 
   /// A browser page served over HTTPS cannot open a connection to a relay
   /// without TLS, so such an address is explained rather than accepted. A
@@ -55,17 +65,24 @@ class RelaySettingsScreen extends StatefulWidget {
 
 class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
   final _url = TextEditingController();
+  final _access = TextEditingController();
   final _form = GlobalKey<FormState>();
   bool _switching = false;
 
   @override
   void dispose() {
     _url.dispose();
+    _access.dispose();
     super.dispose();
   }
 
-  Future<void> _switchTo(String? url) async {
-    if (_switching || url == widget.profile.url) return;
+  Future<void> _switchTo(String? url, {String? access}) async {
+    if (_switching) return;
+    if (url == widget.profile.url) {
+      // The relay already in use, given a key: that is entering its key.
+      if (access != null && url != null) await _saveAccess(access);
+      return;
+    }
     final target = url ?? 'On this device';
     final destinationExists = widget.profiles.any((p) => p.url == url);
     final confirmed = await showDialog<bool>(
@@ -94,7 +111,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     if (confirmed != true || !mounted) return;
     setState(() => _switching = true);
     try {
-      await widget.onSwitchRelay(url);
+      await widget.onSwitchRelay(url, access: access);
       if (mounted) Navigator.of(context).pop();
     } on Object catch (error) {
       if (!mounted) return;
@@ -108,10 +125,95 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     }
   }
 
+  Future<void> _saveAccess(String? access) async {
+    final save = widget.onSetAccess;
+    if (save == null || _switching) return;
+    setState(() => _switching = true);
+    try {
+      await save(access);
+      if (!mounted) return;
+      // Back to the notes, which is where reconnecting shows; this screen
+      // was drawn with the key the relay had before.
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).pop();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            access == null
+                ? 'Access key removed.'
+                : 'Access key saved. Reconnecting to the relay.',
+          ),
+        ),
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save the access key: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  /// Ask for the relay's key: typed, or pasted as the relay link it came in.
+  Future<void> _enterAccess() async {
+    final key = await showDialog<String>(
+      context: context,
+      builder: (context) => _AccessKeyDialog(
+        read: (input) => _readAccess(input, relay: widget.profile.url),
+      ),
+    );
+    if (key != null) await _saveAccess(key);
+  }
+
+  /// A key on its own, or a relay link for [relay] carrying one.
+  ({String? access, String? error}) _readAccess(
+    String input, {
+    required String? relay,
+  }) {
+    final plain = normalizeAccessKey(input);
+    if (plain != null) return (access: plain, error: null);
+    try {
+      final link = parseRelayLink(input);
+      if (link.access == null) {
+        return (access: null, error: 'That link has no access key in it.');
+      }
+      if (relay != null && link.url != relay) {
+        return (
+          access: null,
+          error: 'That link is for another relay: ${link.url}.',
+        );
+      }
+      return (access: link.access, error: null);
+    } on FormatException {
+      return (access: null, error: 'That is not an access key or relay link.');
+    }
+  }
+
+  Future<void> _copyRelayLink(String link) async {
+    await Clipboard.setData(ClipboardData(text: link));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Relay link copied. It lets whoever has it use this relay, so '
+          'send it only to people you share lists with.',
+        ),
+      ),
+    );
+  }
+
+  String? _validateAccess(String? value) {
+    if ((value ?? '').trim().isEmpty) return null;
+    return normalizeAccessKey(value!) == null
+        ? 'That is not an access key.'
+        : null;
+  }
+
   String? _validate(String? value) {
     final String url;
     try {
-      url = canonicalRelayUrl(value ?? '');
+      url = parseRelayLink(value ?? '').url;
     } on FormatException catch (error) {
       return error.message;
     }
@@ -139,6 +241,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
           title: Text(widget.profile.label),
           subtitle: const Text('Only this profile syncs right now.'),
         ),
+        if (widget.profile.url != null) ..._accessSection(context),
         const Divider(height: 32),
         Text(
           'Switch to a relay',
@@ -155,12 +258,27 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 keyboardType: TextInputType.url,
                 autocorrect: false,
                 decoration: const InputDecoration(
-                  labelText: 'Relay URL',
+                  labelText: 'Relay URL or relay link',
                   hintText: 'https://relay.example',
                   helperText:
                       'Use the same relay as the people you share notes with.',
                 ),
                 validator: _validate,
+                onFieldSubmitted: (_) => _submitUrl(),
+              ),
+              TextFormField(
+                key: const Key('relay-access-field'),
+                controller: _access,
+                enabled: !_switching,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Access key (if the relay has one)',
+                  helperText:
+                      'A relay link has it already. Leave empty for a relay '
+                      'anyone may use.',
+                  helperMaxLines: 2,
+                ),
+                validator: _validateAccess,
                 onFieldSubmitted: (_) => _submitUrl(),
               ),
               const SizedBox(height: 12),
@@ -202,10 +320,54 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     ),
   );
 
+  List<Widget> _accessSection(BuildContext context) {
+    final link = widget.profile.relayLink;
+    return [
+      ListTile(
+        key: const Key('relay-access-status'),
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(link == null ? Icons.lock_open : Icons.key),
+        title: Text(link == null ? 'No access key' : 'Access key saved'),
+        subtitle: Text(
+          link == null
+              ? 'Enough for a relay anyone may use. If this relay asks for a '
+                    'key, enter the one its operator gave you.'
+              : 'Someone you share a list with needs this relay\'s link as '
+                    'well as the invite.',
+        ),
+      ),
+      Wrap(
+        spacing: 8,
+        children: [
+          if (widget.onSetAccess != null)
+            OutlinedButton(
+              key: const Key('relay-access-enter'),
+              onPressed: _switching ? null : _enterAccess,
+              child: Text(
+                link == null ? 'Enter access key' : 'Change access key',
+              ),
+            ),
+          if (link != null)
+            OutlinedButton(
+              key: const Key('relay-link-copy'),
+              onPressed: () => _copyRelayLink(link),
+              child: const Text('Copy relay link'),
+            ),
+        ],
+      ),
+    ];
+  }
+
   Future<void> _submitUrl() async {
     if (!(_form.currentState?.validate() ?? false)) return;
     try {
-      await _switchTo(canonicalRelayUrl(_url.text));
+      final link = parseRelayLink(_url.text);
+      final typed = _access.text.trim();
+      await _switchTo(
+        link.url,
+        access:
+            link.access ?? (typed.isEmpty ? null : normalizeAccessKey(typed)),
+      );
     } on FormatException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -213,4 +375,63 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       ).showSnackBar(SnackBar(content: Text(error.message)));
     }
   }
+}
+
+/// Asks for a relay's access key, and pops with it once it reads as one.
+class _AccessKeyDialog extends StatefulWidget {
+  const _AccessKeyDialog({required this.read});
+
+  final ({String? access, String? error}) Function(String input) read;
+
+  @override
+  State<_AccessKeyDialog> createState() => _AccessKeyDialogState();
+}
+
+class _AccessKeyDialogState extends State<_AccessKeyDialog> {
+  final _controller = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final read = widget.read(_controller.text);
+    if (read.error != null) {
+      setState(() => _error = read.error);
+    } else {
+      Navigator.pop(context, read.access);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Relay access key'),
+    content: TextField(
+      key: const Key('relay-access-dialog-field'),
+      controller: _controller,
+      autocorrect: false,
+      decoration: InputDecoration(
+        labelText: 'Access key or relay link',
+        helperText: 'Whoever runs this relay can give you either.',
+        helperMaxLines: 2,
+        errorText: _error,
+        errorMaxLines: 3,
+      ),
+      onSubmitted: (_) => _save(),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        key: const Key('relay-access-save'),
+        onPressed: _save,
+        child: const Text('Save'),
+      ),
+    ],
+  );
 }

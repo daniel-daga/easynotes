@@ -473,7 +473,7 @@ class RustNoteLibrary implements NoteLibrary {
       // Deleting disconnected first, so that nothing the relay said during the
       // purge was recorded; a deletion that did not happen reconnects.
       final relay = _relay;
-      if (relay != null) await connect(relay);
+      if (relay != null) await connect(relay, access: _access);
       rethrow;
     }
   }
@@ -481,11 +481,13 @@ class RustNoteLibrary implements NoteLibrary {
   /// The relay this library was last connected to, for [deleteAccount] to
   /// reconnect to when it fails.
   String? _relay;
+  String? _access;
 
   @override
-  Future<void> connect(String url) {
+  Future<void> connect(String url, {String? access}) {
     _relay = url;
-    return _library.connect(relay: url);
+    _access = access;
+    return _library.connect(relay: url, access: access);
   }
 
   @override

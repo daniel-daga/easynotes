@@ -40,9 +40,14 @@ class NoteScreen extends StatefulWidget {
     this.onLabels,
     this.onReminders,
     this.files = const DeviceAttachmentFiles(),
+    this.relayLink,
   });
 
   final NoteCore core;
+
+  /// The relay's link with its access key, for a guest who needs it as well
+  /// as an invite. Null for a relay with no key.
+  final String? relayLink;
 
   /// Where attachments are picked from and saved to.
   final AttachmentFiles files;
@@ -423,6 +428,7 @@ class _NoteScreenState extends State<NoteScreen> {
       context,
       invites: widget.invites,
       noteId: widget.noteId,
+      relayLink: widget.relayLink,
     );
   }
 

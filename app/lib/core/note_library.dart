@@ -476,7 +476,12 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Returns when the attempt has *started*, not when it has succeeded: there
   /// may be no network, and nothing above this is allowed to wait for one.
   /// [watchSync] is where it says how it went.
-  Future<void> connect(String url);
+  ///
+  /// [access] is the relay's access key, for a relay that lets in only the
+  /// people its operator gave the key to ([ADR
+  /// 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). Connecting
+  /// again with another key is how a changed key takes effect.
+  Future<void> connect(String url, {String? access});
 
   /// Stop syncing. Edits still work and still queue.
   Future<void> disconnect();

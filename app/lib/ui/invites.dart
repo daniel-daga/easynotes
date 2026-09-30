@@ -174,10 +174,15 @@ Future<void> showCollaborators(
   BuildContext context, {
   required Invites invites,
   required String noteId,
+  String? relayLink,
 }) => Navigator.of(context).push(
   MaterialPageRoute<void>(
     fullscreenDialog: true,
-    builder: (context) => CollaboratorsScreen(invites: invites, noteId: noteId),
+    builder: (context) => CollaboratorsScreen(
+      invites: invites,
+      noteId: noteId,
+      relayLink: relayLink,
+    ),
   ),
 );
 
@@ -193,10 +198,19 @@ class CollaboratorsScreen extends StatefulWidget {
     super.key,
     required this.invites,
     required this.noteId,
+    this.relayLink,
   });
 
   final Invites invites;
   final String noteId;
+
+  /// This relay's link, address and access key together, when it has a key
+  /// ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). An
+  /// invite names no relay, so a guest on a private relay needs this too. It
+  /// goes with an invite only when the owner says so: an invite lets one
+  /// person into one note, and a relay link lets whoever holds it use the
+  /// relay for good.
+  final String? relayLink;
 
   @override
   State<CollaboratorsScreen> createState() => _CollaboratorsScreenState();
@@ -218,6 +232,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _refreshing = false;
   bool _askedToNotify = false;
   Timer? _poll;
+
+  /// Whether a sent invite carries [CollaboratorsScreen.relayLink] too.
+  bool _withRelayLink = false;
 
   @override
   void initState() {
@@ -327,12 +344,60 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   Future<void> _send(Invite invite) async {
     // The link goes last: a guest who pastes the whole message rather than
     // tapping it still gets in, because the core reads after the last `#`.
+    final relay = widget.relayLink;
     final shared = await shareContent(
-      'Join my shared note in EasyNotes: ${_link(invite)}',
+      relay != null && _withRelayLink
+          ? 'Join my shared note in EasyNotes. First add my relay in '
+                'Settings, Relay, with this link: $relay\n\n'
+                'Then open the invite: ${_link(invite)}'
+          : 'Join my shared note in EasyNotes: ${_link(invite)}',
     );
     if (!shared && mounted) _copy(invite);
     await _refresh();
   }
+
+  void _copyRelayLink(String link) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    unawaited(
+      Clipboard.setData(ClipboardData(text: link)).then(
+        (_) => messenger?.showSnackBar(
+          const SnackBar(content: Text('Relay link copied')),
+        ),
+        onError: (_) => null,
+      ),
+    );
+  }
+
+  /// What a guest on a relay with an access key needs besides the invite.
+  Widget _relayLinkSection(ThemeData theme, String link) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const SizedBox(height: 8),
+      Text(
+        'This relay has an access key. Someone who is not using it yet needs '
+        'its relay link as well as an invite. The link lets them use the '
+        'relay for good, so send it only to people you trust with that.',
+        key: const Key('relay-link-explainer'),
+        style: theme.textTheme.bodySmall,
+      ),
+      SwitchListTile(
+        key: const Key('invite-with-relay-link'),
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Send the relay link with invites'),
+        value: _withRelayLink,
+        onChanged: _busy ? null : (on) => setState(() => _withRelayLink = on),
+      ),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          key: const Key('copy-relay-link'),
+          onPressed: () => _copyRelayLink(link),
+          icon: const Icon(Icons.key),
+          label: const Text('Copy relay link'),
+        ),
+      ),
+    ],
+  );
 
   void _copy(Invite invite) {
     final messenger = ScaffoldMessenger.maybeOf(context);
@@ -738,6 +803,8 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                   'contain the note, only a way in.',
                   style: theme.textTheme.bodySmall,
                 ),
+                if (widget.relayLink case final link?)
+                  _relayLinkSection(theme, link),
                 const SizedBox(height: 8),
                 if (_open.isEmpty)
                   const Padding(

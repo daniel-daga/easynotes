@@ -178,7 +178,9 @@ Future<NoteLibrary> openInBrowser(
   }
   // As on a device: with no relay there the app is a local notes app, and the
   // status button says so.
-  if (connect && profile.url != null) await library.connect(profile.url!);
+  if (connect && profile.url != null) {
+    await library.connect(profile.url!, access: profile.access);
+  }
   return library;
 }
 
@@ -296,6 +298,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       profile: _session.profile,
       profiles: _session.profiles,
       onSwitchRelay: _session.switchTo,
+      onSetAccess: _session.setAccess,
       onAccountDeleted: _session.reopen,
       initialInviteLink: initialInvite,
       inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,

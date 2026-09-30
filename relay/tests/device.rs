@@ -240,7 +240,7 @@ fn an_envelope(padding: usize) -> (NoteId, Vec<u8>) {
 }
 
 async fn token(relay: &Relay) -> String {
-    authenticate(&relay.http_base(), blank_core().identity())
+    authenticate(&relay.http_base(), None, blank_core().identity())
         .await
         .unwrap()
 }

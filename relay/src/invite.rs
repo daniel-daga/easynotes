@@ -84,6 +84,16 @@ fn holds(secret: &str, expected: &[u8]) -> bool {
     }
 }
 
+/// Whether the caller holds the relay's access key, on a relay that has one
+/// ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The proof is
+/// over the invite ID, which everyone holding the link shares, so it names
+/// nobody: the reason these calls have no device key still holds.
+fn admitted(state: &AppState, id: &str, proof: Option<&str>) -> Result<()> {
+    state.access.check_invite(id, proof).inspect_err(|_| {
+        state.metrics.access_refused();
+    })
+}
+
 fn expires_in(invite: &Invite, now: i64) -> u64 {
     (invite.expires_at - now).max(0) as u64
 }
@@ -117,6 +127,7 @@ pub async fn create(
     Json(req): Json<CreateInvite>,
 ) -> Result<(StatusCode, Json<CreatedInvite>)> {
     invite_id(&req.invite)?;
+    admitted(&state, &req.invite, req.access.as_deref())?;
     let token_hash = hash32(&req.token_hash, "token hash")?;
     let owner_hash = hash32(&req.owner_hash, "owner hash")?;
     if token_hash == owner_hash {
@@ -152,6 +163,8 @@ pub async fn join(
     Path(id): Path<String>,
     Json(req): Json<JoinInvite>,
 ) -> Result<Json<JoinedInvite>> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
     let payload = b64(&req.payload, "payload")?;
     if payload.len() > MAX_INVITE_PAYLOAD_BYTES {
         return Err(RelayError::TooLarge);
@@ -181,6 +194,8 @@ pub async fn poll(
     Path((id, request)): Path<(String, String)>,
     Json(req): Json<PollInvite>,
 ) -> Result<Json<PolledRequest>> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
     let invite = as_guest(&state, &id, &req.token).await?;
     let found = invite
         .requests
@@ -200,6 +215,8 @@ pub async fn list(
     Path(id): Path<String>,
     Json(req): Json<OwnInvite>,
 ) -> Result<Json<InviteListing>> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
     let invite = as_owner(&state, &id, &req.owner).await?;
     let now = now();
     Ok(Json(InviteListing {
@@ -223,6 +240,8 @@ pub async fn answer(
     Path((id, request)): Path<(String, String)>,
     Json(req): Json<AnswerInvite>,
 ) -> Result<StatusCode> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
     let grant = match &req.grant {
         Some(g) => {
             let raw = b64(g, "grant")?;
@@ -252,6 +271,8 @@ pub async fn withdraw(
     Path(id): Path<String>,
     Json(req): Json<OwnInvite>,
 ) -> Result<StatusCode> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
     as_owner(&state, &id, &req.owner).await?;
     state.store.withdraw_invite(&id).await?;
     Ok(StatusCode::NO_CONTENT)

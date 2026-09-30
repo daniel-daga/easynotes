@@ -501,7 +501,7 @@ async fn write_compat_fixtures() {
             ImportHints::default(),
         )
         .unwrap();
-    let token = authenticate(&http, &DeviceIdentity::generate())
+    let token = authenticate(&http, None, &DeviceIdentity::generate())
         .await
         .unwrap();
     upload_media(&http, &token, &ada_media, letter, &staged.media)
@@ -706,7 +706,7 @@ async fn let_in<S1, K1, S2, K2>(
     K2: Keyring + Send + 'static,
 {
     let outgoing = owner.core.lock().unwrap().new_invite(note).unwrap();
-    invite::open(http, &outgoing.secret, &outgoing.owner, 3600)
+    invite::open(http, None, &outgoing.secret, &outgoing.owner, 3600)
         .await
         .unwrap();
     owner
@@ -724,10 +724,10 @@ async fn let_in<S1, K1, S2, K2>(
             core.member().unwrap().id(),
         )
     };
-    let request = invite::request(http, &secret, &member, &sealed)
+    let request = invite::request(http, None, &secret, &member, &sealed)
         .await
         .unwrap();
-    let listing = invite::list(http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     let join = listing.requests[0].join.clone().unwrap();
@@ -752,6 +752,7 @@ async fn let_in<S1, K1, S2, K2>(
         .await;
     invite::approve(
         http,
+        None,
         &outgoing.secret,
         &outgoing.owner,
         &request,
@@ -770,7 +771,7 @@ async fn let_in<S1, K1, S2, K2>(
     let Answer::Approved {
         note: got,
         owner: key,
-    } = invite::poll(http, &secret, &member, &request)
+    } = invite::poll(http, None, &secret, &member, &request)
         .await
         .unwrap()
     else {
@@ -1011,7 +1012,7 @@ async fn read_the_relay(set: &Path, expect: &Expect, name: &str) {
     // The attachment's bytes, through this build's download.
     let scratch = tempfile::tempdir().unwrap();
     let downloaded = MediaStore::open(scratch.path(), MasterKey::random()).unwrap();
-    let token = authenticate(&endpoint.http_base, &DeviceIdentity::generate())
+    let token = authenticate(&endpoint.http_base, None, &DeviceIdentity::generate())
         .await
         .unwrap();
     for note in &expect.notes {

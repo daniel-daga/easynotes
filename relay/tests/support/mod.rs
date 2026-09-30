@@ -69,7 +69,9 @@ impl Device {
         http_base: &str,
         ws_base: &str,
     ) -> Self {
-        let token = authenticate(http_base, core.identity()).await.unwrap();
+        let token = authenticate(http_base, None, core.identity())
+            .await
+            .unwrap();
         let mut device = Self {
             name,
             core,
@@ -159,6 +161,7 @@ impl Device {
                 Some(Incoming::Reset) => panic!("{} unexpectedly reset", self.name),
                 Some(Incoming::Rejected(m)) => panic!("{} was rejected: {m}", self.name),
                 Some(Incoming::Gone) => panic!("{}'s note was purged", self.name),
+                Some(Incoming::RateLimited) => panic!("{} was rate limited", self.name),
                 // Compaction is the engine's business, not this scaffolding's.
                 Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
                 None => {

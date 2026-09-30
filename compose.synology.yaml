@@ -55,6 +55,12 @@ services:
       DATABASE_URL: postgres://easynotes:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/easynotes
       RELAY_ALLOWED_ORIGINS: ${RELAY_ALLOWED_ORIGINS:?Set RELAY_ALLOWED_ORIGINS in .env}
       RELAY_TOKEN_SIGNING_KEY: ${RELAY_TOKEN_SIGNING_KEY:?Set RELAY_TOKEN_SIGNING_KEY in .env}
+      # Who may write here (ADR 0028): an access key you hand to the people you
+      # let in, or `open` for anyone who finds the hostname. Required, so a
+      # household relay is never open by accident.
+      RELAY_ACCESS_KEYS: ${RELAY_ACCESS_KEYS:?Set RELAY_ACCESS_KEYS in .env, to a key or to open}
+      RELAY_WRITE_BURST: ${RELAY_WRITE_BURST:-}
+      RELAY_WRITE_PER_HOUR: ${RELAY_WRITE_PER_HOUR:-}
       RELAY_STORAGE_CEILING: ${RELAY_STORAGE_CEILING:-}
       RELAY_MEDIA_DIR: /var/lib/easynotes-media
       RELAY_MEDIA_PER_NOTE: ${RELAY_MEDIA_PER_NOTE:-}

@@ -30,6 +30,13 @@ pub enum RelayError {
     /// directory.
     #[error("{0}")]
     Unavailable(&'static str),
+    /// A token or invite request without a valid proof of the relay's access
+    /// key ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    #[error("access_required")]
+    AccessRequired,
+    /// Past the address's write budget; try again after this many seconds.
+    #[error("rate_limited")]
+    RateLimited(u64),
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -46,7 +53,25 @@ impl IntoResponse for RelayError {
             RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
             RelayError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            RelayError::AccessRequired => StatusCode::FORBIDDEN,
+            RelayError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         };
+        if let RelayError::RateLimited(retry) = self {
+            return (
+                status,
+                [(axum::http::header::RETRY_AFTER, retry.to_string())],
+            )
+                .into_response();
+        }
+        // A code the client matches on, as the `426` has: a `403` from a proxy
+        // in front of the relay must not look like the relay asking for its key.
+        if let RelayError::AccessRequired = self {
+            return (
+                status,
+                axum::Json(serde_json::json!({ "code": "access_required" })),
+            )
+                .into_response();
+        }
         // The body carries the category and never the detail: a storage error's
         // text could name a note ID, and the relay's whole job is to not leak.
         let body = match self {

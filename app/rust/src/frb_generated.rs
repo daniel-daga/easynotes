@@ -439,6 +439,7 @@ fn wire__crate__api__notes__Library_connect_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
             >>::sse_decode(&mut deserializer);
             let api_relay = <String>::sse_decode(&mut deserializer);
+            let api_access = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
@@ -456,8 +457,11 @@ fn wire__crate__api__notes__Library_connect_impl(
                         }
                     }
                     let api_that_guard = api_that_guard.unwrap();
-                    let output_ok =
-                        crate::api::notes::Library::connect(&*api_that_guard, api_relay)?;
+                    let output_ok = crate::api::notes::Library::connect(
+                        &*api_that_guard,
+                        api_relay,
+                        api_access,
+                    )?;
                     std::result::Result::Ok(output_ok)
                 })())
             }

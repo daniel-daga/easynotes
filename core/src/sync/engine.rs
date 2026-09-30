@@ -34,6 +34,7 @@ use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::note::{NoteCore, Outgoing, SyncCursor};
+use crate::relay_access::RelayAccess;
 use crate::store::{Keyring, OpStore};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -283,6 +284,10 @@ where
 pub struct RelayEndpoint {
     pub http_base: String,
     pub ws_base: String,
+    /// The relay's access key, if its operator gave this device one ([ADR
+    /// 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). Not part
+    /// of the relay's address: changing it is the same relay.
+    pub access: Option<RelayAccess>,
 }
 
 impl RelayEndpoint {
@@ -365,13 +370,23 @@ impl RelayEndpoint {
         Ok(Self {
             http_base: http,
             ws_base: ws,
+            access: None,
         })
+    }
+
+    /// The same relay, proving `access` at the handshake.
+    pub fn with_access(self, access: Option<RelayAccess>) -> Self {
+        Self { access, ..self }
     }
 }
 
 // ---------------------------------------------------------------------------
 // What the UI sees
 // ---------------------------------------------------------------------------
+
+/// Why a device is offline after the relay's write budget refused it.
+const THROTTLED: &str = "The relay is taking no more changes from this network for a moment. \
+     Yours are safe on this device and will sync shortly.";
 
 /// A note's sync status once its owner has deleted it from the relay.
 pub const GONE_NOTE: &str =
@@ -755,6 +770,9 @@ enum Received {
     /// The relay was restored behind a local cursor. The cursor has been
     /// persisted at zero; reconnect so the outbox is derived again from it.
     Reset,
+    /// The relay will take no more writes from here for a while. Reconnect
+    /// later rather than sooner: the outbox goes again then.
+    Throttled,
 }
 
 /// One connection, from handshake to whatever ends it.
@@ -772,7 +790,7 @@ async fn session<P: SyncPeer>(
     // A token every time. They expire, and a reconnect after a long offline spell
     // is exactly the case where the old one would be stale. One per connection,
     // however many notes it carries.
-    let token = match authenticate(&endpoint.http_base, peer).await {
+    let token = match authenticate(&endpoint.http_base, endpoint.access.as_ref(), peer).await {
         Ok(token) => token,
         Err(e) => return Ended::Failed(e.to_string()),
     };
@@ -809,6 +827,10 @@ async fn session<P: SyncPeer>(
                                 caught: true,
                                 reason: "the relay was restored; rebuilding its copy".into(),
                             };
+                        }
+                        Ok(Received::Throttled) => {
+                            let _ = sync.close().await;
+                            return Ended::Failed(THROTTLED.into());
                         }
                         Ok(Received::Continue) => {}
                         Err(e) => return Ended::Failed(e),
@@ -881,6 +903,12 @@ async fn session<P: SyncPeer>(
                         Ok(Received::Reset) => {
                             let _ = sync.close().await;
                             return lost(true, "the relay was restored; rebuilding its copy".into());
+                        }
+                        // Not caught, whatever was: that is what makes the
+                        // engine back off rather than come straight back.
+                        Ok(Received::Throttled) => {
+                            let _ = sync.close().await;
+                            return lost(false, THROTTLED.into());
                         }
                         Err(e) => return lost(caught, e),
                     }
@@ -1295,6 +1323,7 @@ impl Device {
                 live.note_error(message);
                 Ok(Received::Continue)
             }
+            Incoming::RateLimited => Ok(Received::Throttled),
             Incoming::Crowded => {
                 live.crowded = true;
                 live.compact_if_due(peer, id);

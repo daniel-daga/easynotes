@@ -1,6 +1,8 @@
 /// Settings → Relay: choosing a relay, and being told what that does first.
 library;
 
+import 'dart:convert';
+
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/ui/relay_settings_screen.dart';
 import 'package:flutter/material.dart';
@@ -11,15 +13,19 @@ const _relay = RelayProfile(id: 'relay', url: 'https://relay.example');
 
 void main() {
   late List<String?> switched;
+  late List<String?> keys;
   Object? failWith;
 
   setUp(() {
     switched = [];
+    keys = [];
     failWith = null;
   });
 
-  Future<void> onSwitch(String? url) async {
-    switched.add(url);
+  Future<void> onSetAccess(String? access) async => keys.add(access);
+
+  Future<void> onSwitch(String? url, {String? access}) async {
+    switched.add(access == null ? url : '$url with $access');
     if (failWith != null) throw failWith!;
   }
 
@@ -42,6 +48,7 @@ void main() {
                   profile: profile,
                   profiles: profiles,
                   onSwitchRelay: onSwitch,
+                  onSetAccess: onSetAccess,
                   servedOverHttps: servedOverHttps,
                   mobileRelease: mobileRelease,
                 ),
@@ -157,7 +164,14 @@ void main() {
       find.text('Needs an https:// relay in this version'),
       findsOneWidget,
     );
-    await tester.tap(find.text('http://192.168.1.10:8080'));
+    await tester.scrollUntilVisible(
+      find.text('http://192.168.1.10:8080'),
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('http://192.168.1.10:8080').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('http://192.168.1.10:8080').last);
     await tester.pumpAndSettle();
     expect(find.text('Switch relay?'), findsNothing);
   });
@@ -166,7 +180,14 @@ void main() {
     tester,
   ) async {
     await pump(tester, profile: _relay);
-    await tester.tap(find.text('On this device'));
+    await tester.scrollUntilVisible(
+      find.text('On this device'),
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('On this device').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('On this device').last);
     await tester.pumpAndSettle();
     expect(find.textContaining('Switch to On this device?'), findsOneWidget);
     await tester.tap(find.text('Switch'));
@@ -197,5 +218,76 @@ void main() {
           .onPressed,
       isNotNull,
     );
+  });
+
+  group('a relay with an access key', () {
+    final key = base64Url.encode(List<int>.filled(32, 3)).replaceAll('=', '');
+
+    testWidgets('a relay link switches with its key', (tester) async {
+      await pump(tester);
+      await submit(tester, 'https://new.example/#access=$key');
+      await tester.tap(find.text('Switch'));
+      await tester.pumpAndSettle();
+      expect(switched, ['https://new.example with $key']);
+    });
+
+    testWidgets('an address and a typed key switch together', (tester) async {
+      await pump(tester);
+      await tester.enterText(find.byKey(const Key('relay-access-field')), key);
+      await submit(tester, 'https://new.example');
+      await tester.tap(find.text('Switch'));
+      await tester.pumpAndSettle();
+      expect(switched, ['https://new.example with $key']);
+    });
+
+    testWidgets('a key that is not one is explained', (tester) async {
+      await pump(tester);
+      await tester.enterText(
+        find.byKey(const Key('relay-access-field')),
+        'nope',
+      );
+      await submit(tester, 'https://new.example');
+      expect(find.text('That is not an access key.'), findsOneWidget);
+      expect(switched, isEmpty);
+    });
+
+    testWidgets('the relay in use takes a key without switching', (
+      tester,
+    ) async {
+      await pump(tester, profile: _relay);
+      expect(find.text('No access key'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('relay-access-enter')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('relay-access-dialog-field')),
+        'https://other.example/#access=$key',
+      );
+      await tester.tap(find.byKey(const Key('relay-access-save')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('That link is for another relay: https://other.example.'),
+        findsOneWidget,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('relay-access-dialog-field')),
+        'https://relay.example/#access=$key',
+      );
+      await tester.tap(find.byKey(const Key('relay-access-save')));
+      await tester.pumpAndSettle();
+      expect(keys, [key]);
+      expect(switched, isEmpty);
+      expect(find.byType(RelaySettingsScreen), findsNothing);
+    });
+
+    testWidgets('a relay with a key offers its link to copy', (tester) async {
+      await pump(
+        tester,
+        profile: _relay.withAccess(key),
+        profiles: [_local, _relay.withAccess(key)],
+      );
+      expect(find.text('Access key saved'), findsOneWidget);
+      expect(find.byKey(const Key('relay-link-copy')), findsOneWidget);
+    });
   });
 }

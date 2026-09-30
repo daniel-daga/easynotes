@@ -69,6 +69,10 @@ pub struct TokenRequest {
     pub nonce: String,
     /// Ed25519 signature over the fixed-size relay-auth transcript, base64url.
     pub signature: String,
+    /// `easynotes_core::relay_access`'s token proof, base64url. Required on a
+    /// gated relay, ignored on an open one.
+    #[serde(default)]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -97,6 +101,11 @@ pub const RELAY_FULL: &str = "relay_full";
 /// has been purged, and what every subscriber is told at the moment it is
 /// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
 pub const GONE: &str = "gone";
+
+/// What an append is refused with past the address's write budget ([ADR
+/// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3). The relay closes
+/// the socket after saying so, and the client backs off before it reconnects.
+pub const RATE_LIMITED: &str = "rate_limited";
 
 /// How many notes one socket may be subscribed to at once. A device's notes,
 /// not an enumeration of the relay.
@@ -218,6 +227,10 @@ pub struct CreateInvite {
     pub owner_hash: String,
     /// Seconds from now. Clamped to [`INVITE_MAX_TTL_SECS`].
     pub expires_in: u64,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -237,6 +250,10 @@ pub struct JoinInvite {
     pub request: String,
     /// The sealed request, base64url.
     pub payload: String,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -249,6 +266,10 @@ pub struct JoinedInvite {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PollInvite {
     pub token: String,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +293,10 @@ pub struct PolledRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OwnInvite {
     pub owner: String,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,6 +320,10 @@ pub struct ListedRequest {
 pub struct AnswerInvite {
     pub owner: String,
     pub grant: Option<String>,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

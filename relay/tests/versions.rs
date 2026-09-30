@@ -113,7 +113,7 @@ async fn a_refused_protocol_costs_no_rate_limit() {
         assert_eq!(response.status(), 426);
     }
     // A challenge and a token: exactly the burst of two, still unspent.
-    easynotes_core::sync::authenticate(&relay.http_base(), &DeviceIdentity::generate())
+    easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
         .await
         .expect("the refusals spent the handshake budget");
 }
@@ -152,7 +152,7 @@ async fn metrics_count_protocols_spoken_and_refused() {
         .send()
         .await
         .unwrap();
-    easynotes_core::sync::authenticate(&relay.http_base(), &DeviceIdentity::generate())
+    easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
         .await
         .unwrap();
     let text = easynotes_relay::metrics::render(&relay.state).await;
@@ -205,7 +205,7 @@ async fn the_client_says_whose_update_it_is() {
     let device = DeviceIdentity::generate();
 
     let ahead = stand_in(spoken + 1, spoken + 1).await;
-    let error = easynotes_core::sync::authenticate(&ahead, &device)
+    let error = easynotes_core::sync::authenticate(&ahead, None, &device)
         .await
         .unwrap_err();
     assert!(
@@ -215,7 +215,7 @@ async fn the_client_says_whose_update_it_is() {
     assert!(error.to_string().contains("Update the app"), "{error}");
 
     let behind = stand_in(0, spoken - 1).await;
-    let error = easynotes_core::sync::authenticate(&behind, &device)
+    let error = easynotes_core::sync::authenticate(&behind, None, &device)
         .await
         .unwrap_err();
     assert!(

@@ -48,8 +48,10 @@ type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
 pub(crate) async fn sync_ws(
     State(state): State<Arc<AppState>>,
     Query(q): Query<app::WsQuery>,
+    client: Option<axum::Extension<app::Client>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response> {
+    let client = client.map(|c| c.0);
     if state.auth.device_for(&q.token).is_none() {
         return Err(RelayError::Unauthorized);
     }
@@ -61,7 +63,7 @@ pub(crate) async fn sync_ws(
     }
     Ok(ws.on_upgrade(move |socket| async move {
         let _open = state.metrics.socket();
-        if let Err(e) = run(socket, state.clone(), stopping).await {
+        if let Err(e) = run(socket, state.clone(), client, stopping).await {
             tracing::debug!(error = %e, "device session ended");
         }
     }))
@@ -116,6 +118,7 @@ const OUTGOING: usize = 4 * BACKLOG_CHUNK;
 async fn run(
     socket: WebSocket,
     state: Arc<AppState>,
+    client: Option<app::Client>,
     mut stopping: crate::shutdown::Watch,
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = socket.split();
@@ -128,7 +131,7 @@ async fn run(
     // while the relay waited on it.
     let (out, outgoing) = mpsc::channel::<SyncServerMessage>(OUTGOING);
     let writer = tokio::spawn(write(tx, outgoing));
-    let result = serve(&state, &mut rx, out, &mut stopping).await;
+    let result = serve(&state, client, &mut rx, out, &mut stopping).await;
     // The sender went with `serve`, so the writer sends what is queued and
     // finishes, closing the socket. `stopping` is held until then: the relay
     // has not drained while a queue is still being written.
@@ -151,6 +154,7 @@ async fn write(mut tx: Sink, mut outgoing: mpsc::Receiver<SyncServerMessage>) {
 
 async fn serve(
     state: &Arc<AppState>,
+    client: Option<app::Client>,
     rx: &mut futures_util::stream::SplitStream<WebSocket>,
     out: mpsc::Sender<SyncServerMessage>,
     stopping: &mut crate::shutdown::Watch,
@@ -216,7 +220,10 @@ async fn serve(
 
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Text(t))) => {
-                    handle(state, &out, &fanned_tx, &mut subs, &mut backlog, &t).await;
+                    let session = Session { state, client, out: &out, fanned: &fanned_tx };
+                    if let Handled::Close = handle(&session, &mut subs, &mut backlog, &t).await {
+                        break;
+                    }
                 }
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
                 Some(Ok(_)) => {}
@@ -238,7 +245,27 @@ async fn serve(
             },
         }
     }
+
+    // Closing on the client, after telling it why. Dropping `out` lets the
+    // writer send what is queued, the refusal included, and then a close
+    // frame. Reading on until the client answers that matters: a client
+    // flooding appends has more of them in flight, and a socket closed with
+    // data unread is reset, which can destroy the refusal before the client
+    // has read it — and a client that never hears why reconnects at once.
+    drop(out);
+    let _ = tokio::time::timeout(CLOSE_GRACE, async {
+        while let Some(Ok(message)) = rx.next().await {
+            if let Message::Close(_) = message {
+                break;
+            }
+        }
+    })
+    .await;
+    Ok(())
 }
+
+/// How long a session closed on its client waits for the client to close too.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Send the next chunk of one note's backlog. True if there is more.
 async fn send_chunk(
@@ -272,17 +299,40 @@ async fn send_chunk(
     Ok(more)
 }
 
+/// What one message's handling needs of its session.
+struct Session<'a> {
+    state: &'a Arc<AppState>,
+    client: Option<app::Client>,
+    out: &'a mpsc::Sender<SyncServerMessage>,
+    fanned: &'a mpsc::Sender<Fanned>,
+}
+
+/// Whether the session goes on after a message.
+enum Handled {
+    Continue,
+    /// The client has written more than its budget: say so and close, so
+    /// that it backs off rather than keeps sending into refusals.
+    Close,
+}
+
 async fn handle(
-    state: &Arc<AppState>,
-    out: &mpsc::Sender<SyncServerMessage>,
-    fanned: &mpsc::Sender<Fanned>,
+    session: &Session<'_>,
     subs: &mut Subscriptions,
     backlog: &mut VecDeque<String>,
     text: &str,
-) {
+) -> Handled {
+    let Session {
+        state,
+        client,
+        out,
+        fanned,
+    } = *session;
     let message = match serde_json::from_str::<SyncClientMessage>(text) {
         Ok(message) => message,
-        Err(e) => return refuse(out, None, &format!("malformed message: {e}")),
+        Err(e) => {
+            refuse(out, None, &format!("malformed message: {e}"));
+            return Handled::Continue;
+        }
     };
     match message {
         SyncClientMessage::Unknown => {
@@ -290,19 +340,19 @@ async fn handle(
         }
         SyncClientMessage::Subscribe { note, since } => {
             if NoteId::decode(&note).is_err() {
-                return refuse(out, Some(note), "malformed note id");
+                return refused(out, Some(note), "malformed note id");
             }
             if subs.0.contains_key(&note) {
-                return refuse(out, Some(note), "already subscribed");
+                return refused(out, Some(note), "already subscribed");
             }
             if subs.0.len() >= MAX_SUBSCRIPTIONS {
-                return refuse(out, Some(note), "too many notes on one socket");
+                return refused(out, Some(note), "too many notes on one socket");
             }
             let since = since.max(0);
             let head = match state.store.topic(&note).await {
-                Ok(topic) if topic.gone => return refuse(out, Some(note), GONE),
+                Ok(topic) if topic.gone => return refused(out, Some(note), GONE),
                 Ok(topic) => topic.head,
-                Err(e) => return refuse(out, Some(note), &e.to_string()),
+                Err(e) => return refused(out, Some(note), &e.to_string()),
             };
             if since > head {
                 // Do not install a subscription: appends queued behind this
@@ -312,7 +362,7 @@ async fn handle(
                 // the backlog is sent.
                 tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
                 let _ = out.send(SyncServerMessage::Reset { note }).await;
-                return;
+                return Handled::Continue;
             }
             let forwarder = forward(state, note.clone(), fanned.clone());
             subs.0.insert(
@@ -336,7 +386,14 @@ async fn handle(
         SyncClientMessage::Append { note, envelope } => {
             // A socket writes only to notes it has subscribed to.
             if !subs.0.contains_key(&note) {
-                return refuse(out, Some(note), "not subscribed to that note");
+                refuse(out, Some(note), "not subscribed to that note");
+                return Handled::Continue;
+            }
+            // Charged what was sent, stored or not: a flood of refused appends
+            // costs the relay the same work as a flood of accepted ones.
+            if state.spend_writes(client, envelope.len()).is_err() {
+                refuse(out, Some(note), RATE_LIMITED);
+                return Handled::Close;
             }
             // The sender gets its own append back through the fan-out, like
             // everyone else.
@@ -357,7 +414,7 @@ async fn handle(
             signature,
         } => {
             if !subs.0.contains_key(&note) {
-                return refuse(out, Some(note), "not subscribed to that note");
+                return refused(out, Some(note), "not subscribed to that note");
             }
             if let Err(reason) = app::compact(state, &note, covers, &base, &key, &signature).await {
                 tracing::debug!(note = %note, %reason, "compaction refused");
@@ -365,6 +422,13 @@ async fn handle(
             }
         }
     }
+    Handled::Continue
+}
+
+/// [`refuse`], and carry on.
+fn refused(out: &mpsc::Sender<SyncServerMessage>, note: Option<String>, message: &str) -> Handled {
+    refuse(out, note, message);
+    Handled::Continue
 }
 
 /// Tell the client something was refused, if there is room to.

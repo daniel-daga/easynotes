@@ -111,6 +111,7 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiNotesLibraryConnect({
     required Library that,
     required String relay,
+    String? access,
   });
 
   Future<List<String>> crateApiNotesLibraryCreateAccount({
@@ -718,6 +719,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<void> crateApiNotesLibraryConnect({
     required Library that,
     required String relay,
+    String? access,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -728,6 +730,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(relay, serializer);
+          sse_encode_opt_String(access, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -740,7 +743,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNotesLibraryConnectConstMeta,
-        argValues: [that, relay],
+        argValues: [that, relay, access],
         apiImpl: this,
       ),
     );
@@ -749,7 +752,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiNotesLibraryConnectConstMeta =>
       const TaskConstMeta(
         debugName: "Library_connect",
-        argNames: ["that", "relay"],
+        argNames: ["that", "relay", "access"],
       );
 
   @override
@@ -5953,8 +5956,16 @@ class LibraryImpl extends RustOpaque implements Library {
   /// reconnects; naming a different relay is refused, and the connection it
   /// already has is left as it was. Moving to another relay is opening
   /// another library, which is what the app's relay profiles do.
-  Future<void> connect({required String relay}) => RustLib.instance.api
-      .crateApiNotesLibraryConnect(that: this, relay: relay);
+  ///
+  /// `access` is the relay's access key, base64url, for a relay whose
+  /// operator lets in only the people they gave it to ([ADR
+  /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
+  /// for an open relay. Connecting again with another key is how a changed
+  /// key takes effect.
+  Future<void> connect({required String relay, String? access}) => RustLib
+      .instance
+      .api
+      .crateApiNotesLibraryConnect(that: this, relay: relay, access: access);
 
   /// Mint an account for this device and return its recovery phrase, once.
   ///

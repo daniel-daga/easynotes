@@ -53,6 +53,7 @@ async fn drain(sync: &mut NoteSocket) -> Vec<Vec<u8>> {
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             Some(Incoming::Gone) => panic!("unexpectedly purged"),
+            Some(Incoming::RateLimited) => panic!("unexpectedly rate limited"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => return out,
@@ -74,6 +75,7 @@ async fn take(sync: &mut NoteSocket, n: usize) -> Vec<Vec<u8>> {
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             Some(Incoming::Gone) => panic!("unexpectedly purged"),
+            Some(Incoming::RateLimited) => panic!("unexpectedly rate limited"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
@@ -117,10 +119,10 @@ async fn a_subscriber_receives_another_devices_append() {
     let note = NoteId::random();
     let key = NoteKey::random();
 
-    let token_a = easynotes_core::sync::authenticate(&relay.http_base(), &a)
+    let token_a = easynotes_core::sync::authenticate(&relay.http_base(), None, &a)
         .await
         .unwrap();
-    let token_b = easynotes_core::sync::authenticate(&relay.http_base(), &b)
+    let token_b = easynotes_core::sync::authenticate(&relay.http_base(), None, &b)
         .await
         .unwrap();
 
@@ -151,7 +153,7 @@ async fn a_reconnecting_client_replays_from_its_cursor() {
     let a = DeviceIdentity::generate();
     let note = NoteId::random();
     let key = NoteKey::random();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &a)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &a)
         .await
         .unwrap();
 
@@ -341,7 +343,7 @@ async fn a_message_type_the_relay_does_not_know_is_skipped() {
     use tokio_tungstenite::tungstenite::Message;
     let (relay, _store) = relay().await;
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let url = format!("{}/v1/sync?p=1&token={token}", relay.ws_base());
@@ -425,7 +427,7 @@ async fn refuses_a_malformed_note_id() {
     use tokio_tungstenite::tungstenite::Message;
     let (relay, _store) = relay().await;
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let url = format!("{}/v1/sync?p=1&token={token}", relay.ws_base());
@@ -451,7 +453,7 @@ async fn refuses_an_envelope_addressed_to_another_note() {
     // asked to file under this note says so itself.
     let (relay, store) = relay().await;
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let note = NoteId::random();
@@ -479,7 +481,7 @@ async fn refuses_an_envelope_addressed_to_another_note() {
 async fn refuses_an_oversized_envelope() {
     let (relay, store) = relay().await;
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let note = NoteId::random();
@@ -506,7 +508,7 @@ async fn refuses_an_oversized_envelope() {
 async fn refuses_a_blob_that_is_not_an_envelope() {
     let (relay, store) = relay().await;
     let device = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
     let note = NoteId::random();
@@ -869,7 +871,7 @@ async fn metrics_count_what_the_relay_does() {
 
     // Two handshake requests are the whole burst, so a third is refused.
     let identity = DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&relay.http_base(), &identity)
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &identity)
         .await
         .unwrap();
     let refused = reqwest::Client::new()
@@ -1037,7 +1039,7 @@ async fn a_stop_closes_every_socket_and_then_the_listener() {
     let (addr, http, ws) = (relay.addr, relay.http_base(), relay.ws_base());
     let mut sockets = Vec::new();
     for _ in 0..3 {
-        let token = easynotes_core::sync::authenticate(&http, &DeviceIdentity::generate())
+        let token = easynotes_core::sync::authenticate(&http, None, &DeviceIdentity::generate())
             .await
             .unwrap();
         let mut socket = NoteSocket::connect(&ws, &token, NoteId::random(), 0)

@@ -664,6 +664,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hkdf",
+ "hmac",
  "js-sys",
  "rand 0.9.5",
  "reqwest",

@@ -126,8 +126,14 @@ pub struct Device {
 
 impl Device {
     /// Start the engine. It connects once there is a note to sync.
-    pub fn open<P: SyncPeer>(peer: P, relay: &str) -> Result<Self, String> {
-        let endpoint = RelayEndpoint::parse(relay).map_err(|e| e.to_string())?;
+    pub fn open<P: SyncPeer>(
+        peer: P,
+        relay: &str,
+        access: Option<easynotes_core::relay_access::RelayAccess>,
+    ) -> Result<Self, String> {
+        let endpoint = RelayEndpoint::parse(relay)
+            .map_err(|e| e.to_string())?
+            .with_access(access);
         let (engine, sync) = SyncEngine::device(peer, endpoint);
         spawn(engine.run())?;
         Ok(Self { sync })

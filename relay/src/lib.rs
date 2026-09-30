@@ -1,6 +1,7 @@
 //! A dumb WebSocket relay. It stores and forwards encrypted blobs and knows
 //! nothing about notes, items or people.
 
+pub mod access;
 pub mod app;
 pub mod auth;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod shutdown;
 pub mod store;
 pub mod sync;
 
+pub use access::Access;
 pub use app::{router, router_with, AppState, Origins, RelayConfig};
 pub use limit::TrustedProxies;
 pub use media::{Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs};
@@ -47,14 +49,9 @@ impl Relay {
     pub async fn serve_with(
         store: Arc<dyn RelayStore>,
         addr: SocketAddr,
-        config: RelayConfig,
+        mut config: RelayConfig,
     ) -> anyhow::Result<Self> {
-        let state = AppState::with_media(
-            store,
-            config.token_signing_key,
-            config.storage,
-            config.media.clone(),
-        );
+        let state = AppState::configured(store, &mut config);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let app = router_with(state.clone(), config);

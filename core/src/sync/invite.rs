@@ -15,6 +15,7 @@ use crate::crypto::AuthorKey;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::invite::{self, InviteSecret, JoinRequest, OwnerSecret};
+use crate::relay_access::RelayAccess;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -47,6 +48,7 @@ fn unb64(raw: &str) -> Result<Vec<u8>> {
 /// may be less than asked for.
 pub async fn open(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     expires_in: u64,
@@ -59,6 +61,7 @@ pub async fn open(
             token_hash: &secret.token_hash(),
             owner_hash: &owner.hash(),
             expires_in,
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await?;
@@ -70,6 +73,7 @@ pub async fn open(
 /// and the relay gives it back rather than finding the link used.
 pub async fn request(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     member: &AuthorKey,
     sealed_request: &[u8],
@@ -81,6 +85,7 @@ pub async fn request(
             token: &secret.token(),
             request: &invite::request_name(secret, member),
             payload: &payload,
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await?;
@@ -104,6 +109,7 @@ pub enum Answer {
 /// Ask how a request went, and open the answer if there is one.
 pub async fn poll(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     member: &MemberIdentity,
     request: &str,
@@ -112,6 +118,7 @@ pub async fn poll(
         &invite_url(http_base, secret.id(), &format!("/requests/{request}")),
         &wire::PollInvite {
             token: &secret.token(),
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await?;
@@ -148,11 +155,17 @@ pub struct Listing {
 }
 
 /// Every request on an invite, opened.
-pub async fn list(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -> Result<Listing> {
+pub async fn list(
+    http_base: &str,
+    access: Option<&RelayAccess>,
+    secret: &InviteSecret,
+    owner: &OwnerSecret,
+) -> Result<Listing> {
     let listing: wire::InviteListing = call_json(
         &invite_url(http_base, secret.id(), "/list"),
         &wire::OwnInvite {
             owner: &owner.encode(),
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await?;
@@ -179,28 +192,31 @@ pub async fn list(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -
 /// lets the person in is on the relay.
 pub async fn approve(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
     grant: &[u8],
 ) -> Result<()> {
     let grant = URL_SAFE_NO_PAD.encode(grant);
-    answer(http_base, secret, owner, request, Some(&grant)).await
+    answer(http_base, access, secret, owner, request, Some(&grant)).await
 }
 
 /// Turn a request away. Only a request that could not be read is: the
 /// invite has been claimed either way, and nobody else can ask on it.
 pub async fn decline(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
 ) -> Result<()> {
-    answer(http_base, secret, owner, request, None).await
+    answer(http_base, access, secret, owner, request, None).await
 }
 
 async fn answer(
     http_base: &str,
+    access: Option<&RelayAccess>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
@@ -215,6 +231,7 @@ async fn answer(
         &wire::AnswerInvite {
             owner: &owner.encode(),
             grant,
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await
@@ -222,11 +239,17 @@ async fn answer(
 }
 
 /// Take an invite down. Anyone holding the link is told it does not exist.
-pub async fn withdraw(http_base: &str, secret: &InviteSecret, owner: &OwnerSecret) -> Result<()> {
+pub async fn withdraw(
+    http_base: &str,
+    access: Option<&RelayAccess>,
+    secret: &InviteSecret,
+    owner: &OwnerSecret,
+) -> Result<()> {
     call(
         &invite_url(http_base, secret.id(), "/withdraw"),
         &wire::OwnInvite {
             owner: &owner.encode(),
+            access: access.map(|key| key.invite_proof(&secret.id())),
         },
     )
     .await

@@ -136,7 +136,7 @@ impl Phone {
 async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
     let http = owner.http.clone();
     let outgoing = owner.core.lock().unwrap().new_invite(note).unwrap();
-    invite::open(&http, &outgoing.secret, &outgoing.owner, 3600)
+    invite::open(&http, None, &outgoing.secret, &outgoing.owner, 3600)
         .await
         .unwrap();
     owner
@@ -154,11 +154,11 @@ async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
             core.member().unwrap().id(),
         )
     };
-    let request = invite::request(&http, &secret, &member, &sealed)
+    let request = invite::request(&http, None, &secret, &member, &sealed)
         .await
         .unwrap();
 
-    let listing = invite::list(&http, &outgoing.secret, &outgoing.owner)
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
         .await
         .unwrap();
     let join = listing.requests[0].join.clone().unwrap();
@@ -183,6 +183,7 @@ async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
         .await;
     invite::approve(
         &http,
+        None,
         &outgoing.secret,
         &outgoing.owner,
         &request,
@@ -201,7 +202,7 @@ async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
     let Answer::Approved {
         note: got,
         owner: key,
-    } = invite::poll(&http, &secret, &member, &request)
+    } = invite::poll(&http, None, &secret, &member, &request)
         .await
         .unwrap()
     else {
@@ -456,7 +457,7 @@ async fn a_member_compacts_a_shared_note_and_the_removed_one_cannot() {
 
     // Anna, or anyone with her old key, is refused.
     let stranger = easynotes_core::crypto::DeviceIdentity::generate();
-    let token = easynotes_core::sync::authenticate(&endpoint.http_base, &stranger)
+    let token = easynotes_core::sync::authenticate(&endpoint.http_base, None, &stranger)
         .await
         .unwrap();
     let mut sync = DeviceSync::connect(&endpoint.ws_base, &token)

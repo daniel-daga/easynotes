@@ -17,6 +17,7 @@
 use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::Result;
+use crate::relay_access::RelayAccess;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -33,8 +34,13 @@ use wire::net;
 ///
 /// Takes a [`DeviceSigner`] rather than the identity itself, so the engine can
 /// authenticate against a core held behind a lock without the seed leaving it.
-pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result<String> {
-    let device = signer.device_key()?.encode();
+pub async fn authenticate(
+    http_base: &str,
+    access: Option<&RelayAccess>,
+    signer: &impl DeviceSigner,
+) -> Result<String> {
+    let device_key = signer.device_key()?;
+    let device = device_key.encode();
     let http = reqwest::Client::new();
 
     let challenge: ChallengeResponse = post_json(
@@ -54,6 +60,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
             device: &device,
             nonce: &challenge.nonce,
             signature: &signature,
+            access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
         },
     )
     .await?;
@@ -72,7 +79,7 @@ async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
     let response = http.post(url).json(body).send().await.map_err(net)?;
     let status = response.status().as_u16();
     let bytes = response.bytes().await.map_err(net)?;
-    if let Some(outdated) = wire::outdated(status, &bytes) {
+    if let Some(outdated) = wire::refused(status, &bytes) {
         return Err(outdated);
     }
     if !(200..300).contains(&status) {

@@ -43,12 +43,76 @@ void main() {
     });
   });
 
+  group('relay links', () {
+    final key = base64Url.encode(List<int>.filled(32, 1)).replaceAll('=', '');
+
+    test('an address alone has no key', () {
+      final read = parseRelayLink('wss://Relay.Example/');
+      expect(read.url, 'https://relay.example');
+      expect(read.access, isNull);
+    });
+
+    test('a link carries the key in its fragment, and round-trips', () {
+      final link = relayLinkFor('https://relay.example', key);
+      expect(link, 'https://relay.example/#access=$key');
+      final read = parseRelayLink(link);
+      expect(read.url, 'https://relay.example');
+      expect(read.access, key);
+    });
+
+    test('a link with anything else after the # is not a relay link', () {
+      expect(
+        () => parseRelayLink('https://relay.example/#join#abc'),
+        throwsFormatException,
+      );
+      expect(
+        () => parseRelayLink('https://relay.example/#access=short'),
+        throwsFormatException,
+      );
+    });
+
+    test('a key is 32 bytes of base64url, padding forgiven', () {
+      expect(normalizeAccessKey(' $key= '), key);
+      expect(normalizeAccessKey(key.substring(1)), isNull);
+      expect(normalizeAccessKey('${key.substring(1)}!'), isNull);
+    });
+  });
+
   group('RelayProfiles', () {
     setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
     Future<Map<String, dynamic>> stored() async =>
         jsonDecode((await const FlutterSecureStorage().read(key: _key))!)
             as Map<String, dynamic>;
+
+    test("a relay's access key is kept apart from the settings, per "
+        "profile", () async {
+      final key = base64Url.encode(List<int>.filled(32, 2)).replaceAll('=', '');
+      final profiles = RelayProfiles();
+      await profiles.load();
+      final relay = await profiles.prepare(
+        'https://relay.example',
+        access: key,
+      );
+      expect(relay.access, key);
+      expect(relay.relayLink, 'https://relay.example/#access=$key');
+      // Not in the settings, which an older build could rewrite without it.
+      expect(jsonEncode(await stored()), isNot(contains(key)));
+
+      final again = RelayProfiles();
+      await again.load();
+      final found = again.profiles.singleWhere((p) => p.id == relay.id);
+      expect(found.access, key);
+
+      final forgotten = await again.setAccess(found, null);
+      expect(forgotten.access, isNull);
+      final third = RelayProfiles();
+      await third.load();
+      expect(
+        third.profiles.singleWhere((p) => p.id == relay.id).access,
+        isNull,
+      );
+    });
 
     test('a fresh install starts on this device, and remembers it', () async {
       final profiles = RelayProfiles();

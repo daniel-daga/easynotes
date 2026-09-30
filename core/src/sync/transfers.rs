@@ -54,6 +54,7 @@ use crate::attachment::{AttachmentState, Media, MediaRef, Variant};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
+use crate::relay_access::RelayAccess;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -215,17 +216,21 @@ impl TransferQueue {
 
 /// A token, and when it was issued, on [`now`]'s clock.
 #[derive(Default)]
-struct Tokens(tokio::sync::Mutex<Option<(String, Duration)>>);
+struct Tokens {
+    held: tokio::sync::Mutex<Option<(String, Duration)>>,
+    /// The relay's access key, for the handshake (ADR 0028).
+    access: Option<RelayAccess>,
+}
 
 impl Tokens {
     async fn get(&self, http_base: &str, signer: &impl DeviceSigner) -> Result<String> {
-        let mut held = self.0.lock().await;
+        let mut held = self.held.lock().await;
         if let Some((token, at)) = held.as_ref() {
             if now().saturating_sub(*at) < TOKEN_LIFE {
                 return Ok(token.clone());
             }
         }
-        let token = authenticate(http_base, signer).await?;
+        let token = authenticate(http_base, self.access.as_ref(), signer).await?;
         *held = Some((token.clone(), now()));
         Ok(token)
     }
@@ -233,7 +238,7 @@ impl Tokens {
     /// After any failure: a refused token is one cause, and asking for a new
     /// one is two calls against a transfer that is being retried anyway.
     fn forget(&self) {
-        if let Ok(mut held) = self.0.try_lock() {
+        if let Ok(mut held) = self.held.try_lock() {
             *held = None;
         }
     }
@@ -328,6 +333,17 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
             status: status_rx,
         };
         (runner, queue)
+    }
+
+    /// The relay's access key, for a relay that lets in only the people its
+    /// operator gave it to ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    /// Before [`run`](Self::run), which is the only time it is read.
+    pub fn with_access(mut self, access: Option<RelayAccess>) -> Self {
+        self.tokens = Arc::new(Tokens {
+            held: Default::default(),
+            access,
+        });
+        self
     }
 
     /// Run until every [`TransferQueue`] is dropped. A transfer in flight then

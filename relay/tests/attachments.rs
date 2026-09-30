@@ -62,10 +62,10 @@ async fn a_photo_reaches_another_device_as_ciphertext_only() {
     let (dir_a, dir_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let media_a = MediaStore::open(dir_a.path(), MasterKey::random()).unwrap();
     let media_b = MediaStore::open(dir_b.path(), MasterKey::random()).unwrap();
-    let token_a = authenticate(&base, &DeviceIdentity::generate())
+    let token_a = authenticate(&base, None, &DeviceIdentity::generate())
         .await
         .unwrap();
-    let token_b = authenticate(&base, &DeviceIdentity::generate())
+    let token_b = authenticate(&base, None, &DeviceIdentity::generate())
         .await
         .unwrap();
 
@@ -145,7 +145,7 @@ async fn an_upload_cut_off_part_way_finishes_on_the_next_try() {
     .await
     .unwrap();
     let base = relay.http_base();
-    let token = authenticate(&base, &DeviceIdentity::generate())
+    let token = authenticate(&base, None, &DeviceIdentity::generate())
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();

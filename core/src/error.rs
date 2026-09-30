@@ -52,6 +52,12 @@ pub enum CoreError {
     /// person's to fix with a button: whoever runs the relay has to update it.
     #[error("This relay runs an older version of EasyNotes than this app can sync with. Ask whoever runs it to update it; your notes are safe on this device.")]
     RelayOutdated,
+    /// The relay lets in only the people its operator gave its access key
+    /// to, and this device has not got it, or has an old one ([ADR
+    /// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The person
+    /// fixes it in Settings, with the relay link they were given.
+    #[error("This relay needs an access key. Ask whoever runs it for its relay link, and add it under Settings, Relay. Your notes are safe on this device.")]
+    AccessRequired,
     #[error("envelope exceeds the {limit} byte cap")]
     TooLarge { limit: usize },
 }
