@@ -120,12 +120,20 @@ storage, with encryption and a retention of its own: a backup stored only on
 the NAS will not protect against NAS failure.
 
 A backup nobody has restored is a hope. Schedule a second task, monthly, that
-restores the newest dump into a throwaway database and checks it holds the
-relay's tables — it never touches the live one:
+restores the newest dump into a throwaway database, checks it holds the relay's
+tables, and checks that the media archive with the same timestamp holds every
+attachment the dump records as committed, at its recorded size — it never
+touches the live database or media directory:
 
 ```sh
 /volume1/docker/easynotes/deploy/synology/restore-check.sh
 ```
+
+Size is read from the archive's listing, so that check costs little. Now and
+then, and always after changing anything about backups, run it with
+`VERIFY_DIGESTS=1` as well: it unpacks the archive into `TMPDIR` (which then
+needs room for all of it) and checks every object's SHA-256 against the digest
+it was committed under, the only check that proves the bytes themselves.
 
 To restore for real, into an empty database, gunzip a dump and pipe it to
 `docker exec -i easynotes-db psql -U easynotes easynotes`, and unpack the

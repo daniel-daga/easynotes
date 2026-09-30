@@ -1,5 +1,6 @@
 #!/bin/sh
-# Restore a dump into a throwaway database and check it holds a relay's tables.
+# Restore a dump into a throwaway database, check it holds a relay's tables, and
+# check that the media archive taken with it holds every attachment it records.
 #
 # A backup that has never been restored is a hope, not a backup. Run this after
 # changing anything about backups, and on a schedule (monthly is a reasonable
@@ -8,6 +9,13 @@
 #
 #   restore-check.sh                  # the newest dump in BACKUP_DIR
 #   restore-check.sh path/to/dump.sql.gz
+#
+# The media archive is the one `backup.sh` wrote with the same timestamp. Every
+# object the dump records as committed must be in it at the recorded size. With
+# VERIFY_DIGESTS=1 the archive is also unpacked into a scratch directory
+# (TMPDIR, which then needs room for all of it) and each object's SHA-256 is
+# checked against the digest it was committed under: slower, and the only check
+# that proves the bytes rather than their length.
 set -eu
 
 backup_dir="${BACKUP_DIR:-/volume1/docker/easynotes-backups}"
@@ -17,12 +25,26 @@ if [ -z "$dump" ] || [ ! -f "$dump" ]; then
     exit 1
 fi
 
+case "$dump" in
+    *easynotes-*.sql.gz) ;;
+    *) printf 'error: %s is not named like a backup.sh dump\n' "$dump" >&2; exit 1 ;;
+esac
+stamp=$(basename "$dump" .sql.gz)
+stamp=${stamp#easynotes-}
+media="$(dirname "$dump")/easynotes-media-$stamp.tar.gz"
+if [ ! -f "$media" ]; then
+    printf 'error: no media archive %s beside %s\n' "$media" "$dump" >&2
+    exit 1
+fi
+
 scratch="easynotes_restore_check_$$"
+work=$(mktemp -d)
 psql() {
     docker exec -i easynotes-db psql -v ON_ERROR_STOP=1 -q -U easynotes "$@"
 }
 drop() {
     psql -d postgres -c "DROP DATABASE IF EXISTS $scratch" >/dev/null
+    rm -rf "$work"
 }
 trap drop EXIT HUP INT TERM
 
@@ -39,4 +61,51 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 envelopes=$(psql -d "$scratch" -At -c 'SELECT count(*) FROM note_log')
+
+# What the dump says is committed: "<note>/<object> <sealed bytes> <sha256>".
+# A reservation still uploading (no digest) has nothing to find yet.
+psql -d "$scratch" -At -F ' ' -c "
+    SELECT note_id || '/' || object_id, sealed_len, encode(digest, 'hex')
+    FROM media_objects WHERE digest IS NOT NULL ORDER BY 1" > "$work/expected"
+
+# What the archive holds, from its listing: "<note>/<object> <bytes>". The
+# archive's paths are media/objects/<note>/<object>; parts and tmp are not
+# objects. The size is the listing's third column in GNU and BusyBox tar alike.
+tar -tvzf "$media" | awk '
+    { path = $NF; sub(/^\.\//, "", path) }
+    path ~ /^[^\/]+\/objects\/[^\/]+\/[^\/]+$/ {
+        sub(/^[^\/]+\/objects\//, "", path); print path, $3
+    }' | sort > "$work/archived"
+
+# Missing, or there at another length. Objects in the archive the dump does
+# not name are fine: an upload committed after the dump began is one.
+awk 'NR == FNR { size[$1] = $2; next }
+     !($1 in size)    { print $1 ": missing"; next }
+     size[$1] != $2   { print $1 ": " size[$1] " bytes, expected " $2 }' \
+    "$work/archived" "$work/expected" > "$work/wrong"
+
+if [ "${VERIFY_DIGESTS:-0}" = 1 ] && [ ! -s "$work/wrong" ]; then
+    mkdir "$work/media"
+    tar -xzf "$media" -C "$work/media"
+    root=$(find "$work/media" -mindepth 2 -maxdepth 2 -type d -name objects | head -n 1)
+    while read -r path _ digest; do
+        actual=$(sha256sum "$root/$path" | cut -d ' ' -f 1)
+        if [ "$actual" != "$digest" ]; then
+            printf '%s: bytes do not match the committed digest\n' "$path"
+        fi
+    done < "$work/expected" > "$work/wrong"
+fi
+
+if [ -s "$work/wrong" ]; then
+    printf 'error: %s does not hold what %s records:\n' "$media" "$dump" >&2
+    head -n 20 "$work/wrong" >&2
+    printf '(%s object(s) in all)\n' "$(wc -l < "$work/wrong" | tr -d ' ')" >&2
+    exit 1
+fi
+objects=$(wc -l < "$work/expected" | tr -d ' ')
 printf 'Restored %s: %s logged envelopes\n' "$dump" "$envelopes"
+if [ "${VERIFY_DIGESTS:-0}" = 1 ]; then
+    printf 'Checked %s: all %s committed attachments present, digests match\n' "$media" "$objects"
+else
+    printf 'Checked %s: all %s committed attachments present at their size\n' "$media" "$objects"
+fi
