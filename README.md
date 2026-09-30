@@ -230,6 +230,11 @@ one in memory keeps them in memory. `RELAY_MEDIA_PER_NOTE` (1 GiB) and
 `RELAY_MEDIA_CEILING` (64 GiB, or `off`) bound them
 ([ADR 0027](docs/adr/0027-attachments.md) §4).
 
+The relay rate-limits its unauthenticated doors per client address. Behind a
+reverse proxy every client has the proxy's address, so name the proxy in
+`RELAY_TRUSTED_PROXIES` (addresses or CIDR ranges, comma separated): from those
+peers, and only those, the relay reads the client from `X-Forwarded-For`.
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy

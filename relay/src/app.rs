@@ -16,7 +16,7 @@
 use crate::auth::Auth;
 use crate::error::{RelayError, Result};
 use crate::invite;
-use crate::limit::RateLimit;
+use crate::limit::{RateLimit, TrustedProxies};
 use crate::protocol::*;
 use crate::quota::{Limits, Proposal, Refusal};
 use crate::store::{Appended, RelayStore};
@@ -264,6 +264,9 @@ pub struct RelayConfig {
     /// Where attachment bytes go and how much of them there may be
     /// ([ADR 0027](../../docs/adr/0027-attachments.md) §4).
     pub media: crate::media::MediaConfig,
+    /// The peers whose `X-Forwarded-For` names the client the rate limits are
+    /// keyed on: the relay's own reverse proxy, and nothing else.
+    pub trusted_proxies: TrustedProxies,
 }
 
 impl Default for RelayConfig {
@@ -281,6 +284,7 @@ impl Default for RelayConfig {
             storage: Limits::default(),
             media_rate: RateLimit::unlimited(),
             media: crate::media::MediaConfig::default(),
+            trusted_proxies: TrustedProxies::default(),
         }
     }
 }
@@ -322,6 +326,7 @@ impl RelayConfig {
                 },
                 ..crate::media::MediaConfig::default()
             },
+            trusted_proxies: TrustedProxies::default(),
         }
     }
 }
@@ -433,10 +438,19 @@ async fn enforce_limits(
     let Some(peer) = peer else {
         return next.run(req).await;
     };
-    if limit.allow(peer) {
+    // A value that is not text cannot be skipped, since nobody can say which
+    // hops it held: it stands in as an entry that stops the walk there.
+    let client = config.trusted_proxies.client(
+        peer,
+        req.headers()
+            .get_all("x-forwarded-for")
+            .iter()
+            .map(|v| v.to_str().unwrap_or("unreadable")),
+    );
+    if limit.allow(client) {
         return next.run(req).await;
     }
-    tracing::debug!(%peer, path = %req.uri().path(), "rate limited");
+    tracing::debug!(%client, %peer, path = %req.uri().path(), "rate limited");
     let retry = limit.retry_after().as_secs();
     (
         StatusCode::TOO_MANY_REQUESTS,

@@ -19,12 +19,19 @@
 //! in its first, which is twice the rate it was configured for at exactly the
 //! moment that matters. A bucket refills continuously and has no edge.
 //!
-//! Keyed on the address the socket actually came from, and deliberately **not**
-//! on `X-Forwarded-For`. That header is a client-supplied string: reading it
-//! from an untrusted peer turns the limiter off, because every request can carry
-//! a fresh one. A relay behind a proxy therefore limits the proxy, which is
-//! wrong but safe; making it right means telling the relay which hop to trust,
-//! and there is no deployment yet to tell it about.
+//! Keyed on the address the socket actually came from, and **not** on
+//! `X-Forwarded-For` unless the deployment says which peers may set it. That
+//! header is a client-supplied string: reading it from an untrusted peer turns
+//! the limiter off, because every request can carry a fresh one.
+//!
+//! But a relay behind a reverse proxy — which is how the Synology deployment
+//! runs — sees one peer for every client, and then limits the proxy: every
+//! device shares one bucket, a relay restart refuses all but the first twenty
+//! to reconnect, and one noisy client spends everybody's allowance.
+//! [`TrustedProxies`] is the fix. `RELAY_TRUSTED_PROXIES` names the addresses
+//! (or ranges) the relay's own proxy connects from; a request from one of them
+//! is keyed on the address that proxy says it received the request from, and a
+//! request from anywhere else is keyed on its peer exactly as before.
 //!
 //! ## What it costs when nobody is attacking
 //!
@@ -35,7 +42,8 @@
 //! forgotten everything anyway — whenever it grows past [`SWEEP_ABOVE`].
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -128,6 +136,122 @@ impl RateLimit {
     }
 }
 
+/// The peers allowed to say who a client is, and the reading of what they say.
+///
+/// Empty — the default, and what every test gets — means no peer is trusted and
+/// `X-Forwarded-For` is never read.
+#[derive(Debug, Default)]
+pub struct TrustedProxies {
+    nets: Vec<(IpAddr, u8)>,
+    /// Set once a trusted peer has sent a request with no usable header, so the
+    /// warning that says so is logged once rather than per request.
+    warned: AtomicBool,
+}
+
+impl TrustedProxies {
+    /// Parse a comma-separated list of addresses and CIDR ranges, such as
+    /// `172.30.87.1` or `10.0.0.0/8, ::1`. Anything it cannot read is an error:
+    /// a trust list that silently drops an entry is one that limits the proxy
+    /// again without saying so.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let mut nets = Vec::new();
+        for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            let (addr, prefix) = match entry.split_once('/') {
+                Some((addr, prefix)) => (addr, Some(prefix)),
+                None => (entry, None),
+            };
+            let addr: IpAddr = addr
+                .parse()
+                .map_err(|_| format!("{entry:?} is not an IP address or CIDR range"))?;
+            let addr = addr.to_canonical();
+            let max = if addr.is_ipv4() { 32 } else { 128 };
+            let prefix = match prefix {
+                None => max,
+                Some(p) => p
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|p| *p <= max)
+                    .ok_or_else(|| format!("{entry:?} has a prefix length outside 0-{max}"))?,
+            };
+            nets.push((addr, prefix));
+        }
+        Ok(Self {
+            nets,
+            warned: AtomicBool::new(false),
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nets.is_empty()
+    }
+
+    fn trusts(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        self.nets.iter().any(|&(net, prefix)| match (net, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        })
+    }
+
+    /// The address to key a request on: the peer itself, unless the peer is a
+    /// trusted proxy, in which case the nearest address in `X-Forwarded-For`
+    /// that is not another trusted proxy.
+    ///
+    /// The header is read from the right, because each proxy appends the
+    /// address it received the request from: the rightmost entries were written
+    /// by proxies this relay trusts, and everything to the left of the first
+    /// untrusted one was written by the client and may be anything. An entry
+    /// that cannot be read stops the walk at the last address that could be
+    /// trusted, which limits a proxy again rather than believing a stranger.
+    pub fn client<'a>(&self, peer: IpAddr, forwarded: impl Iterator<Item = &'a str>) -> IpAddr {
+        let peer = peer.to_canonical();
+        if !self.trusts(peer) {
+            return peer;
+        }
+        // Several headers are one list, in order (RFC 9110 §5.3).
+        let entries: Vec<&str> = forwarded
+            .flat_map(|h| h.split(','))
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .collect();
+        if entries.is_empty() && !self.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                %peer,
+                "a trusted proxy sent a request without X-Forwarded-For: \
+                 every client behind it shares one rate limit until it does"
+            );
+        }
+        let mut client = peer;
+        for entry in entries.iter().rev() {
+            let Some(ip) = parse_forwarded(entry) else {
+                break;
+            };
+            client = ip;
+            if !self.trusts(ip) {
+                break;
+            }
+        }
+        client
+    }
+}
+
+/// One `X-Forwarded-For` entry: a bare address, or one with a port, which some
+/// proxies write (`203.0.113.9:4711`, `[2001:db8::1]:4711`).
+fn parse_forwarded(entry: &str) -> Option<IpAddr> {
+    entry
+        .parse::<IpAddr>()
+        .or_else(|_| entry.parse::<SocketAddr>().map(|a| a.ip()))
+        .ok()
+        .map(|ip| ip.to_canonical())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +312,95 @@ mod tests {
         for _ in 0..1000 {
             assert!(limit.allow_at(ip(1), now));
         }
+    }
+
+    fn trusting(raw: &str) -> TrustedProxies {
+        TrustedProxies::parse(raw).unwrap()
+    }
+
+    fn addr(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn an_untrusted_peer_is_keyed_on_itself_whatever_it_claims() {
+        let proxies = trusting("10.0.0.1");
+        assert_eq!(
+            proxies.client(addr("198.51.100.7"), ["203.0.113.9"].into_iter()),
+            addr("198.51.100.7"),
+        );
+        // And with no list at all, nobody's header is read.
+        assert_eq!(
+            TrustedProxies::default().client(addr("10.0.0.1"), ["203.0.113.9"].into_iter()),
+            addr("10.0.0.1"),
+        );
+    }
+
+    #[test]
+    fn a_trusted_proxy_is_keyed_on_the_client_it_names() {
+        let proxies = trusting("10.0.0.1");
+        assert_eq!(
+            proxies.client(addr("10.0.0.1"), ["203.0.113.9"].into_iter()),
+            addr("203.0.113.9"),
+        );
+    }
+
+    #[test]
+    fn what_the_client_wrote_to_the_left_is_ignored() {
+        // The client sent `X-Forwarded-For: 1.2.3.4`, and the proxy appended the
+        // address it really came from. Only the rightmost untrusted entry counts.
+        let proxies = trusting("10.0.0.1");
+        assert_eq!(
+            proxies.client(addr("10.0.0.1"), ["1.2.3.4, 203.0.113.9"].into_iter()),
+            addr("203.0.113.9"),
+        );
+    }
+
+    #[test]
+    fn a_chain_of_trusted_proxies_is_walked_through() {
+        let proxies = trusting("10.0.0.0/8");
+        assert_eq!(
+            proxies.client(
+                addr("10.0.0.1"),
+                ["1.2.3.4, 203.0.113.9", "10.1.2.3"].into_iter()
+            ),
+            addr("203.0.113.9"),
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_header_limits_the_proxy() {
+        let proxies = trusting("10.0.0.1");
+        assert_eq!(
+            proxies.client(addr("10.0.0.1"), std::iter::empty()),
+            addr("10.0.0.1"),
+        );
+        assert_eq!(
+            proxies.client(addr("10.0.0.1"), ["203.0.113.9, unknown"].into_iter()),
+            addr("10.0.0.1"),
+            "an entry the proxy could not have written stops the walk",
+        );
+    }
+
+    #[test]
+    fn ports_brackets_and_mapped_addresses_are_understood() {
+        let proxies = trusting("10.0.0.1, ::1");
+        assert_eq!(
+            proxies.client(addr("::ffff:10.0.0.1"), ["203.0.113.9:4711"].into_iter()),
+            addr("203.0.113.9"),
+        );
+        assert_eq!(
+            proxies.client(addr("::1"), ["[2001:db8::1]:4711"].into_iter()),
+            addr("2001:db8::1"),
+        );
+    }
+
+    #[test]
+    fn a_trust_list_it_cannot_read_is_an_error() {
+        assert!(TrustedProxies::parse("10.0.0.1, 10.0.0.300").is_err());
+        assert!(TrustedProxies::parse("10.0.0.0/33").is_err());
+        assert!(TrustedProxies::parse("proxy.local").is_err());
+        assert!(TrustedProxies::parse("").unwrap().is_empty());
+        assert!(trusting("0.0.0.0/0").trusts(addr("198.51.100.7")));
     }
 }
