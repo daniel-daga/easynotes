@@ -398,10 +398,14 @@ async fn a_withdrawn_invite_is_gone() {
 async fn an_invite_expires() {
     let (relay, _) = relay().await;
     let http = relay.http_base();
-    let (_owner, outgoing) = owner_with_invite(&http, 1).await;
+    // Two seconds, not one: the relay keeps whole seconds, so an invite asked
+    // to last one second and opened just before a second ticks over expires
+    // almost at once, before the request in time can be made. Two leave at
+    // least one full second for it, and the sleep still ends past expiry.
+    let (_owner, outgoing) = owner_with_invite(&http, 2).await;
     let (early, _) = ask(&http, &outgoing.secret.link(), "Anna").await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(3100)).await;
 
     is_invite_error(ask(&http, &outgoing.secret.link(), "Late").await, "expired");
     // Nor can a request made in time be approved after it.
