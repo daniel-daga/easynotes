@@ -61,9 +61,16 @@ impl DeviceSync {
 
     /// The next thing from the relay, or `None` when it closes. Cancel-safe.
     pub async fn next(&mut self) -> Result<Option<Routed>> {
-        match self.socket.recv().await? {
-            Some(text) => wire::parse_routed(&text).map(Some),
-            None => Ok(None),
+        // Cancel-safe still: a skipped message was read whole, so dropping
+        // this future between two reads loses nothing.
+        loop {
+            match self.socket.recv().await? {
+                Some(text) => match wire::parse_routed(&text)? {
+                    Some(routed) => return Ok(Some(routed)),
+                    None => continue,
+                },
+                None => return Ok(None),
+            }
         }
     }
 

@@ -331,6 +331,92 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
     assert_eq!(raw.status(), 401);
 }
 
+/// A message type the relay does not know is skipped, not refused: a refusal
+/// names no note, so a client would pin it on every note it syncs. The socket
+/// stays open and the next message is handled as usual. Something that is not
+/// a message at all is still refused.
+#[tokio::test]
+async fn a_message_type_the_relay_does_not_know_is_skipped() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn reply(socket: &mut Ws) -> String {
+        loop {
+            if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                return text.to_string();
+            }
+        }
+    }
+    for text in [
+        r#"{"type":"something_new","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#,
+        r#"{"type":"subscribe","note":"not-a-note-id","since":0}"#,
+    ] {
+        socket.send(Message::text(text)).await.unwrap();
+    }
+    let first = reply(&mut socket).await;
+    assert!(
+        first.contains("malformed note id"),
+        "the unknown message was answered: {first}"
+    );
+    socket.send(Message::text("not json")).await.unwrap();
+    let second = reply(&mut socket).await;
+    assert!(second.contains("malformed message"), "got: {second}");
+}
+
+/// The other direction: a client skips a message type it does not know, and
+/// its socket carries on, instead of dropping and reconnecting for ever the
+/// moment a relay adds anything.
+#[tokio::test]
+async fn a_client_skips_a_message_type_it_does_not_know() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let note = NoteId::random();
+    // A relay from the future: it answers a subscribe with something new,
+    // and then with what every build knows.
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        loop {
+            if let Message::Text(_) = ws.next().await.unwrap().unwrap() {
+                break;
+            }
+        }
+        let note = note.encode();
+        for text in [
+            format!(r#"{{"type":"notice","note":"{note}","text":"hello"}}"#),
+            format!(r#"{{"type":"caught","note":"{note}","seq":0,"since":"later"}}"#),
+        ] {
+            ws.send(Message::text(text)).await.unwrap();
+        }
+        // Held open until the client is done, so a drop is the client's.
+        let _ = ws.next().await;
+    });
+    let mut socket = NoteSocket::connect(&format!("ws://{addr}"), "t0k", note, 0)
+        .await
+        .unwrap();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("timed out waiting for the known message")
+        .expect("the unknown message broke the socket");
+    assert!(
+        matches!(next, Some(Incoming::Caught { seq: 0 })),
+        "expected caught after the skipped message"
+    );
+    drop(socket);
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn refuses_a_malformed_note_id() {
     // A note ID that cannot exist is refused before anything is subscribed, so

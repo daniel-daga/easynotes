@@ -98,6 +98,11 @@ pub enum SyncClientMessage {
         /// Its signature over `easynotes_core::compaction::transcript`, 64 bytes.
         signature: String,
     },
+    /// A message type this relay does not know: something a newer client can
+    /// do without. Skipped rather than refused, because a refusal names no
+    /// note and so reaches every note on the socket as an error.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Server to client, over `/v1/sync`.

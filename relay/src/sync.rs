@@ -285,6 +285,9 @@ async fn handle(
         Err(e) => return refuse(out, None, &format!("malformed message: {e}")),
     };
     match message {
+        SyncClientMessage::Unknown => {
+            tracing::debug!("skipped a message type this relay does not know");
+        }
         SyncClientMessage::Subscribe { note, since } => {
             if NoteId::decode(&note).is_err() {
                 return refuse(out, Some(note), "malformed note id");
