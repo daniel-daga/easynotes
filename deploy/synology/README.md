@@ -34,6 +34,12 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   on the relay ([ADR 0027](../../docs/adr/0027-attachments.md) §5), so a note
   whose attachments change often reaches its budget sooner than its live
   files suggest.
+- Leave `RELAY_NETWORK` empty unless the NAS already uses `172.30.87.0/24`.
+  It is the subnet of the Compose network, and the relay trusts the
+  `X-Forwarded-For` header only from that range, which is where DSM's reverse
+  proxy reaches it from. Without that trust every device would arrive from one
+  address and share one rate limit. If you change it, pick another private
+  range that nothing else on the NAS uses.
 - Set `NAS_DATA_DIR` to a persistent shared-folder path, for example
   `/volume1/docker/easynotes-data`.
 
@@ -181,7 +187,13 @@ keys the relay never holds.
 - **WebSocket fails but health works:** check the DSM reverse proxy's WebSocket
   custom header and confirm the client uses `wss://` through the HTTPS hostname.
 - **Relay does not start:** check that Postgres is healthy and inspect the
-  relay logs for a database URL or origin configuration error.
+  relay logs for a database URL, origin or trusted-proxy configuration error.
+- **Log says `a trusted proxy sent a request without X-Forwarded-For`:** DSM's
+  reverse proxy normally adds the header. If your DSM version does not, add a
+  custom header to the reverse-proxy rule named `X-Forwarded-For` with the
+  value `$proxy_add_x_forwarded_for`. Until then every device shares one rate
+  limit, and more than about twenty reconnecting at once are refused for a
+  minute.
 
 Two unauthenticated status routes exist for monitoring. `/v1/health` says the
 process is up and nothing else. `/v1/ready` also asks the database and answers

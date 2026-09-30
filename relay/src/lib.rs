@@ -13,6 +13,7 @@ pub mod store;
 pub mod sync;
 
 pub use app::{router, router_with, AppState, Origins, RelayConfig};
+pub use limit::TrustedProxies;
 pub use media::{Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs};
 pub use quota::Limits;
 pub use store::{Appended, MemoryStore, PostgresStore, RelayStore};

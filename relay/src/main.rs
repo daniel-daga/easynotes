@@ -31,7 +31,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_relay::{
-    DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
+    DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore, TrustedProxies,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -113,6 +113,25 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(origins = %raw, "the handshake is allowed from these origins");
         }
         Err(_) => tracing::info!("RELAY_ALLOWED_ORIGINS is unset: any page may handshake"),
+    }
+
+    match std::env::var("RELAY_TRUSTED_PROXIES").as_deref().map(str::trim) {
+        Ok(raw) if !raw.is_empty() => {
+            // Like the origins, a list that cannot be read fails to start: one
+            // that quietly trusted nobody would put every client behind the
+            // proxy back into one bucket, and one that trusted too much would
+            // let anybody pick their own address.
+            config.trusted_proxies = TrustedProxies::parse(raw).map_err(|e| {
+                anyhow::anyhow!("RELAY_TRUSTED_PROXIES could not be understood: {e}")
+            })?;
+            tracing::info!(
+                proxies = raw,
+                "rate limits follow X-Forwarded-For from these peers"
+            );
+        }
+        _ => tracing::info!(
+            "RELAY_TRUSTED_PROXIES is unset: rate limits are per connecting address, so a reverse proxy is one client"
+        ),
     }
 
     match std::env::var("RELAY_MEDIA_DIR").as_deref().map(str::trim) {

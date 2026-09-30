@@ -4,7 +4,7 @@
 use easynotes_core::crypto::{DeviceIdentity, Envelope, NoteKey};
 use easynotes_core::ids::NoteId;
 use easynotes_core::sync::Incoming;
-use easynotes_relay::limit::RateLimit;
+use easynotes_relay::limit::{RateLimit, TrustedProxies};
 use easynotes_relay::{MemoryStore, Origins, Relay, RelayConfig, RelayStore};
 use std::sync::Arc;
 use support::NoteSocket;
@@ -624,6 +624,72 @@ async fn the_two_limits_are_kept_apart() {
         socket.status(),
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         "the socket path was spending the handshake's allowance",
+    );
+}
+
+/// Behind a trusted reverse proxy, each client the proxy names has a bucket of
+/// its own.
+///
+/// This is the Synology deployment: every request arrives from the proxy's
+/// address, and without `RELAY_TRUSTED_PROXIES` they would all share one
+/// allowance. Here the test is the proxy, on 127.0.0.1.
+#[tokio::test]
+async fn clients_behind_a_trusted_proxy_are_limited_apart() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 1),
+        trusted_proxies: TrustedProxies::parse("127.0.0.1").unwrap(),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+    let identity = DeviceIdentity::generate();
+    let ask = |client: &'static str| {
+        http.post(format!("{}/v1/challenge", relay.http_base()))
+            .header("X-Forwarded-For", client)
+            .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+            .send()
+    };
+
+    assert!(ask("203.0.113.1").await.unwrap().status().is_success());
+    assert_eq!(
+        ask("203.0.113.1").await.unwrap().status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "one client behind the proxy still has a limit",
+    );
+    assert!(
+        ask("203.0.113.2").await.unwrap().status().is_success(),
+        "a second client behind the proxy was refused for the first one's requests",
+    );
+    // What a client writes itself, to the left of what the proxy appended, is
+    // not a way out of its own bucket.
+    assert_eq!(
+        ask("198.51.100.99, 203.0.113.1").await.unwrap().status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+    );
+}
+
+/// Without a trust list, `X-Forwarded-For` is only a string a stranger chose,
+/// and a fresh one on every request must not buy a fresh allowance.
+#[tokio::test]
+async fn an_untrusted_forwarded_for_is_ignored() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 1),
+        ..RelayConfig::default()
+    })
+    .await;
+    let http = reqwest::Client::new();
+    let identity = DeviceIdentity::generate();
+    let ask = |client: &'static str| {
+        http.post(format!("{}/v1/challenge", relay.http_base()))
+            .header("X-Forwarded-For", client)
+            .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+            .send()
+    };
+
+    assert!(ask("203.0.113.1").await.unwrap().status().is_success());
+    assert_eq!(
+        ask("203.0.113.2").await.unwrap().status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
     );
 }
 
