@@ -43,6 +43,15 @@ pub enum CoreError {
     /// format this release takes, too many on one note.
     #[error("{0}")]
     Attachment(String),
+    /// The relay no longer speaks the protocol this build does (ADR 0029 §4).
+    /// Nothing local is affected: the app keeps working and stops syncing
+    /// until it is updated.
+    #[error("This relay needs a newer version of EasyNotes. Update the app to sync again; your notes are safe on this device.")]
+    AppOutdated,
+    /// The relay is older than anything this build still speaks. Not the
+    /// person's to fix with a button: whoever runs the relay has to update it.
+    #[error("This relay runs an older version of EasyNotes than this app can sync with. Ask whoever runs it to update it; your notes are safe on this device.")]
+    RelayOutdated,
     #[error("envelope exceeds the {limit} byte cap")]
     TooLarge { limit: usize },
 }

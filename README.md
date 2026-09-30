@@ -174,6 +174,7 @@ share URL does not create a duplicate note. It needs a web build, but no relay.
 core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform policy.
 relay/   Rust (axum): WebSocket relay over Postgres. Ciphertext only.
 app/     Flutter app, plus the thin bridge crate in app/rust.
+compat/  What each release wrote, read back by every later build's tests (ADR 0029).
 docs/    Design, plans, and the decision records.
 tools/   Measurement helpers and build checks that are not part of the product.
 ```
@@ -308,7 +309,7 @@ reading the whole database at open.
 | [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
 | [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
 | [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet (proposed) |
-| [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (proposed) |
+| [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
 
 ## Security, in one paragraph
 

@@ -113,6 +113,131 @@ pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("relay: {e}"))
 }
 
+// -- the protocol version ----------------------------------------------------
+//
+// ADR 0029 §4. Every request names the protocol it speaks in `?p=`, and a relay
+// that does not speak it answers `426` with the range it does. A query
+// parameter rather than a header, because a browser cannot set headers on a
+// WebSocket and a new header would put a CORS preflight in front of requests
+// that have none.
+
+/// The protocol this build speaks, and sends on every request.
+///
+/// Bumped only for a change an older peer cannot ignore: a new required field,
+/// a changed meaning, a removed message. Something an older peer can skip
+/// (ADR 0029 §3) does not bump it. A client is to keep speaking the version
+/// before this one as well (ADR 0029 §4); while there has only been one
+/// version, there is nothing to fall back to.
+pub const PROTOCOL: u32 = 1;
+
+/// `{base}/v1{path}`, naming the protocol. `path` starts with `/` and carries
+/// no query of its own; one that needs more (the socket's token) appends it
+/// after this with `&`.
+pub(crate) fn api(base: &str, path: &str) -> String {
+    format!("{base}/v1{path}?p={PROTOCOL}")
+}
+
+#[derive(Deserialize)]
+struct Refusal {
+    code: String,
+    protocol: Range,
+}
+
+/// Only the top of the relay's range matters to a build that speaks one
+/// version at a time; `min` is in the body for whoever reads it.
+#[derive(Deserialize)]
+struct Range {
+    max: u32,
+}
+
+/// What a `426` means, if `status` is one and its body is the relay's.
+///
+/// The two answers are different requests of different people: "update the
+/// app" is a button, "the relay is too old" is an email to whoever runs it, so
+/// the relay's range is compared with this build's to know which to say. A
+/// relay whose newest protocol is older than this build's is behind; anything
+/// else has moved on without it. (A build that could fall back to the version
+/// before its own would try that first; none has one to fall back to yet.) A
+/// `426` without the relay's body is still a refusal to talk, and is taken as
+/// the likelier case, an app that has fallen behind.
+pub(crate) fn outdated(status: u16, body: &[u8]) -> Option<CoreError> {
+    if status != 426 {
+        return None;
+    }
+    let relay = serde_json::from_slice::<Refusal>(body)
+        .ok()
+        .filter(|refusal| refusal.code == "update_app")
+        .map(|refusal| refusal.protocol);
+    Some(match relay {
+        Some(relay) if relay.max < PROTOCOL => CoreError::RelayOutdated,
+        _ => CoreError::AppOutdated,
+    })
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn every_request_names_the_protocol() {
+        assert_eq!(
+            api("https://relay.example", "/challenge"),
+            format!("https://relay.example/v1/challenge?p={PROTOCOL}")
+        );
+        assert!(sync_url("wss://relay.example", "t0k")
+            .starts_with(&format!("wss://relay.example/v1/sync?p={PROTOCOL}&")));
+        assert!(sync_url("wss://relay.example", "t0k").ends_with("&token=t0k"));
+    }
+
+    #[test]
+    fn a_relay_that_has_moved_on_asks_for_an_app_update() {
+        let body = format!(
+            r#"{{"code":"update_app","protocol":{{"min":{},"max":{}}}}}"#,
+            PROTOCOL + 1,
+            PROTOCOL + 2
+        );
+        assert!(matches!(
+            outdated(426, body.as_bytes()),
+            Some(CoreError::AppOutdated)
+        ));
+    }
+
+    #[test]
+    fn a_relay_that_is_behind_is_its_operators_to_update() {
+        let body = format!(
+            r#"{{"code":"update_app","protocol":{{"min":0,"max":{}}}}}"#,
+            PROTOCOL - 1
+        );
+        assert!(matches!(
+            outdated(426, body.as_bytes()),
+            Some(CoreError::RelayOutdated)
+        ));
+    }
+
+    #[test]
+    fn only_a_426_is_a_protocol_refusal() {
+        assert!(outdated(400, b"{}").is_none());
+        assert!(outdated(200, b"").is_none());
+        // A proxy's own 426 page is still a refusal to talk.
+        assert!(matches!(
+            outdated(426, b"<html>Upgrade Required</html>"),
+            Some(CoreError::AppOutdated)
+        ));
+    }
+
+    #[test]
+    fn a_relay_answer_with_fields_this_build_does_not_know_still_reads() {
+        // ADR 0029 §3: JSON bodies ignore what they do not know, in both
+        // directions. A newer relay adding a field must not break the handshake.
+        let challenge: ChallengeResponse =
+            serde_json::from_str(r#"{"nonce":"abc","expires_in":60,"hint":"x"}"#).unwrap();
+        assert_eq!(challenge.nonce, "abc");
+        let token: TokenResponse =
+            serde_json::from_str(r#"{"token":"t","scope":["notes"]}"#).unwrap();
+        assert_eq!(token.token, "t");
+    }
+}
+
 // -- the device socket -------------------------------------------------------
 //
 // `/v1/sync`: one socket for every note a device syncs, so every message names
@@ -186,7 +311,7 @@ pub enum Routed {
 
 /// The URL a device's one socket is opened at.
 pub(crate) fn sync_url(ws_base: &str, token: &str) -> String {
-    format!("{ws_base}/v1/sync?token={token}")
+    format!("{}&token={token}", api(ws_base, "/sync"))
 }
 
 fn device(message: &DeviceMessage<'_>) -> String {
@@ -393,6 +518,9 @@ pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
             body.to_string()
         }
     };
+    if let Some(outdated) = outdated(status, body.as_bytes()) {
+        return Err(outdated);
+    }
     match status {
         200..=299 => Ok(()),
         404 => Err(CoreError::Invite(
@@ -411,7 +539,7 @@ pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
 }
 
 pub(crate) fn invite_url(http_base: &str, invite: crate::ids::InviteId, rest: &str) -> String {
-    format!("{http_base}/v1/invites/{}{rest}", invite.encode())
+    api(http_base, &format!("/invites/{}{rest}", invite.encode()))
 }
 
 #[cfg(test)]
@@ -497,7 +625,10 @@ mod tests {
             append_note(note, b"hi"),
             r#"{"type":"append","note":"AAAAAAAAAAAAAAAAAAAAAA","envelope":"aGk"}"#
         );
-        assert_eq!(sync_url("ws://r", "t0k"), "ws://r/v1/sync?token=t0k");
+        assert_eq!(
+            sync_url("ws://r", "t0k"),
+            format!("ws://r/v1/sync?p={PROTOCOL}&token=t0k")
+        );
     }
 
     #[test]

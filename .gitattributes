@@ -1,0 +1,3 @@
+# Compatibility fixtures are what a release wrote, byte for byte: never
+# normalise their line endings, and do not show them in diffs.
+compat/** -text -diff linguist-generated

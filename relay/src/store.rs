@@ -731,14 +731,23 @@ impl PostgresStore {
         Ok(store)
     }
 
-    /// Create the schema if it is not already there.
+    /// Bring the schema up to this build's: every migration in
+    /// [`MIGRATIONS`] that the database has not recorded, in order.
     ///
-    /// Held under an advisory lock, because `CREATE TABLE IF NOT EXISTS` is *not*
-    /// safe to run concurrently in Postgres: two sessions racing it both pass the
-    /// existence check and then collide on the system catalog with
-    /// `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`.
-    /// Every relay instance runs this at startup, so "several at once" is the
-    /// normal case on a deploy, not an edge case.
+    /// Held under an advisory lock, because every relay instance runs this at
+    /// startup, so "several at once" is the normal case on a deploy. (It was
+    /// also needed before there were numbered migrations: `CREATE TABLE IF NOT
+    /// EXISTS` is *not* safe to run concurrently in Postgres, and two sessions
+    /// racing it collide on the system catalog.) Each migration runs in its own
+    /// transaction with the row that records it, so one that fails leaves the
+    /// database as the previous one left it.
+    ///
+    /// A database that has recorded migrations this build does not know is
+    /// from a newer release. It is used as it is, not refused: migrations are
+    /// expand-then-contract ([ADR
+    /// 0029](../../docs/adr/0029-compatibility-across-releases.md) §5), so the
+    /// release before a change runs on the schema after it, which is what a
+    /// rolling deploy and a rollback both need.
     pub async fn migrate(&self) -> Result<()> {
         // An arbitrary constant that only this migration uses.
         const MIGRATION_LOCK: i64 = 0x0000_EA51_0DE5;
@@ -755,150 +764,7 @@ impl PostgresStore {
             .await
             .map_err(|e| RelayError::Storage(e.to_string()))?;
 
-        // Two tables, because the sequence number has to be allocated atomically.
-        //
-        // `note_head` holds one row per note carrying its highest `seq`; an
-        // `ON CONFLICT DO UPDATE ... RETURNING` against it takes a row lock and
-        // hands back the next number in a single statement, so concurrent
-        // appenders queue rather than collide. `note_log` holds the envelopes.
-        //
-        // The obvious `SELECT MAX(seq) + 1` does not work here: readers do not
-        // block each other, so sixteen concurrent appends all compute the same
-        // number and fifteen of them lose on the primary key. Retrying just moves
-        // the collision to the retry.
-        //
-        // `seq` is per note rather than global so that a client's `since` cursor
-        // is dense and means what it looks like it means.
-        let created = async {
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS note_log (
-                    note_id     TEXT   NOT NULL,
-                    seq         BIGINT NOT NULL,
-                    envelope    BYTEA  NOT NULL,
-                    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    PRIMARY KEY (note_id, seq)
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS note_head (
-                    note_id TEXT   PRIMARY KEY,
-                    seq     BIGINT NOT NULL
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            // ADR 0024: what compaction must leave, and each topic's
-            // bookkeeping. Added rather than declared above, so a relay whose
-            // tables predate them gains them on its next start.
-            for statement in [
-                "ALTER TABLE note_log ADD COLUMN IF NOT EXISTS keep BOOLEAN NOT NULL DEFAULT FALSE",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS live_envelopes BIGINT NOT NULL DEFAULT 0",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS live_bytes BIGINT NOT NULL DEFAULT 0",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS loose_envelopes BIGINT NOT NULL DEFAULT 0",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS loose_bytes BIGINT NOT NULL DEFAULT 0",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS owner BYTEA",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_revision BIGINT",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_digest BYTEA",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS current_compaction BYTEA",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS registered BYTEA",
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS covers BIGINT NOT NULL DEFAULT 0",
-                // ADR 0026: a purged topic's tombstone.
-                "ALTER TABLE note_head ADD COLUMN IF NOT EXISTS gone BOOLEAN NOT NULL DEFAULT FALSE",
-            ] {
-                sqlx::query(statement).execute(&mut *conn).await?;
-            }
-            // Topics stored before there was any bookkeeping start with none.
-            // Counted once: a topic with anything in it never counts zero again,
-            // because a compaction leaves at least its base.
-            sqlx::query(
-                r#"
-                UPDATE note_head h SET
-                    live_envelopes = c.n, live_bytes = c.b,
-                    loose_envelopes = c.n, loose_bytes = c.b
-                FROM (
-                    SELECT l.note_id, count(*) AS n, COALESCE(sum(length(l.envelope)), 0) AS b
-                    FROM note_log l JOIN note_head z ON z.note_id = l.note_id
-                    WHERE z.live_envelopes = 0 AND z.seq > 0
-                    GROUP BY l.note_id
-                ) c
-                WHERE h.note_id = c.note_id
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS auth_challenges (
-                    nonce      BYTEA PRIMARY KEY,
-                    device     BYTEA NOT NULL,
-                    expires_at BIGINT NOT NULL
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            // ADR 0027: attachment objects. The bytes are in the media
-            // directory; this is what is reserved and what is committed.
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS media_objects (
-                    note_id    TEXT    NOT NULL,
-                    object_id  TEXT    NOT NULL,
-                    sealed_len BIGINT  NOT NULL,
-                    chunk_size INTEGER NOT NULL,
-                    digest     BYTEA,
-                    touched_at BIGINT  NOT NULL,
-                    PRIMARY KEY (note_id, object_id)
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            sqlx::query(
-                "CREATE INDEX IF NOT EXISTS media_objects_staging \
-                 ON media_objects (touched_at) WHERE digest IS NULL",
-            )
-            .execute(&mut *conn)
-            .await?;
-            // Invites. `expires_at` is Unix seconds, the same number the memory
-            // store keeps, so the two cannot round differently. `grant_blob`
-            // because `grant` is a keyword.
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS invites (
-                    invite_id  TEXT    PRIMARY KEY,
-                    token_hash BYTEA   NOT NULL,
-                    owner_hash BYTEA   NOT NULL,
-                    expires_at BIGINT  NOT NULL,
-                    open       BOOLEAN NOT NULL DEFAULT TRUE
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE IF NOT EXISTS invite_requests (
-                    invite_id  TEXT     NOT NULL REFERENCES invites (invite_id) ON DELETE CASCADE,
-                    request_id TEXT     NOT NULL,
-                    payload    BYTEA    NOT NULL,
-                    state      SMALLINT NOT NULL DEFAULT 0,
-                    grant_blob BYTEA,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-                    PRIMARY KEY (invite_id, request_id)
-                )
-                "#,
-            )
-            .execute(&mut *conn)
-            .await
-        }
-        .await;
+        let migrated = self.apply_migrations(&mut conn).await;
 
         // Unlock before propagating any failure: an advisory lock is
         // session-scoped, and this connection is about to go back into the pool.
@@ -907,11 +773,89 @@ impl PostgresStore {
             .execute(&mut *conn)
             .await;
 
-        created.map_err(|e: sqlx::Error| RelayError::Storage(e.to_string()))?;
+        migrated.map_err(|e| RelayError::Storage(e.to_string()))?;
         unlocked.map_err(|e| RelayError::Storage(e.to_string()))?;
         Ok(())
     }
+
+    /// The body of [`Self::migrate`], under its lock.
+    async fn apply_migrations(&self, conn: &mut sqlx::PgConnection) -> sqlx::Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    INTEGER PRIMARY KEY,
+                name       TEXT    NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+        let applied: Option<i32> = sqlx::query_scalar("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&mut *conn)
+            .await?;
+        let applied = applied.unwrap_or(0);
+        let known = MIGRATIONS.last().map_or(0, |m| m.version);
+        if applied > known {
+            tracing::warn!(
+                applied,
+                known,
+                "the database has migrations from a newer relay; running on it as it is"
+            );
+        }
+        for migration in MIGRATIONS.iter().filter(|m| m.version > applied) {
+            // Its own connection, so the lock's session is not also
+            // the one a failed migration aborts. The lock still orders
+            // every instance: they are all waiting on it, not on this.
+            let mut tx = self.pool.begin().await?;
+            sqlx::raw_sql(migration.sql).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO schema_migrations (version, name) VALUES ($1, $2)")
+                .bind(migration.version)
+                .bind(migration.name)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            tracing::info!(
+                version = migration.version,
+                name = migration.name,
+                "applied a schema migration"
+            );
+        }
+        Ok(())
+    }
+
+    /// The highest migration this database has recorded.
+    pub async fn schema_version(&self) -> Result<i32> {
+        let version: Option<i32> = sqlx::query_scalar("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(version.unwrap_or(0))
+    }
 }
+
+/// One step of the relay's schema, from `relay/migrations/`.
+pub struct Migration {
+    pub version: i32,
+    pub name: &'static str,
+    pub sql: &'static str,
+}
+
+/// Every migration, in order, numbered from 1 with no gaps
+/// (`migrations_are_numbered_densely` checks). Forward only, and never edited
+/// once a release has shipped it: a change is a new file here and a new entry
+/// below.
+///
+/// **Expand, then contract.** Several relay instances can run at once (ADR
+/// 0021), and the previous release must keep working on this schema until the
+/// last of its instances stops. So a migration may add a table, a column with
+/// a default, or an index; only a later release, once no instance of the one
+/// that used it can still be running, may drop or repurpose one.
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "initial",
+    sql: include_str!("../migrations/0001_initial.sql"),
+}];
 
 #[async_trait]
 impl RelayStore for PostgresStore {
@@ -1687,5 +1631,37 @@ fn state_from_db(raw: i16) -> Result<RequestState> {
         other => Err(RelayError::Storage(format!(
             "unknown request state {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::MIGRATIONS;
+
+    /// A gap or a repeat would make "applied up to N" mean something other
+    /// than "applied 1 to N".
+    #[test]
+    fn migrations_are_numbered_densely() {
+        for (i, migration) in MIGRATIONS.iter().enumerate() {
+            assert_eq!(migration.version, i as i32 + 1, "{}", migration.name);
+        }
+    }
+
+    /// Every file in `relay/migrations/` is listed, under its own number, so a
+    /// migration cannot be written and then left out of the build.
+    #[test]
+    fn every_migration_file_is_listed() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
+        let mut files: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".sql"))
+            .collect();
+        files.sort();
+        let listed: Vec<String> = MIGRATIONS
+            .iter()
+            .map(|m| format!("{:04}_{}.sql", m.version, m.name))
+            .collect();
+        assert_eq!(files, listed);
     }
 }

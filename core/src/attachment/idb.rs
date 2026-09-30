@@ -32,9 +32,22 @@ use web_sys::{
     IdbDatabase, IdbFactory, IdbKeyRange, IdbRequest, IdbTransaction, IdbTransactionMode,
 };
 
-/// The object store, and the version that creates it.
+/// The object store.
 const STORE: &str = "media";
-const VERSION: u32 = 1;
+
+/// Each step takes the database one IndexedDB version on: `STEPS[0]` creates
+/// version 1 from nothing, `STEPS[n]` takes `n` to `n + 1` ([ADR
+/// 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5). They run
+/// in the browser's own upgrade transaction, so a step that throws aborts the
+/// whole upgrade and the database stays at the version it was.
+///
+/// Never edit a step a release has shipped; add one at the end.
+type Step = fn(&IdbDatabase) -> std::result::Result<(), JsValue>;
+
+const STEPS: &[Step] = &[|db| db.create_object_store(STORE).map(|_| ())];
+
+/// The version this build opens, which is the number of steps.
+const VERSION: u32 = STEPS.len() as u32;
 
 thread_local! {
     static OPEN: RefCell<HashMap<String, IdbDatabase>> = RefCell::new(HashMap::new());
@@ -128,15 +141,26 @@ async fn database(name: &str) -> Result<IdbDatabase> {
         return Ok(db);
     }
     let request = factory()?.open_with_u32(name, VERSION).map_err(js)?;
-    // Runs once, when the database is new. `once_into_js` frees the closure
-    // when it is called; one that never is costs a few bytes per connection.
+    // Runs when the database is new or older than this build: every step it
+    // has not had. A database from a newer build fails to open with a
+    // `VersionError` instead, which is the refusal a downgrade gets.
+    // `once_into_js` frees the closure when it is called; one that never is
+    // costs a few bytes per connection.
     let upgrade = Closure::once_into_js({
         let request = request.clone();
-        move |_: web_sys::Event| {
-            if let Ok(db) = request.result() {
-                let _ = db
-                    .unchecked_into::<IdbDatabase>()
-                    .create_object_store(STORE);
+        move |event: web_sys::IdbVersionChangeEvent| {
+            let Ok(db) = request.result() else { return };
+            let db = db.unchecked_into::<IdbDatabase>();
+            let from = event.old_version() as usize;
+            for step in STEPS.iter().skip(from) {
+                if step(&db).is_err() {
+                    // Aborting the upgrade transaction rolls back every step
+                    // and fails the open, rather than leaving half of one.
+                    if let Some(upgrade) = request.transaction() {
+                        let _ = upgrade.abort();
+                    }
+                    return;
+                }
             }
         }
     });

@@ -48,7 +48,7 @@ jobs:
       attestations: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Refuse to start without the signing key and the published details
         env:
@@ -90,6 +90,23 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
 
+      # ADR 0029 §6: a release is tagged with the record of what it writes,
+      # which every later build's tests read back. Written by `just
+      # compat-fixtures` and committed before the tag; the Rust version is
+      # checked too, because it is what the fixtures are named after.
+      - name: Compatibility fixtures for this version
+        run: |
+          name='${{ steps.version.outputs.name }}'
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$crate" != "$name" ]; then
+            echo "::error::the workspace version is $crate, the tag says $name"
+            exit 1
+          fi
+          if ! grep -q "\"version\": \"$name\"" "compat/v$name/expect.json" 2>/dev/null; then
+            echo "::error::compat/v$name/ is missing: run \`just compat-fixtures\` and commit it before tagging"
+            exit 1
+          fi
+
       # As in app-builds.yml: a release build of the core for three ABIs, plus
       # Gradle's caches, does not fit in what the runner image leaves free.
       - name: Free disk space
@@ -98,17 +115,17 @@ jobs:
             /usr/local/share/boost /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -214,11 +231,11 @@ jobs:
           (cd dist && sha256sum -- * > SHA256SUMS)
           cat dist/SHA256SUMS
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: dist/easynotes-*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: easynotes-${{ steps.version.outputs.name }}
           path: dist/

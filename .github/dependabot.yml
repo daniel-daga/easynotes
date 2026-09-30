@@ -8,6 +8,14 @@
 # Not covered: `third_party/flutter_rust_bridge`, a patched copy that moves
 # with the bridge codegen and the Dart package together (third_party/README.md).
 # The `Advisories` workflow checks its upstream version instead.
+#
+# Every action in `.github/workflows/` is pinned to a commit SHA, with the
+# release it came from in a trailing comment (`@<sha> # v4.4.0`). A moved or
+# re-pointed tag then cannot change what runs, least of all in `release.yml`,
+# which holds the signing key. Dependabot reads that comment and moves the SHA
+# and the comment together; pin a new action the same way. The toolchain
+# action has no releases, only a `v1` tag that follows its default branch, and
+# picks the Rust channel from its `toolchain` input rather than from the ref.
 version: 2
 updates:
   - package-ecosystem: cargo

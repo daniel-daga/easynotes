@@ -11,6 +11,39 @@ use serde::{Deserialize, Serialize};
 /// in `tests/protocol.rs` fails if the two ever drift.
 pub const MAX_ENVELOPE_BYTES: usize = 1 << 20;
 
+/// The protocol versions this relay speaks ([ADR
+/// 0029](../../docs/adr/0029-compatibility-across-releases.md) §4). A client
+/// names its own in `?p=` on every request; one outside this range is refused
+/// with `426` before anything else runs.
+///
+/// The order of a breaking change is fixed: a relay that raises `MAX` ships
+/// first, clients that speak the new version follow, and `MIN` rises only when
+/// no client released in the last twelve months still speaks the old one.
+/// `easynotes_relay_protocol_requests_total` says who still does.
+pub const PROTOCOL_MIN: u32 = 1;
+pub const PROTOCOL_MAX: u32 = 1;
+
+/// The body of a `426`: what the client needs to tell "update the app" from
+/// "the relay is too old", which it works out from the range.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Outdated {
+    pub code: String,
+    pub protocol: ProtocolRange,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolRange {
+    pub min: u32,
+    pub max: u32,
+}
+
+impl ProtocolRange {
+    pub const SPOKEN: Self = Self {
+        min: PROTOCOL_MIN,
+        max: PROTOCOL_MAX,
+    };
+}
+
 /// How long a challenge nonce stays redeemable.
 pub const CHALLENGE_TTL_SECS: u64 = 60;
 

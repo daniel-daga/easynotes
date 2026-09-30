@@ -352,6 +352,7 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
     let limits = Arc::new(config);
     let metrics = state.metrics.clone();
     let counted = state.metrics.clone();
+    let spoken = state.metrics.clone();
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
@@ -404,6 +405,13 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
             let metrics = metrics.clone();
             async move { enforce_limits(limits, metrics, req, next).await }
         }))
+        // Outside the limiter, so that a client this relay cannot talk to is
+        // told so without spending anyone's budget; inside CORS, so that a tab
+        // can read the refusal.
+        .layer(axum::middleware::from_fn(move |req, next| {
+            let spoken = spoken.clone();
+            async move { speak(spoken, req, next).await }
+        }))
         .layer(cors)
         // Outermost, so that refusals from the limiter and CORS are counted too.
         .layer(axum::middleware::from_fn(
@@ -423,12 +431,61 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
 /// not. The reason is logged rather than returned: the endpoint is public, and
 /// a database error can name hosts and users.
 async fn ready(State(state): State<Arc<AppState>>) -> Response {
-    let version = serde_json::json!({ "version": env!("CARGO_PKG_VERSION") });
+    let version = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": ProtocolRange::SPOKEN,
+    });
     match state.store.check().await {
         Ok(()) => Json(version).into_response(),
         Err(error) => {
             tracing::warn!(%error, "readiness check failed: the store did not answer");
             (StatusCode::SERVICE_UNAVAILABLE, Json(version)).into_response()
+        }
+    }
+}
+
+/// Refuse a client that does not speak a protocol this relay does (ADR 0029
+/// §4), with the range it would have needed.
+///
+/// Every `/v1` route but health and readiness, which are for load balancers and
+/// monitoring rather than clients, and which a client reads to learn the range
+/// in the first place. A request that names no protocol at all is from a build
+/// older than the version check, and is told to update like any other.
+async fn speak(
+    metrics: Arc<crate::metrics::Metrics>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path();
+    if !path.starts_with("/v1/") || path == "/v1/health" || path == "/v1/ready" {
+        return next.run(req).await;
+    }
+    let spoken = req.uri().query().and_then(|query| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("p="))
+            .and_then(|p| p.parse::<u32>().ok())
+    });
+    match spoken {
+        Some(p) if (PROTOCOL_MIN..=PROTOCOL_MAX).contains(&p) => {
+            metrics.spoke(p);
+            next.run(req).await
+        }
+        _ => {
+            tracing::debug!(
+                path,
+                ?spoken,
+                "refused a protocol this relay does not speak"
+            );
+            metrics.outdated();
+            (
+                StatusCode::UPGRADE_REQUIRED,
+                Json(Outdated {
+                    code: "update_app".into(),
+                    protocol: ProtocolRange::SPOKEN,
+                }),
+            )
+                .into_response()
         }
     }
 }

@@ -68,6 +68,9 @@ async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Re
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
     let (status, text) = post(url, body).await?;
+    if let Some(outdated) = wire::outdated(status, text.as_bytes()) {
+        return Err(outdated);
+    }
     if !(200..300).contains(&status) {
         return Err(net(format!("{status} {text}")));
     }
@@ -166,7 +169,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
     let device = signer.device_key()?.encode();
 
     let challenge: ChallengeResponse = post_json(
-        &format!("{http_base}/v1/challenge"),
+        &wire::api(http_base, "/challenge"),
         &wire::ChallengeRequest { device: &device },
     )
     .await?;
@@ -175,7 +178,7 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
     let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
     let token: TokenResponse = post_json(
-        &format!("{http_base}/v1/token"),
+        &wire::api(http_base, "/token"),
         &wire::TokenRequest {
             device: &device,
             nonce: &challenge.nonce,

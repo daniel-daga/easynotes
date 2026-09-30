@@ -81,6 +81,17 @@ test-core:
 test-relay:
     cargo test -p easynotes-relay
 
+# Write this build's compatibility fixtures to compat/v<version>/ (ADR 0029
+# §6), which every later `cargo test` reads back. Run once per release, before
+# it is tagged, and commit the result; the release workflow refuses a tag
+# without it. It needs pg_dump on the path and DATABASE_URL naming an *empty*
+# database, since the relay's dump is part of the set; take a pg_dump of the
+# same major version as CI's Postgres (16), or the dump may not restore there.
+# It will not overwrite a set: COMPAT_REPLACE=1 does, and is only for a version
+# not yet tagged.
+compat-fixtures:
+    cargo test -p easynotes-relay --test compat write_compat_fixtures -- --ignored --nocapture
+
 # Widget tests against a fake core, tests driving the real core across the
 # bridge, and the demo run from the app's own API through a real relay. The last
 # two groups skip unless the binaries below are built, so they are built here.

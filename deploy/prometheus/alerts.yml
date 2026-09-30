@@ -74,3 +74,14 @@ groups:
         labels: { severity: warn }
         annotations:
           summary: More than 5% of the relay's responses are server errors.
+
+      # Clients this relay cannot talk to (ADR 0029 §4). They keep working
+      # offline and say why; they sync again once their app, or this relay, is
+      # updated. `easynotes_relay_protocol_requests_total` shows which versions
+      # the rest speak.
+      - alert: EasyNotesRelayRefusingOutdatedClients
+        expr: increase(easynotes_relay_outdated_total[1h]) > 0
+        for: 1h
+        labels: { severity: warn }
+        annotations:
+          summary: The relay is refusing clients whose protocol it does not speak.

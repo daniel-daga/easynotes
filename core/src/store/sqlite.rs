@@ -27,10 +27,6 @@ use crate::ids::NoteId;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
-/// Bumped when the schema changes in a way a migration has to handle. Stored in
-/// SQLite's own `user_version`, so it costs no table.
-const SCHEMA_VERSION: i32 = 1;
-
 fn db(e: rusqlite::Error) -> CoreError {
     CoreError::Storage(e.to_string())
 }
@@ -87,7 +83,24 @@ fn checkpoint(conn: &Connection) {
     let _ = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
 }
 
-fn migrate(conn: &mut Connection, schema: &str) -> Result<()> {
+/// Bring a database up to `steps.len()`: run every step it has not had, in
+/// order, and record how far it got in SQLite's own `user_version`, which
+/// costs no table.
+///
+/// `steps[0]` creates version 1 and `steps[n]` takes version `n` to `n + 1`
+/// ([ADR 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5).
+/// A new database runs all of them rather than a schema of its own, so that a
+/// fresh install and an upgraded one cannot end up different. Every step, and
+/// the version, is in one transaction: a step that fails leaves the database
+/// exactly as it was, still readable by the build that wrote it.
+///
+/// A database from a newer build is refused rather than half-understood.
+/// Downgrading the app is not supported.
+///
+/// Never edit a step a release has shipped. A change is a new step at the
+/// end, with a test that opens a database from the release before it.
+pub(crate) fn migrate(conn: &mut Connection, steps: &[&str]) -> Result<()> {
+    let newest = steps.len() as i32;
     // IMMEDIATE so that two processes opening the database at the same moment do
     // not both decide it is empty. Slice 1 learned this against Postgres, where a
     // racing `CREATE TABLE IF NOT EXISTS` deadlocked on the system catalog.
@@ -97,15 +110,18 @@ fn migrate(conn: &mut Connection, schema: &str) -> Result<()> {
     let version: i32 = tx
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db)?;
-    if version == 0 {
-        tx.execute_batch(schema).map_err(db)?;
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-            .map_err(db)?;
-    } else if version > SCHEMA_VERSION {
+    if version > newest {
         return Err(CoreError::Storage(format!(
-            "this database was written by a newer version of the app (schema {version}, this build understands {SCHEMA_VERSION})"
+            "this database was written by a newer version of the app (schema {version}, this build understands {newest}). Update the app to open it."
         )));
     }
+    if version == newest {
+        return Ok(());
+    }
+    for step in &steps[version as usize..] {
+        tx.execute_batch(step).map_err(db)?;
+    }
+    tx.pragma_update(None, "user_version", newest).map_err(db)?;
     tx.commit().map_err(db)
 }
 
@@ -113,7 +129,10 @@ fn migrate(conn: &mut Connection, schema: &str) -> Result<()> {
 // The log
 // ---------------------------------------------------------------------------
 
-const STORE_SCHEMA: &str = "
+/// The op log's schema, one step per version: see [`migrate`].
+const STORE_MIGRATIONS: &[&str] = &[STORE_SCHEMA_1];
+
+const STORE_SCHEMA_1: &str = "
     CREATE TABLE ops (
         note     BLOB NOT NULL,
         seq      INTEGER NOT NULL,
@@ -158,7 +177,7 @@ impl SqliteStore {
 
     fn from_connection(mut conn: Connection, master: MasterKey) -> Result<Self> {
         prepare(&conn)?;
-        migrate(&mut conn, STORE_SCHEMA)?;
+        migrate(&mut conn, STORE_MIGRATIONS)?;
         Ok(Self { conn, master })
     }
 }
@@ -335,7 +354,10 @@ impl OpStore for SqliteStore {
 // The keyring
 // ---------------------------------------------------------------------------
 
-const KEYRING_SCHEMA: &str = "
+/// The keyring's schema, one step per version: see [`migrate`].
+const KEYRING_MIGRATIONS: &[&str] = &[KEYRING_SCHEMA_1];
+
+const KEYRING_SCHEMA_1: &str = "
     CREATE TABLE keys (
         kind   TEXT NOT NULL,
         id     BLOB NOT NULL,
@@ -374,7 +396,7 @@ impl SqliteKeyring {
 
     fn from_connection(mut conn: Connection, master: MasterKey) -> Result<Self> {
         prepare(&conn)?;
-        migrate(&mut conn, KEYRING_SCHEMA)?;
+        migrate(&mut conn, KEYRING_MIGRATIONS)?;
         Ok(Self { conn, master })
     }
 
@@ -526,4 +548,80 @@ pub fn open_local(
     }
 
     Ok((store, keyring))
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    const V1: &str = "CREATE TABLE t (a INTEGER NOT NULL);";
+    const V2: &str = "ALTER TABLE t ADD COLUMN b TEXT NOT NULL DEFAULT 'none';";
+
+    fn version(conn: &Connection) -> i32 {
+        conn.pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_new_database_runs_every_step() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[V1, V2]).unwrap();
+        assert_eq!(version(&conn), 2);
+        conn.execute("INSERT INTO t (a, b) VALUES (1, 'x')", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn an_older_database_is_brought_forward_with_its_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[V1]).unwrap();
+        conn.execute("INSERT INTO t (a) VALUES (7)", []).unwrap();
+
+        migrate(&mut conn, &[V1, V2]).unwrap();
+        assert_eq!(version(&conn), 2);
+        let row: (i64, String) = conn
+            .query_row("SELECT a, b FROM t", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(row, (7, "none".to_string()));
+        // And once there, opening again changes nothing.
+        migrate(&mut conn, &[V1, V2]).unwrap();
+        assert_eq!(version(&conn), 2);
+    }
+
+    /// A step that fails partway leaves the database as the last build wrote
+    /// it, so that build can still open it.
+    #[test]
+    fn a_failed_step_changes_nothing() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[V1]).unwrap();
+        let broken = "ALTER TABLE t ADD COLUMN c INTEGER; SELECT * FROM no_such_table;";
+        assert!(migrate(&mut conn, &[V1, broken]).is_err());
+        assert_eq!(version(&conn), 1);
+        let columns: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_table_info('t')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(columns, 1, "the half-run step was kept");
+        migrate(&mut conn, &[V1]).unwrap();
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[V1, V2]).unwrap();
+        let err = migrate(&mut conn, &[V1]).unwrap_err().to_string();
+        assert!(err.contains("newer version"), "{err}");
+        assert!(err.contains("Update the app"), "{err}");
+        assert_eq!(version(&conn), 2);
+    }
+
+    #[test]
+    fn the_stores_are_at_their_newest_version() {
+        let master = MasterKey::random();
+        let store = SqliteStore::in_memory(master.clone()).unwrap();
+        assert_eq!(version(&store.conn), STORE_MIGRATIONS.len() as i32);
+        let keyring = SqliteKeyring::in_memory(master).unwrap();
+        assert_eq!(version(&keyring.conn), KEYRING_MIGRATIONS.len() as i32);
+    }
 }

@@ -35,7 +35,7 @@
     allow(dead_code)
 )]
 mod wire;
-pub use wire::{Incoming, RequestState, Routed};
+pub use wire::{Incoming, RequestState, Routed, PROTOCOL};
 
 // Exactly one transport is compiled, and which one is not a choice a caller
 // makes: a device has no browser to borrow a socket from and a tab cannot open

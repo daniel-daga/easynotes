@@ -39,7 +39,7 @@ pub async fn purge(http_base: &str, topics: &[(NoteId, Request)]) -> Result<Vec<
         };
         let body = serde_json::to_string(&body)
             .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
-        let (status, text) = post(&format!("{http_base}/v1/purge"), body).await?;
+        let (status, text) = post(&wire::api(http_base, "/purge"), body).await?;
         invite_status(status, &text)?;
         let answer: wire::PurgeResponse = serde_json::from_str(&text)
             .map_err(|e| wire::net(format!("relay sent nonsense: {e}")))?;

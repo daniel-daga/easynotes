@@ -109,7 +109,7 @@ impl Upload {
 
     fn url(&self, rest: &str) -> String {
         format!(
-            "{}/v1/media/{}/{}{rest}",
+            "{}/v1/media/{}/{}{rest}?p=1",
             self.base,
             self.note.encode(),
             self.media.object.encode()
