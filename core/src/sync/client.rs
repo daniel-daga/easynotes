@@ -37,38 +37,51 @@ pub async fn authenticate(http_base: &str, signer: &impl DeviceSigner) -> Result
     let device = signer.device_key()?.encode();
     let http = reqwest::Client::new();
 
-    let challenge: ChallengeResponse = http
-        .post(format!("{http_base}/v1/challenge"))
-        .json(&wire::ChallengeRequest { device: &device })
-        .send()
-        .await
-        .map_err(net)?
-        .error_for_status()
-        .map_err(net)?
-        .json()
-        .await
-        .map_err(net)?;
+    let challenge: ChallengeResponse = post_json(
+        &http,
+        &wire::api(http_base, "/challenge"),
+        &wire::ChallengeRequest { device: &device },
+    )
+    .await?;
 
     let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
     let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
-    let token: TokenResponse = http
-        .post(format!("{http_base}/v1/token"))
-        .json(&wire::TokenRequest {
+    let token: TokenResponse = post_json(
+        &http,
+        &wire::api(http_base, "/token"),
+        &wire::TokenRequest {
             device: &device,
             nonce: &challenge.nonce,
             signature: &signature,
-        })
-        .send()
-        .await
-        .map_err(net)?
-        .error_for_status()
-        .map_err(net)?
-        .json()
-        .await
-        .map_err(net)?;
+        },
+    )
+    .await?;
 
     Ok(token.token)
+}
+
+/// A JSON `POST` that has to succeed. A relay that does not speak this build's
+/// protocol says so here first, since the handshake is the first thing any
+/// connection asks for.
+async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
+    http: &reqwest::Client,
+    url: &str,
+    body: &Q,
+) -> Result<R> {
+    let response = http.post(url).json(body).send().await.map_err(net)?;
+    let status = response.status().as_u16();
+    let bytes = response.bytes().await.map_err(net)?;
+    if let Some(outdated) = wire::outdated(status, &bytes) {
+        return Err(outdated);
+    }
+    if !(200..300).contains(&status) {
+        return Err(net(format!(
+            "{status} {}",
+            String::from_utf8_lossy(&bytes).trim()
+        )));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| net(format!("relay sent nonsense: {e}")))
 }
 
 /// A JSON `POST`, and whatever came back, whatever its status.

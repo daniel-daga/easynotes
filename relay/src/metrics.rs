@@ -14,6 +14,7 @@
 //! `deploy/prometheus/alerts.yml` fire at 80% of each.
 
 use crate::app::AppState;
+use crate::protocol::{PROTOCOL_MAX, PROTOCOL_MIN};
 use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
@@ -67,7 +68,14 @@ pub struct Metrics {
     refused: [AtomicU64; 4],
     /// By status class, 1xx to 5xx. A socket's upgrade is a 1xx.
     responses: [AtomicU64; 5],
+    /// Requests by the protocol they named, from `PROTOCOL_MIN` up.
+    spoken: [AtomicU64; SPOKEN],
+    /// Requests refused with `426`.
+    outdated: AtomicU64,
 }
+
+/// How many protocol versions this relay speaks, and so counts.
+const SPOKEN: usize = (PROTOCOL_MAX - PROTOCOL_MIN + 1) as usize;
 
 impl Metrics {
     pub(crate) fn rate_limited(&self, bucket: Bucket) {
@@ -81,6 +89,15 @@ impl Metrics {
     pub(crate) fn responded(&self, status: axum::http::StatusCode) {
         let class = (status.as_u16() / 100).clamp(1, 5) as usize - 1;
         self.responses[class].fetch_add(1, Relaxed);
+    }
+
+    /// A request in protocol `p`, which the caller has checked is spoken.
+    pub(crate) fn spoke(&self, p: u32) {
+        self.spoken[(p - PROTOCOL_MIN) as usize].fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn outdated(&self) {
+        self.outdated.fetch_add(1, Relaxed);
     }
 
     /// Count a sync socket as open for as long as the guard lives.
@@ -255,6 +272,24 @@ pub async fn render(state: &AppState) -> String {
                 m.refused[why as usize].load(Relaxed),
             )
         }),
+    );
+    family(
+        "easynotes_relay_protocol_requests_total",
+        "counter",
+        "Requests by the protocol version the client named. A version is \
+         dropped only once this stops rising for it (ADR 0029 §4).",
+        &std::array::from_fn::<_, SPOKEN, _>(|i| {
+            (
+                format!("{{protocol=\"{}\"}}", PROTOCOL_MIN as usize + i),
+                m.spoken[i].load(Relaxed),
+            )
+        }),
+    );
+    family(
+        "easynotes_relay_outdated_total",
+        "counter",
+        "Requests refused with 426 because the client's protocol is not spoken.",
+        &one(m.outdated.load(Relaxed)),
     );
     family(
         "easynotes_relay_http_responses_total",

@@ -53,7 +53,7 @@ pub async fn open(
 ) -> Result<u64> {
     let id = secret.id().encode();
     let created: wire::CreatedInvite = call_json(
-        &format!("{http_base}/v1/invites"),
+        &wire::api(http_base, "/invites"),
         &wire::CreateInvite {
             invite: &id,
             token_hash: &secret.token_hash(),
