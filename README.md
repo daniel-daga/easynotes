@@ -244,6 +244,13 @@ socket cleanly so devices reconnect on their own, and gives requests in flight
 `RELAY_DRAIN_SECONDS` (8) to finish. `easynotes-relay check` asks a running
 relay's `/v1/ready` and exits 0 or 1, for a container health check.
 
+`RELAY_METRICS_ADDR` (for example `0.0.0.0:9090`) serves Prometheus metrics at
+`/metrics` on a listener of its own, kept off the public one: storage and
+attachment bytes against their ceilings, open sockets, rate-limit and quota
+refusals, and responses by status class. Example alerts, at 80% of each
+ceiling among others, are in
+[`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml).
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy

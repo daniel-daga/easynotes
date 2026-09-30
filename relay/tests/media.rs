@@ -444,6 +444,15 @@ async fn budgets_count_what_is_reserved_and_what_is_committed() {
         // Another note has its own budget.
         let elsewhere = Upload::new(&relay, 1000).await;
         assert_eq!(elsewhere.reserve().await, StatusCode::CREATED, "{name}");
+        // And the refusal is counted where an operator will see it.
+        let metrics = easynotes_relay::metrics::render(&relay.state).await;
+        assert!(
+            metrics
+                .lines()
+                .any(|l| l
+                    == "easynotes_relay_quota_refusals_total{store=\"media\",scope=\"note\"} 1"),
+            "{name}: {metrics}"
+        );
     }
 
     for (name, store) in stores().await {

@@ -751,6 +751,196 @@ async fn ready_fails_when_the_store_does_not_answer() {
 /// A store whose database has gone away: every call fails.
 struct Unreachable;
 
+/// The value of one series in an exposition, named with its labels exactly as
+/// the relay prints them.
+fn metric(text: &str, series: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(series)?.strip_prefix(' ')?.parse().ok())
+}
+
+/// `/metrics` counts what an operator needs to see coming: devices online,
+/// the storage it holds against its ceiling, and what it refused and why.
+#[tokio::test]
+async fn metrics_count_what_the_relay_does() {
+    let relay = relay_with(RelayConfig {
+        handshake: RateLimit::new(60, 2),
+        storage: easynotes_relay::Limits {
+            ceiling: Some(1),
+            ..easynotes_relay::Limits::default()
+        },
+        ..RelayConfig::default()
+    })
+    .await;
+    let scrape = || easynotes_relay::metrics::render(&relay.state);
+    let before = scrape().await;
+    assert_eq!(metric(&before, "easynotes_relay_store_up"), Some(1));
+    assert_eq!(metric(&before, "easynotes_relay_notes"), Some(0));
+    assert_eq!(
+        metric(&before, "easynotes_relay_log_ceiling_bytes"),
+        Some(1)
+    );
+    assert_eq!(metric(&before, "easynotes_relay_sockets_open"), Some(0));
+
+    // Two handshake requests are the whole burst, so a third is refused.
+    let identity = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), &identity)
+        .await
+        .unwrap();
+    let refused = reqwest::Client::new()
+        .post(format!("{}/v1/challenge", relay.http_base()))
+        .json(&serde_json::json!({ "device": identity.public_key().encode() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+    // The first note fits under the ceiling; once it is stored, a second does
+    // not.
+    let key = NoteKey::random();
+    let first = NoteId::random();
+    let mut one = NoteSocket::connect(&relay.ws_base(), &token, first, 0)
+        .await
+        .unwrap();
+    assert!(drain(&mut one).await.is_empty());
+    let sealed = envelope(&identity, first, &key, 0, b"first");
+    one.append(&sealed).await.unwrap();
+    take(&mut one, 1).await;
+    let second = NoteId::random();
+    let mut two = NoteSocket::connect(&relay.ws_base(), &token, second, 0)
+        .await
+        .unwrap();
+    assert!(drain(&mut two).await.is_empty());
+    two.append(&envelope(&identity, second, &key, 0, b"second"))
+        .await
+        .unwrap();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), two.next())
+        .await
+        .expect("timed out waiting for the refusal")
+        .unwrap();
+    assert!(
+        matches!(answer, Some(Incoming::Rejected(_))),
+        "the second note was not refused"
+    );
+
+    let during = scrape().await;
+    assert_eq!(metric(&during, "easynotes_relay_notes"), Some(1));
+    assert_eq!(
+        metric(&during, "easynotes_relay_log_bytes"),
+        Some(sealed.len() as u64)
+    );
+    assert_eq!(metric(&during, "easynotes_relay_sockets_open"), Some(2));
+    assert_eq!(
+        metric(&during, "easynotes_relay_sockets_opened_total"),
+        Some(2)
+    );
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_rate_limited_total{limit=\"handshake\"}"
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_rate_limited_total{limit=\"sockets\"}"
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_quota_refusals_total{store=\"log\",scope=\"relay\"}"
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_http_responses_total{class=\"4xx\"}"
+        ),
+        Some(1)
+    );
+    // Two upgrades, and the two handshake requests.
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_http_responses_total{class=\"1xx\"}"
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        metric(
+            &during,
+            "easynotes_relay_http_responses_total{class=\"2xx\"}"
+        ),
+        Some(2)
+    );
+
+    // A socket stops counting when it closes, whoever closed it.
+    one.close().await.unwrap();
+    drop(two);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while metric(&scrape().await, "easynotes_relay_sockets_open") != Some(0) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "closed sockets are still counted as open"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// A store that does not answer is a number an alert can fire on, not a
+/// failed scrape that looks the same as a relay that is down.
+#[tokio::test]
+async fn metrics_say_when_the_store_does_not_answer() {
+    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let text = easynotes_relay::metrics::render(&relay.state).await;
+    assert_eq!(metric(&text, "easynotes_relay_store_up"), Some(0));
+    assert_eq!(metric(&text, "easynotes_relay_notes"), None);
+    assert!(!text.contains("database is gone"), "{text}");
+}
+
+/// Metrics are served on a listener of their own, and not on the public one.
+#[tokio::test]
+async fn metrics_are_not_on_the_public_listener() {
+    let (relay, _) = relay().await;
+    let public = reqwest::get(format!("{}/metrics", relay.http_base()))
+        .await
+        .unwrap();
+    assert_eq!(public.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = easynotes_relay::metrics::router(relay.state.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let private = reqwest::get(format!("http://{addr}/metrics"))
+        .await
+        .unwrap();
+    assert_eq!(private.status(), reqwest::StatusCode::OK);
+    assert!(private.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/plain; version=0.0.4"));
+    let text = private.text().await.unwrap();
+    assert!(
+        text.contains("# TYPE easynotes_relay_sockets_open gauge"),
+        "{text}"
+    );
+    assert_eq!(
+        metric(
+            &text,
+            &format!(
+                "easynotes_relay_build_info{{version=\"{}\"}}",
+                env!("CARGO_PKG_VERSION")
+            )
+        ),
+        Some(1)
+    );
+}
+
 /// A stop closes every sync socket cleanly, so that each device hears it and
 /// reconnects rather than waiting to time out, and then stops listening. The
 /// sockets are what axum would not wait for on its own: once upgraded, they are
@@ -846,6 +1036,9 @@ impl RelayStore for Unreachable {
         gone()
     }
     async fn head(&self, _: &str) -> easynotes_relay::error::Result<i64> {
+        gone()
+    }
+    async fn usage(&self) -> easynotes_relay::error::Result<easynotes_relay::Usage> {
         gone()
     }
     async fn save_auth_challenge(

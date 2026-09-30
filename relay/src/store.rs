@@ -186,12 +186,32 @@ pub trait RelayStore: Send + Sync + 'static {
     /// say which, so their bytes can go too.
     async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>>;
 
+    /// How much the relay holds, for monitoring ([`crate::metrics`]). The
+    /// same sums the ceilings are enforced on, so an alert on them fires
+    /// before a refusal does.
+    async fn usage(&self) -> Result<Usage>;
+
     /// Whether the store can answer a query right now. What `/v1/ready`
     /// reports: a relay whose database has gone away still accepts
     /// connections, and only this says it cannot keep what they send.
     async fn check(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Totals across every note. See [`RelayStore::usage`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Notes with a log, purged ones excluded.
+    pub notes: u64,
+    /// Live log bytes: what the storage ceiling is measured against.
+    pub log_bytes: u64,
+    /// Committed attachment objects, and their sealed bytes.
+    pub media_objects: u64,
+    pub media_committed_bytes: u64,
+    /// Bytes reserved by uploads not yet committed. They count against the
+    /// media ceiling as committed bytes do.
+    pub media_reserved_bytes: u64,
 }
 
 pub struct NewInvite<'a> {
@@ -527,6 +547,25 @@ impl RelayStore for MemoryStore {
             media.remove(key);
         }
         Ok(expired)
+    }
+
+    async fn usage(&self) -> Result<Usage> {
+        let mut usage = Usage::default();
+        for log in self.notes.lock().unwrap().values() {
+            if !log.topic.gone {
+                usage.notes += 1;
+            }
+            usage.log_bytes += log.topic.live_bytes;
+        }
+        for m in self.media.lock().unwrap().values() {
+            if m.row.committed.is_some() {
+                usage.media_objects += 1;
+                usage.media_committed_bytes += m.row.geometry.sealed_len;
+            } else {
+                usage.media_reserved_bytes += m.row.geometry.sealed_len;
+            }
+        }
+        Ok(usage)
     }
 
     async fn topic(&self, note: &str) -> Result<Topic> {
@@ -1057,6 +1096,29 @@ impl RelayStore for PostgresStore {
         save_topic(&mut tx, note, &gone(topic.head)).await?;
         tx.commit().await.map_err(pg)?;
         Ok(Ok(()))
+    }
+
+    async fn usage(&self) -> Result<Usage> {
+        // One statement, so the numbers are from one snapshot.
+        let (notes, log_bytes, objects, committed, reserved): (i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT \
+                   (SELECT count(*) FROM note_head WHERE NOT gone), \
+                   (SELECT COALESCE(sum(live_bytes), 0)::BIGINT FROM note_head), \
+                   (SELECT count(*) FROM media_objects WHERE digest IS NOT NULL), \
+                   (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE digest IS NOT NULL), \
+                   (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE digest IS NULL)",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(Usage {
+            notes: notes as u64,
+            log_bytes: log_bytes as u64,
+            media_objects: objects as u64,
+            media_committed_bytes: committed as u64,
+            media_reserved_bytes: reserved as u64,
+        })
     }
 
     async fn topic(&self, note: &str) -> Result<Topic> {

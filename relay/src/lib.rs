@@ -7,6 +7,7 @@ pub mod error;
 pub mod invite;
 pub mod limit;
 pub mod media;
+pub mod metrics;
 pub mod protocol;
 pub mod quota;
 pub mod shutdown;
@@ -17,7 +18,7 @@ pub use app::{router, router_with, AppState, Origins, RelayConfig};
 pub use limit::TrustedProxies;
 pub use media::{Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs};
 pub use quota::Limits;
-pub use store::{Appended, MemoryStore, PostgresStore, RelayStore};
+pub use store::{Appended, MemoryStore, PostgresStore, RelayStore, Usage};
 
 use std::net::SocketAddr;
 use std::sync::Arc;

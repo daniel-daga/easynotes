@@ -60,7 +60,8 @@ pub(crate) async fn sync_ws(
         return Err(RelayError::Unavailable("stopping"));
     }
     Ok(ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run(socket, state, stopping).await {
+        let _open = state.metrics.socket();
+        if let Err(e) = run(socket, state.clone(), stopping).await {
             tracing::debug!(error = %e, "device session ended");
         }
     }))
