@@ -5,7 +5,11 @@ encrypted, lists can be edited live by several people, and sharing needs no
 email account. See [`docs/design.md`](docs/design.md) for the product and
 architecture.
 
-**Status: Slices 1 and 2 complete. Android has now been built and exercised on a Pixel; iOS still needs a Mac, and the full hardware demo remains open.** The vertical spike works —
+**Status: not production-ready ([2026-09-30 review](docs/production-readiness-2026-09-30.md)).
+Slices 1 and 2 are complete, and attachments ([ADR 0027](docs/adr/0027-attachments.md))
+work on native and on the web. Android has been built and exercised on a Pixel;
+a signed release has not yet been cut through `release.yml`, iOS still needs a
+Mac, and the full hardware demo remains open.** The vertical spike works —
 one Rust core for crypto, CRDT, storage and sync, driving a Flutter UI on Linux
 desktop and in a browser, with a relay that stores and forwards ciphertext and
 nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest
@@ -235,6 +239,11 @@ reverse proxy every client has the proxy's address, so name the proxy in
 `RELAY_TRUSTED_PROXIES` (addresses or CIDR ranges, comma separated): from those
 peers, and only those, the relay reads the client from `X-Forwarded-For`.
 
+On `SIGTERM` or Ctrl-C the relay stops taking connections, closes every sync
+socket cleanly so devices reconnect on their own, and gives requests in flight
+`RELAY_DRAIN_SECONDS` (8) to finish. `easynotes-relay check` asks a running
+relay's `/v1/ready` and exits 0 or 1, for a container health check.
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy
@@ -335,4 +344,5 @@ holds no keys and cannot read one: it hands every arrival to the core, which
 verifies before it decrypts.
 
 This has **not** been audited. The design doc schedules an external review before
-1.0, and nothing here should be relied on until then.
+1.0, and nothing here should be relied on until then. To report a
+vulnerability, see [`SECURITY.md`](SECURITY.md).
