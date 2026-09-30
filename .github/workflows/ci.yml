@@ -1,9 +1,10 @@
 name: CI
 
-# Only on `main`, and by hand. A pull request does not run this: the justfile
-# recipes it wraps are the ones a contributor runs locally before pushing, so the
-# pull request was paying for a second opinion on a claim it had already made.
-# `workflow_dispatch` is the escape hatch for asking anyway, on any branch.
+# On `main`, on every pull request, and by hand. Pull requests used not to run
+# it, on the grounds that a contributor had already run the justfile recipes it
+# wraps; that holds for one maintainer and not for a change from anyone else,
+# which is what a public project gets (production readiness review, F7).
+# `workflow_dispatch` is still there for asking on any branch.
 #
 # Kept to lint and tests. Building the app itself — the APK, the Linux desktop
 # bundle, the web build and its browser checks — is most of an hour of runners
@@ -11,9 +12,16 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
   # So that `release.yml` can require the same lint and tests before it builds.
   workflow_call:
+
+# A pull request that is pushed to again needs only its newest run. `main` keeps
+# every run, so that each commit on it has a result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
