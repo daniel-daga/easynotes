@@ -1,0 +1,72 @@
+name: Advisories
+
+# Known vulnerabilities in what the app and the relay are built from, checked
+# on a schedule as well as when a lockfile changes: an advisory published
+# against a crate we already ship arrives without anyone touching the code
+# (production readiness review, F7).
+#
+# Rust through `cargo audit` and the RustSec database; Dart through OSV, which
+# covers pub. A finding fails the run, and GitHub mails a failed scheduled run
+# to whoever last edited this file's schedule. *Unmaintained* notices are
+# printed and do not fail it: they are for tracking upstream, not for acting on.
+on:
+  schedule:
+    - cron: '17 6 * * 1'     # Mondays, before the week starts
+  push:
+    branches: [main]
+    paths: ['**/Cargo.lock', '**/pubspec.lock', 'third_party/**', '.github/workflows/advisories.yml']
+  pull_request:
+    paths: ['**/Cargo.lock', '**/pubspec.lock', 'third_party/**', '.github/workflows/advisories.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit Cargo.lock
+        run: cargo audit
+
+      # The vendored bridge crate is a path dependency, so the lockfile names no
+      # registry version for `cargo audit` to look up. Ask about the upstream
+      # release it was vendored from instead: a fix published against that is
+      # one this repository has to carry by hand (third_party/README.md).
+      - name: Audit the vendored flutter_rust_bridge
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' third_party/flutter_rust_bridge/Cargo.toml | head -n 1)
+          printf 'version = 3\n\n[[package]]\nname = "flutter_rust_bridge"\nversion = "%s"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n' \
+            "$version" > "$RUNNER_TEMP/vendored.lock"
+          echo "flutter_rust_bridge $version (vendored)"
+          cargo audit --file "$RUNNER_TEMP/vendored.lock"
+
+  dart:
+    name: Dart (OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install osv-scanner
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0
+
+      # Against the downloaded database rather than the query API, so that an
+      # API that cannot be reached is a failed download here, never a scan that
+      # quietly checked nothing and reported no issues.
+      - name: Scan the pub lockfiles
+        run: |
+          "$(go env GOPATH)/bin/osv-scanner" scan source \
+            --offline-vulnerabilities --download-offline-databases \
+            --lockfile=app/pubspec.lock \
+            --lockfile=app/rust_builder/cargokit/build_tool/pubspec.lock

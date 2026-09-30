@@ -1,0 +1,42 @@
+# Update pull requests for the three things this repository depends on from
+# outside (production readiness review, F7). Weekly and grouped, so that they
+# arrive as a few pull requests a week that CI has already run on, rather than
+# one per crate. Security updates are not held to this schedule: GitHub opens
+# those as soon as an advisory lands, when Dependabot security updates are on
+# in the repository settings.
+#
+# Not covered: `third_party/flutter_rust_bridge`, a patched copy that moves
+# with the bridge codegen and the Dart package together (third_party/README.md).
+# The `Advisories` workflow checks its upstream version instead.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # Moves with the vendored crate and the codegen, never on its own.
+      - dependency-name: flutter_rust_bridge
+
+  - package-ecosystem: pub
+    directory: /app
+    schedule:
+      interval: weekly
+    groups:
+      dart:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: flutter_rust_bridge
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
