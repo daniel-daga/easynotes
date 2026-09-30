@@ -222,8 +222,7 @@ async fn serve(
                 Some(Ok(Message::Text(t))) => {
                     let session = Session { state, client, out: &out, fanned: &fanned_tx };
                     if let Handled::Close = handle(&session, &mut subs, &mut backlog, &t).await {
-                        // What was queued goes first, the refusal included.
-                        return Ok(());
+                        break;
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
@@ -246,7 +245,27 @@ async fn serve(
             },
         }
     }
+
+    // Closing on the client, after telling it why. Dropping `out` lets the
+    // writer send what is queued, the refusal included, and then a close
+    // frame. Reading on until the client answers that matters: a client
+    // flooding appends has more of them in flight, and a socket closed with
+    // data unread is reset, which can destroy the refusal before the client
+    // has read it — and a client that never hears why reconnects at once.
+    drop(out);
+    let _ = tokio::time::timeout(CLOSE_GRACE, async {
+        while let Some(Ok(message)) = rx.next().await {
+            if let Message::Close(_) = message {
+                break;
+            }
+        }
+    })
+    .await;
+    Ok(())
 }
+
+/// How long a session closed on its client waits for the client to close too.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Send the next chunk of one note's backlog. True if there is more.
 async fn send_chunk(
