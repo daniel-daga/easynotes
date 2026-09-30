@@ -244,6 +244,13 @@ socket cleanly so devices reconnect on their own, and gives requests in flight
 `RELAY_DRAIN_SECONDS` (8) to finish. `easynotes-relay check` asks a running
 relay's `/v1/ready` and exits 0 or 1, for a container health check.
 
+`RELAY_METRICS_ADDR` (for example `0.0.0.0:9090`) serves Prometheus metrics at
+`/metrics` on a listener of its own, kept off the public one: storage and
+attachment bytes against their ceilings, open sockets, rate-limit and quota
+refusals, and responses by status class. Example alerts, at 80% of each
+ceiling among others, are in
+[`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml).
+
 For a small private deployment on a Synology NAS, see
 [`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
 container, runs Postgres with persistent storage, and uses DSM's reverse proxy
@@ -300,6 +307,8 @@ reading the whole database at open.
 | [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
 | [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
 | [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
+| [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet (proposed) |
+| [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (proposed) |
 
 ## Security, in one paragraph
 

@@ -60,7 +60,8 @@ pub(crate) async fn sync_ws(
         return Err(RelayError::Unavailable("stopping"));
     }
     Ok(ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run(socket, state, stopping).await {
+        let _open = state.metrics.socket();
+        if let Err(e) = run(socket, state.clone(), stopping).await {
             tracing::debug!(error = %e, "device session ended");
         }
     }))
@@ -284,6 +285,9 @@ async fn handle(
         Err(e) => return refuse(out, None, &format!("malformed message: {e}")),
     };
     match message {
+        SyncClientMessage::Unknown => {
+            tracing::debug!("skipped a message type this relay does not know");
+        }
         SyncClientMessage::Subscribe { note, since } => {
             if NoteId::decode(&note).is_err() {
                 return refuse(out, Some(note), "malformed note id");

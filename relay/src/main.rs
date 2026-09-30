@@ -37,6 +37,9 @@
 //!   [`DEFAULT_DRAIN`]. Keep it under the grace period whatever stops the
 //!   container allows (`stop_grace_period` in compose, ten seconds by default),
 //!   or the process is killed before it is done.
+//! * `RELAY_METRICS_ADDR` — where to serve `/metrics`, in the Prometheus text
+//!   format ([`easynotes_relay::metrics`]). A listener of its own, so that it
+//!   can be kept off the public network. Unset serves no metrics.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -200,8 +203,31 @@ async fn main() -> anyhow::Result<()> {
         })?),
     };
 
+    let metrics_addr: Option<SocketAddr> = match std::env::var("RELAY_METRICS_ADDR")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => None,
+        Ok(raw) => Some(raw.parse().map_err(|_| {
+            anyhow::anyhow!("RELAY_METRICS_ADDR must be an address and port, such as 0.0.0.0:9090")
+        })?),
+    };
+
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
+
+    // Dropped with the process: a scrape cut off by a stop is just a missed
+    // scrape, so it is not among what a stop drains.
+    if let Some(metrics_addr) = metrics_addr {
+        let listener = tokio::net::TcpListener::bind(metrics_addr).await?;
+        tracing::info!(addr = %listener.local_addr()?, "metrics listening");
+        let app = easynotes_relay::metrics::router(relay.state.clone());
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!(error = %e, "metrics listener stopped");
+            }
+        });
+    }
 
     stopped().await?;
     tracing::info!(

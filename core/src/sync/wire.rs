@@ -168,6 +168,12 @@ enum DeviceReply {
         note: Option<String>,
         message: String,
     },
+    /// A message type this build does not know: something a newer relay says
+    /// that an older client can do without. Skipped, never an error — an
+    /// error drops the socket, and a relay that added any message at all
+    /// would put every older client into a reconnect loop.
+    #[serde(other)]
+    Unknown,
 }
 
 /// What arrived on a device's socket, and which note it is about.
@@ -221,17 +227,20 @@ pub(crate) fn compact_note(
     })
 }
 
-/// Read one message from a device's socket.
+/// Read one message from a device's socket, or `None` for a message type
+/// this build does not know, which the caller skips.
 ///
 /// No cursor here, unlike [`parse`]: there is one per note, and the engine
 /// keeps them. An update or a `caught` for a note ID that does not parse is
 /// nonsense, because this device never subscribed to one; a refusal naming one
-/// is still a refusal, and is passed on unrouted rather than lost.
-pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
+/// is still a refusal, and is passed on unrouted rather than lost. Fields a
+/// known message gains are ignored, so adding one needs no new type.
+pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
     let nonsense = |what: &str| CoreError::Storage(format!("relay sent nonsense: {what}"));
     let parsed: DeviceReply = serde_json::from_str(text).map_err(|e| nonsense(&e.to_string()))?;
     let note = |raw: &str| crate::ids::NoteId::decode(raw).map_err(|_| nonsense("a bad note id"));
-    Ok(match parsed {
+    Ok(Some(match parsed {
+        DeviceReply::Unknown => return Ok(None),
         DeviceReply::Update {
             note: raw,
             seq,
@@ -261,7 +270,7 @@ pub(crate) fn parse_routed(text: &str) -> Result<Routed> {
                 None => Routed::Unrouted(message),
             }
         }
-    })
+    }))
 }
 
 // -- purge -------------------------------------------------------------------
@@ -409,6 +418,32 @@ pub(crate) fn invite_url(http_base: &str, invite: crate::ids::InviteId, rest: &s
 mod tests {
     use super::*;
 
+    /// A message every build knows, so never skipped.
+    fn routed(text: &str) -> Result<Routed> {
+        parse_routed(text).map(|routed| routed.expect("a known message type"))
+    }
+
+    #[test]
+    fn a_message_type_this_build_does_not_know_is_skipped() {
+        // What a newer relay might add. Not an error, which would drop the
+        // socket, and not a refusal, which would be pinned on every note.
+        for text in [
+            r#"{"type":"notice","note":"AAAAAAAAAAAAAAAAAAAAAA","text":"hello"}"#,
+            r#"{"type":"something_new"}"#,
+        ] {
+            assert!(parse_routed(text).unwrap().is_none(), "{text}");
+        }
+        // A field a known message gains is ignored in the same spirit.
+        assert!(matches!(
+            routed(r#"{"type":"caught","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":3,"extra":[1]}"#)
+                .unwrap(),
+            Routed::Note(_, Incoming::Caught { seq: 3 })
+        ));
+        // Still nonsense: no type at all, or a known type missing what it needs.
+        assert!(parse_routed(r#"{"note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).is_err());
+        assert!(parse_routed(r#"{"type":"caught","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).is_err());
+    }
+
     #[test]
     fn an_invites_answers_are_words_and_not_codes() {
         assert!(invite_status(201, "").is_ok());
@@ -431,7 +466,7 @@ mod tests {
         // The relay refused one envelope; the socket is fine and the rest of
         // the outbox still goes.
         let text = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"too big"}"#;
-        match parse_routed(text).unwrap() {
+        match routed(text).unwrap() {
             Routed::Note(_, Incoming::Rejected(m)) => assert_eq!(m, "too big"),
             _ => panic!("expected a rejection"),
         }
@@ -439,9 +474,9 @@ mod tests {
 
     #[test]
     fn nonsense_is_an_error_rather_than_a_guess() {
-        assert!(parse_routed("{}").is_err());
-        assert!(parse_routed("not json at all").is_err());
-        assert!(parse_routed(
+        assert!(routed("{}").is_err());
+        assert!(routed("not json at all").is_err());
+        assert!(routed(
             r#"{"type":"update","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":1,"envelope":"!!!"}"#
         )
         .is_err());
@@ -469,7 +504,7 @@ mod tests {
     fn a_purged_note_is_gone_rather_than_refused() {
         let gone = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"gone"}"#;
         assert!(matches!(
-            parse_routed(gone).unwrap(),
+            routed(gone).unwrap(),
             Routed::Note(_, Incoming::Gone)
         ));
     }
@@ -479,7 +514,7 @@ mod tests {
         let note = crate::ids::NoteId::from_bytes([0u8; 16]);
         let update =
             r#"{"type":"update","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":7,"envelope":"aGk"}"#;
-        match parse_routed(update).unwrap() {
+        match routed(update).unwrap() {
             Routed::Note(n, Incoming::Envelope { seq, envelope }) => {
                 assert_eq!(n, note);
                 assert_eq!(seq, 7);
@@ -487,13 +522,12 @@ mod tests {
             }
             _ => panic!("expected an envelope for the note"),
         }
-        match parse_routed(r#"{"type":"caught","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":3}"#).unwrap()
-        {
+        match routed(r#"{"type":"caught","note":"AAAAAAAAAAAAAAAAAAAAAA","seq":3}"#).unwrap() {
             Routed::Note(n, Incoming::Caught { seq: 3 }) => assert_eq!(n, note),
             _ => panic!("expected caught for the note"),
         }
         assert!(matches!(
-            parse_routed(r#"{"type":"reset","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
+            routed(r#"{"type":"reset","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
             Routed::Note(n, Incoming::Reset) if n == note
         ));
         // A refusal that names no note, or one that does not parse, still
@@ -502,19 +536,17 @@ mod tests {
             r#"{"type":"error","message":"malformed message"}"#,
             r#"{"type":"error","note":"??","message":"malformed note id"}"#,
         ] {
-            assert!(matches!(parse_routed(text).unwrap(), Routed::Unrouted(_)));
+            assert!(matches!(routed(text).unwrap(), Routed::Unrouted(_)));
         }
         // An update for a note that cannot exist is the relay talking nonsense.
-        assert!(parse_routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
+        assert!(routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
     }
 
     #[test]
     fn a_full_note_is_said_in_words() {
         let note = crate::ids::NoteId::from_bytes([0u8; 16]);
-        match parse_routed(
-            r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"note_full"}"#,
-        )
-        .unwrap()
+        match routed(r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"note_full"}"#)
+            .unwrap()
         {
             Routed::Note(n, Incoming::Rejected(words)) => {
                 assert_eq!(n, note);
@@ -523,11 +555,11 @@ mod tests {
             _ => panic!("expected a rejection"),
         }
         assert!(matches!(
-            parse_routed(r#"{"type":"crowded","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
+            routed(r#"{"type":"crowded","note":"AAAAAAAAAAAAAAAAAAAAAA"}"#).unwrap(),
             Routed::Note(n, Incoming::Crowded) if n == note
         ));
         assert!(matches!(
-            parse_routed(r#"{"type":"compact_refused","note":"AAAAAAAAAAAAAAAAAAAAAA","reason":"stale"}"#).unwrap(),
+            routed(r#"{"type":"compact_refused","note":"AAAAAAAAAAAAAAAAAAAAAA","reason":"stale"}"#).unwrap(),
             Routed::Note(n, Incoming::CompactRefused(r)) if n == note && r == "stale"
         ));
     }

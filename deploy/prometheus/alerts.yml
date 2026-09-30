@@ -1,0 +1,76 @@
+# Example Prometheus alerting rules for an EasyNotes relay (production
+# readiness review, F6). Load with `rule_files:` in prometheus.yml, next to a
+# scrape job named `easynotes-relay` pointed at RELAY_METRICS_ADDR:
+#
+#   scrape_configs:
+#     - job_name: easynotes-relay
+#       scrape_interval: 30s
+#       static_configs:
+#         - targets: ['127.0.0.1:19090']
+#
+# The ceilings are the relay's own, read from the same scrape, so these need no
+# editing when RELAY_STORAGE_CEILING or RELAY_MEDIA_CEILING changes. A ceiling
+# set to `off` has no series, and its alert then never fires.
+groups:
+  - name: easynotes-relay
+    rules:
+      # Nothing answers at all: the process, the container or the host.
+      - alert: EasyNotesRelayDown
+        expr: up{job="easynotes-relay"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: The relay's metrics listener has not answered for two minutes.
+
+      # Up, but its database is not answering: sockets open and every write fails.
+      - alert: EasyNotesRelayStoreDown
+        expr: easynotes_relay_store_up == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: The relay cannot reach its database. /v1/ready is failing too.
+
+      # At the ceiling the relay stops taking new notes; existing ones go on.
+      # Anyone with a device key can write (ADR 0024), so a fast climb is
+      # worth reading as abuse before it is read as growth.
+      - alert: EasyNotesRelayLogNearCeiling
+        expr: easynotes_relay_log_bytes / easynotes_relay_log_ceiling_bytes > 0.8
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: Note logs hold {{ $value | humanizePercentage }} of RELAY_STORAGE_CEILING.
+
+      # At the ceiling no attachment can be added anywhere. Space is not freed
+      # when attachments are removed yet (ADR 0027 §5), so this only climbs.
+      - alert: EasyNotesRelayMediaNearCeiling
+        expr: sum without (state) (easynotes_relay_media_bytes) / easynotes_relay_media_ceiling_bytes > 0.8
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: Attachments hold {{ $value | humanizePercentage }} of RELAY_MEDIA_CEILING.
+
+      # Any refusal at a ceiling means somebody's write did not land.
+      - alert: EasyNotesRelayRefusingWrites
+        expr: increase(easynotes_relay_quota_refusals_total{scope="relay"}[15m]) > 0
+        labels: { severity: page }
+        annotations:
+          summary: The relay refused {{ $labels.store }} writes at its ceiling.
+
+      # A burst after a restart is expected; refusals that go on are either a
+      # flood or limits set too low for the clients behind one address.
+      - alert: EasyNotesRelayRateLimiting
+        expr: rate(easynotes_relay_rate_limited_total[10m]) > 0.5
+        for: 15m
+        labels: { severity: warn }
+        annotations:
+          summary: The {{ $labels.limit }} limit is refusing requests steadily.
+
+      - alert: EasyNotesRelayServerErrors
+        expr: >
+          sum without (class) (rate(easynotes_relay_http_responses_total{class="5xx"}[10m]))
+            / clamp_min(sum without (class) (rate(easynotes_relay_http_responses_total[10m])), 1e-9)
+            > 0.05
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: More than 5% of the relay's responses are server errors.

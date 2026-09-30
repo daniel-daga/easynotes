@@ -37,6 +37,20 @@ async fn answers_the_readiness_check() {
     store.check().await.unwrap();
 }
 
+/// Usage is what `/metrics` reports against the ceilings. Only ever more here,
+/// never exactly: the other tests in this file share the database and append
+/// to it at the same time.
+#[tokio::test]
+async fn usage_counts_a_new_note_and_its_bytes() {
+    let store = store_or_skip!();
+    let before = store.usage().await.unwrap();
+    store.append(&note(), &[7; 300]).await.unwrap();
+    let after = store.usage().await.unwrap();
+    assert!(after.notes > before.notes);
+    assert!(after.log_bytes >= before.log_bytes + 300);
+    assert!(after.media_objects >= before.media_objects);
+}
+
 #[tokio::test]
 async fn assigns_dense_increasing_sequence_numbers() {
     let store = store_or_skip!();

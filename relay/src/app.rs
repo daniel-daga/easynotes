@@ -91,6 +91,8 @@ pub struct AppState {
     append_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     /// Tells the sync sessions to close when the relay is stopping.
     pub shutdown: crate::shutdown::Shutdown,
+    /// Running counts for `/metrics` ([`crate::metrics`]).
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl AppState {
@@ -125,6 +127,7 @@ impl AppState {
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
             shutdown: crate::shutdown::Shutdown::default(),
+            metrics: Arc::default(),
         })
     }
 
@@ -347,6 +350,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
     let cors = browser_access(&config.origins);
     let limits = Arc::new(config);
+    let metrics = state.metrics.clone();
+    let counted = state.metrics.clone();
     Router::new()
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
@@ -396,9 +401,21 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         .route("/v1/ready", get(ready))
         .layer(axum::middleware::from_fn(move |req, next| {
             let limits = limits.clone();
-            async move { enforce_limits(limits, req, next).await }
+            let metrics = metrics.clone();
+            async move { enforce_limits(limits, metrics, req, next).await }
         }))
         .layer(cors)
+        // Outermost, so that refusals from the limiter and CORS are counted too.
+        .layer(axum::middleware::from_fn(
+            move |req, next: axum::middleware::Next| {
+                let counted = counted.clone();
+                async move {
+                    let response = next.run(req).await;
+                    counted.responded(response.status());
+                    response
+                }
+            },
+        ))
         .with_state(state)
 }
 
@@ -424,14 +441,16 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
 /// failing every request with a 500.
 async fn enforce_limits(
     config: Arc<RelayConfig>,
+    metrics: Arc<crate::metrics::Metrics>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let limit = match req.uri().path() {
-        "/v1/challenge" | "/v1/token" | "/v1/purge" => &config.handshake,
-        "/v1/sync" => &config.sockets,
-        path if path.starts_with("/v1/invites") => &config.invites,
-        path if path.starts_with("/v1/media") => &config.media_rate,
+    use crate::metrics::Bucket;
+    let (limit, bucket) = match req.uri().path() {
+        "/v1/challenge" | "/v1/token" | "/v1/purge" => (&config.handshake, Bucket::Handshake),
+        "/v1/sync" => (&config.sockets, Bucket::Sockets),
+        path if path.starts_with("/v1/invites") => (&config.invites, Bucket::Invites),
+        path if path.starts_with("/v1/media") => (&config.media_rate, Bucket::Media),
         _ => return next.run(req).await,
     };
     let peer = req
@@ -454,6 +473,7 @@ async fn enforce_limits(
         return next.run(req).await;
     }
     tracing::debug!(%client, %peer, path = %req.uri().path(), "rate limited");
+    metrics.rate_limited(bucket);
     let retry = limit.retry_after().as_secs();
     (
         StatusCode::TOO_MANY_REQUESTS,
@@ -550,8 +570,14 @@ pub(crate) async fn append(
             state.broadcast(note, seq, raw);
             Ok(Accepted { crowded })
         }
-        Appended::NoteFull => Err(RelayError::NoteFull),
-        Appended::RelayFull => Err(RelayError::RelayFull),
+        Appended::NoteFull => {
+            state.metrics.refused(crate::metrics::Refused::LogNote);
+            Err(RelayError::NoteFull)
+        }
+        Appended::RelayFull => {
+            state.metrics.refused(crate::metrics::Refused::LogRelay);
+            Err(RelayError::RelayFull)
+        }
         Appended::Gone => Err(RelayError::TopicGone),
     }
 }

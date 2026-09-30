@@ -120,12 +120,20 @@ storage, with encryption and a retention of its own: a backup stored only on
 the NAS will not protect against NAS failure.
 
 A backup nobody has restored is a hope. Schedule a second task, monthly, that
-restores the newest dump into a throwaway database and checks it holds the
-relay's tables — it never touches the live one:
+restores the newest dump into a throwaway database, checks it holds the relay's
+tables, and checks that the media archive with the same timestamp holds every
+attachment the dump records as committed, at its recorded size — it never
+touches the live database or media directory:
 
 ```sh
 /volume1/docker/easynotes/deploy/synology/restore-check.sh
 ```
+
+Size is read from the archive's listing, so that check costs little. Now and
+then, and always after changing anything about backups, run it with
+`VERIFY_DIGESTS=1` as well: it unpacks the archive into `TMPDIR` (which then
+needs room for all of it) and checks every object's SHA-256 against the digest
+it was committed under, the only check that proves the bytes themselves.
 
 To restore for real, into an empty database, gunzip a dump and pipe it to
 `docker exec -i easynotes-db psql -U easynotes easynotes`, and unpack the
@@ -150,7 +158,42 @@ cleanly`, or that the drain period ran out; the second costs a device a resumed
 upload, not data. Do not remove the project's
 data directory when cleaning up containers.
 
-## 5. Check and rotate the token signing key
+## 5. Monitoring
+
+The relay publishes Prometheus metrics on the NAS's loopback, at
+`http://127.0.0.1:19090/metrics` (`RELAY_METRICS_PORT` in `.env` changes the
+port). They are not behind DSM's reverse proxy, and should not be: they say how
+many notes the relay holds and how close it is to refusing more. Check them
+over SSH:
+
+```sh
+curl -s http://127.0.0.1:19090/metrics | grep -v '^#'
+```
+
+The numbers that matter most on a relay anyone with the hostname can write to
+([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)):
+
+- `easynotes_relay_log_bytes` against `easynotes_relay_log_ceiling_bytes`, and
+  `easynotes_relay_media_bytes` against `easynotes_relay_media_ceiling_bytes`.
+  At either ceiling the relay stops taking new notes or new attachments.
+  Removing attachments does not free media space yet, so that one only climbs.
+- `easynotes_relay_store_up`: 0 while the database is not answering.
+- `easynotes_relay_quota_refusals_total` and
+  `easynotes_relay_rate_limited_total`: writes and requests the relay refused.
+
+Anything that scrapes Prometheus's format works. With Prometheus itself (in
+another container on the NAS, with `network_mode: host` so it can reach the
+loopback), scrape `127.0.0.1:19090` and load
+[`deploy/prometheus/alerts.yml`](../prometheus/alerts.yml), which alerts at 80%
+of each ceiling, on the database or the relay going away, on refusals, and on
+server errors. Route its alerts somewhere a person reads: an alert nobody sees
+is a log line.
+
+The container health check covers the relay without any of that, and Container
+Manager restarts a relay that fails it; it does not tell anyone, though, and
+it does not see a ceiling coming.
+
+## 6. Check and rotate the token signing key
 
 The key signs the short-lived access tokens devices get from the handshake
 ([ADR 0021](../../docs/adr/0021-stateless-relay-tokens.md)). To confirm the

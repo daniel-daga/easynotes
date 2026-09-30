@@ -702,8 +702,14 @@ pub(crate) async fn reserve(
         Reserved::Conflict => Err(RelayError::Conflict(
             "that object is already reserved with other sizes",
         )),
-        Reserved::NoteFull => Err(RelayError::NoteFull),
-        Reserved::RelayFull => Err(RelayError::RelayFull),
+        Reserved::NoteFull => {
+            state.metrics.refused(crate::metrics::Refused::MediaNote);
+            Err(RelayError::NoteFull)
+        }
+        Reserved::RelayFull => {
+            state.metrics.refused(crate::metrics::Refused::MediaRelay);
+            Err(RelayError::RelayFull)
+        }
         Reserved::Gone => Err(RelayError::TopicGone),
     }
 }
