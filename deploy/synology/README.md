@@ -91,7 +91,7 @@ clients; the app changes it to `https://` for its HTTP handshake requests.
 
 Check `https://your-relay-hostname/v1/health` returns HTTP 200, and that
 `https://your-relay-hostname/v1/ready` returns HTTP 200 with the relay's
-version. Then point a
+version and the range of app protocol versions it speaks. Then point a
 client at `https://your-relay-hostname` and verify it can sync; the websocket
 endpoint is `/v1/sync`.
 
@@ -157,6 +157,17 @@ reconnects on its own, and gives uploads in flight up to eight seconds
 cleanly`, or that the drain period ran out; the second costs a device a resumed
 upload, not data. Do not remove the project's
 data directory when cleaning up containers.
+
+On start the relay brings its database up to date by itself, applying any new
+numbered migration (`relay/migrations/`) and logging each one; there is no
+step to run by hand, and a restored older backup is brought forward the same
+way. Migrations only add, so rolling back to the previous release works on the
+newer database. Update the relay before, or together with, the apps that use
+it: an app newer than its relay may need a protocol the relay does not speak
+yet, and it then stops syncing and tells its user to ask you to update
+([ADR 0029](../../docs/adr/0029-compatibility-across-releases.md)).
+`easynotes_relay_outdated_total` (section 5) counts the requests refused that
+way.
 
 ## 5. Monitoring
 

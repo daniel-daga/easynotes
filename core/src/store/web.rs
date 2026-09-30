@@ -49,10 +49,75 @@ use std::collections::BTreeMap;
 /// database a newer build wrote is refused rather than half-understood, and in a
 /// browser that matters more than on a phone, because an old tab and a new one
 /// can be open at the same moment.
-pub const SCHEMA_VERSION: u8 = 1;
+///
+/// It is one more than the number of [`STORE_STEPS`]: version 1 is the layout
+/// below, and each step takes the rows one version on.
+pub const SCHEMA_VERSION: u8 = 1 + STORE_STEPS.len() as u8;
 
-/// The row that holds it.
+/// The row that holds it, in both object stores.
 pub const SCHEMA_KEY: &str = "schema";
+
+/// One step of a browser store's layout ([ADR
+/// 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5): every
+/// row at one version in, the same store at the next version out. It may add,
+/// rewrite and remove rows; it must not fail on rows it has no business with.
+///
+/// Never edit a step a release has shipped. A change is a new step at the end
+/// of the list, with a test that opens rows from the release before it.
+pub type Step = fn(&mut Rows) -> Result<()>;
+
+/// Every row of an object store, by key.
+pub type Rows = BTreeMap<String, Vec<u8>>;
+
+/// The note store's steps. None yet: version 1 is the only one there has been.
+pub const STORE_STEPS: &[Step] = &[];
+
+/// The keyring's steps, and its version on the same terms.
+pub const KEYRING_STEPS: &[Step] = &[];
+pub const KEYRING_SCHEMA_VERSION: u8 = 1 + KEYRING_STEPS.len() as u8;
+
+/// `rows`, at `from`, brought to the newest version `steps` know of, and the
+/// changes that record it — the schema row included — for the sink to apply
+/// as one transaction.
+///
+/// Nothing is written unless every step succeeds, so a failed step leaves the
+/// rows as the last build wrote them, and that build can still open them.
+pub fn bring_forward(mut rows: Rows, from: u8, steps: &[Step]) -> Result<(Rows, Vec<Change>)> {
+    let newest = 1 + steps.len() as u8;
+    let before = rows.clone();
+    for step in &steps[(from as usize).saturating_sub(1).min(steps.len())..] {
+        step(&mut rows)?;
+    }
+    let mut changes: Vec<Change> = before
+        .keys()
+        .filter(|key| !rows.contains_key(*key))
+        .map(|key| Change::Delete { key: key.clone() })
+        .collect();
+    changes.extend(
+        rows.iter()
+            .filter(|(key, value)| before.get(*key) != Some(value))
+            .map(|(key, value)| Change::Put {
+                key: key.clone(),
+                value: value.clone(),
+            }),
+    );
+    changes.push(Change::Put {
+        key: SCHEMA_KEY.to_string(),
+        value: vec![newest],
+    });
+    Ok((rows, changes))
+}
+
+/// The version a schema row names, refusing one from a newer build.
+fn schema_version(value: &[u8], newest: u8) -> Result<u8> {
+    match value.first() {
+        Some(&v) if v <= newest => Ok(v),
+        Some(&v) => Err(CoreError::Storage(format!(
+            "these notes were written by a newer version of the app (schema {v}, this build understands {newest}). Update the app to open them."
+        ))),
+        None => Err(malformed(SCHEMA_KEY)),
+    }
+}
 
 /// One change to a browser's key-value store.
 ///
@@ -214,23 +279,12 @@ impl WebStore {
     ) -> Result<Self> {
         // Collected first so the schema row is read before anything is believed,
         // whatever order the rows arrive in.
-        let rows: Vec<(String, Vec<u8>)> = rows.into_iter().collect();
-        let mut fresh = true;
-        for (key, value) in &rows {
-            if key == SCHEMA_KEY {
-                fresh = false;
-                match value.first() {
-                    Some(&v) if v <= SCHEMA_VERSION => {}
-                    Some(&v) => {
-                        return Err(CoreError::Storage(format!(
-                            "these notes were written by a newer version of the app (schema {v}, this build understands {SCHEMA_VERSION})"
-                        )))
-                    }
-                    None => return Err(malformed(SCHEMA_KEY)),
-                }
-            }
-        }
-        if fresh && !rows.is_empty() {
+        let mut rows: BTreeMap<String, Vec<u8>> = rows.into_iter().collect();
+        let version = match rows.remove(SCHEMA_KEY) {
+            Some(value) => Some(schema_version(&value, SCHEMA_VERSION)?),
+            None => None,
+        };
+        if version.is_none() && !rows.is_empty() {
             // Rows but no schema row: not a database this file wrote. Refusing
             // is the same call as the version check above — the alternative is
             // writing into it and making the mess permanent.
@@ -238,6 +292,17 @@ impl WebStore {
                 "the local database has no schema row, so it was not written by this app".into(),
             ));
         }
+        // A new store, or an older one brought forward. Either way, what is
+        // written is one batch, so a tab closed halfway leaves the old rows.
+        let rows = match version {
+            Some(v) if v == SCHEMA_VERSION => rows,
+            v => {
+                let (rows, changes) =
+                    bring_forward(rows, v.unwrap_or(SCHEMA_VERSION), STORE_STEPS)?;
+                sink.changed(&changes);
+                rows
+            }
+        };
 
         // Keyed by the row name rather than by sequence, because the sequence
         // numbers in the keys are the *stored* order and need not be dense: a
@@ -249,9 +314,6 @@ impl WebStore {
         let mut meta = BTreeMap::new();
 
         for (key, value) in rows {
-            if key == SCHEMA_KEY {
-                continue;
-            }
             let (note, rest) = split_note_row(&key).ok_or_else(|| malformed(&key))?;
             if rest == "s" {
                 snapshots.insert(note, value);
@@ -274,12 +336,6 @@ impl WebStore {
             master,
             sink,
         };
-        if fresh {
-            store.sink.changed(&[Change::Put {
-                key: SCHEMA_KEY.to_string(),
-                value: vec![SCHEMA_VERSION],
-            }]);
-        }
         Ok(store)
     }
 }
@@ -405,7 +461,18 @@ pub struct WebKeyring {
 }
 
 impl WebKeyring {
+    /// A keyring for a browser that has never held one. Like [`WebStore::new`]
+    /// it writes its schema row, so a later build can tell what it has.
     pub fn new(master: MasterKey, sink: Box<dyn ChangeSink>) -> Self {
+        let keyring = Self::empty(master, sink);
+        keyring.sink.changed(&[Change::Put {
+            key: SCHEMA_KEY.to_string(),
+            value: vec![KEYRING_SCHEMA_VERSION],
+        }]);
+        keyring
+    }
+
+    fn empty(master: MasterKey, sink: Box<dyn ChangeSink>) -> Self {
         Self {
             seed: None,
             root: None,
@@ -415,12 +482,29 @@ impl WebKeyring {
         }
     }
 
+    /// The keyring a browser's object store holds.
+    ///
+    /// Keyrings written before the schema row existed have none, and are
+    /// version 1: there was no other. They gain the row here, as does a new
+    /// one.
     pub fn from_rows(
         master: MasterKey,
         sink: Box<dyn ChangeSink>,
         rows: impl IntoIterator<Item = (String, Vec<u8>)>,
     ) -> Result<Self> {
-        let mut keyring = Self::new(master, sink);
+        let mut rows: BTreeMap<String, Vec<u8>> = rows.into_iter().collect();
+        let version = match rows.remove(SCHEMA_KEY) {
+            Some(value) => Some(schema_version(&value, KEYRING_SCHEMA_VERSION)?),
+            None => None,
+        };
+        let rows = if version == Some(KEYRING_SCHEMA_VERSION) {
+            rows
+        } else {
+            let (rows, changes) = bring_forward(rows, version.unwrap_or(1), KEYRING_STEPS)?;
+            sink.changed(&changes);
+            rows
+        };
+        let mut keyring = Self::empty(master, sink);
         for (key, value) in rows {
             if key == DEVICE_SEED_KEY {
                 keyring.seed = Some(value);
@@ -536,5 +620,144 @@ impl Keyring for WebKeyring {
         self.root = None;
         self.sink.changed(&changes);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A sink that keeps every batch, to see what was written and in how many
+    /// transactions.
+    #[derive(Clone, Default)]
+    struct Batches(Arc<Mutex<Vec<Vec<Change>>>>);
+
+    impl ChangeSink for Batches {
+        fn changed(&self, changes: &[Change]) {
+            self.0.lock().unwrap().push(changes.to_vec());
+        }
+    }
+
+    fn rows(pairs: &[(&str, &[u8])]) -> BTreeMap<String, Vec<u8>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_vec()))
+            .collect()
+    }
+
+    /// Renames `old` to `new` and drops `gone`: the three things a step does.
+    fn rename(rows: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+        if let Some(value) = rows.remove("old") {
+            rows.insert("new".into(), value);
+        }
+        rows.remove("gone");
+        rows.insert("added".into(), b"x".to_vec());
+        Ok(())
+    }
+
+    fn fails(_: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+        Err(CoreError::Storage("this step does not apply".into()))
+    }
+
+    #[test]
+    fn a_step_is_written_as_one_batch_with_the_new_version() {
+        let before = rows(&[("old", b"1"), ("gone", b"2"), ("kept", b"3")]);
+        let (after, changes) = bring_forward(before, 1, &[rename]).unwrap();
+        assert_eq!(
+            after,
+            rows(&[("new", b"1"), ("kept", b"3"), ("added", b"x")])
+        );
+        assert!(changes.contains(&Change::Delete { key: "old".into() }));
+        assert!(changes.contains(&Change::Delete { key: "gone".into() }));
+        assert!(changes.contains(&Change::Put {
+            key: "new".into(),
+            value: b"1".to_vec()
+        }));
+        assert!(!changes
+            .iter()
+            .any(|c| matches!(c, Change::Put { key, .. } if key == "kept")));
+        assert_eq!(
+            changes.last(),
+            Some(&Change::Put {
+                key: SCHEMA_KEY.into(),
+                value: vec![2]
+            })
+        );
+    }
+
+    #[test]
+    fn only_the_steps_a_store_has_not_had_run() {
+        let before = rows(&[("old", b"1")]);
+        // Already at version 2 of three: only the last step runs, and the
+        // first, which would fail, does not.
+        let (_, changes) = bring_forward(before, 2, &[fails, rename]).unwrap();
+        assert!(changes.contains(&Change::Delete { key: "old".into() }));
+    }
+
+    /// A step that fails yields no changes at all — not the ones before it —
+    /// so the caller has nothing to hand the sink, and the rows stay as the
+    /// last build wrote them.
+    #[test]
+    fn a_failed_step_yields_no_changes() {
+        let result = bring_forward(rows(&[("old", b"1")]), 1, &[rename, fails]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_store_from_a_newer_build_is_refused() {
+        let newer = vec![(SCHEMA_KEY.to_string(), vec![SCHEMA_VERSION + 1])];
+        let err = WebStore::from_rows(MasterKey::random(), Box::new(Discard), newer)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Update the app"), "{err}");
+        let newer = vec![(SCHEMA_KEY.to_string(), vec![KEYRING_SCHEMA_VERSION + 1])];
+        assert!(WebKeyring::from_rows(MasterKey::random(), Box::new(Discard), newer).is_err());
+    }
+
+    /// A keyring written before keyrings had a schema row is version 1, and
+    /// gains the row the first time a build that knows about it opens it.
+    #[test]
+    fn a_keyring_without_a_schema_row_is_version_one() {
+        let master = MasterKey::random();
+        let written = Batches::default();
+        let mut old = WebKeyring::empty(master.clone(), Box::new(written.clone()));
+        old.put_device_seed(&DeviceSeed([7; 64])).unwrap();
+        let rows: Vec<(String, Vec<u8>)> = written
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter_map(|c| match c {
+                Change::Put { key, value } => Some((key.clone(), value.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(rows.iter().all(|(key, _)| key != SCHEMA_KEY));
+
+        let opened = Batches::default();
+        let keyring = WebKeyring::from_rows(master, Box::new(opened.clone()), rows).unwrap();
+        assert_eq!(keyring.device_seed().unwrap().unwrap().0, [7; 64]);
+        assert_eq!(
+            *opened.0.lock().unwrap(),
+            vec![vec![Change::Put {
+                key: SCHEMA_KEY.into(),
+                value: vec![KEYRING_SCHEMA_VERSION]
+            }]]
+        );
+    }
+
+    /// Opening a store that is already current writes nothing at all.
+    #[test]
+    fn a_current_store_is_left_alone() {
+        let current = vec![(SCHEMA_KEY.to_string(), vec![SCHEMA_VERSION])];
+        let sink = Batches::default();
+        WebStore::from_rows(MasterKey::random(), Box::new(sink.clone()), current).unwrap();
+        assert!(sink.0.lock().unwrap().is_empty());
+        let current = vec![(SCHEMA_KEY.to_string(), vec![KEYRING_SCHEMA_VERSION])];
+        WebKeyring::from_rows(MasterKey::random(), Box::new(sink.clone()), current).unwrap();
+        assert!(sink.0.lock().unwrap().is_empty());
     }
 }

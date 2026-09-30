@@ -20,6 +20,16 @@ class RelayProfiles {
     : _storage = storage ?? const FlutterSecureStorage();
 
   static const _key = 'easynotes.relay-profiles';
+
+  /// The layout [_write] stores, as its `version` field says (ADR 0029 §5).
+  /// One more than the number of [_steps].
+  static const version = 1;
+
+  /// Each step takes the stored settings one version on: `_steps[0]` from 1
+  /// to 2, and so on. None yet. Never edit one a release has shipped; a
+  /// change is a new step at the end, with a test that loads the old layout.
+  static final List<Map<String, dynamic> Function(Map<String, dynamic>)>
+  _steps = [];
   final FlutterSecureStorage _storage;
   List<RelayProfile> _profiles = const [];
   String? _selectedId;
@@ -30,8 +40,24 @@ class RelayProfiles {
 
   Future<void> load() async {
     final value = await _storage.read(key: _key);
+    var upgraded = false;
     if (value != null) {
-      final json = jsonDecode(value) as Map<String, dynamic>;
+      var json = jsonDecode(value) as Map<String, dynamic>;
+      final stored = json['version'] as int? ?? 1;
+      if (stored > version) {
+        // Downgrading is not supported, and writing this back in the older
+        // layout would drop whatever the newer one added: every profile
+        // listed has a store and a key, so losing one hides its notes.
+        throw StateError(
+          'Relay settings were saved by a newer version of EasyNotes '
+          '(settings version $stored, this build understands $version). '
+          'Update the app to open them.',
+        );
+      }
+      for (final step in _steps.skip(stored - 1)) {
+        json = step(json);
+      }
+      upgraded = stored < version;
       _profiles = [
         for (final item in json['profiles'] as List<dynamic>)
           RelayProfile(id: item['id'] as String, url: item['url'] as String?),
@@ -42,6 +68,8 @@ class RelayProfiles {
       final local = RelayProfile(id: _newId(), url: null);
       _profiles = [local];
       _selectedId = local.id;
+      await _save();
+    } else if (upgraded && _profiles.any((p) => p.id == _selectedId)) {
       await _save();
     } else if (!_profiles.any((p) => p.id == _selectedId)) {
       // A selection that names no profile is repaired by choosing one that
@@ -78,7 +106,7 @@ class RelayProfiles {
 
   Future<void> _write(List<RelayProfile> profiles, String selected) async {
     final value = jsonEncode({
-      'version': 1,
+      'version': version,
       'selected': selected,
       'profiles': [
         for (final profile in profiles) {'id': profile.id, 'url': profile.url},

@@ -143,3 +143,29 @@ async fn migrating_twice_is_harmless() {
     store.migrate().await.unwrap();
     store.migrate().await.unwrap();
 }
+
+/// Connecting brings the schema to this build's, and records it (ADR 0029 §5).
+#[tokio::test]
+async fn records_every_migration_it_applies() {
+    let store = store_or_skip!();
+    let newest = easynotes_relay::MIGRATIONS.last().unwrap().version;
+    assert_eq!(store.schema_version().await.unwrap(), newest);
+}
+
+/// Instances start together on a deploy, and each runs the migrations. They
+/// queue on the lock; none fails and none applies anything twice.
+#[tokio::test]
+async fn instances_starting_together_migrate_once() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let starts = (0..4).map(|_| PostgresStore::connect(&url));
+    for start in futures_util::future::join_all(starts).await {
+        let store = start.expect("an instance failed to start");
+        assert_eq!(
+            store.schema_version().await.unwrap(),
+            easynotes_relay::MIGRATIONS.last().unwrap().version
+        );
+    }
+}

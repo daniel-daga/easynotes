@@ -18,7 +18,7 @@ pub use app::{router, router_with, AppState, Origins, RelayConfig};
 pub use limit::TrustedProxies;
 pub use media::{Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs};
 pub use quota::Limits;
-pub use store::{Appended, MemoryStore, PostgresStore, RelayStore, Usage};
+pub use store::{Appended, MemoryStore, Migration, PostgresStore, RelayStore, Usage, MIGRATIONS};
 
 use std::net::SocketAddr;
 use std::sync::Arc;

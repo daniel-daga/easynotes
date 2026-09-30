@@ -133,5 +133,37 @@ void main() {
       expect(profiles.selected.id, 'local');
       expect((await stored())['selected'], 'local');
     });
+
+    test(
+      'settings from a newer build are refused and left as they are',
+      () async {
+        // ADR 0029 §5: downgrading is not supported, and rewriting the newer
+        // layout in this one would lose whatever it added.
+        final newer = jsonEncode({
+          'version': RelayProfiles.version + 1,
+          'selected': 'relay',
+          'profiles': [
+            {'id': 'relay', 'url': 'https://relay.example', 'added': 'later'},
+          ],
+        });
+        FlutterSecureStorage.setMockInitialValues({_key: newer});
+        await expectLater(RelayProfiles().load(), throwsStateError);
+        expect(await const FlutterSecureStorage().read(key: _key), newer);
+      },
+    );
+
+    test('settings saved before they had a version are version 1', () async {
+      FlutterSecureStorage.setMockInitialValues({
+        _key: jsonEncode({
+          'selected': 'local',
+          'profiles': [
+            {'id': 'local', 'url': null},
+          ],
+        }),
+      });
+      final profiles = RelayProfiles();
+      await profiles.load();
+      expect(profiles.selected.id, 'local');
+    });
   });
 }
