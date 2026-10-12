@@ -13,7 +13,9 @@ use easynotes_core::ids::NoteId;
 use easynotes_core::purge::Request;
 use easynotes_core::sync::Incoming;
 use easynotes_relay::quota::{Proposal, Refusal};
-use easynotes_relay::{Appended, Limits, MemoryStore, PostgresStore, Relay, RelayStore};
+use easynotes_relay::{
+    Appended, Limits, MediaLimits, MemoryStore, PostgresStore, Relay, RelayStore,
+};
 use std::sync::Arc;
 use support::NoteSocket;
 
@@ -116,15 +118,19 @@ async fn a_never_shared_note_is_purged_and_stays_gone() {
             .unwrap();
         assert_eq!(appended, Appended::Gone, "{name}");
         let update = note.update();
-        let base = easynotes_core::compaction::Request::sign(note.id, &note.key, 1, update);
+        let base = easynotes_core::compaction::Request::sign(note.id, &note.key, 1, update, None);
         let proposal = Proposal {
             covers: 1,
             base: &base.base,
+            media: None,
             key: base.key.0,
             signature: base.signature,
         };
         assert_eq!(
-            store.compact(&topic, &proposal).await.unwrap(),
+            store
+                .compact(&topic, &proposal, &MediaLimits::default(), 0)
+                .await
+                .unwrap(),
             Err(Refusal::Gone),
             "{name}"
         );
@@ -159,14 +165,19 @@ async fn a_registered_compaction_key_is_the_only_one_that_purges() {
         let topic = note.topic();
         store.append(&topic, &note.update()).await.unwrap();
         let update = note.update();
-        let base = easynotes_core::compaction::Request::sign(note.id, &note.key, 1, update);
+        let base = easynotes_core::compaction::Request::sign(note.id, &note.key, 1, update, None);
         let proposal = Proposal {
             covers: 1,
             base: &base.base,
+            media: None,
             key: base.key.0,
             signature: base.signature,
         };
-        store.compact(&topic, &proposal).await.unwrap().unwrap();
+        store
+            .compact(&topic, &proposal, &MediaLimits::default(), 0)
+            .await
+            .unwrap()
+            .unwrap();
 
         let stranger = Request::sign(note.id, &DeviceIdentity::generate());
         assert_eq!(

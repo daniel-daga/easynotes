@@ -790,6 +790,39 @@ fn a_staged_import_is_reconciled_without_resurrecting_it<D: NoteDoc>() {
     );
 }
 
+/// What a compaction tells the relay to keep (ADR 0027 §5): every object of
+/// every attachment the note still has, thumbnails included, and nothing of
+/// one that was removed, wherever the removal was made.
+fn a_compaction_lists_the_objects_the_note_still_names<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>(NoteKind::Checklist);
+    let (kept, with_thumbnail) = media_with_thumbnail("kept.png");
+    let (gone, plain) = media("gone.png", 40);
+    let wire = vec![
+        a.add_attachment(id, kept, with_thumbnail.clone()).unwrap(),
+        a.add_attachment(id, gone, plain).unwrap(),
+    ];
+    deliver(&mut b, id, &wire);
+    // Removed on the other device: the tombstone still names its object.
+    deliver(&mut a, id, &[b.remove_attachment(id, gone).unwrap()]);
+
+    let mut want = vec![
+        with_thumbnail.original.object,
+        with_thumbnail.thumbnail.as_ref().unwrap().media.object,
+    ];
+    want.sort();
+    let request = a.compaction(id, 5).unwrap().expect("a base");
+    assert_eq!(request.media, Some(want));
+    assert!(request.verifies(id));
+
+    // A note with nothing attached lists nothing, which is not the same as
+    // listing no list: every object it ever had may go.
+    let (mut c, _, empty) = pair::<D>(NoteKind::Text);
+    assert_eq!(
+        c.compaction(empty, 1).unwrap().unwrap().media,
+        Some(Vec::new())
+    );
+}
+
 macro_rules! both_backends {
     ($($name:ident),* $(,)?) => {
         mod automerge_backend {
@@ -808,6 +841,7 @@ both_backends!(
     concurrent_adds_both_survive,
     limits_are_held,
     a_staged_import_is_reconciled_without_resurrecting_it,
+    a_compaction_lists_the_objects_the_note_still_names,
 );
 
 #[test]

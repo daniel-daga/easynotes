@@ -135,6 +135,11 @@ pub enum SyncClientMessage {
         covers: i64,
         /// The base: an ordinary sealed update holding the whole document.
         base: String,
+        /// The attachment objects the base names, as object IDs: the topic's
+        /// other committed objects are doomed (ADR 0027 §5). Absent, nothing
+        /// is; a client from before clean-up sends none.
+        #[serde(default)]
+        media: Option<Vec<String>>,
         /// The note's compaction key, 32 bytes.
         key: String,
         /// Its signature over `easynotes_core::compaction::transcript`, 64 bytes.

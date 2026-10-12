@@ -195,6 +195,12 @@ impl Connection {
         self.handle.flush();
     }
 
+    /// Compact the note soon, so the relay can free what was just removed
+    /// from it (ADR 0027 §5).
+    pub fn reclaim(&self) {
+        self.handle.reclaim();
+    }
+
     /// Stop syncing the note. The socket stays up for the device's other notes.
     pub fn shutdown(&self) {
         self.handle.shutdown();

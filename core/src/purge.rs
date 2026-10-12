@@ -67,7 +67,7 @@ mod tests {
     fn a_compaction_signature_is_not_a_purge() {
         let note = NoteId::from_bytes([7u8; 16]);
         let key = crate::crypto::NoteKey([1u8; 32]);
-        let compaction = crate::compaction::Request::sign(note, &key, 0, Vec::new());
+        let compaction = crate::compaction::Request::sign(note, &key, 0, Vec::new(), None);
         let forged = Request {
             key: compaction.key,
             signature: compaction.signature,

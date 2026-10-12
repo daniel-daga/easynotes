@@ -410,13 +410,24 @@ async fn handle(
             note,
             covers,
             base,
+            media,
             key,
             signature,
         } => {
             if !subs.0.contains_key(&note) {
                 return refused(out, Some(note), "not subscribed to that note");
             }
-            if let Err(reason) = app::compact(state, &note, covers, &base, &key, &signature).await {
+            let compacted = app::compact(
+                state,
+                &note,
+                covers,
+                &base,
+                media.as_deref(),
+                &key,
+                &signature,
+            )
+            .await;
+            if let Err(reason) = compacted {
                 tracing::debug!(note = %note, %reason, "compaction refused");
                 let _ = out.try_send(SyncServerMessage::CompactRefused { note, reason });
             }

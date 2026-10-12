@@ -39,10 +39,13 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   working. Leave it empty for the default of 16 GiB, or set it to `off`.
 - Optionally set `RELAY_MEDIA_PER_NOTE` and `RELAY_MEDIA_CEILING`, the bytes
   one note's attachments may hold (default 1 GiB) and all of them together
-  (default 64 GiB, or `off`). Removing an attachment does not yet free space
-  on the relay ([ADR 0027](../../docs/adr/0027-attachments.md) §5), so a note
-  whose attachments change often reaches its budget sooner than its live
-  files suggest.
+  (default 64 GiB, or `off`). A removed attachment stops counting against
+  its note at the next compaction, which the device that removed it asks
+  for, and its bytes are deleted about a week after that
+  ([ADR 0027](../../docs/adr/0027-attachments.md) §5). Until they are, they
+  still count against `RELAY_MEDIA_CEILING`, because they are still on the
+  disk. `easynotes_relay_media_bytes{state="doomed"}` says how much is
+  waiting to go.
 - Leave `RELAY_NETWORK` empty unless the NAS already uses `172.30.87.0/24`.
   It is the subnet of the Compose network, and the relay trusts the
   `X-Forwarded-For` header only from that range, which is where DSM's reverse

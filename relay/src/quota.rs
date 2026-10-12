@@ -22,7 +22,7 @@
 use easynotes_core::access::{Digest, Package};
 use easynotes_core::compaction::Request;
 use easynotes_core::crypto::{AuthorKey, Envelope, EnvelopeKind, SIG_LEN};
-use easynotes_core::ids::NoteId;
+use easynotes_core::ids::{MediaObjectId, NoteId};
 use easynotes_core::purge;
 
 /// What a deployment allows. The defaults are ADR 0024's starting values.
@@ -156,6 +156,9 @@ pub fn classify(topic: &Topic, note: &str, raw: &[u8]) -> Classified {
 pub struct Proposal<'a> {
     pub covers: i64,
     pub base: &'a [u8],
+    /// The objects the base names: what the topic keeps of its media, the
+    /// rest being doomed (ADR 0027 §5). `None` keeps everything.
+    pub media: Option<&'a [MediaObjectId]>,
     pub key: [u8; 32],
     pub signature: [u8; SIG_LEN],
 }
@@ -203,6 +206,7 @@ pub fn authorise(topic: &Topic, note: &str, proposal: &Proposal<'_>) -> Result<b
     let request = Request {
         covers: proposal.covers,
         base: proposal.base.to_vec(),
+        media: proposal.media.map(<[MediaObjectId]>::to_vec),
         key: AuthorKey(proposal.key),
         signature: proposal.signature,
     };

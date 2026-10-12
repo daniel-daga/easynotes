@@ -299,6 +299,10 @@ pub trait NoteDoc: Sized {
 
     fn view(&self) -> NoteView;
 
+    /// Every attachment object this document still names, or `None` when one
+    /// of its descriptors does not say: see [`live_objects`].
+    fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>>;
+
     /// The full state, for the encrypted snapshot that lets a client skip the log.
     fn snapshot(&self) -> Vec<u8>;
 
@@ -366,6 +370,47 @@ pub(crate) fn attachment_view(
     })
 }
 
+/// The attachment objects a document still names, from each attachment map's
+/// `media` field and `removed` flag: what a compaction lists for the relay
+/// to keep ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+///
+/// Read for the object IDs alone, not through [`Media::decode`]: a descriptor
+/// this build cannot read may be a newer build's live one, and its bytes are
+/// not this device's to let go. A map that is not removed and does not yield
+/// even its object IDs makes the whole answer `None`, which lists nothing and
+/// so lets nothing go. Never more than
+/// [`crate::compaction::MAX_LIVE_OBJECTS`], for the same reason.
+#[cfg(any(feature = "automerge-backend", feature = "yrs-backend"))]
+pub(crate) fn live_objects(
+    maps: impl IntoIterator<Item = (String, bool)>,
+) -> Option<Vec<crate::ids::MediaObjectId>> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        object: crate::ids::MediaObjectId,
+    }
+    #[derive(serde::Deserialize)]
+    struct Thumbnail {
+        media: Named,
+    }
+    #[derive(serde::Deserialize)]
+    struct Objects {
+        original: Named,
+        thumbnail: Option<Thumbnail>,
+    }
+    let mut live = Vec::new();
+    for (media, removed) in maps {
+        if removed {
+            continue;
+        }
+        let objects: Objects = serde_json::from_str(&media).ok()?;
+        live.push(objects.original.object);
+        live.extend(objects.thumbnail.map(|t| t.media.object));
+    }
+    live.sort();
+    live.dedup();
+    (live.len() <= crate::compaction::MAX_LIVE_OBJECTS).then_some(live)
+}
+
 #[cfg(any(feature = "automerge-backend", feature = "yrs-backend"))]
 pub(crate) fn sort_attachments(attachments: &mut [AttachmentView]) {
     attachments.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
@@ -387,3 +432,71 @@ pub(crate) fn sort_items(items: &mut [ItemView]) {
 pub type DefaultNoteDoc = YrsNote;
 #[cfg(all(not(feature = "yrs-backend"), feature = "automerge-backend"))]
 pub type DefaultNoteDoc = AutomergeNote;
+
+#[cfg(all(test, any(feature = "automerge-backend", feature = "yrs-backend")))]
+mod live_objects_tests {
+    use super::live_objects;
+    use crate::ids::MediaObjectId;
+
+    fn id(byte: u8) -> MediaObjectId {
+        MediaObjectId::from_bytes([byte; 16])
+    }
+
+    fn descriptor(original: u8, thumbnail: Option<u8>) -> String {
+        let named = |b: u8| serde_json::json!({ "object": id(b) });
+        serde_json::json!({
+            "v": 1,
+            "original": named(original),
+            "thumbnail": thumbnail.map(|t| serde_json::json!({ "media": named(t) })),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn removed_maps_are_left_out_and_the_rest_are_listed_once() {
+        let maps = [
+            (descriptor(3, Some(4)), false),
+            (descriptor(1, None), true),
+            (descriptor(3, None), false),
+        ];
+        assert_eq!(live_objects(maps), Some(vec![id(3), id(4)]));
+    }
+
+    #[test]
+    fn a_descriptor_from_a_newer_build_still_keeps_its_objects() {
+        // A version and fields this build has never heard of: not something
+        // it can draw, but its bytes are still somebody's.
+        let newer = serde_json::json!({
+            "v": 9,
+            "format": "holo",
+            "original": { "object": id(5), "layers": 3 },
+            "thumbnail": null,
+        })
+        .to_string();
+        assert_eq!(live_objects([(newer, false)]), Some(vec![id(5)]));
+    }
+
+    #[test]
+    fn a_live_map_without_object_ids_lists_nothing_at_all() {
+        let maps = [
+            (descriptor(3, None), false),
+            (r#"{"v":9,"elsewhere":true}"#.to_string(), false),
+        ];
+        assert_eq!(live_objects(maps), None);
+        // The same map removed says nothing about anything.
+        let maps = [(String::new(), true), (descriptor(3, None), false)];
+        assert_eq!(live_objects(maps), Some(vec![id(3)]));
+    }
+
+    #[test]
+    fn a_list_past_the_cap_is_no_list() {
+        let maps = (0..=crate::compaction::MAX_LIVE_OBJECTS).map(|n| {
+            let object = MediaObjectId::from_bytes((n as u128).to_be_bytes());
+            (
+                serde_json::json!({ "original": { "object": object } }).to_string(),
+                false,
+            )
+        });
+        assert_eq!(live_objects(maps), None);
+    }
+}

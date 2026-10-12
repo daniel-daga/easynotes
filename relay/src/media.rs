@@ -65,15 +65,24 @@ pub const MAX_PART_BYTES: usize = MAX_CHUNK_SIZE as usize + CHUNK_OVERHEAD;
 /// long an upload may sit unfinished.
 #[derive(Clone, Copy, Debug)]
 pub struct MediaLimits {
-    /// Reserved and committed bytes in one topic. Well above the 200 MB a note
-    /// may have live at once, because until clean-up exists (ADR 0027 §5) a
-    /// removed attachment keeps its bytes here.
+    /// Reserved and committed bytes in one topic, doomed ones left out. Above
+    /// the 200 MB a note may have live at once, with room for the uploads in
+    /// flight and the removals not yet compacted away (ADR 0027 §5).
     pub note_bytes: u64,
-    /// Reserved and committed bytes in every topic together, or `None`.
+    /// Reserved, committed and doomed bytes in every topic together, or
+    /// `None`. Doomed bytes count here until they are deleted, because they
+    /// are on the disk until then.
     pub ceiling: Option<u64>,
     /// An uncommitted reservation with no chunk for this long is dropped, and
     /// stops counting.
     pub staging_ttl_secs: i64,
+    /// A committed object a compaction does not list is left alone if it was
+    /// committed or asked about this recently: it may be an upload whose
+    /// descriptor is on its way (ADR 0027 §5).
+    pub fresh_secs: i64,
+    /// How long a doomed object waits to be deleted, for anything that still
+    /// wants it to ask for it.
+    pub doomed_ttl_secs: i64,
 }
 
 impl Default for MediaLimits {
@@ -82,6 +91,8 @@ impl Default for MediaLimits {
             note_bytes: 1 << 30,
             ceiling: None,
             staging_ttl_secs: 24 * 60 * 60,
+            fresh_secs: 24 * 60 * 60,
+            doomed_ttl_secs: 7 * 24 * 60 * 60,
         }
     }
 }
@@ -160,6 +171,9 @@ pub struct MediaRow {
     pub geometry: Geometry,
     /// The digest it was committed under, once it is.
     pub committed: Option<[u8; 32]>,
+    /// No compaction lists it any more, and it is waiting to be deleted
+    /// (ADR 0027 §5). Asking for it cancels that.
+    pub doomed: bool,
 }
 
 /// What became of a reservation.
@@ -664,11 +678,21 @@ async fn row(state: &AppState, note: &str, object: &str) -> Result<MediaRow> {
         .ok_or(RelayError::NotFound)
 }
 
-/// Drop uploads that were abandoned. Run on each reservation, which is when
-/// the space would be wanted; no timer to forget to start.
-async fn expire(state: &Arc<AppState>, blobs: &Arc<dyn Blobs>) -> Result<()> {
-    let before = now() - state.media.limits.staging_ttl_secs;
-    for (note, object) in state.store.expire_media(before).await? {
+/// Drop uploads that were abandoned, and objects doomed long enough ago that
+/// nothing has asked for them since (ADR 0027 §5). Run on each reservation,
+/// which is when the space would be wanted, and after each compaction, which
+/// is what dooms them; no timer to forget to start.
+pub(crate) async fn expire(state: &Arc<AppState>, blobs: &Arc<dyn Blobs>) -> Result<()> {
+    let limits = &state.media.limits;
+    let abandoned = state
+        .store
+        .expire_media(now() - limits.staging_ttl_secs)
+        .await?;
+    let doomed = state
+        .store
+        .sweep_media(now() - limits.doomed_ttl_secs)
+        .await?;
+    for (note, object) in abandoned.into_iter().chain(doomed) {
         // Under the object's lock, after its row is gone: a chunk being
         // written as it expired lands first and is removed with the rest.
         let _object = state.append_lock(&lock_key(&note, &object)).await;
@@ -768,6 +792,10 @@ pub(crate) async fn status(
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let row = row(&state, &note, &object).await?;
+    // Asked about, so wanted: an upload resuming, or a device about to
+    // publish what it uploaded. A committed object is fresh again, and one a
+    // compaction doomed is not doomed any more (ADR 0027 §5).
+    state.store.touch_media(&note, &object, now()).await?;
     Ok(Json(match row.committed {
         Some(_) => MediaStatus {
             committed: true,
@@ -798,6 +826,8 @@ pub(crate) async fn commit(
     let row = row(&state, &note, &object).await?;
     if let Some(committed) = row.committed {
         return if committed == digest {
+            // A device asking again is a device that still wants it.
+            state.store.touch_media(&note, &object, now()).await?;
             Ok(StatusCode::OK)
         } else {
             Err(RelayError::Conflict("committed under another digest"))
@@ -809,6 +839,9 @@ pub(crate) async fn commit(
     {
         Assembled::Done => {
             state.store.commit_media(&note, &object, digest).await?;
+            // Committed now: fresh for a day from now, not from its last
+            // chunk, so its descriptor has the whole day to arrive.
+            state.store.touch_media(&note, &object, now()).await?;
             Ok(StatusCode::OK)
         }
         Assembled::Missing(_) => Err(RelayError::Conflict("chunks are missing")),
@@ -845,6 +878,13 @@ pub(crate) async fn fetch(
     let row = row(&state, &note, &object).await?;
     if row.committed.is_none() {
         return Err(RelayError::NotFound);
+    }
+    if row.doomed {
+        // Somebody still draws it: a reader that has not seen it removed, or
+        // a live list that was wrong. Kept, and the next compaction decides
+        // again (ADR 0027 §5). Only a doomed one is written to, so an
+        // ordinary fetch costs the store nothing.
+        state.store.touch_media(&note, &object, now()).await?;
     }
     let len = row.geometry.sealed_len;
     let Some(wanted) = range(&headers, len) else {

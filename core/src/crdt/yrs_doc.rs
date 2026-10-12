@@ -14,8 +14,8 @@
 
 use super::attachment_fields as field;
 use super::{
-    attachment_key, attachment_view, parse_attachment_key, sort_attachments, sort_items, splice,
-    Edit, ItemView, NoteDoc, NoteKind, NoteView,
+    attachment_key, attachment_view, live_objects, parse_attachment_key, sort_attachments,
+    sort_items, splice, Edit, ItemView, NoteDoc, NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -316,6 +316,23 @@ impl NoteDoc for YrsNote {
             attachments,
             retired_attachments,
         }
+    }
+
+    fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>> {
+        let txn = self.doc.transact();
+        let maps: Vec<(String, bool)> = self
+            .root
+            .iter(&txn)
+            .filter(|(key, _)| parse_attachment_key(key).is_some())
+            .filter_map(|(_, value)| match value {
+                Out::YMap(obj) => Some((
+                    any_str(obj.get(&txn, field::MEDIA)),
+                    any_bool(obj.get(&txn, field::REMOVED)),
+                )),
+                _ => None,
+            })
+            .collect();
+        live_objects(maps)
     }
 
     fn snapshot(&self) -> Vec<u8> {

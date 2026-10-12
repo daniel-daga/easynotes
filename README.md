@@ -161,8 +161,9 @@ IndexedDB database of its own.
 The editor has **Add attachment**, a picture gallery above the title with a
 full-screen viewer, and rows for sound files. Upload and download states show
 on each item, and a card shows the note's first picture. Not built yet: an
-audio player, the camera, paste and drop, and anything that frees relay space
-when an attachment is removed.
+audio player, the camera, and paste and drop. A removed attachment's bytes
+leave the relay about a week after the compaction its removal asks for
+([ADR 0027](docs/adr/0027-attachments.md) §5).
 
 `just web-shared-text` verifies the browser's incoming share route: text and
 checklists keep their content and checked state after reload, and a consumed

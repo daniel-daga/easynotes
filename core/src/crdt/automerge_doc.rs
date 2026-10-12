@@ -29,8 +29,8 @@
 
 use super::attachment_fields as field;
 use super::{
-    attachment_key, attachment_view, parse_attachment_key, sort_attachments, sort_items, Edit,
-    ItemView, NoteDoc, NoteKind, NoteView,
+    attachment_key, attachment_view, live_objects, parse_attachment_key, sort_attachments,
+    sort_items, Edit, ItemView, NoteDoc, NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -292,6 +292,22 @@ impl NoteDoc for AutomergeNote {
             attachments,
             retired_attachments,
         }
+    }
+
+    fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>> {
+        let maps: Vec<(String, bool)> = self
+            .doc
+            .keys(ROOT)
+            .filter(|key| parse_attachment_key(key).is_some())
+            .filter_map(|key| match self.doc.get(ROOT, &key) {
+                Ok(Some((Value::Object(ObjType::Map), obj))) => Some((
+                    Self::str_at(&self.doc, &obj, field::MEDIA),
+                    Self::bool_at(&self.doc, &obj, field::REMOVED),
+                )),
+                _ => None,
+            })
+            .collect();
+        live_objects(maps)
     }
 
     fn snapshot(&self) -> Vec<u8> {

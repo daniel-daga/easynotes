@@ -667,3 +667,115 @@ async fn a_relay_with_nowhere_durable_for_media_says_so() {
     let up = Upload::new(&relay, 1000).await;
     assert_eq!(up.reserve().await, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// Compact `upload`'s topic straight in the store, listing `live`: what a
+/// member's base would do over the socket, without one.
+async fn compact_listing(
+    store: &Arc<dyn RelayStore>,
+    upload: &Upload,
+    live: Vec<MediaObjectId>,
+    limits: &MediaLimits,
+) {
+    use easynotes_core::crypto::{Envelope, NoteKey};
+    // The same key every time: the first compaction registers the topic's
+    // compaction key, and the relay takes no other after it.
+    let (device, key) = (DeviceIdentity::generate(), NoteKey([9; 32]));
+    let topic = upload.note.encode();
+    let seal = |counter| {
+        Envelope::seal(&device, upload.note, &key, counter, b"edit")
+            .unwrap()
+            .encode()
+    };
+    let covers = match store
+        .append_within(&topic, &seal(1), &easynotes_relay::Limits::default())
+        .await
+        .unwrap()
+    {
+        easynotes_relay::Appended::Stored { seq, .. } => seq,
+        other => panic!("not stored: {other:?}"),
+    };
+    let request =
+        easynotes_core::compaction::Request::sign(upload.note, &key, covers, seal(2), Some(live));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    store
+        .compact(
+            &topic,
+            &easynotes_relay::quota::Proposal {
+                covers: request.covers,
+                base: &request.base,
+                media: request.media.as_deref(),
+                key: request.key.0,
+                signature: request.signature,
+            },
+            limits,
+            now,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
+    for (name, store) in stores().await {
+        // Nothing is ever fresh and a doom is due at once, so one compaction
+        // dooms and the next reservation sweeps.
+        let limits = MediaLimits {
+            fresh_secs: -60,
+            doomed_ttl_secs: -60,
+            ..MediaLimits::default()
+        };
+        let relay = relay(
+            store.clone(),
+            MediaConfig {
+                limits,
+                ..MediaConfig::default()
+            },
+        )
+        .await;
+        let kept = Upload::new(&relay, 1000).await;
+        kept.send().await;
+        let removed = kept.sibling(1000);
+        removed.send().await;
+        let doomed = |u: &Upload| {
+            let (store, topic, object) = (store.clone(), u.note.encode(), u.media.object.encode());
+            async move {
+                store
+                    .media(&topic, &object)
+                    .await
+                    .unwrap()
+                    .map(|r| r.doomed)
+            }
+        };
+
+        // Doomed, then fetched by a reader that has not seen it removed: kept.
+        compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+        assert_eq!(doomed(&removed).await, Some(true), "{name}");
+        assert_eq!(removed.read_back().await, removed.plain, "{name}");
+        assert_eq!(doomed(&removed).await, Some(false), "{name}");
+
+        // Doomed again, and asked about by the device that uploaded it: kept.
+        compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+        assert!(removed.status().await.unwrap().committed, "{name}");
+        assert_eq!(doomed(&removed).await, Some(false), "{name}");
+
+        // Doomed again and left alone: the next reservation sweeps it, bytes
+        // and all, and the listed one is untouched.
+        compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+        let next = kept.sibling(1000);
+        assert_eq!(next.reserve().await, StatusCode::CREATED, "{name}");
+        assert_eq!(
+            removed.fetch(None).await.status(),
+            StatusCode::NOT_FOUND,
+            "{name}"
+        );
+        assert_eq!(doomed(&removed).await, None, "{name}");
+        assert_eq!(kept.read_back().await, kept.plain, "{name}");
+        // A device that still had it, and was not told, can put it back.
+        removed.send().await;
+        assert_eq!(removed.read_back().await, removed.plain, "{name}");
+    }
+}

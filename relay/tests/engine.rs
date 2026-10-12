@@ -944,3 +944,106 @@ async fn a_base_is_acknowledged_like_an_edit() {
     a.wait_until_synced().await;
     assert_eq!(log.head(&a.note.encode()).await.unwrap(), head);
 }
+
+/// ADR 0027 §5 end to end: removing an attachment and asking to reclaim
+/// makes a base the relay never asked for, and its live list dooms the
+/// removed file's object and keeps the other's.
+#[tokio::test]
+async fn removing_an_attachment_and_reclaiming_dooms_its_bytes() {
+    use easynotes_core::attachment::seal::seal_whole;
+    use easynotes_core::attachment::{ContentKey, Media, MediaFormat, Variant};
+    use easynotes_core::ids::AttachmentId;
+    use easynotes_relay::media::Geometry;
+    use easynotes_relay::MediaLimits;
+
+    // Far from crowded, so any compaction here is the reclaim's.
+    let (_relay, log, endpoint) = relay().await;
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    a.add_item("milk");
+    a.wait_until_synced().await;
+
+    let topic = a.note.encode();
+    let two_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        - 2 * 24 * 60 * 60;
+    let attach = |name: &str| {
+        let (id, key) = (AttachmentId::random(), ContentKey::random());
+        let (original, _) =
+            seal_whole(&key, a.note, id, Variant::Original, &[7u8; 300], 1 << 20).unwrap();
+        let media = Media {
+            v: 1,
+            format: MediaFormat::Png,
+            name: name.into(),
+            width: Some(4),
+            height: Some(3),
+            duration_ms: None,
+            key: Some(key),
+            original,
+            thumbnail: None,
+        };
+        let envelope = a
+            .core
+            .lock()
+            .unwrap()
+            .add_attachment(a.note, id, media.clone())
+            .unwrap();
+        a.publish(envelope);
+        (id, media.original)
+    };
+    let (_, kept) = attach("kept.png");
+    let (removed, gone) = attach("gone.png");
+    a.wait_until_synced().await;
+    // The bytes, as the queue would have left them: committed, and long
+    // enough ago that neither is fresh.
+    for object in [&kept, &gone] {
+        let geometry = Geometry {
+            sealed_len: object.sealed_len(),
+            chunk_size: object.chunk_size,
+        };
+        log.reserve_media(
+            &topic,
+            &object.object.encode(),
+            geometry,
+            &MediaLimits::default(),
+            two_days_ago,
+        )
+        .await
+        .unwrap();
+        log.commit_media(&topic, &object.object.encode(), object.digest)
+            .await
+            .unwrap();
+    }
+
+    let envelope = a
+        .core
+        .lock()
+        .unwrap()
+        .remove_attachment(a.note, removed)
+        .unwrap();
+    a.publish(envelope);
+    a.handle.as_ref().unwrap().reclaim();
+    wait_for_compaction(&log, a.note).await;
+
+    let doomed = |object: &easynotes_core::attachment::MediaRef| {
+        let (log, topic, object) = (log.clone(), topic.clone(), object.object.encode());
+        async move { log.media(&topic, &object).await.unwrap().unwrap().doomed }
+    };
+    assert!(
+        doomed(&gone).await,
+        "the removed file's bytes are not doomed"
+    );
+    assert!(!doomed(&kept).await, "the kept file's bytes were doomed");
+    // And the base covers the removal: nothing this device sent is lost.
+    a.wait_until_synced().await;
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk"]).await;
+    b.wait_until("the kept attachment only", || {
+        let view = b.core.lock().unwrap().view(b.note).unwrap();
+        view.attachments.len() == 1 && view.attachments[0].media.name == "kept.png"
+    })
+    .await;
+}

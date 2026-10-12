@@ -456,6 +456,12 @@ enum Command {
     Settle {
         note: NoteId,
     },
+    /// Compact the note as if the relay had asked: this device removed an
+    /// attachment, and the base's live list is what frees its bytes
+    /// ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+    Reclaim {
+        note: NoteId,
+    },
     /// One note's held typing, or every note's.
     Flush {
         note: Option<NoteId>,
@@ -594,6 +600,19 @@ impl SyncHandle {
     /// and settles then.
     pub fn settle(&self) {
         let _ = self.commands.send(Command::Settle { note: self.note });
+    }
+
+    /// Hand the relay a base for this note soon, as if it had asked for one —
+    /// once the edits this device has sent are acknowledged, as any base
+    /// waits for. What removing an attachment calls: the base's live list is
+    /// what lets the relay free the bytes, and it is also what takes the
+    /// removed file's key out of the relay's log
+    /// ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+    ///
+    /// Forgotten if the connection drops first, like the relay's own request:
+    /// the next compaction the note gets does the same.
+    pub fn reclaim(&self) {
+        let _ = self.commands.send(Command::Reclaim { note: self.note });
     }
 
     /// Send whatever is being held back, now. For the moments the app may not
@@ -974,6 +993,7 @@ async fn wait(
                 }
                 // Offline: the next connection's `Caught` settles it.
                 Some(Command::Settle { .. }) => {}
+                Some(Command::Reclaim { .. }) => {}
                 Some(Command::Flush { .. }) => {}
                 Some(Command::Released) => {
                     device.released = true;
@@ -1169,6 +1189,14 @@ impl Device {
                     settle(peer, note, live);
                     self.send_urgent(sync).await?;
                 }
+            }
+            Command::Reclaim { note } => {
+                let Some(live) = self.notes.get_mut(&note) else {
+                    return Ok(Next::Continue);
+                };
+                live.crowded = true;
+                live.compact_if_due(peer, note);
+                self.send_urgent(sync).await?;
             }
             Command::Flush { note: Some(note) } => self.flush(peer, note, sync).await?,
             Command::Flush { note: None } => {

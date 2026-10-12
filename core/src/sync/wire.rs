@@ -322,6 +322,10 @@ enum DeviceMessage<'a> {
         note: &'a str,
         covers: i64,
         base: String,
+        /// The live list (ADR 0027 §5), as object IDs. Left out when there is
+        /// none, which a relay reads as "vouch for nothing".
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media: Option<Vec<String>>,
         key: String,
         signature: String,
     },
@@ -408,6 +412,10 @@ pub(crate) fn compact_note(
         note: &note.encode(),
         covers: request.covers,
         base: URL_SAFE_NO_PAD.encode(&request.base),
+        media: request
+            .media
+            .as_ref()
+            .map(|media| media.iter().map(|object| object.encode()).collect()),
         key: URL_SAFE_NO_PAD.encode(request.key.0),
         signature: URL_SAFE_NO_PAD.encode(request.signature),
     })
@@ -797,6 +805,7 @@ mod tests {
             &crate::crypto::NoteKey([1u8; 32]),
             9,
             b"hi".to_vec(),
+            Some(vec![crate::ids::MediaObjectId::from_bytes([0u8; 16])]),
         );
         let text = compact_note(note, &request);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -804,10 +813,24 @@ mod tests {
         assert_eq!(value["note"], "AAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(value["covers"], 9);
         assert_eq!(value["base"], "aGk");
+        assert_eq!(
+            value["media"],
+            serde_json::json!(["AAAAAAAAAAAAAAAAAAAAAA"])
+        );
         assert_eq!(value["key"], URL_SAFE_NO_PAD.encode(request.key.0));
         assert_eq!(
             value["signature"],
             URL_SAFE_NO_PAD.encode(request.signature)
         );
+
+        // No list is no field, not an empty one: an empty list would let the
+        // relay go of every object the note has.
+        let unlisted = crate::compaction::Request {
+            media: None,
+            ..request
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&compact_note(note, &unlisted)).unwrap();
+        assert!(value.get("media").is_none());
     }
 }

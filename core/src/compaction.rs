@@ -22,7 +22,7 @@
 //! compaction the relay sees.
 
 use crate::crypto::{AuthorKey, DeviceIdentity, NoteKey, SIG_LEN};
-use crate::ids::NoteId;
+use crate::ids::{MediaObjectId, NoteId};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -52,14 +52,42 @@ pub fn public_key(topic: NoteId, key: &NoteKey) -> AuthorKey {
     identity(topic, key).public_key()
 }
 
-/// What a compaction signs: the domain, the topic, how far the base reaches,
-/// and a hash of the base. Fixed-length, so no two different requests share one.
-pub fn transcript(topic: NoteId, covers: i64, base: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(COMPACT_DOMAIN.len() + 16 + 8 + 32);
+/// The most objects a live list may name. A note's own limits keep it to
+/// forty or so (twenty attachments, each an original and a thumbnail); only
+/// hostile descriptors reach this, and a note that names more sends no list.
+pub const MAX_LIVE_OBJECTS: usize = 4096;
+
+/// What a compaction signs: the domain, the topic, how far the base reaches, a
+/// hash of the base, and the live list
+/// ([ADR 0027](../../docs/adr/0027-attachments.md) §5): a byte saying whether
+/// there is one, and if so a hash of its IDs sorted and without repeats, so
+/// that the order a device listed them in does not matter. Fixed-length, so no
+/// two different requests share one.
+pub fn transcript(
+    topic: NoteId,
+    covers: i64,
+    base: &[u8],
+    media: Option<&[MediaObjectId]>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(COMPACT_DOMAIN.len() + 16 + 8 + 32 + 1 + 32);
     out.extend_from_slice(COMPACT_DOMAIN);
     out.extend_from_slice(topic.as_bytes());
     out.extend_from_slice(&covers.to_be_bytes());
     out.extend_from_slice(&Sha256::digest(base));
+    match media {
+        None => out.push(0),
+        Some(media) => {
+            let mut sorted = media.to_vec();
+            sorted.sort();
+            sorted.dedup();
+            let mut hash = Sha256::new();
+            for object in &sorted {
+                hash.update(object.as_bytes());
+            }
+            out.push(1);
+            out.extend_from_slice(&hash.finalize());
+        }
+    }
     out
 }
 
@@ -71,28 +99,44 @@ pub struct Request {
     pub covers: i64,
     /// The whole document, sealed as an ordinary update by this device.
     pub base: Vec<u8>,
+    /// Every attachment object the base still names, and this device's own
+    /// imports not in it yet; the relay lets the rest of the topic's go
+    /// (ADR 0027 §5). `None` vouches for nothing, and the relay deletes
+    /// nothing: a document with a descriptor this build cannot even find the
+    /// objects of, and the account document, which has none.
+    pub media: Option<Vec<MediaObjectId>>,
     /// The compaction key's public half.
     pub key: AuthorKey,
     pub signature: [u8; SIG_LEN],
 }
 
 impl Request {
-    /// Sign a base with the topic's compaction key.
-    pub fn sign(topic: NoteId, key: &NoteKey, covers: i64, base: Vec<u8>) -> Self {
+    /// Sign a base, and the live list if there is one, with the topic's
+    /// compaction key.
+    pub fn sign(
+        topic: NoteId,
+        key: &NoteKey,
+        covers: i64,
+        base: Vec<u8>,
+        media: Option<Vec<MediaObjectId>>,
+    ) -> Self {
         let signer = identity(topic, key);
-        let signature = signer.sign(&transcript(topic, covers, &base));
+        let signature = signer.sign(&transcript(topic, covers, &base, media.as_deref()));
         Self {
             covers,
             base,
+            media,
             key: signer.public_key(),
             signature,
         }
     }
 
-    /// Whether the signature is the named key's over this base.
+    /// Whether the signature is the named key's over this base and list.
     pub fn verifies(&self, topic: NoteId) -> bool {
-        self.key
-            .verify(&transcript(topic, self.covers, &self.base), &self.signature)
+        self.key.verify(
+            &transcript(topic, self.covers, &self.base, self.media.as_deref()),
+            &self.signature,
+        )
     }
 }
 
@@ -128,7 +172,7 @@ mod tests {
     fn a_request_verifies_only_as_it_was_signed() {
         let note = NoteId::from_bytes([7u8; 16]);
         let key = NoteKey([1u8; 32]);
-        let request = Request::sign(note, &key, 12, b"base".to_vec());
+        let request = Request::sign(note, &key, 12, b"base".to_vec(), None);
         assert!(request.verifies(note));
         assert!(!request.verifies(NoteId::from_bytes([8u8; 16])));
         let mut moved = request.clone();
@@ -137,5 +181,52 @@ mod tests {
         let mut swapped = request.clone();
         swapped.base = b"other".to_vec();
         assert!(!swapped.verifies(note));
+        // A list added to a request signed without one is a list nobody
+        // vouched for.
+        let mut listed = request.clone();
+        listed.media = Some(Vec::new());
+        assert!(!listed.verifies(note));
+    }
+
+    #[test]
+    fn the_live_list_is_signed_whatever_order_it_comes_in() {
+        let note = NoteId::from_bytes([7u8; 16]);
+        let key = NoteKey([1u8; 32]);
+        let (a, b, c) = (
+            MediaObjectId::from_bytes([1u8; 16]),
+            MediaObjectId::from_bytes([2u8; 16]),
+            MediaObjectId::from_bytes([3u8; 16]),
+        );
+        let request = Request::sign(note, &key, 12, b"base".to_vec(), Some(vec![a, b]));
+        assert!(request.verifies(note));
+        // The same objects in another order, or one twice, are the same list.
+        let mut reordered = request.clone();
+        reordered.media = Some(vec![b, a, b]);
+        assert!(reordered.verifies(note));
+        // Another object, one fewer, or an empty list is not.
+        for other in [vec![a, b, c], vec![a], Vec::new()] {
+            let mut changed = request.clone();
+            changed.media = Some(other);
+            assert!(!changed.verifies(note));
+        }
+        let mut dropped = request.clone();
+        dropped.media = None;
+        assert!(!dropped.verifies(note));
+    }
+
+    #[test]
+    fn the_transcript_is_pinned() {
+        // The relay checks this transcript as written here, so a change to it
+        // is a protocol change, not a refactor.
+        let note = NoteId::from_bytes([0u8; 16]);
+        let without = transcript(note, 1, b"", None);
+        let with = transcript(note, 1, b"", Some(&[MediaObjectId::from_bytes([0u8; 16])]));
+        assert_eq!(without.len(), COMPACT_DOMAIN.len() + 16 + 8 + 32 + 1);
+        assert_eq!(with.len(), without.len() + 32);
+        assert_eq!(&without[without.len() - 1..], &[0]);
+        assert_eq!(
+            &with[without.len() - 1..],
+            [&[1u8][..], &Sha256::digest([0u8; 16])[..]].concat()
+        );
     }
 }

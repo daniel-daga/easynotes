@@ -51,6 +51,10 @@ struct Peer {
     core: Arc<Mutex<Core>>,
     handle: Arc<Mutex<Option<SyncHandle>>>,
     local_only: bool,
+    /// Say the relay has not acknowledged anything, whatever the engine says:
+    /// a device whose descriptor has not reached the relay, without having to
+    /// take its network away.
+    unheard: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DeviceSigner for Peer {
@@ -97,6 +101,17 @@ impl TransferPeer for Peer {
         }
     }
 
+    fn acknowledged(&self, _note: NoteId) -> bool {
+        if self.unheard.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        self.local_only
+            || self.handle.lock().unwrap().as_ref().is_some_and(|h| {
+                let status = h.status();
+                status.state == SyncState::Synced && status.pending == 0
+            })
+    }
+
     fn publish(&self, note: NoteId, id: AttachmentId, media: Media) -> easynotes_core::Result<()> {
         let envelope = self.core.lock().unwrap().add_attachment(note, id, media)?;
         if let Some(handle) = self.handle.lock().unwrap().as_ref() {
@@ -121,6 +136,7 @@ impl App {
             core: Arc::new(Mutex::new(core)),
             handle: Arc::default(),
             local_only: relay.is_none(),
+            unheard: Arc::default(),
         };
         let dir = tempfile::tempdir().unwrap();
         let media = Arc::new(MediaStore::open(dir.path(), MasterKey::random()).unwrap());
@@ -387,6 +403,7 @@ async fn staged_imports_are_reconciled_when_the_queue_starts() {
         core: Arc::new(Mutex::new(core)),
         handle: Arc::default(),
         local_only: true,
+        unheard: Arc::default(),
     };
     let queue = start(&peer, &media, None);
     let state = |id| {
@@ -533,4 +550,129 @@ async fn the_same_queue_runs_over_a_tabs_store() {
             .unwrap(),
         thumb
     );
+}
+
+/// ADR 0027 §5 from the uploader's side. A published upload whose descriptor
+/// the relay has not acknowledged keeps its record, and with it the bytes. If
+/// the relay let them go meanwhile, as a compaction from a device that never
+/// saw the descriptor would, the queue's next look at the record puts them
+/// back, and the record settles once the relay has the descriptor.
+#[tokio::test]
+async fn an_upload_not_yet_heard_of_is_kept_and_put_back_if_lost() {
+    use easynotes_core::compaction::Request;
+    use easynotes_relay::quota::Proposal;
+    use easynotes_relay::RelayStore;
+
+    let store = Arc::new(easynotes_relay::MemoryStore::new());
+    let blobs = Arc::new(MemoryBlobs::default());
+    // Nothing is ever fresh, so one compaction dooms what it does not list.
+    let limits = MediaLimits {
+        fresh_secs: -60,
+        ..MediaLimits::default()
+    };
+    let relay = Relay::serve_with(
+        store.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            media: MediaConfig {
+                blobs: Some(blobs.clone() as Arc<dyn easynotes_relay::Blobs>),
+                limits,
+            },
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    let (a, b) = pair(&endpoint);
+    a.connect(&endpoint);
+    b.connect(&endpoint);
+
+    a.peer
+        .unheard
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let photo = png(64, 48, 5000);
+    let staged = a.import("kept.png", &photo, None);
+    eventually("the descriptor to reach b", || {
+        b.state(staged.id) == AttachmentState::Live
+    })
+    .await;
+    // Published, and not settled: the relay has not been heard to have it.
+    assert_eq!(a.state(staged.id), AttachmentState::Live);
+    assert_eq!(a.media.staged().unwrap(), vec![staged.clone()]);
+
+    // A compaction that does not list it, and the week gone by: the relay
+    // forgets the object, bytes and all.
+    let topic = a.note.encode();
+    let object = staged.media.original.object.encode();
+    let head = store.head(&topic).await.unwrap();
+    let base = a
+        .peer
+        .core
+        .lock()
+        .unwrap()
+        .compaction(a.note, head)
+        .unwrap()
+        .expect("a base");
+    let key = easynotes_core::crypto::import_share_blob(
+        &a.peer
+            .core
+            .lock()
+            .unwrap()
+            .export_share_blob(a.note)
+            .unwrap(),
+    )
+    .unwrap()
+    .1;
+    let unlisted = Request::sign(a.note, &key, base.covers, base.base, Some(Vec::new()));
+    store
+        .compact(
+            &topic,
+            &Proposal {
+                covers: unlisted.covers,
+                base: &unlisted.base,
+                media: unlisted.media.as_deref(),
+                key: unlisted.key.0,
+                signature: unlisted.signature,
+            },
+            &limits,
+            i64::MAX / 2,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    for (note, gone) in store.sweep_media(i64::MAX).await.unwrap() {
+        easynotes_relay::Blobs::remove(blobs.as_ref(), &note, &gone)
+            .await
+            .unwrap();
+    }
+    assert!(store.media(&topic, &object).await.unwrap().is_none());
+
+    // The app is opened again: the queue looks at the record, and sends it.
+    let again = start(&a.peer, &a.media, Some(&endpoint));
+    again.kick();
+    let mut back = false;
+    for _ in 0..500 {
+        back = store
+            .media(&topic, &object)
+            .await
+            .unwrap()
+            .is_some_and(|row| row.committed.is_some());
+        if back {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(back, "the bytes the relay lost were not put back");
+    assert_eq!(a.media.staged().unwrap(), vec![staged.clone()]);
+
+    // Heard: the record settles.
+    a.peer
+        .unheard
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    again.kick();
+    eventually("the record to settle", || {
+        a.media.staged().unwrap().is_empty()
+    })
+    .await;
 }
