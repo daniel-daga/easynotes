@@ -20,7 +20,7 @@ export async function load(d, to) {
 export async function configureRelay(d, url) {
   await tap(d, /navigation menu/i);
   await tap(d, /Relay settings/);
-  await fill(d, 'Relay URL', url);
+  await fill(d, 'Relay URL or relay link', url);
   await tap(d, /^Switch relay$/);
   await tap(d, /^Switch$/);
   // Replacing the keyed home screen can leave Settings as the visible route
