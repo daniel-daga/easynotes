@@ -212,6 +212,10 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   ReminderScheduler? _reminders;
   bool _launchPayloadsDelivered = false;
 
+  /// Between a library's release and its replacement's install, when nothing
+  /// may draw from it: see [_releaseSession].
+  bool _released = false;
+
   RelaySession get _session => widget.session;
 
   @override
@@ -229,6 +233,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   }
 
   void _installSession(NoteLibrary library) {
+    // The session says it has changed once this returns, which is what
+    // draws the note list again.
+    _released = false;
     // Anything a failed release left behind goes first, so that a library
     // handed back after one never has two of each.
     _lifecycle?.dispose();
@@ -247,7 +254,14 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
 
   /// Nothing of the outgoing profile may fire once another is showing: its
   /// reminders and join alerts would name notes the new profile does not have.
+  ///
+  /// Nor may its note list draw. Closing the library ends its streams, and a
+  /// list rebuilt on that reads the library it is built on, which is closed
+  /// by then. Marking this widget dirty first means the next frame builds it
+  /// before the list, and takes the list away; no frame is waited for, since
+  /// a tab nobody is looking at draws none, and builds nothing either.
   Future<void> _releaseSession(NoteLibrary library) async {
+    if (mounted) setState(() => _released = true);
     _lifecycle?.dispose();
     _lifecycle = null;
     await _reminders?.dispose(cancelScheduled: true);
@@ -280,7 +294,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       // has a use for.
       theme: _easyNotesTheme(Brightness.light),
       darkTheme: _easyNotesTheme(Brightness.dark),
-      home: _noteList(library),
+      home: _released
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _noteList(library),
     );
   }
 

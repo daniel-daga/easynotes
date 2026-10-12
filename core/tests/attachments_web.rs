@@ -276,14 +276,22 @@ impl MediaRows for Failing {
         changes: Vec<Change>,
     ) -> easynotes_core::attachment::storage::Fut<'_, easynotes_core::Result<()>> {
         use std::sync::atomic::Ordering;
-        if self
-            .left
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_err()
-        {
-            return Box::pin(std::future::ready(Err(easynotes_core::CoreError::Storage(
-                "quota".into(),
-            ))));
+        // A compare-and-swap loop rather than `fetch_update`, which Rust 1.99
+        // deprecates in favour of a `try_update` that 1.82 does not have.
+        let mut left = self.left.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = left.checked_sub(1) else {
+                return Box::pin(std::future::ready(Err(easynotes_core::CoreError::Storage(
+                    "quota".into(),
+                ))));
+            };
+            match self
+                .left
+                .compare_exchange_weak(left, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(actual) => left = actual,
+            }
         }
         self.rows.apply(changes)
     }

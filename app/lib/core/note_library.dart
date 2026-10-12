@@ -322,12 +322,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// drift from encrypted reminder truth.
   List<Reminder> get reminders;
 
-  Stream<List<Reminder>> watchReminders() async* {
-    yield reminders;
-    await for (final _ in watchNotes()) {
-      yield reminders;
-    }
-  }
+  /// [watchNotes] mapped, and not an `async*` loop over it: an `async*`
+  /// generator waiting in `await for` does not see a cancel until the next
+  /// note event, so cancelling it on a quiet library never completed, and
+  /// switching relay hung in the reminder scheduler's `dispose`.
+  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
 
   /// Make one reminder for [noteId] and return its stable account-document ID.
   Future<String> createReminder({
