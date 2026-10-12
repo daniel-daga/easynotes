@@ -1,3 +1,4 @@
+import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/reminder_scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -79,5 +80,17 @@ void main() {
     final first = DateTime.utc(2026, 5, 31, 9);
     expect(next(first, ReminderRepeat.never, first), isNull);
     expect(next(first, ReminderRepeat.monthly, DateTime.utc(2026, 1)), first);
+  });
+
+  test('watching reminders on a quiet library can be cancelled', () async {
+    // Releasing a session cancels this subscription. It used to be an
+    // `async*` loop over the note stream, whose cancel waited for a note
+    // event that a quiet library never sends, and switching relay hung.
+    final library = FakeNoteLibrary();
+    final seen = <List<Reminder>>[];
+    final watching = library.watchReminders().listen(seen.add);
+    await pumpEventQueue();
+    expect(seen, hasLength(1));
+    await watching.cancel().timeout(const Duration(seconds: 1));
   });
 }

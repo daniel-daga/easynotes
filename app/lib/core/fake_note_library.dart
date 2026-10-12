@@ -110,12 +110,7 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Stream<List<Reminder>> watchReminders() async* {
-    yield reminders;
-    await for (final _ in watchNotes()) {
-      yield reminders;
-    }
-  }
+  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
 
   @override
   Future<String> createReminder({
