@@ -23,9 +23,8 @@ export async function configureRelay(d, url) {
   await fill(d, 'Relay URL or relay link', url);
   await tap(d, /^Switch relay$/);
   await tap(d, /^Switch$/);
-  // Replacing the keyed home screen can leave Settings as the visible route
-  // after the switch. Return to notes explicitly before continuing the smoke.
-  await tap(d, /^Back$/);
+  // Settings closes itself once the new profile is open. If it stays, the
+  // switch has not finished, which is a failure and not something to tap past.
   await find(d, n => n.text.trim() === 'New checklist', { timeout: 30_000 });
 }
 
@@ -42,8 +41,12 @@ export async function accessible(d) {
 
 /// The semantics nodes a person could see: what each says, the label of the
 /// field it holds, whether it is ticked, and where its centre is.
+// A heading, such as an app bar's title, is drawn as an `<h1>`–`<h6>` of its
+// own rather than as `flt-semantics`, so it is asked for by name.
 export const nodes = d => d.page.evaluate(() =>
-  Array.from(document.querySelectorAll('flt-semantics')).map(e => {
+  Array.from(document.querySelectorAll(
+    'flt-semantics, flt-semantics-host :is(h1, h2, h3, h4, h5, h6)',
+  )).map(e => {
     const r = e.getBoundingClientRect();
     const input = e.querySelector('input, textarea');
     return {
