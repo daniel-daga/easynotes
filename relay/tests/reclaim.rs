@@ -270,9 +270,13 @@ async fn the_sweep_deletes_only_what_was_doomed_long_enough_ago() {
 async fn a_doomed_object_frees_its_note_but_not_the_relay_until_it_goes() {
     for (name, store) in stores().await {
         let mut note = Note::new();
+        // The relay-wide ceiling is checked against the memory store only.
+        // On Postgres every test shares the table, so a ceiling this small is
+        // already full of the others' objects.
+        let memory = name == "memory";
         let limits = MediaLimits {
             note_bytes: 2 * OBJECT.sealed_len,
-            ceiling: Some(3 * OBJECT.sealed_len),
+            ceiling: memory.then_some(3 * OBJECT.sealed_len),
             ..MediaLimits::default()
         };
         // Two objects fill the note.
@@ -321,7 +325,7 @@ async fn a_doomed_object_frees_its_note_but_not_the_relay_until_it_goes() {
 
         // But the relay's ceiling still counts the doomed bytes, which are
         // still on its disk.
-        if !name.starts_with("postgres") {
+        if memory {
             let fourth = MediaObjectId::random();
             let relay_full = store
                 .reserve_media(&Note::new().topic(), &fourth.encode(), OBJECT, &limits, T0)
