@@ -35,11 +35,64 @@ const browser = await chromium.launch({
 // A tab whose main thread is stuck answers no `evaluate`, and nothing in
 // Playwright times one out, so the whole run is given a ceiling instead.
 const started = Date.now();
-const step = what => console.log(`--    ${what} (${Math.round((Date.now() - started) / 1000)}s)`);
-setTimeout(() => {
-  console.error(`\ngave up after ${Math.round((Date.now() - started) / 1000)}s: a tab stopped answering`);
+const elapsed = () => Math.round((Date.now() - started) / 1000);
+const step = what => console.log(`--    ${what} (${elapsed()}s)`);
+const devices = [];
+setTimeout(async () => {
+  console.error(`\ngave up after ${elapsed()}s: a tab stopped answering`);
+  await Promise.race([diagnose(), new Promise(r => setTimeout(r, 30_000))]);
   process.exit(2);
 }, 6 * 60_000).unref();
+
+/// Where each tab is stuck: the page thread's stack and every worker's,
+/// paused through the DevTools protocol, which answers even when the page
+/// does not. And the last heap samples, which tell a spin from a tab that ran
+/// out of memory.
+async function diagnose() {
+  const frames = paused => paused.callFrames.slice(0, 30).map(f =>
+    `      ${f.functionName || '<anonymous>'}  ${f.url.split('/').pop()}:${f.location.lineNumber + 1}`,
+  ).join('\n');
+  for (const d of devices) {
+    console.error(`\n${d.name}: heap ${d.heap.slice(-4).join(', ') || 'never sampled'}`);
+    try {
+      const cdp = await d.context.newCDPSession(d.page);
+      await cdp.send('Debugger.enable');
+      const paused = new Promise(r => cdp.once('Debugger.paused', r));
+      await cdp.send('Debugger.pause');
+      console.error(`  page thread:\n${frames(await paused)}`);
+    } catch (e) {
+      console.error(`  page thread: ${e.message}`);
+    }
+  }
+  // Workers are not pages, so they are reached through the browser's own
+  // session and messages relayed to each.
+  const cdp = await browser.newBrowserCDPSession();
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  for (const worker of targetInfos.filter(t => /worker/.test(t.type))) {
+    try {
+      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: worker.targetId, flatten: false });
+      const replies = new Map();
+      let paused;
+      cdp.on('Target.receivedMessageFromTarget', m => {
+        if (m.sessionId !== sessionId) return;
+        const msg = JSON.parse(m.message);
+        if (msg.method === 'Debugger.paused') paused?.(msg.params);
+        else replies.get(msg.id)?.(msg);
+      });
+      let id = 0;
+      const send = (method, params = {}) => new Promise(r => {
+        replies.set(++id, r);
+        cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id, method, params }) });
+      });
+      const stopped = new Promise(r => { paused = r; });
+      await send('Debugger.enable');
+      await send('Debugger.pause');
+      console.error(`  ${worker.type} ${worker.url.split('/').pop()}:\n${frames(await stopped)}`);
+    } catch (e) {
+      console.error(`  ${worker.type}: ${e.message}`);
+    }
+  }
+}
 
 /// One device: its own context, so its own storage and its own account. Tall
 /// enough that nothing this test touches is below the fold.
@@ -48,16 +101,36 @@ async function device(name) {
   // The share sheet, stood in for: what the app hands it is kept where the
   // test can read it, which is the link a person would have sent.
   await context.addInitScript(() => {
+    // Chrome keeps ten frames, and a Rust panic's hook takes most of them.
+    Error.stackTraceLimit = 200;
     navigator.canShare = () => true;
     navigator.share = async data => { window.__shared = data.text; };
   });
-  const d = { name, context, crashes: [], errors: [] };
+  const d = { name, context, crashes: [], errors: [], heap: [] };
+  devices.push(d);
   // Every tab the device opens, including the one a link is opened in later.
   context.on('page', page => {
     page.on('pageerror', e => d.crashes.push(e.message));
     page.on('console', m => m.type() === 'error' && d.errors.push(m.text()));
+    page.on('crash', async () => {
+      console.error(`\n${d.name}'s tab crashed at ${elapsed()}s`);
+      await diagnose();
+    });
   });
   d.page = await context.newPage();
+  // A sample stops arriving while the page thread is stuck, which is itself
+  // worth knowing; the protocol's heap query runs on that thread.
+  // It follows whichever tab is the device's now.
+  let sampled, heap;
+  setInterval(async () => {
+    try {
+      if (sampled !== d.page) [sampled, heap] = [d.page, await context.newCDPSession(d.page)];
+      const h = await heap.send('Runtime.getHeapUsage');
+      d.heap.push(`${elapsed()}s ${Math.round(h.usedSize / 2 ** 20)} MiB`);
+    } catch {
+      // A closed or crashed tab: the next sample tries the current one.
+    }
+  }, 5_000).unref();
   await load(d, url);
   return d;
 }
@@ -66,6 +139,10 @@ async function device(name) {
 /// straight into.
 async function addItem(d, text) {
   await tap(d, /^\+ Checklist item$/);
+  // Typed into the editing element Flutter focuses for the new row, once it
+  // has: before then the first keystrokes go nowhere, and on a slow build
+  // "bread" arrives as "read".
+  await d.page.waitForFunction(() => /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? ''));
   await d.page.keyboard.type(text);
   await d.page.waitForTimeout(600);
 }
@@ -245,6 +322,7 @@ check(b.crashes.length === 0, `B threw nothing: ${b.crashes.slice(0, 3).join(' |
 // test found (see `app/rust/src/lock.rs`) left no page error behind.
 const errors = [...a.errors, ...b.errors];
 check(errors.length === 0, `and logged no errors: ${errors.slice(0, 2).join(' | ').slice(0, 300)}`);
+for (const error of errors) console.error(`\nlogged:\n${error.slice(0, 6000)}`);
 step('done');
 
 await browser.close();
