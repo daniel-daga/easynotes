@@ -2691,8 +2691,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Remove an attachment for everyone on the note. The bytes stay where
     /// they are — on this device until its media store collects them, on the
-    /// relay until clean-up exists, and on anyone's device who already had
-    /// them — but no one reading the note from here on is handed the key.
+    /// relay until a compaction no longer lists them and a week has passed
+    /// (ADR 0027 §5), and on anyone's device who already had them — but no
+    /// one reading the note from here on is handed the key.
     pub fn remove_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<Vec<u8>> {
         self.require_attachment(id, attachment)?;
         self.apply_local(id, Edit::RemoveAttachment { id: attachment })
@@ -3153,11 +3154,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             let base = self.seal_account_snapshot()?;
             self.store
                 .replace_log(self.account_id, std::slice::from_ref(&base))?;
+            // The account document names no attachments, and lists none.
             return Ok(Some(crate::compaction::Request::sign(
                 id,
                 &self.account.key,
                 covers,
                 base,
+                None,
             )));
         }
         if self.is_account(id)
@@ -3188,6 +3191,12 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let counter = note.next_counter;
         note.next_counter += 1;
         let base = Envelope::seal(identity, id, &note.key, counter, &note.doc.snapshot())?;
+        // From the same document as the base, so the relay is told what the
+        // base names (ADR 0027 §5). An import that is committed and not yet
+        // in the note is not in it, and needs not be: the relay keeps what
+        // was committed or asked about in the last day, and the queue asks
+        // again before it publishes.
+        let media = note.doc.live_media();
         note.seen.insert((base.author, counter));
         let key = note.key.clone();
         self.store
@@ -3197,6 +3206,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             &key,
             covers,
             base.encode(),
+            media,
         )))
     }
 

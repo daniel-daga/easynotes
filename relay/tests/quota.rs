@@ -13,7 +13,7 @@ use easynotes_core::compaction::Request;
 use easynotes_core::crypto::{DeviceIdentity, Envelope, EnvelopeKind, NoteKey};
 use easynotes_core::ids::NoteId;
 use easynotes_relay::quota::{Proposal, Refusal};
-use easynotes_relay::{Appended, Limits, MemoryStore, PostgresStore, RelayStore};
+use easynotes_relay::{Appended, Limits, MediaLimits, MemoryStore, PostgresStore, RelayStore};
 use std::sync::Arc;
 
 async fn stores() -> Vec<(&'static str, Arc<dyn RelayStore>)> {
@@ -63,7 +63,7 @@ impl Note {
     /// A base: an update sealed like any other, signed for the relay.
     fn base(&mut self, covers: i64) -> Request {
         let base = self.update(b"the whole document");
-        Request::sign(self.id, &self.key, covers, base)
+        Request::sign(self.id, &self.key, covers, base, None)
     }
 }
 
@@ -71,6 +71,7 @@ fn proposal(request: &Request) -> Proposal<'_> {
     Proposal {
         covers: request.covers,
         base: &request.base,
+        media: request.media.as_deref(),
         key: request.key.0,
         signature: request.signature,
     }
@@ -127,7 +128,7 @@ async fn a_compaction_drops_what_its_base_covers_and_nothing_after() {
         }
         let request = note.base(3);
         let seq = store
-            .compact(&topic, &proposal(&request))
+            .compact(&topic, &proposal(&request), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap_or_else(|r| panic!("{name}: refused: {r:?}"));
@@ -177,7 +178,7 @@ async fn once_a_key_compacts_a_note_no_other_key_can() {
             store.append(&topic, &note.update(&[i])).await.unwrap();
         }
         store
-            .compact(&topic, &proposal(&note.base(2)))
+            .compact(&topic, &proposal(&note.base(2)), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap();
@@ -190,7 +191,12 @@ async fn once_a_key_compacts_a_note_no_other_key_can() {
             counter: 0,
         };
         let refused = store
-            .compact(&topic, &proposal(&stranger.base(4)))
+            .compact(
+                &topic,
+                &proposal(&stranger.base(4)),
+                &MediaLimits::default(),
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(refused, Err(Refusal::Unauthorised), "{name}");
@@ -207,7 +213,7 @@ async fn a_stale_or_forged_or_foreign_compaction_is_refused() {
             store.append(&topic, &note.update(&[i])).await.unwrap();
         }
         store
-            .compact(&topic, &proposal(&note.base(4)))
+            .compact(&topic, &proposal(&note.base(4)), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap();
@@ -216,7 +222,12 @@ async fn a_stale_or_forged_or_foreign_compaction_is_refused() {
         // once cannot move it backwards.
         for covers in [3, 4] {
             let refused = store
-                .compact(&topic, &proposal(&note.base(covers)))
+                .compact(
+                    &topic,
+                    &proposal(&note.base(covers)),
+                    &MediaLimits::default(),
+                    0,
+                )
                 .await
                 .unwrap();
             assert_eq!(refused, Err(Refusal::Stale), "{name}: covers {covers}");
@@ -224,7 +235,12 @@ async fn a_stale_or_forged_or_foreign_compaction_is_refused() {
         // Past the head is a promise nobody can keep.
         let head = store.head(&topic).await.unwrap();
         let refused = store
-            .compact(&topic, &proposal(&note.base(head + 1)))
+            .compact(
+                &topic,
+                &proposal(&note.base(head + 1)),
+                &MediaLimits::default(),
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(refused, Err(Refusal::Stale), "{name}");
@@ -232,7 +248,10 @@ async fn a_stale_or_forged_or_foreign_compaction_is_refused() {
         // Signed for one reach and sent with another.
         let mut request = note.base(5);
         request.covers = 6;
-        let refused = store.compact(&topic, &proposal(&request)).await.unwrap();
+        let refused = store
+            .compact(&topic, &proposal(&request), &MediaLimits::default(), 0)
+            .await
+            .unwrap();
         assert_eq!(refused, Err(Refusal::BadSignature), "{name}");
 
         // A snapshot kind, or another note's update, is not a base.
@@ -247,16 +266,22 @@ async fn a_stale_or_forged_or_foreign_compaction_is_refused() {
         )
         .unwrap()
         .encode();
-        let request = Request::sign(note.id, &note.key, 5, snapshot);
-        let refused = store.compact(&topic, &proposal(&request)).await.unwrap();
+        let request = Request::sign(note.id, &note.key, 5, snapshot, None);
+        let refused = store
+            .compact(&topic, &proposal(&request), &MediaLimits::default(), 0)
+            .await
+            .unwrap();
         assert_eq!(refused, Err(Refusal::NotABase), "{name}");
         let mut other = Note {
             id: NoteId::random(),
             ..Note::new()
         };
         let foreign = other.update(b"doc");
-        let request = Request::sign(note.id, &note.key, 5, foreign);
-        let refused = store.compact(&topic, &proposal(&request)).await.unwrap();
+        let request = Request::sign(note.id, &note.key, 5, foreign, None);
+        let refused = store
+            .compact(&topic, &proposal(&request), &MediaLimits::default(), 0)
+            .await
+            .unwrap();
         assert_eq!(refused, Err(Refusal::NotABase), "{name}");
 
         assert_eq!(store.topic(&topic).await.unwrap().covers, 4, "{name}");
@@ -294,7 +319,7 @@ async fn packages_outlive_compaction_and_name_who_may_compact() {
         );
 
         store
-            .compact(&topic, &proposal(&note.base(4)))
+            .compact(&topic, &proposal(&note.base(4)), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap();
@@ -314,7 +339,12 @@ async fn packages_outlive_compaction_and_name_who_may_compact() {
         store.append(&topic, &note.update(b"c")).await.unwrap();
         let head = store.head(&topic).await.unwrap();
         let refused = store
-            .compact(&topic, &proposal(&note.base(head)))
+            .compact(
+                &topic,
+                &proposal(&note.base(head)),
+                &MediaLimits::default(),
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(refused, Err(Refusal::Unauthorised), "{name}");
@@ -327,7 +357,12 @@ async fn packages_outlive_compaction_and_name_who_may_compact() {
         };
         let head = store.head(&topic).await.unwrap();
         store
-            .compact(&topic, &proposal(&member.base(head)))
+            .compact(
+                &topic,
+                &proposal(&member.base(head)),
+                &MediaLimits::default(),
+                0,
+            )
             .await
             .unwrap()
             .unwrap_or_else(|r| panic!("{name}: the current key was refused: {r:?}"));
@@ -376,7 +411,7 @@ async fn a_full_note_refuses_appends_but_not_its_owners_packages() {
 
         // A compaction is the way out.
         store
-            .compact(&topic, &proposal(&note.base(3)))
+            .compact(&topic, &proposal(&note.base(3)), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap();
@@ -426,7 +461,7 @@ async fn an_appender_is_told_when_a_note_is_crowded() {
         }
         assert_eq!(said, vec![false, false, false, true, true], "{name}");
         store
-            .compact(&topic, &proposal(&note.base(5)))
+            .compact(&topic, &proposal(&note.base(5)), &MediaLimits::default(), 0)
             .await
             .unwrap()
             .unwrap();

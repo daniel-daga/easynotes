@@ -207,9 +207,10 @@ pub async fn render(state: &AppState) -> String {
         family(
             "easynotes_relay_media_bytes",
             "gauge",
-            "Attachment bytes, committed and reserved by uploads in progress. Both count against the media ceiling.",
+            "Attachment bytes: committed, doomed (no compaction lists them, deleted a week later unless asked for), and reserved by uploads in progress. All three count against the media ceiling.",
             &[
                 ("{state=\"committed\"}".into(), usage.media_committed_bytes),
+                ("{state=\"doomed\"}".into(), usage.media_doomed_bytes),
                 ("{state=\"reserved\"}".into(), usage.media_reserved_bytes),
             ],
         );

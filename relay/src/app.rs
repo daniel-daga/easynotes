@@ -29,7 +29,7 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::crypto::Envelope;
-use easynotes_core::ids::NoteId;
+use easynotes_core::ids::{MediaObjectId, NoteId};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -815,6 +815,7 @@ pub(crate) async fn compact(
     note: &str,
     covers: i64,
     base_b64: &str,
+    media: Option<&[String]>,
     key_b64: &str,
     signature_b64: &str,
 ) -> std::result::Result<i64, String> {
@@ -830,16 +831,43 @@ pub(crate) async fn compact(
     let (Ok(key), Ok(signature)) = (key.try_into(), signature.try_into()) else {
         return Err("a key or signature of the wrong length".into());
     };
+    let media = match media {
+        Some(media) if media.len() > easynotes_core::compaction::MAX_LIVE_OBJECTS => {
+            return Err("too many objects in the live list".into());
+        }
+        Some(media) => Some(
+            media
+                .iter()
+                .map(|object| MediaObjectId::decode(object))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| "a malformed object id in the live list".to_string())?,
+        ),
+        None => None,
+    };
     let proposal = Proposal {
         covers,
         base: &base,
+        media: media.as_deref(),
         key,
         signature,
     };
     let _append = state.append_lock(note).await;
-    match state.store.compact(note, &proposal).await {
+    let now = crate::auth::unix_now() as i64;
+    match state
+        .store
+        .compact(note, &proposal, &state.media.limits, now)
+        .await
+    {
         Ok(Ok(seq)) => {
             state.broadcast(note, seq, base);
+            // A compaction is what dooms objects, so it is also when the
+            // ones doomed long enough ago go. A failure here is the next
+            // sweep's to finish, not a reason to refuse a base already kept.
+            if let Some(blobs) = &state.media.blobs {
+                if let Err(e) = crate::media::expire(state, blobs).await {
+                    tracing::warn!(error = %e, "could not sweep media after a compaction");
+                }
+            }
             Ok(seq)
         }
         Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),

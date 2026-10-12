@@ -16,7 +16,7 @@ use crate::media::{Geometry, MediaLimits, MediaRow, Reserved};
 use crate::protocol::RequestState;
 use crate::quota::{self, Limits, Proposal, Refusal, Topic};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// One stored envelope.
@@ -68,10 +68,18 @@ pub trait RelayStore: Send + Sync + 'static {
     /// Compact a note to a base, if [`quota::authorise`] allows it: drop every
     /// envelope at or below `covers` that is not a kept package, and store the
     /// base as a new envelope at the head. Returns the base's sequence number.
+    ///
+    /// With a live list, in the same transaction, the topic's committed
+    /// objects are sorted by it (ADR 0027 §5): a listed one is no longer
+    /// doomed; an unlisted one committed or asked about within
+    /// `media.fresh_secs` of `now` is left alone; any other unlisted one is
+    /// doomed at `now`, if it is not already.
     async fn compact(
         &self,
         note: &str,
         proposal: &Proposal<'_>,
+        media: &MediaLimits,
+        now: i64,
     ) -> Result<std::result::Result<i64, Refusal>>;
 
     /// A note's bookkeeping. The default for a note the store has never seen.
@@ -176,7 +184,10 @@ pub trait RelayStore: Send + Sync + 'static {
 
     async fn media(&self, note: &str, object: &str) -> Result<Option<MediaRow>>;
 
-    /// A chunk arrived: the upload is not abandoned.
+    /// Something wants this object: a chunk arrived, its status was asked
+    /// for, it was committed, or a doomed one was fetched. An upload is not
+    /// abandoned, a committed object is fresh again, and a doomed one is not
+    /// doomed any more.
     async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()>;
 
     /// Record an object as committed under `digest`.
@@ -185,6 +196,10 @@ pub trait RelayStore: Send + Sync + 'static {
     /// Delete every uncommitted reservation last touched before `before`, and
     /// say which, so their bytes can go too.
     async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>>;
+
+    /// Delete every object doomed before `before`, and say which, so their
+    /// bytes can go too (ADR 0027 §5).
+    async fn sweep_media(&self, before: i64) -> Result<Vec<(String, String)>>;
 
     /// How much the relay holds, for monitoring ([`crate::metrics`]). The
     /// same sums the ceilings are enforced on, so an alert on them fires
@@ -206,9 +221,14 @@ pub struct Usage {
     pub notes: u64,
     /// Live log bytes: what the storage ceiling is measured against.
     pub log_bytes: u64,
-    /// Committed attachment objects, and their sealed bytes.
+    /// Committed attachment objects, doomed ones included, and the sealed
+    /// bytes of those that are not doomed.
     pub media_objects: u64,
     pub media_committed_bytes: u64,
+    /// Bytes of committed objects no compaction lists any more, waiting to be
+    /// deleted (ADR 0027 §5). Not counted against their note; counted against
+    /// the media ceiling until they go.
+    pub media_doomed_bytes: u64,
     /// Bytes reserved by uploads not yet committed. They count against the
     /// media ceiling as committed bytes do.
     pub media_reserved_bytes: u64,
@@ -293,6 +313,8 @@ struct Log {
 struct MediaMeta {
     row: MediaRow,
     touched: i64,
+    /// When no compaction listed it any more; `row.doomed` is read off this.
+    doomed_at: Option<i64>,
 }
 
 #[derive(Default, Clone)]
@@ -399,6 +421,8 @@ impl RelayStore for MemoryStore {
         &self,
         note: &str,
         proposal: &Proposal<'_>,
+        limits: &MediaLimits,
+        now: i64,
     ) -> Result<std::result::Result<i64, Refusal>> {
         let mut notes = self.notes.lock().unwrap();
         let Some(log) = notes.get_mut(note) else {
@@ -434,6 +458,21 @@ impl RelayStore for MemoryStore {
         let loose = log.rows.iter().filter(|r| !r.keep);
         topic.loose_envelopes = loose.clone().count() as u64;
         topic.loose_bytes = loose.map(|r| r.stored.envelope.len() as u64).sum();
+        // Under the notes lock still, which a reservation takes first too.
+        if let Some(live) = proposal.media {
+            let live: HashSet<String> = live.iter().map(|o| o.encode()).collect();
+            let fresh = now - limits.fresh_secs;
+            for ((n, object), m) in self.media.lock().unwrap().iter_mut() {
+                if n != note || m.row.committed.is_none() {
+                    continue;
+                }
+                if live.contains(object) {
+                    m.doomed_at = None;
+                } else if m.touched < fresh {
+                    m.doomed_at.get_or_insert(now);
+                }
+            }
+        }
         Ok(Ok(seq))
     }
 
@@ -480,7 +519,7 @@ impl RelayStore for MemoryStore {
         }
         let in_note: u64 = media
             .iter()
-            .filter(|((n, _), _)| n == note)
+            .filter(|((n, _), m)| n == note && m.doomed_at.is_none())
             .map(|(_, m)| m.row.geometry.sealed_len)
             .sum();
         if in_note + geometry.sealed_len > limits.note_bytes {
@@ -498,8 +537,10 @@ impl RelayStore for MemoryStore {
                 row: MediaRow {
                     geometry,
                     committed: None,
+                    doomed: false,
                 },
                 touched: now,
+                doomed_at: None,
             },
         );
         Ok(Reserved::New)
@@ -509,7 +550,10 @@ impl RelayStore for MemoryStore {
         let media = self.media.lock().unwrap();
         Ok(media
             .get(&(note.to_string(), object.to_string()))
-            .map(|m| m.row.clone()))
+            .map(|m| MediaRow {
+                doomed: m.doomed_at.is_some(),
+                ..m.row.clone()
+            }))
     }
 
     async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()> {
@@ -520,6 +564,7 @@ impl RelayStore for MemoryStore {
             .get_mut(&(note.to_string(), object.to_string()))
         {
             m.touched = now;
+            m.doomed_at = None;
         }
         Ok(())
     }
@@ -549,6 +594,19 @@ impl RelayStore for MemoryStore {
         Ok(expired)
     }
 
+    async fn sweep_media(&self, before: i64) -> Result<Vec<(String, String)>> {
+        let mut media = self.media.lock().unwrap();
+        let swept: Vec<(String, String)> = media
+            .iter()
+            .filter(|(_, m)| m.doomed_at.is_some_and(|at| at < before))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &swept {
+            media.remove(key);
+        }
+        Ok(swept)
+    }
+
     async fn usage(&self) -> Result<Usage> {
         let mut usage = Usage::default();
         for log in self.notes.lock().unwrap().values() {
@@ -560,7 +618,11 @@ impl RelayStore for MemoryStore {
         for m in self.media.lock().unwrap().values() {
             if m.row.committed.is_some() {
                 usage.media_objects += 1;
-                usage.media_committed_bytes += m.row.geometry.sealed_len;
+                if m.doomed_at.is_some() {
+                    usage.media_doomed_bytes += m.row.geometry.sealed_len;
+                } else {
+                    usage.media_committed_bytes += m.row.geometry.sealed_len;
+                }
             } else {
                 usage.media_reserved_bytes += m.row.geometry.sealed_len;
             }
@@ -851,11 +913,18 @@ pub struct Migration {
 /// last of its instances stops. So a migration may add a table, a column with
 /// a default, or an index; only a later release, once no instance of the one
 /// that used it can still be running, may drop or repurpose one.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "media_doomed",
+        sql: include_str!("../migrations/0002_media_doomed.sql"),
+    },
+];
 
 #[async_trait]
 impl RelayStore for PostgresStore {
@@ -953,6 +1022,8 @@ impl RelayStore for PostgresStore {
         &self,
         note: &str,
         proposal: &Proposal<'_>,
+        limits: &MediaLimits,
+        now: i64,
     ) -> Result<std::result::Result<i64, Refusal>> {
         let mut tx = self.pool.begin().await.map_err(pg)?;
         let Some(mut topic) = lock_topic(&mut tx, note).await? else {
@@ -1000,6 +1071,30 @@ impl RelayStore for PostgresStore {
         topic.loose_envelopes = loose as u64;
         topic.loose_bytes = loose_bytes as u64;
         save_topic(&mut tx, note, &topic).await?;
+        if let Some(live) = proposal.media {
+            let live: Vec<String> = live.iter().map(|o| o.encode()).collect();
+            sqlx::query(
+                "UPDATE media_objects SET doomed_at = NULL \
+                 WHERE note_id = $1 AND object_id = ANY($2) AND doomed_at IS NOT NULL",
+            )
+            .bind(note)
+            .bind(&live)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+            sqlx::query(
+                "UPDATE media_objects SET doomed_at = $3 \
+                 WHERE note_id = $1 AND NOT (object_id = ANY($2)) \
+                   AND digest IS NOT NULL AND doomed_at IS NULL AND touched_at < $4",
+            )
+            .bind(note)
+            .bind(&live)
+            .bind(now)
+            .bind(now - limits.fresh_secs)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg)?;
+        }
         tx.commit().await.map_err(pg)?;
         Ok(Ok(topic.head))
     }
@@ -1044,13 +1139,16 @@ impl RelayStore for PostgresStore {
 
     async fn usage(&self) -> Result<Usage> {
         // One statement, so the numbers are from one snapshot.
-        let (notes, log_bytes, objects, committed, reserved): (i64, i64, i64, i64, i64) =
+        let (notes, log_bytes, objects, committed, doomed, reserved): (i64, i64, i64, i64, i64, i64) =
             sqlx::query_as(
                 "SELECT \
                    (SELECT count(*) FROM note_head WHERE NOT gone), \
                    (SELECT COALESCE(sum(live_bytes), 0)::BIGINT FROM note_head), \
                    (SELECT count(*) FROM media_objects WHERE digest IS NOT NULL), \
-                   (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE digest IS NOT NULL), \
+                   (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+                      WHERE digest IS NOT NULL AND doomed_at IS NULL), \
+                   (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+                      WHERE doomed_at IS NOT NULL), \
                    (SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE digest IS NULL)",
             )
             .fetch_one(&self.pool)
@@ -1061,6 +1159,7 @@ impl RelayStore for PostgresStore {
             log_bytes: log_bytes as u64,
             media_objects: objects as u64,
             media_committed_bytes: committed as u64,
+            media_doomed_bytes: doomed as u64,
             media_reserved_bytes: reserved as u64,
         })
     }
@@ -1383,7 +1482,8 @@ impl RelayStore for PostgresStore {
             });
         }
         let (in_note,): (i64,) = sqlx::query_as(
-            "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects WHERE note_id = $1",
+            "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+             WHERE note_id = $1 AND doomed_at IS NULL",
         )
         .bind(note)
         .fetch_one(&mut *tx)
@@ -1419,22 +1519,23 @@ impl RelayStore for PostgresStore {
     }
 
     async fn media(&self, note: &str, object: &str) -> Result<Option<MediaRow>> {
-        let row: Option<(i64, i32, Option<Vec<u8>>)> = sqlx::query_as(
-            "SELECT sealed_len, chunk_size, digest FROM media_objects \
-             WHERE note_id = $1 AND object_id = $2",
+        let row: Option<(i64, i32, Option<Vec<u8>>, bool)> = sqlx::query_as(
+            "SELECT sealed_len, chunk_size, digest, doomed_at IS NOT NULL \
+             FROM media_objects WHERE note_id = $1 AND object_id = $2",
         )
         .bind(note)
         .bind(object)
         .fetch_optional(&self.pool)
         .await
         .map_err(pg)?;
-        row.map(|(sealed_len, chunk_size, digest)| {
+        row.map(|(sealed_len, chunk_size, digest, doomed)| {
             Ok(MediaRow {
                 geometry: Geometry {
                     sealed_len: sealed_len as u64,
                     chunk_size: chunk_size as u32,
                 },
                 committed: digest.map(key32).transpose()?,
+                doomed,
             })
         })
         .transpose()
@@ -1442,7 +1543,8 @@ impl RelayStore for PostgresStore {
 
     async fn touch_media(&self, note: &str, object: &str, now: i64) -> Result<()> {
         sqlx::query(
-            "UPDATE media_objects SET touched_at = $3 WHERE note_id = $1 AND object_id = $2",
+            "UPDATE media_objects SET touched_at = $3, doomed_at = NULL \
+             WHERE note_id = $1 AND object_id = $2",
         )
         .bind(note)
         .bind(object)
@@ -1471,6 +1573,16 @@ impl RelayStore for PostgresStore {
         sqlx::query_as(
             "DELETE FROM media_objects WHERE digest IS NULL AND touched_at < $1 \
              RETURNING note_id, object_id",
+        )
+        .bind(before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(pg)
+    }
+
+    async fn sweep_media(&self, before: i64) -> Result<Vec<(String, String)>> {
+        sqlx::query_as(
+            "DELETE FROM media_objects WHERE doomed_at < $1 RETURNING note_id, object_id",
         )
         .bind(before)
         .fetch_all(&self.pool)

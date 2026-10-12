@@ -468,7 +468,7 @@ async fn a_member_compacts_a_shared_note_and_the_removed_one_cannot() {
     let base = easynotes_core::crypto::Envelope::seal(&stranger, note, &old_key, 1, b"nothing")
         .unwrap()
         .encode();
-    let request = easynotes_core::compaction::Request::sign(note, &old_key, head, base);
+    let request = easynotes_core::compaction::Request::sign(note, &old_key, head, base, None);
     sync.compact(note, &request).await.unwrap();
     let refused = tokio::time::timeout(PATIENCE, async {
         loop {

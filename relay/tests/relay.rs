@@ -1099,6 +1099,8 @@ impl RelayStore for Unreachable {
         &self,
         _: &str,
         _: &easynotes_relay::quota::Proposal<'_>,
+        _: &easynotes_relay::MediaLimits,
+        _: i64,
     ) -> easynotes_relay::error::Result<Result<i64, easynotes_relay::quota::Refusal>> {
         gone()
     }
@@ -1215,6 +1217,9 @@ impl RelayStore for Unreachable {
         gone()
     }
     async fn expire_media(&self, _: i64) -> easynotes_relay::error::Result<Vec<(String, String)>> {
+        gone()
+    }
+    async fn sweep_media(&self, _: i64) -> easynotes_relay::error::Result<Vec<(String, String)>> {
         gone()
     }
     async fn check(&self) -> easynotes_relay::error::Result<()> {
