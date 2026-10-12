@@ -63,10 +63,19 @@ fi
 envelopes=$(psql -d "$scratch" -At -c 'SELECT count(*) FROM note_log')
 
 # What the dump says is committed: "<note>/<object> <sealed bytes> <sha256>".
-# A reservation still uploading (no digest) has nothing to find yet.
+# A reservation still uploading (no digest) has nothing to find yet. Nor has a
+# doomed object (ADR 0027 §5): nothing lists it any more, and the relay may
+# have deleted its bytes between the dump and the archive. A dump from before
+# the relay could doom anything has no `doomed_at` to ask about.
+doomed=
+if [ "$(psql -d "$scratch" -At -c "
+    SELECT count(*) FROM information_schema.columns
+    WHERE table_name = 'media_objects' AND column_name = 'doomed_at'")" = 1 ]; then
+    doomed='AND doomed_at IS NULL'
+fi
 psql -d "$scratch" -At -F ' ' -c "
     SELECT note_id || '/' || object_id, sealed_len, encode(digest, 'hex')
-    FROM media_objects WHERE digest IS NOT NULL ORDER BY 1" > "$work/expected"
+    FROM media_objects WHERE digest IS NOT NULL $doomed ORDER BY 1" > "$work/expected"
 
 # What the archive holds, from its listing: "<note>/<object> <bytes>". The
 # archive's paths are media/objects/<note>/<object>; parts and tmp are not
