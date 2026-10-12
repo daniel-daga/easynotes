@@ -774,6 +774,15 @@ impl Statuses {
         self.existing(note, |status| status.tx.get().state)
     }
 
+    /// Synced, with nothing of this device's waiting for the relay.
+    fn acknowledged(&self, note: NoteId) -> bool {
+        self.existing(note, |status| {
+            let now = status.tx.get();
+            now.state == SyncState::Synced && now.pending == 0
+        })
+        .unwrap_or(false)
+    }
+
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
         let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
@@ -1447,6 +1456,14 @@ impl TransferPeer for MediaPeer {
             Some(SyncState::Connecting | SyncState::Online) => Reach::Connected,
             _ => Reach::Offline,
         }
+    }
+
+    fn acknowledged(&self, note: NoteId) -> bool {
+        self.local
+            || self
+                .shared()
+                .ok()
+                .is_some_and(|s| s.statuses.acknowledged(note))
     }
 
     fn publish(
@@ -3655,12 +3672,21 @@ impl Note {
     /// first. The queue's [`Library::transfers`] says where each one is.
     pub async fn pending_attachments(&self) -> Result<Vec<AttachmentView>, String> {
         let store = self.shared.media_store().await?;
-        Ok(self
-            .staged(&store)
-            .await?
-            .iter()
-            .map(|s| AttachmentView::of(s.id, &s.media, String::new(), true))
-            .collect())
+        let staged = self.staged(&store).await?;
+        // A record outlives its publication until the relay has the
+        // descriptor (ADR 0027 §5); by then the note draws it, and it is not
+        // pending any more.
+        let mut core = self.shared.locked()?;
+        let mut pending = Vec::new();
+        for s in &staged {
+            if matches!(
+                core.attachment_state(self.id, s.id),
+                Ok(AttachmentState::Pending)
+            ) {
+                pending.push(AttachmentView::of(s.id, &s.media, String::new(), true));
+            }
+        }
+        Ok(pending)
     }
 
     /// An attachment's bytes, decrypted: its thumbnail, or the whole file.
@@ -3735,6 +3761,9 @@ impl Note {
         };
         if let Some((envelope, media)) = removed {
             self.send(envelope, false);
+            // A base after the removal is what lets the relay free its bytes,
+            // and what takes its key out of the relay's log (ADR 0027 §5).
+            self.shared.with_connection(self.id, Connection::reclaim);
             let store = self.shared.media_store().await?;
             return store
                 .remove(self.id, &media)

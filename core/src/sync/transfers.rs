@@ -77,6 +77,13 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(120);
 /// the app's [`kick`](TransferQueue::kick) on a status change was missed.
 const RECHECK: Duration = Duration::from_secs(5);
 
+/// How often an upload whose descriptor the relay has not acknowledged yet
+/// asks the relay again about its bytes. Half the day for which the relay
+/// leaves a committed or asked-about object alone, so that a device away for
+/// longer finds a doom cancelled, or the bytes gone and sends them again,
+/// before anyone else has to (ADR 0027 §5).
+const REVOUCH: Duration = Duration::from_secs(12 * 60 * 60);
+
 /// How long a token is used for. The relay's last fifteen minutes; this leaves
 /// room for a long upload that started with one.
 const TOKEN_LIFE: Duration = Duration::from_secs(10 * 60);
@@ -109,6 +116,13 @@ pub trait TransferPeer: DeviceSigner + Send + Sync + 'static {
     fn attachment(&self, note: NoteId, id: AttachmentId) -> Result<Option<Media>>;
 
     fn reach(&self, note: NoteId) -> Reach;
+
+    /// Whether the relay has every edit this device made to the note: synced,
+    /// and nothing of this device's waiting to be acknowledged. What an
+    /// upload's record waits for after publishing, since until then its
+    /// descriptor may not be on the relay, and nothing there names its bytes
+    /// (ADR 0027 §5).
+    fn acknowledged(&self, note: NoteId) -> bool;
 
     /// Put the descriptor into the note — `NoteCore::add_attachment` — and hand
     /// the envelope to the engine, as any edit is handed.
@@ -261,6 +275,10 @@ impl Progress {
 struct Job {
     /// The record an upload publishes; `None` for a download.
     staged: Option<Staged>,
+    /// When an upload last ran to a commit, on [`now`]'s clock: that is when
+    /// the relay last heard that this device wants its bytes. `None` before
+    /// the first run since launch.
+    vouched: Option<Duration>,
     failures: u32,
     /// On [`now`]'s clock.
     not_before: Option<Duration>,
@@ -272,6 +290,7 @@ impl Job {
     fn new(staged: Option<Staged>) -> Self {
         Self {
             staged,
+            vouched: None,
             failures: 0,
             not_before: None,
             failed: false,
@@ -501,10 +520,32 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
                 };
                 match self.peer.attachment_state(note, id) {
                     Err(e) => Step::Retry(e.to_string()),
-                    Ok(AttachmentState::Live) => {
-                        let _ = self.store.settle(id).await;
-                        Step::Done
-                    }
+                    // Published. Settled once the relay has the descriptor;
+                    // until then, its bytes are this device's to vouch for.
+                    Ok(AttachmentState::Live) => match self.peer.reach(note) {
+                        Reach::LocalOnly => {
+                            let _ = self.store.settle(id).await;
+                            Step::Done
+                        }
+                        _ if self.peer.acknowledged(note) => {
+                            let _ = self.store.settle(id).await;
+                            Step::Done
+                        }
+                        Reach::Synced if self.http_base.is_some() => {
+                            let vouched = self.jobs.get(&transfer).and_then(|j| j.vouched);
+                            if vouched.is_some_and(|at| now() < at + REVOUCH) {
+                                Step::Wait
+                            } else if room {
+                                // The same upload: three calls and no bytes
+                                // for an object the relay still has, and the
+                                // whole object again for one it has deleted.
+                                Step::Start
+                            } else {
+                                Step::Wait
+                            }
+                        }
+                        _ => Step::Wait,
+                    },
                     Ok(AttachmentState::Removed | AttachmentState::NoNote) => {
                         let _ = self.store.discard(&staged).await;
                         Step::Done
@@ -553,12 +594,16 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
             .peer
             .publish(staged.note, staged.id, staged.media.clone())
         {
-            Ok(()) => {
-                // Published and not settled is the state §3 recovers from: the
-                // next scan finds the record, sees `Live`, and settles it.
+            // Published and not settled is the state §3 recovers from: the next
+            // scan finds the record and sees `Live`. Settled now only where
+            // there is no relay; otherwise once the relay has the descriptor
+            // (`decide`), so that an upload committed and never named on the
+            // relay is still somebody's to vouch for (ADR 0027 §5).
+            Ok(()) if self.peer.reach(staged.note) == Reach::LocalOnly => {
                 let _ = self.store.settle(staged.id).await;
                 Step::Done
             }
+            Ok(()) => Step::Wait,
             Err(e) if permanent(&e) => Step::Fail(e.to_string()),
             Err(e) => Step::Retry(e.to_string()),
         }
@@ -611,6 +656,9 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
     async fn finished(&mut self, transfer: Transfer, result: Result<()>) {
         if let Some(job) = self.jobs.get_mut(&transfer) {
             job.running = false;
+            if result.is_ok() && transfer.direction == Direction::Up {
+                job.vouched = Some(now());
+            }
         }
         if let Err(e) = result {
             self.tokens.forget();
