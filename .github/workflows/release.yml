@@ -22,6 +22,12 @@ name: Release
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to build and draft
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -49,6 +55,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Refuse to start without the signing key and the published details
         env:
@@ -80,8 +88,15 @@ jobs:
       # arrives at the same number.
       - name: Version from the tag
         id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          name="${GITHUB_REF_NAME#v}"
+          tag="$RELEASE_TAG"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release tag must match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          name="${tag#v}"
           IFS=. read -r major minor patch <<< "$name"
           if [ "$minor" -ge 1000 ] || [ "$patch" -ge 1000 ]; then
             echo "::error::minor and patch must be below 1000 for the versionCode scheme"
@@ -232,6 +247,7 @@ jobs:
           cat dist/SHA256SUMS
 
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        if: github.event.repository.visibility == 'public'
         with:
           subject-path: dist/easynotes-*
 
@@ -250,13 +266,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
         run: |
           changelog="fastlane/metadata/android/en-US/changelogs/$VERSION_CODE.txt"
           if [ ! -f "$changelog" ]; then
             echo "::error::no $changelog: write this release's store changelog first"
             exit 1
           fi
-          { cat "$changelog"; echo; echo "Checksums are in SHA256SUMS, and the build provenance is attested."; } > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          { cat "$changelog"; echo; if [ "$REPOSITORY_VISIBILITY" = public ]; then echo "Build provenance is attested."; else echo "Build provenance attestation is unavailable for private repositories."; fi; echo "Checksums are in SHA256SUMS."; } > "$RUNNER_TEMP/notes.md"
+          gh release create "$RELEASE_TAG" dist/* \
             --draft --verify-tag --title "EasyNotes $VERSION_NAME" \
             --notes-file "$RUNNER_TEMP/notes.md"
