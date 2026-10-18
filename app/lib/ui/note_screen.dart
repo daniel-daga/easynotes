@@ -127,6 +127,9 @@ class _NoteScreenState extends State<NoteScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_startEmptyChecklist());
+    });
     _viewWatch = widget.core.watch().listen((_) => _refreshPending());
     _transferWatch = widget.library?.watchTransfers().listen((transfers) {
       if (!mounted) return;
@@ -405,19 +408,41 @@ class _NoteScreenState extends State<NoteScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _addListEntry() async {
-    final id = await widget.core.addItem('');
-    _newBlankItems.add(id);
-    final items = widget.core.current.items;
-    final itemIndex = items.indexWhere((item) => item.id == id);
-    if (itemIndex < 0) return;
+  /// Seed only on opening a checklist or switching to it. An empty view after
+  /// someone deletes the last item must stay empty, including on stream updates.
+  Future<void> _startEmptyChecklist() async {
+    final note = widget.core.current;
+    if (note.kind == NoteKind.checklist && note.items.isEmpty) {
+      await _addListEntry();
+    }
+  }
 
-    // Keep a new unchecked entry at the end of the unchecked group, above the
-    // crossed-off section, even when checked rows were originally interleaved.
-    final firstChecked = items.indexWhere((item) => item.checked);
-    final target = firstChecked < 0 ? items.length - 1 : firstChecked;
-    if (itemIndex != target) await widget.core.moveItem(id, target);
-    _focusForItem(id).requestFocus();
+  Future<void> _toggleKind() async {
+    final kind = widget.core.current.kind == NoteKind.text
+        ? NoteKind.checklist
+        : NoteKind.text;
+    await widget.core.setKind(kind);
+    if (mounted && kind == NoteKind.checklist) await _startEmptyChecklist();
+  }
+
+  Future<void> _addListEntry() async {
+    _itemWriteStateChanged(true);
+    try {
+      final id = await widget.core.addItem('');
+      _newBlankItems.add(id);
+      final items = widget.core.current.items;
+      final itemIndex = items.indexWhere((item) => item.id == id);
+      if (itemIndex < 0) return;
+
+      // Keep a new unchecked entry at the end of the unchecked group, above the
+      // crossed-off section, even when checked rows were originally interleaved.
+      final firstChecked = items.indexWhere((item) => item.checked);
+      final target = firstChecked < 0 ? items.length - 1 : firstChecked;
+      if (itemIndex != target) await widget.core.moveItem(id, target);
+      if (mounted) _focusForItem(id).requestFocus();
+    } finally {
+      _itemWriteStateChanged(false);
+    }
   }
 
   /// Share: the first time, set up an account and a name, then straight on
@@ -628,15 +653,7 @@ class _NoteScreenState extends State<NoteScreen> {
       buildDefaultDragHandles: false,
       padding: const EdgeInsets.only(top: 8, bottom: 16),
       header: note.body.isEmpty
-          ? note.items.isEmpty
-                ? const Center(
-                    key: Key('empty-state'),
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text('Nothing on this checklist yet.'),
-                    ),
-                  )
-                : null
+          ? null
           : Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: _bodyField(note),
@@ -683,8 +700,18 @@ class _NoteScreenState extends State<NoteScreen> {
               key: const Key('add-list-entry'),
               contentPadding: const EdgeInsets.symmetric(horizontal: 8),
               minLeadingWidth: 0,
-              leading: const SizedBox(width: 88),
-              title: const Text('+ Checklist item'),
+              leading: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(width: 40),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: Icon(Icons.add),
+                  ),
+                ],
+              ),
+              title: const Text('Checklist item'),
               onTap: _addListEntry,
             ),
           );
@@ -815,9 +842,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 onAttach: _addAttachment,
                 onSend: () => _shareContent(widget.core.current),
                 isText: isText,
-                onKindToggle: () => widget.core.setKind(
-                  isText ? NoteKind.checklist : NoteKind.text,
-                ),
+                onKindToggle: _toggleKind,
               )
             : _NoteToolbar(
                 onAttach: _addAttachment,
@@ -825,9 +850,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 note: summary,
                 library: library,
                 isText: isText,
-                onKindToggle: () => widget.core.setKind(
-                  isText ? NoteKind.checklist : NoteKind.text,
-                ),
+                onKindToggle: _toggleKind,
                 onLabels: widget.onLabels,
                 onReminders: widget.onReminders,
                 onTrash: () async {

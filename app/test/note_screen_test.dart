@@ -172,26 +172,100 @@ void main() {
 
     expect(find.text('Groceries'), findsOneWidget);
     expect(visibleItems(tester), ['milk', 'bread', 'eggs']);
+    expect(core.edits, isEmpty);
+    expect(focusedFieldText(tester), isNull);
   });
 
-  testWidgets('shows an empty state when there is nothing on the list', (
+  testWidgets('an empty checklist starts with one focused blank item', (
     tester,
   ) async {
-    await pumpScreen(tester, FakeNoteCore());
-    expect(find.byKey(const Key('empty-state')), findsOneWidget);
+    final core = FakeNoteCore();
+    await pumpScreen(tester, core);
+
+    expect(core.edits, ['addItem()']);
+    expect(visibleItems(tester), ['']);
+    expect(focusedFieldText(tester), '');
+    expect(find.byKey(const Key('empty-state')), findsNothing);
+
+    await core.setTitle('Groceries');
+    await tester.pumpAndSettle();
+    expect(core.current.items, hasLength(1));
+    expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
+  });
+
+  testWidgets('deleting the last item leaves a blank list until Add is tapped', (
+    tester,
+  ) async {
+    final core = FakeNoteCore();
+    await pumpScreen(tester, core);
+    final id = core.current.items.single.id;
+
+    await tester.tap(find.byKey(Key('delete:$id')));
+    await tester.pumpAndSettle();
+    await core.setTitle('Still empty');
+    await tester.pumpAndSettle();
+
+    expect(core.current.items, isEmpty);
+    expect(visibleItems(tester), isEmpty);
+    expect(find.byType(Checkbox), findsNothing);
+    expect(find.byKey(const Key('empty-state')), findsNothing);
+    expect(find.text('Nothing on this checklist yet.'), findsNothing);
+    expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
+
+    await tester.tap(find.byKey(const Key('add-list-entry')));
+    await tester.pumpAndSettle();
+    expect(visibleItems(tester), ['']);
+    expect(focusedFieldText(tester), '');
+  });
+
+  testWidgets('the add icon lines up with checkboxes and its label with text', (
+    tester,
+  ) async {
+    for (final direction in TextDirection.values) {
+      final core = FakeNoteCore(items: const ['milk']);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Directionality(
+            textDirection: direction,
+            child: NoteScreen(
+              key: UniqueKey(),
+              core: core,
+              storage: FakeStorageHealth(),
+              noteId: 'this-note',
+              invites: FakeNoteLibrary()..setUpSharing(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final add = find.descendant(
+        of: find.byKey(const Key('add-list-entry')),
+        matching: find.byIcon(Icons.add),
+      );
+      expect(
+        tester.getCenter(add).dx,
+        tester.getCenter(find.byType(Checkbox)).dx,
+      );
+      final text = find.byKey(Key('text:${core.current.items.single.id}'));
+      expect(
+        tester.getRect(find.text('Checklist item')).left,
+        tester.getRect(text).left,
+      );
+    }
   });
 
   testWidgets('adding an entry makes a blank item, focused, saved as typed', (
     tester,
   ) async {
-    final core = FakeNoteCore();
+    final core = FakeNoteCore(items: const ['milk']);
     await pumpScreen(tester, core);
 
     await tester.tap(find.byKey(const Key('add-list-entry')));
     await tester.pumpAndSettle();
 
     expect(core.edits, ['addItem()']);
-    final id = core.current.items.single.id;
+    final id = core.current.items.last.id;
     expect(
       tester.widget<TextField>(find.byKey(Key('text:$id'))).focusNode!.hasFocus,
       isTrue,
@@ -201,7 +275,7 @@ void main() {
     await tester.enterText(find.byKey(Key('text:$id')), 'asparagus');
     await tester.pumpAndSettle();
     expect(core.edits, contains('setItemText($id, asparagus)'));
-    expect(visibleItems(tester), ['asparagus']);
+    expect(visibleItems(tester), ['milk', 'asparagus']);
   });
 
   testWidgets('an entry left blank is gone when the note is closed', (
@@ -231,8 +305,6 @@ void main() {
     await tester.tap(find.byKey(const Key('open')));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('add-list-entry')));
-    await tester.pumpAndSettle();
     final id = core.current.items.single.id;
     await tester.enterText(find.byKey(Key('text:$id')), '   ');
     await tester.pumpAndSettle();
@@ -740,6 +812,22 @@ void main() {
   group('text notes', () {
     TextField bodyField(WidgetTester tester) =>
         tester.widget<TextField>(find.byKey(const Key('body-text')));
+
+    testWidgets('switching an empty text note to checkboxes focuses one item', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(kind: NoteKind.text);
+      await pumpScreen(tester, core);
+      expect(core.edits, isEmpty);
+      expect(visibleItems(tester), isEmpty);
+
+      await tester.tap(find.byKey(const Key('kind-toggle')));
+      await tester.pumpAndSettle();
+
+      expect(core.edits, ['setKind(checklist)', 'addItem()']);
+      expect(visibleItems(tester), ['']);
+      expect(focusedFieldText(tester), '');
+    });
 
     testWidgets('a text note is a body, with no list under it', (tester) async {
       await pumpScreen(
