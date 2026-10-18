@@ -16,10 +16,14 @@
 # and the comment together; pin a new action the same way. The toolchain
 # action has no releases, only a `v1` tag that follows its default branch, and
 # picks the Rust channel from its `toolchain` input rather than from the ref.
+# Dependabot version update PRs are temporarily paused. Set each
+# open-pull-requests-limit back above zero to resume them. Security updates
+# are managed separately in the repository settings.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -32,6 +36,7 @@ updates:
 
   - package-ecosystem: pub
     directory: /app
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
@@ -43,6 +48,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    open-pull-requests-limit: 0
     schedule:
       interval: weekly
     groups:
