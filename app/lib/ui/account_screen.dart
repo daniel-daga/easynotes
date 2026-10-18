@@ -36,9 +36,13 @@ class AccountScreen extends StatefulWidget {
     this.ask,
     this.profile,
     this.onDeleted,
+    this.embedded = false,
   });
 
   final Accounts library;
+
+  /// Reuse the recovery and account controls inside Sync & devices.
+  final bool embedded;
 
   /// What the app does once the account is deleted: open this profile again,
   /// empty. Called after this screen has closed itself.
@@ -165,15 +169,13 @@ class _AccountScreenState extends State<AccountScreen> {
   @override
   Widget build(BuildContext context) {
     final has = widget.library.hasAccount;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Your devices')),
-      body: ListView(
-        padding: const EdgeInsets.all(24),
-        children: [
+    final children = <Widget>[
           ...has
               ? [
-                  Icon(Icons.devices, size: 48),
-                  SizedBox(height: 16),
+                  if (!widget.embedded) ...[
+                    Icon(Icons.devices, size: 48),
+                    SizedBox(height: 16),
+                  ],
                   Text(
                     'This device belongs to your account.',
                     key: Key('account-yes'),
@@ -184,7 +186,9 @@ class _AccountScreenState extends State<AccountScreen> {
                   // that nobody goes looking for the button.
                   Text(
                     'Your notes, colours, labels and pins follow you to any '
-                    'device you set up with your recovery phrase. The phrase is '
+                    'device you set up with the same relay and your recovery '
+                    'phrase. Without a relay, this collection stays on this '
+                    'device. The phrase is '
                     'not kept anywhere, so it cannot be shown again — the copy '
                     'you wrote down is the only one.',
                   ),
@@ -207,17 +211,22 @@ class _AccountScreenState extends State<AccountScreen> {
                   ),
                 ]
               : [
-                  const Icon(Icons.phone_android, size: 48),
-                  const SizedBox(height: 16),
+                  if (!widget.embedded) ...[
+                    const Icon(Icons.phone_android, size: 48),
+                    const SizedBox(height: 16),
+                  ],
                   Text(
-                    'This device is on its own.',
+                    'Access on other devices is not set up.',
                     key: Key('account-no'),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Set up an account to have your notes on your other devices '
-                    'too. There is no password and no email: your account is '
+                  Text(
+                    '${widget.profile?.url == null ? 'A relay carries encrypted notes between devices. ' : 'Your relay stores and forwards encrypted notes. '}'
+                    'Create an account so your devices can find and unlock '
+                    'the same notes, or recover them if you lose this device. '
+                    'You need the same relay and your recovery phrase. '
+                    'There is no password and no email: your account is '
                     'twelve words, which you write down once. Anyone with the '
                     'words has your notes, and without them nobody can get them '
                     'back — not even us.',
@@ -226,34 +235,55 @@ class _AccountScreenState extends State<AccountScreen> {
                   FilledButton.icon(
                     key: const Key('create-account-button'),
                     icon: const Icon(Icons.key),
-                    label: const Text('Set up an account'),
+                    label: const Text('Create account'),
                     onPressed: _busy ? null : _create,
                   ),
                   const SizedBox(height: 12),
                   OutlinedButton.icon(
                     key: const Key('adopt-account-button'),
                     icon: const Icon(Icons.edit_note),
-                    label: const Text('I already have twelve words'),
+                    label: const Text('Use recovery phrase'),
                     onPressed: _busy ? null : _adopt,
                   ),
                 ],
-          if (widget.profile case final profile?) ...[
+          if (!widget.embedded && widget.profile != null) ...[
             const SizedBox(height: 24),
             ListTile(
               key: const Key('account-relay'),
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.dns_outlined),
-              title: Text(profile.label),
+              title: Text(widget.profile!.label),
               subtitle: Text(
-                profile.url == null
+                widget.profile!.url == null
                     ? 'Not using a relay. An account here stays on this '
-                          'device until you choose a relay in Relay settings.'
+                          'device until you move this collection to a relay '
+                          'in Sync & devices.'
                     : 'This account is kept on this relay. To use it on '
                           'another device, choose the same relay there first.',
               ),
             ),
           ],
-          const Divider(height: 48),
+          if (!widget.embedded) const Divider(height: 48),
+          if (widget.embedded)
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Account settings'),
+              children: [_deleteTile(has)],
+            )
+          else
+            _deleteTile(has),
+          if (_busy) const LinearProgressIndicator(),
+        ];
+    if (widget.embedded) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
+    }
+    return Scaffold(
+      appBar: AppBar(title: const Text('Your devices')),
+      body: ListView(padding: const EdgeInsets.all(24), children: children),
+    );
+  }
+
+  Widget _deleteTile(bool has) =>
           ListTile(
             key: const Key('delete-account'),
             contentPadding: EdgeInsets.zero,
@@ -273,12 +303,7 @@ class _AccountScreenState extends State<AccountScreen> {
                         'note from this device',
             ),
             onTap: _delete,
-          ),
-          if (_busy) const LinearProgressIndicator(),
-        ],
-      ),
-    );
-  }
+          );
 }
 
 /// The twelve words, once, and then the check that they were written down.
@@ -809,3 +834,4 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
     );
   }
 }
+

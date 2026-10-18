@@ -28,7 +28,7 @@ import '../core/shared_text.dart';
 import '../core/sync_status.dart';
 import 'about_screen.dart';
 import 'attachments.dart';
-import 'account_screen.dart';
+import 'sync_devices_screen.dart';
 import 'invites.dart';
 import 'motion.dart';
 import 'note_appearance.dart';
@@ -124,6 +124,7 @@ class NoteListScreen extends StatefulWidget {
     RelayProfiles? profiles,
     this.onSwitchRelay = _ignoreRelaySwitch,
     this.onSetAccess,
+    this.onMoveLocalToRelay,
     this.onAccountDeleted,
     this.initialInviteLink,
     this.inviteLinks,
@@ -135,6 +136,7 @@ class NoteListScreen extends StatefulWidget {
   final RelayProfile profile;
   final RelayProfiles profiles;
   final Future<void> Function(String?, {String? access}) onSwitchRelay;
+  final Future<void> Function(String, {String? access})? onMoveLocalToRelay;
 
   /// Keep a new access key for the relay in use and reconnect with it. Null
   /// in tests that do not go there.
@@ -488,13 +490,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// Where this device becomes one of a person's devices. Rebuilt on the way
   /// back, because the drawer's line about it has changed if an account was
   /// made or adopted and nothing streams that.
-  Future<void> _openAccount() async {
+  Future<void> _openSyncDevices() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => AccountScreen(
+        builder: (context) => SyncDevicesScreen(
           library: widget.library,
           profile: widget.profile,
-          onDeleted: widget.onAccountDeleted,
+          onAccountDeleted: widget.onAccountDeleted,
+          onServer: _openRelaySettings,
         ),
       ),
     );
@@ -507,6 +510,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
         profile: widget.profile,
         profiles: widget.profiles.profiles,
         onSwitchRelay: widget.onSwitchRelay,
+        onMoveLocalToRelay: widget.onMoveLocalToRelay,
         onSetAccess: widget.onSetAccess,
       ),
     ),
@@ -739,10 +743,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onChosen: _show,
               onRename: _renameLabel,
               onForget: _forgetLabel,
-              hasAccount: widget.library.hasAccount,
-              onAccount: _openAccount,
+              onSyncDevices: _openSyncDevices,
               profile: widget.profile,
-              onRelaySettings: _openRelaySettings,
               onAbout: _openAbout,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
@@ -1580,10 +1582,8 @@ class _Shelves extends StatelessWidget {
     required this.onChosen,
     required this.onRename,
     required this.onForget,
-    required this.hasAccount,
-    required this.onAccount,
+    required this.onSyncDevices,
     required this.profile,
-    required this.onRelaySettings,
     required this.onAbout,
     required this.onJoin,
     required this.watchSync,
@@ -1602,13 +1602,8 @@ class _Shelves extends StatelessWidget {
   final void Function(Tag) onRename;
   final void Function(Tag) onForget;
 
-  /// Whether this device belongs to an account, which is what the last entry
-  /// says — a device on its own says so, because that is the state a person
-  /// needs to find out about before they lose the phone.
-  final bool hasAccount;
-  final VoidCallback onAccount;
+  final VoidCallback onSyncDevices;
   final RelayProfile profile;
-  final VoidCallback onRelaySettings;
   final VoidCallback onAbout;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
@@ -1705,28 +1700,13 @@ class _Shelves extends StatelessWidget {
               ),
           ],
           const Divider(),
-          SyncStatusTile(watch: watchSync, initial: initialSyncStatus),
-          const Divider(),
-          ListTile(
-            key: const Key('relay-settings-entry'),
-            leading: const Icon(Icons.dns_outlined),
-            title: const Text('Relay settings'),
-            subtitle: Text(profile.label),
+          SyncStatusTile(
+            watch: watchSync,
+            initial: initialSyncStatus,
+            hasRelay: profile.url != null,
             onTap: () {
               Navigator.of(context).pop();
-              onRelaySettings();
-            },
-          ),
-          ListTile(
-            key: const Key('account-entry'),
-            leading: Icon(hasAccount ? Icons.devices : Icons.phone_android),
-            title: const Text('Your devices'),
-            subtitle: Text(
-              hasAccount ? 'Synced to your account' : 'Only on this device',
-            ),
-            onTap: () {
-              Navigator.of(context).pop();
-              onAccount();
+              onSyncDevices();
             },
           ),
           if (onJoin != null)
@@ -2735,3 +2715,4 @@ class _MediaCount extends StatelessWidget {
     );
   }
 }
+

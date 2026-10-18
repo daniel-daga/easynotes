@@ -314,6 +314,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       profile: _session.profile,
       profiles: _session.profiles,
       onSwitchRelay: _session.switchTo,
+      onMoveLocalToRelay: _session.moveLocalToRelay,
       onSetAccess: _session.setAccess,
       onAccountDeleted: _session.reopen,
       initialInviteLink: initialInvite,
@@ -323,3 +324,4 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     );
   }
 }
+

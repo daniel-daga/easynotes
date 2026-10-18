@@ -135,6 +135,54 @@ void main() {
       expect(profiles.profiles, hasLength(2));
     });
 
+    test('moving local notes keeps their store and creates a separate local collection', () async {
+      final profiles = RelayProfiles();
+      await profiles.load();
+      final original = profiles.selected;
+      final key = base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '');
+      final moved = await profiles.moveLocalToRelay('wss://Relay.Example/', access: key);
+      expect(moved.id, original.id);
+      expect(moved.url, 'https://relay.example');
+      expect(moved.access, key);
+      expect(profiles.selected, moved);
+      final local = profiles.profiles.singleWhere((p) => p.url == null);
+      expect(local.id, isNot(original.id));
+      expect(local.access, isNull);
+
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.id, original.id);
+      expect(again.selected.access, key);
+      expect(again.selected.url, moved.url);
+      expect((await again.select(null)).id, local.id);
+      expect((await again.select(moved.url)).id, original.id);
+    });
+
+    test('moving cannot replace a saved relay collection or move a relay again', () async {
+      final profiles = RelayProfiles();
+      await profiles.load();
+      final local = profiles.selected;
+      final saved = await profiles.prepare('https://relay.example');
+      await expectLater(profiles.moveLocalToRelay('https://relay.example'), throwsStateError);
+      expect(profiles.selected.id, local.id);
+      await profiles.activate(saved);
+      await expectLater(profiles.moveLocalToRelay('https://other.example'), throwsStateError);
+      expect(profiles.selected.id, saved.id);
+      expect(profiles.profiles, hasLength(2));
+    });
+
+    test('an invalid access key does not move the local collection', () async {
+      final profiles = RelayProfiles();
+      await profiles.load();
+      final local = profiles.selected;
+      await expectLater(profiles.moveLocalToRelay('https://relay.example', access: 'bad'), throwsFormatException);
+      expect(profiles.selected, local);
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.url, isNull);
+      expect(again.profiles, hasLength(1));
+    });
+
     test('different relays get different profiles', () async {
       final profiles = RelayProfiles();
       await profiles.load();
@@ -231,3 +279,4 @@ void main() {
     });
   });
 }
+

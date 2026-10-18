@@ -14,11 +14,13 @@ const _relay = RelayProfile(id: 'relay', url: 'https://relay.example');
 void main() {
   late List<String?> switched;
   late List<String?> keys;
+  late List<String> moved;
   Object? failWith;
 
   setUp(() {
     switched = [];
     keys = [];
+    moved = [];
     failWith = null;
   });
 
@@ -37,6 +39,7 @@ void main() {
     List<RelayProfile> profiles = const [_local, _relay],
     bool servedOverHttps = false,
     bool mobileRelease = false,
+    bool offerMove = false,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -49,6 +52,10 @@ void main() {
                   profiles: profiles,
                   onSwitchRelay: onSwitch,
                   onSetAccess: onSetAccess,
+                  onMoveLocalToRelay: offerMove ? (url, {access}) async {
+                    moved.add(url);
+                    if (failWith != null) throw failWith!;
+                  } : null,
                   servedOverHttps: servedOverHttps,
                   mobileRelease: mobileRelease,
                 ),
@@ -89,6 +96,43 @@ void main() {
   ) async {
     await pump(tester);
     await submit(tester, 'https://relay.example:443');
+    expect(find.textContaining('Its saved notes will open'), findsOneWidget);
+  });
+
+  testWidgets('first relay setup can move the current local notes', (tester) async {
+    await pump(tester, offerMove: true);
+    await submit(tester, 'https://new.example');
+    expect(find.byKey(const Key('move-local-notes')), findsOneWidget);
+    expect(find.byKey(const Key('start-empty-collection')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('move-local-notes')));
+    await tester.pumpAndSettle();
+    expect(moved, ['https://new.example']);
+    expect(switched, isEmpty);
+    expect(find.byType(RelaySettingsScreen), findsNothing);
+  });
+
+  testWidgets('starting empty keeps local notes in their own collection', (tester) async {
+    await pump(tester, offerMove: true);
+    await submit(tester, 'https://new.example');
+    await tester.tap(find.byKey(const Key('start-empty-collection')));
+    await tester.pumpAndSettle();
+    expect(switched, ['https://new.example']);
+    expect(moved, isEmpty);
+  });
+
+  testWidgets('cancelling setup neither moves nor switches', (tester) async {
+    await pump(tester, offerMove: true);
+    await submit(tester, 'https://new.example');
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(switched, isEmpty);
+    expect(moved, isEmpty);
+  });
+
+  testWidgets('saved relay collections never offer to move local notes over them', (tester) async {
+    await pump(tester, offerMove: true);
+    await submit(tester, 'https://relay.example');
+    expect(find.byKey(const Key('move-local-notes')), findsNothing);
     expect(find.textContaining('Its saved notes will open'), findsOneWidget);
   });
 
@@ -291,3 +335,4 @@ void main() {
     });
   });
 }
+
