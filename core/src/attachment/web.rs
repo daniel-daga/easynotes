@@ -437,12 +437,17 @@ impl<R: MediaRows> WebMediaStore<R> {
     /// sealed objects already exist; only the durable staging record is added.
     pub async fn restage(&self, staged: &Staged) -> Result<()> {
         staged.media.check()?;
-        self.rows
-            .apply(vec![Change::Put {
-                key: record_key(self.seq.fetch_add(1, Ordering::SeqCst), staged.id),
-                value: seal_record(&self.master, staged)?,
-            }])
-            .await
+        let mut changes: Vec<Change> = self
+            .record_keys(staged.id)
+            .await?
+            .into_iter()
+            .map(|key| Change::Delete { key })
+            .collect();
+        changes.push(Change::Put {
+            key: record_key(self.seq.fetch_add(1, Ordering::SeqCst), staged.id),
+            value: seal_record(&self.master, staged)?,
+        });
+        self.rows.apply(changes).await
     }
 
     async fn record_keys(&self, id: AttachmentId) -> Result<Vec<String>> {
@@ -774,4 +779,3 @@ impl<R: MediaRows> IncomingMedia for WebIncoming<R> {
         Box::pin(WebIncoming::finish(self))
     }
 }
-

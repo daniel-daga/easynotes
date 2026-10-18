@@ -617,6 +617,12 @@ void main() {
       await note.addItem('milk');
       await local.setPinned(id, true);
       await local.addTag(id, 'Home');
+      final reminder = await local.createReminder(
+        noteId: id,
+        fireAt: DateTime.utc(2030, 1, 1),
+        repeat: ReminderRepeat.never,
+        timezone: 'UTC',
+      );
       final photo = _png(8, 8, 3000);
       final attachment = await note.importAttachment('local.png', photo);
       await _until(note.watch(),
@@ -636,6 +642,7 @@ void main() {
       await _untilNotes(restored.watchNotes(),
         (notes) => notes.any((n) => n.id == id && n.pinned && n.tags.any((t) => t.name == 'Home')),
         'the moved collection could not be recovered');
+      expect(restored.reminders.any((r) => r.id == reminder && r.noteId == id), isTrue);
       final copy = await restored.openNote(id);
       addTearDown(copy.dispose);
       await _until(copy.watch(),

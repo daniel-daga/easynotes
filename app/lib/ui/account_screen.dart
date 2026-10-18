@@ -283,27 +283,27 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
-  Widget _deleteTile(bool has) =>
-  ListTile(
-    key: const Key('delete-account'),
-    contentPadding: EdgeInsets.zero,
-    enabled: !_busy,
-    leading: Icon(
-      Icons.delete_forever_outlined,
-      color: Theme.of(context).colorScheme.error,
-    ),
-    title: Text(
-      has ? 'Delete account' : 'Delete everything on this device',
-      style: TextStyle(color: Theme.of(context).colorScheme.error),
-    ),
-    subtitle: Text(
-      widget.profile?.url == null
-          ? 'Removes every note from this device'
-          : 'Removes the lists you made from the relay and every '
-                'note from this device',
-    ),
-    onTap: _delete,
-  );
+  Widget _deleteTile(bool has) => ListTile(
+      key: const Key('delete-account'),
+      contentPadding: EdgeInsets.zero,
+      enabled: !_busy,
+      leading: Icon(
+        Icons.delete_forever_outlined,
+        color: Theme.of(context).colorScheme.error,
+      ),
+      title: Text(
+        has ? 'Delete account' : 'Delete everything on this device',
+        style: TextStyle(color: Theme.of(context).colorScheme.error),
+      ),
+      subtitle: Text(
+        widget.profile?.url == null
+            ? 'Removes every note from this device'
+            : 'Removes the lists you made from the relay and every '
+                  'note from this device',
+      ),
+      onTap: _delete,
+    );
+
 }
 
 /// The twelve words, once, and then the check that they were written down.

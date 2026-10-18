@@ -43,15 +43,23 @@ async fn a_local_attachment_can_be_restaged_durably_in_a_tab() {
     let store = open(&rows, &master).await;
     let note = NoteId::random();
     let photo = png(8, 8, 500);
-    let staged = store.import(note, "local.png", &photo, None,
-        ImportHints::default()).await.unwrap();
+    let staged = store
+        .import(note, "local.png", &photo, None, ImportHints::default())
+        .await
+        .unwrap();
     store.settle(staged.id).await.unwrap();
+    store.restage(&staged).await.unwrap();
     store.restage(&staged).await.unwrap();
     drop(store);
     let reopened = open(&rows, &master).await;
     assert_eq!(reopened.staged().await.unwrap(), vec![staged.clone()]);
-    assert_eq!(reopened.read(note, staged.id, &staged.media,
-        Variant::Original).await.unwrap(), photo);
+    assert_eq!(
+        reopened
+            .read(note, staged.id, &staged.media, Variant::Original)
+            .await
+            .unwrap(),
+        photo
+    );
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -562,4 +570,3 @@ async fn discarding_purging_and_collecting_take_only_what_they_should() {
     store.purge_note(note).await.unwrap();
     assert!(rows.snapshot().is_empty());
 }
-

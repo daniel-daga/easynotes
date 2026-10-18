@@ -20,6 +20,13 @@ class _Library extends FakeNoteLibrary {
   final String name;
   bool disposed = false;
   String? refuseOnDispose;
+  bool refuseConnection = false;
+
+  @override
+  Future<void> connect(String url, {String? access}) async {
+    await super.connect(url, access: access);
+    if (refuseConnection) throw StateError('sync worker unavailable');
+  }
 
   @override
   Future<void> dispose() async {
@@ -171,6 +178,20 @@ void main() {
       expect(local.disposed, isFalse);
       expect(local.calls.where((c) => c.startsWith('connect')), isEmpty);
     }
+  });
+
+  test('a connection failure after a move keeps the collection durable and offline', () async {
+    final local = _Library('local')..refuseConnection = true;
+    final s = session(local);
+    final id = await local.createNote();
+    await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
+    expect(s.profile.url, 'https://relay.example');
+    expect(local.notes.single.id, id);
+    expect(local.disposed, isFalse);
+    final again = RelayProfiles();
+    await again.load();
+    expect(again.selected.id, s.profile.id);
+    expect(again.selected.url, s.profile.url);
   });
 
   test(

@@ -833,4 +833,3 @@ async fn pull<P: TransferPeer, S: MediaStorage>(
     .await?;
     incoming.finish().await
 }
-

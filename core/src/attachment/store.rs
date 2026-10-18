@@ -609,4 +609,3 @@ fn sync_dir(dir: Option<&Path>) -> Result<()> {
     let _ = dir;
     Ok(())
 }
-

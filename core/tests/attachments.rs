@@ -45,16 +45,32 @@ fn a_local_attachment_can_be_restaged_after_restart_without_resealing() {
     let store = MediaStore::open(dir.path(), key.clone()).unwrap();
     let note = NoteId::random();
     let photo = png(8, 8, 500);
-    let staged = store.import(note, "local.png", &photo[..], photo.len() as u64,
-        None, ImportHints::default()).unwrap();
+    let staged = store
+        .import(
+            note,
+            "local.png",
+            &photo[..],
+            photo.len() as u64,
+            None,
+            ImportHints::default(),
+        )
+        .unwrap();
     let sealed = store.read_sealed(note, &staged.media.original).unwrap();
     store.settle(staged.id).unwrap();
     store.restage(&staged).unwrap();
     drop(store);
     let reopened = MediaStore::open(dir.path(), key).unwrap();
     assert_eq!(reopened.staged().unwrap(), vec![staged.clone()]);
-    assert_eq!(reopened.read_sealed(note, &staged.media.original).unwrap(), sealed);
-    assert_eq!(reopened.read(note, staged.id, &staged.media, Variant::Original).unwrap(), photo);
+    assert_eq!(
+        reopened.read_sealed(note, &staged.media.original).unwrap(),
+        sealed
+    );
+    assert_eq!(
+        reopened
+            .read(note, staged.id, &staged.media, Variant::Original)
+            .unwrap(),
+        photo
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -887,4 +903,3 @@ fn the_default_backend_forgets_a_removed_key() {
     assert!(doc.view().attachments.is_empty());
     assert_eq!(AttachmentKind::Image, MediaFormat::Png.kind());
 }
-
