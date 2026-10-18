@@ -201,14 +201,18 @@ just --list           # everything else
 ```
 
 The two-device demo is `just run-relay` in one terminal and `just run-linux` in
-another — twice, if you want two devices. In each app, open the drawer's
-**Relay settings** and enter `http://127.0.0.1:8080` (or the URL of your relay).
+another — twice, if you want two devices. In each app, open the drawer’s
+**Sync & devices → Set up sync** and enter `http://127.0.0.1:8080` (or the URL of your relay).
 The URL is saved in the app, so release builds can choose a relay after
 installation.
 
 On a new install, notes start in **On this device** until a relay is selected.
-Each relay has its own notes and account; switching relays leaves both profiles
-available. To share a list, open it, press the share
+Setup offers to move the current local collection to the new relay or start
+with an empty collection and keep the local notes separate. Moved notes remain
+available offline. Each relay has its own notes and account; switching relays
+leaves both collections available. Relay sync uploads encrypted updates even
+without an account. An account and its recovery phrase let another device find
+and unlock the same notes, using the same relay. To share a list, open it, press the share
 button and send the link it makes. The link carries no key: the first person to
 open it joins, and nobody after them can ([ADR 0015](docs/adr/0015-invites.md),
 [ADR 0023](docs/adr/0023-access-packages.md),
@@ -227,7 +231,7 @@ a temporary process key intended only for local development.
 A relay lets in only devices holding one of its access keys when
 `RELAY_ACCESS_KEYS` names any ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)).
 Its operator hands out a relay link, `https://relay.example/#access=<key>`, which
-goes in Settings → Relay. Set it to `open` to let anyone write; unset is open,
+goes in Sync & devices → Server (relay). Set it to `open` to let anyone write; unset is open,
 with a warning, and the Synology setup refuses to start without it.
 `easynotes-relay access-key` prints a new key. Every relay also holds each client
 address to a write budget, 200 MiB at once and 200 MiB an hour by default
@@ -366,3 +370,4 @@ verifies before it decrypts.
 This has **not** been audited. The design doc schedules an external review before
 1.0, and nothing here should be relied on until then. To report a
 vulnerability, see [`SECURITY.md`](SECURITY.md).
+

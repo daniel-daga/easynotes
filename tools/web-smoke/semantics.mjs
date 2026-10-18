@@ -19,10 +19,11 @@ export async function load(d, to) {
 /// exercise instead of relying on a build-time address.
 export async function configureRelay(d, url) {
   await tap(d, /navigation menu/i);
-  await tap(d, /Relay settings/);
+  await tap(d, /Sync & devices/);
+  await tap(d, /^Set up sync$/);
   await fill(d, 'Relay URL or relay link', url);
-  await tap(d, /^Switch relay$/);
-  await tap(d, /^Switch$/);
+  await tap(d, /^Set up sync$/);
+  await tap(d, /^Start with an empty collection$/);
   // Settings closes itself once the new profile is open. If it stays, the
   // switch has not finished, which is a failure and not something to tap past.
   await find(d, n => n.text.trim() === 'New checklist', { timeout: 30_000 });
@@ -100,3 +101,4 @@ export async function fill(d, label, value) {
   await d.page.keyboard.type(value);
   await d.page.waitForTimeout(400);
 }
+

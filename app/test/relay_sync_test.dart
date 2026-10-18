@@ -603,6 +603,96 @@ void main() {
       complaint,
     );
 
+    test('local notes and their recovery identity survive moving to a relay', () async {
+      final originalProfile = profiles.selected;
+      final local = await openIn(originalProfile);
+      final session = RelaySession(
+        profiles: profiles, library: local, profile: originalProfile, open: openIn,
+      );
+      addTearDown(() => session.library.dispose());
+      final phrase = await local.createAccount();
+      final id = await local.createNote();
+      final note = await local.openNote(id);
+      await note.setTitle('Local groceries');
+      await note.addItem('milk');
+      await local.setPinned(id, true);
+      await local.addTag(id, 'Home');
+      final reminder = await local.createReminder(
+        noteId: id,
+        fireAt: DateTime.utc(2030, 1, 1),
+        repeat: ReminderRepeat.never,
+        timezone: 'UTC',
+      );
+      final photo = _png(8, 8, 3000);
+      final attachment = await note.importAttachment('local.png', photo);
+      await _until(note.watch(),
+        (view) => view.attachments.any((a) => a.id == attachment.id),
+        'the local attachment never became part of the note');
+      await note.dispose();
+
+      await session.moveLocalToRelay(relayUrl);
+      expect(session.library, same(local));
+      expect(session.profile.id, originalProfile.id);
+      await synced(local, 'the moved collection never reached the relay');
+
+      // Recovery on another device proves the existing identity, metadata,
+      // note keys and media made it to the relay together.
+      final restored = await device();
+      await restored.adoptAccount(phrase.join(' '));
+      await _untilNotes(restored.watchNotes(),
+        (notes) => notes.any((n) => n.id == id && n.pinned && n.tags.any((t) => t.name == 'Home')),
+        'the moved collection could not be recovered');
+      expect(restored.reminders.any((r) => r.id == reminder && r.noteId == id), isTrue);
+      final copy = await restored.openNote(id);
+      addTearDown(copy.dispose);
+      await _until(copy.watch(),
+        (view) => view.items.any((i) => i.text == 'milk') &&
+            view.attachments.any((a) => a.id == attachment.id),
+        'the note or attachment descriptor never arrived');
+      final deadline = DateTime.now().add(patience);
+      while (await copy.readAttachment(attachment.id) == null) {
+        if (DateTime.now().isAfter(deadline)) fail('the moved attachment never arrived');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(await copy.readAttachment(attachment.id), photo);
+
+      await session.switchTo(null);
+      expect(session.profile.id, isNot(originalProfile.id));
+      expect(session.library.notes, isEmpty);
+      expect(session.library.hasAccount, isFalse);
+      await session.switchTo(relayUrl);
+      expect(session.library.notes.single.id, id);
+      expect(session.library.hasAccount, isTrue);
+      await session.library.dispose();
+      final reloaded = RelayProfiles();
+      await reloaded.load();
+      final reopened = await openIn(reloaded.selected);
+      addTearDown(reopened.dispose);
+      expect(reopened.notes.single.id, id);
+      expect(reopened.hasAccount, isTrue);
+    });
+
+    test('local notes upload before an account exists and can gain recovery later', () async {
+      final local = await openIn(profiles.selected);
+      final session = RelaySession(
+        profiles: profiles, library: local, profile: profiles.selected, open: openIn,
+      );
+      addTearDown(() => session.library.dispose());
+      final id = await local.createNote();
+      final note = await local.openNote(id);
+      await note.setTitle('Notes before account setup');
+      await note.dispose();
+      await session.moveLocalToRelay(relayUrl);
+      await synced(local, 'notes without an account never reached the relay');
+      expect(local.hasAccount, isFalse);
+      final phrase = await local.createAccount();
+      final restored = await device();
+      await restored.adoptAccount(phrase.join(' '));
+      await _untilNotes(restored.watchNotes(),
+        (notes) => notes.any((n) => n.id == id),
+        'creating an account after moving did not make the notes recoverable');
+    });
+
     test('switching relay and back keeps each relay\'s notes and account to '
         'itself', () async {
       final session = await start(relayUrl);
@@ -1137,3 +1227,4 @@ Uint8List _png(int w, int h, int len) {
   }
   return bytes;
 }
+

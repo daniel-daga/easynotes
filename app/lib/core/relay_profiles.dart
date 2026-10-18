@@ -151,6 +151,37 @@ class RelayProfiles {
 
   Future<void> activate(RelayProfile profile) => _write(_profiles, profile.id);
 
+  /// Give the selected local collection its first relay, preserving its store
+  /// ID and keys. The single settings write is the move: before it succeeds
+  /// the collection is local; afterwards it belongs to this relay. A fresh
+  /// local profile keeps "On this device" separate, with no copied identities.
+  /// Existing relay collections are never replaced or merged.
+  Future<RelayProfile> moveLocalToRelay(String address, {String? access}) async {
+    final local = selected;
+    final url = canonicalRelayUrl(address);
+    if (local.url != null || _profiles.any((p) => p.url == url)) {
+      throw StateError('Only a local collection can move to a new relay.');
+    }
+    final key = access == null ? null : normalizeAccessKey(access);
+    if (access != null && key == null) {
+      throw const FormatException('That is not an access key.');
+    }
+    // Save the key first without mutating the in-memory profile list. If
+    // settings refuse the move, both the live and stored selection stay local.
+    if (key != null) {
+      await _storage.write(key: _accessKey(local.id), value: key);
+    } else {
+      await _storage.delete(key: _accessKey(local.id));
+    }
+    final target = RelayProfile(id: local.id, url: url, access: key);
+    await _write([
+      for (final profile in _profiles)
+        if (profile.id == local.id) target else profile,
+      RelayProfile(id: _newId(), url: null),
+    ], target.id);
+    return target;
+  }
+
   Future<void> _save() => _write(_profiles, _selectedId!);
 
   Future<void> _write(List<RelayProfile> profiles, String selected) async {
@@ -272,3 +303,4 @@ String canonicalRelayUrl(String input) {
     path: path,
   ).toString();
 }
+

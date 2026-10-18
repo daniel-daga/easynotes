@@ -348,7 +348,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     final shared = await shareContent(
       relay != null && _withRelayLink
           ? 'Join my shared note in EasyNotes. First add my relay in '
-                'Settings, Relay, with this link: $relay\n\n'
+                'Sync & devices → Server (relay), with this link: $relay\n\n'
                 'Then open the invite: ${_link(invite)}'
           : 'Join my shared note in EasyNotes: ${_link(invite)}',
     );
@@ -1280,3 +1280,4 @@ class _Line extends StatelessWidget {
     );
   }
 }
+

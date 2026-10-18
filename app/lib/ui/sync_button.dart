@@ -64,10 +64,18 @@ Future<void> showSyncDetail(BuildContext context, SyncStatus status) {
 /// hands out a single-subscription stream, and the drawer's list drops and
 /// rebuilds this tile as it scrolls, so each mount has to open its own.
 class SyncStatusTile extends StatefulWidget {
-  const SyncStatusTile({super.key, required this.watch, required this.initial});
+  const SyncStatusTile({
+    super.key,
+    required this.watch,
+    required this.initial,
+    this.hasRelay = true,
+    this.onTap,
+  });
 
   final Stream<SyncStatus> Function() watch;
   final SyncStatus initial;
+  final bool hasRelay;
+  final VoidCallback? onTap;
 
   @override
   State<SyncStatusTile> createState() => _SyncStatusTileState();
@@ -91,9 +99,13 @@ class _SyncStatusTileState extends State<SyncStatusTile> {
       return ListTile(
         key: const Key('sync-status'),
         leading: Icon(_syncIcon(status)),
-        title: const Text('Sync'),
-        subtitle: Text(syncSentence(status)),
-        onTap: () => showSyncDetail(context, status),
+        title: const Text('Sync & devices'),
+        subtitle: Text(!widget.hasRelay
+            ? 'Sync not set up'
+            : status.state == SyncState.synced && status.pending == 0
+            ? 'Up to date with relay'
+            : syncSentence(status)),
+        onTap: widget.onTap ?? () => showSyncDetail(context, status),
       );
     },
   );
@@ -106,3 +118,4 @@ IconData _syncIcon(SyncStatus status) => switch (status.state) {
   SyncState.online => Icons.cloud_sync_outlined,
   SyncState.synced => Icons.cloud_done_outlined,
 };
+

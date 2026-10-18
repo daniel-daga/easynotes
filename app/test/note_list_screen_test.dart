@@ -10,6 +10,7 @@ import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
+import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
@@ -408,13 +409,16 @@ void main() {
 
   testWidgets('sync status is available in the home drawer', (tester) async {
     final library = twoLists();
-    await pumpList(tester, library);
-
+    await tester.pumpWidget(MaterialApp(home: NoteListScreen(
+      library: library,
+      profile: const RelayProfile(id: 'relay', url: 'https://relay.example'),
+    )));
+    await tester.pumpAndSettle();
     library.pushStatus(const SyncStatus(state: SyncState.offline, pending: 3));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    // The drawer says it in a line, and the tile opens the same sentence.
+    // The drawer's status opens the consolidated screen with the same status.
     expect(
       find.descendant(
         of: find.byKey(const Key('sync-status')),
@@ -426,10 +430,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.descendant(
-        of: find.byType(AlertDialog),
-        matching: find.text('Not syncing, 3 edits waiting'),
-      ),
+      find.text('Not syncing, 3 edits waiting'),
       findsOneWidget,
     );
   });
@@ -1029,7 +1030,14 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.bySemanticsLabel('Has reminder'), findsOneWidget);
+    // The card may merge the indicator into its own accessibility label.
+    final semantics = tester.ensureSemantics();
+    await tester.pump();
+    try {
+      expect(find.bySemanticsLabel(RegExp('Has reminder')), findsWidgets);
+    } finally {
+      semantics.dispose();
+    }
 
     await tester.tap(find.byKey(const Key('layout-toggle')));
     await tester.pumpAndSettle();
@@ -1618,3 +1626,4 @@ void main() {
     expect(find.byKey(const Key('storage-error')), findsOneWidget);
   });
 }
+

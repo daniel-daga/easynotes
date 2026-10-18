@@ -146,6 +146,47 @@ class RelaySession extends ChangeNotifier {
     onInstall?.call(next);
   }
 
+  /// Move this device's local collection to an unused relay. No data or key
+  /// is copied or deleted: the profile keeps its ID, so native and browser
+  /// storage, attachments and any account all stay together. Persist the
+  /// selection before connecting, so a restart cannot treat uploaded notes
+  /// as a local-only collection. A failed connection leaves this relay
+  /// selected and the collection available offline, ready to retry.
+  Future<void> moveLocalToRelay(String address, {String? access}) {
+    final running = _switching;
+    if (running != null) return running;
+    final done = _moveLocalToRelay(address, access).whenComplete(() {
+      _switching = null;
+      notifyListeners();
+    });
+    _switching = done;
+    notifyListeners();
+    return done;
+  }
+
+  Future<void> _moveLocalToRelay(String address, String? access) async {
+    if (_profile.url != null ||
+        profiles.profiles.any((p) => p.url == canonicalRelayUrl(address))) {
+      throw StateError('Only a local collection can move to a new relay.');
+    }
+    if (!_library.canJoin) {
+      throw StateError('This tab has no storage. Keep it open and save its notes first.');
+    }
+    await _library.flush();
+    if (_library.storageError != null) {
+      throw StateError('Some changes could not be saved. Your notes have not moved.');
+    }
+    _profile = await profiles.moveLocalToRelay(address, access: access);
+    // Tell the app about the durable move even if starting sync throws.
+    notifyListeners();
+    try {
+      await _library.connect(_profile.url!, access: _profile.access);
+    } on Object catch (error) {
+      throw StateError('Your collection has moved to ${_profile.url} and is '
+          'available offline. Sync could not start: $error');
+    }
+  }
+
   /// Keep [access] as this relay's access key, or forget it when null, and
   /// reconnect with it: how a person enters the key a relay asked for, or the
   /// new one after its operator changed it. The same relay and the same
@@ -190,3 +231,4 @@ class RelaySession extends ChangeNotifier {
     onInstall?.call(restored);
   }
 }
+

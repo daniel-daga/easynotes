@@ -115,7 +115,8 @@ class AboutScreen extends StatelessWidget {
             'in a relay\'s history or backups.',
           ),
           para(
-            'Deleting your account, from Your devices, removes every list you '
+            'Deleting your account, from Sync & devices → Account settings, '
+            'removes every list you '
             'made from the relay, including ones you shared, and everything '
             'from this device. Lists others shared with you stay theirs. A '
             'relay\'s backups may keep encrypted copies for up to 30 days.',
@@ -193,3 +194,4 @@ class _Copyable extends StatelessWidget {
     ),
   );
 }
+

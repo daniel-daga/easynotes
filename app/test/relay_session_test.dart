@@ -20,6 +20,13 @@ class _Library extends FakeNoteLibrary {
   final String name;
   bool disposed = false;
   String? refuseOnDispose;
+  bool refuseConnection = false;
+
+  @override
+  Future<void> connect(String url, {String? access}) async {
+    await super.connect(url, access: access);
+    if (refuseConnection) throw StateError('sync worker unavailable');
+  }
 
   @override
   Future<void> dispose() async {
@@ -33,6 +40,13 @@ class _Library extends FakeNoteLibrary {
 /// Profiles whose writes can be made to fail.
 class _Profiles extends RelayProfiles {
   bool failActivate = false;
+  bool failMove = false;
+
+  @override
+  Future<RelayProfile> moveLocalToRelay(String address, {String? access}) async {
+    if (failMove) throw StateError('keychain refused');
+    return super.moveLocalToRelay(address, access: access);
+  }
 
   @override
   Future<void> activate(RelayProfile profile) async {
@@ -115,6 +129,69 @@ void main() {
     await s.switchTo(null);
     expect(s.profile.id, local.id);
     expect(profiles.profiles, hasLength(2));
+  });
+
+  test('moving a local collection preserves the open library and account', () async {
+    final local = _Library('local');
+    await local.createAccount();
+    final id = await local.createNote();
+    local.calls.clear();
+    final s = session(local);
+    final originalId = s.profile.id;
+    await s.moveLocalToRelay('wss://Relay.Example/');
+    expect(s.profile.id, originalId);
+    expect(s.profile.url, 'https://relay.example');
+    expect(s.library, same(local));
+    expect(local.notes.single.id, id);
+    expect(local.hasAccount, isTrue);
+    expect(local.disposed, isFalse);
+    expect(local.calls, ['flush()', 'connect(https://relay.example)']);
+    expect(events, isEmpty);
+    final again = RelayProfiles();
+    await again.load();
+    expect(again.selected.id, originalId);
+    expect(again.selected.url, s.profile.url);
+  });
+
+  test('a move refused by storage leaves notes local and never connects', () async {
+    final local = _Library('local');
+    final s = session(local);
+    profiles.failMove = true;
+    await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
+    expect(s.profile.url, isNull);
+    expect(s.library, same(local));
+    expect(local.disposed, isFalse);
+    expect(local.calls, ['flush()']);
+    final again = RelayProfiles();
+    await again.load();
+    expect(again.selected.url, isNull);
+  });
+
+  test('a move refuses unsaved notes and ephemeral tabs', () async {
+    for (final local in [
+      _Library('local', canJoin: false),
+      _Library('local')..pushStorageError('QuotaExceededError'),
+    ]) {
+      final s = session(local);
+      await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
+      expect(s.profile.url, isNull);
+      expect(local.disposed, isFalse);
+      expect(local.calls.where((c) => c.startsWith('connect')), isEmpty);
+    }
+  });
+
+  test('a connection failure after a move keeps the collection durable and offline', () async {
+    final local = _Library('local')..refuseConnection = true;
+    final s = session(local);
+    final id = await local.createNote();
+    await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
+    expect(s.profile.url, 'https://relay.example');
+    expect(local.notes.single.id, id);
+    expect(local.disposed, isFalse);
+    final again = RelayProfiles();
+    await again.load();
+    expect(again.selected.id, s.profile.id);
+    expect(again.selected.url, s.profile.url);
   });
 
   test(
@@ -239,3 +316,4 @@ void main() {
     ]);
   });
 }
+

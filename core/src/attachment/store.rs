@@ -243,6 +243,13 @@ impl MediaStore {
         })
     }
 
+    /// Queue an already published local attachment for its first relay upload,
+    /// preserving its sealed objects and content key.
+    pub fn restage(&self, staged: &Staged) -> Result<()> {
+        staged.media.check()?;
+        self.write_record(staged)
+    }
+
     fn write_record(&self, staged: &Staged) -> Result<()> {
         let sealed = seal_record(&self.master, staged)?;
         self.write_atomic(&self.staging_path(staged.id), |f| {

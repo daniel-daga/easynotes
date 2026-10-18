@@ -36,6 +36,32 @@ async fn open(rows: &Arc<MemoryRows>, master: &MasterKey) -> Store {
         .unwrap()
 }
 
+#[tokio::test]
+async fn a_local_attachment_can_be_restaged_durably_in_a_tab() {
+    let rows = Arc::new(MemoryRows::default());
+    let master = MasterKey::random();
+    let store = open(&rows, &master).await;
+    let note = NoteId::random();
+    let photo = png(8, 8, 500);
+    let staged = store
+        .import(note, "local.png", &photo, None, ImportHints::default())
+        .await
+        .unwrap();
+    store.settle(staged.id).await.unwrap();
+    store.restage(&staged).await.unwrap();
+    store.restage(&staged).await.unwrap();
+    drop(store);
+    let reopened = open(&rows, &master).await;
+    assert_eq!(reopened.staged().await.unwrap(), vec![staged.clone()]);
+    assert_eq!(
+        reopened
+            .read(note, staged.id, &staged.media, Variant::Original)
+            .await
+            .unwrap(),
+        photo
+    );
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }

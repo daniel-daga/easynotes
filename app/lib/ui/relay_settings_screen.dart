@@ -25,6 +25,7 @@ class RelaySettingsScreen extends StatefulWidget {
     required this.profile,
     required this.profiles,
     required this.onSwitchRelay,
+    this.onMoveLocalToRelay,
     this.onSetAccess,
     bool? servedOverHttps,
     bool? mobileRelease,
@@ -37,6 +38,10 @@ class RelaySettingsScreen extends StatefulWidget {
   /// Switch to the relay at a canonical URL, or to notes on this device for
   /// null, keeping [access] as that relay's access key when given.
   final Future<void> Function(String?, {String? access}) onSwitchRelay;
+
+  /// Assign the current local collection to a new relay, keeping all its
+  /// notes and account. Never offered for a destination that already exists.
+  final Future<void> Function(String, {String? access})? onMoveLocalToRelay;
 
   /// Keep a new access key for the relay in use, or forget it for null, and
   /// reconnect with it ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)).
@@ -85,6 +90,41 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     }
     final target = url ?? 'On this device';
     final destinationExists = widget.profiles.any((p) => p.url == url);
+    final canMove = widget.profile.url == null &&
+        url != null && !destinationExists && widget.onMoveLocalToRelay != null;
+    if (canMove) {
+      final move = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Set up sync'),
+          content: Text(
+            'Use $target for this collection? Move your current notes, '
+            'including attachments, labels and reminders, or keep them in '
+            'On this device and start with an empty collection. '
+            'Moved notes remain available offline on this device.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              key: const Key('start-empty-collection'),
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Start with an empty collection'),
+            ),
+            FilledButton(
+              key: const Key('move-local-notes'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Move my current notes'),
+            ),
+          ],
+        ),
+      );
+      if (move == null || !mounted) return;
+      await _applySwitch(url, access: access, move: move);
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -109,19 +149,31 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    await _applySwitch(url, access: access);
+  }
+
+  Future<void> _applySwitch(String? url, {String? access, bool move = false}) async {
     setState(() => _switching = true);
     try {
-      await widget.onSwitchRelay(url, access: access);
-      if (mounted) Navigator.of(context).pop();
+      if (move) {
+        await widget.onMoveLocalToRelay!(url!, access: access);
+      } else {
+        await widget.onSwitchRelay(url, access: access);
+      }
+      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
     } on Object catch (error) {
       if (!mounted) return;
       setState(() => _switching = false);
       final message = error is StateError
           ? error.message.toString()
           : error.toString();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not switch relay: $message')),
-      );
+      final messenger = ScaffoldMessenger.of(context);
+      // A move may already be durable when starting the connection fails.
+      // Return to the live collection instead of keeping stale local settings.
+      if (move) Navigator.of(context).popUntil((route) => route.isFirst);
+      messenger.showSnackBar(SnackBar(content: Text(
+        move ? message : 'Could not switch relay: $message',
+      )));
     }
   }
 
@@ -230,7 +282,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Relay settings')),
+    appBar: AppBar(title: const Text('Server (relay)')),
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -239,7 +291,9 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.check_circle_outline),
           title: Text(widget.profile.label),
-          subtitle: const Text('Only this profile syncs right now.'),
+          subtitle: Text(widget.profile.url == null
+              ? 'This collection stays on this device until you set up sync.'
+              : 'Notes in other collections stay separate.'),
         ),
         if (widget.profile.url != null) ..._accessSection(context),
         const Divider(height: 32),
@@ -287,7 +341,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 child: FilledButton(
                   key: const Key('switch-relay-button'),
                   onPressed: _switching ? null : _submitUrl,
-                  child: const Text('Switch relay'),
+                  child: Text(widget.profile.url == null ? 'Set up sync' : 'Switch relay'),
                 ),
               ),
             ],
@@ -435,3 +489,4 @@ class _AccessKeyDialogState extends State<_AccessKeyDialog> {
     ],
   );
 }
+

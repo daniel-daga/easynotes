@@ -227,7 +227,7 @@ void main() {
       final scaffold = tester.firstState<ScaffoldState>(find.byType(Scaffold));
       scaffold.openDrawer();
       await tester.pumpAndSettle();
-      await tapKey(tester, 'account-entry');
+      await tapKey(tester, 'sync-status');
       await tapKey(tester, 'adopt-account-button');
       await tester.enterText(
         find.byKey(const Key('adopt-phrase-field')),
@@ -335,3 +335,4 @@ void main() {
     expect(library.takeRemovals(), isEmpty);
   });
 }
+

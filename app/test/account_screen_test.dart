@@ -69,7 +69,7 @@ class _RefusingLibrary extends FakeNoteLibrary {
 }
 
 void main() {
-  testWidgets('the drawer says a device is on its own, and opens the screen', (
+  testWidgets('the drawer opens sync and device setup together', (
     tester,
   ) async {
     final library = FakeNoteLibrary();
@@ -81,9 +81,12 @@ void main() {
     final scaffold = tester.firstState<ScaffoldState>(find.byType(Scaffold));
     scaffold.openDrawer();
     await tester.pumpAndSettle();
-    expect(find.text('Only on this device'), findsOneWidget);
+    expect(find.text('Sync not set up'), findsOneWidget);
+    expect(find.text('Sync & devices'), findsOneWidget);
+    expect(find.text('Relay settings'), findsNothing);
+    expect(find.text('Your devices'), findsNothing);
 
-    await tester.tap(find.byKey(const Key('account-entry')));
+    await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('account-no')), findsOneWidget);
   });
@@ -468,3 +471,4 @@ void main() {
     });
   });
 }
+
