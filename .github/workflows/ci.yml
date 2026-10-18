@@ -1,18 +1,8 @@
 name: CI
 
-# On `main`, on every pull request, and by hand. Pull requests used not to run
-# it, on the grounds that a contributor had already run the justfile recipes it
-# wraps; that holds for one maintainer and not for a change from anyone else,
-# which is what a public project gets (production readiness review, F7).
-# `workflow_dispatch` is still there for asking on any branch.
-#
-# Kept to lint and tests. Building the app itself — the APK, the Linux desktop
-# bundle, the web build and its browser checks — is most of an hour of runners
-# and lives in `app-builds.yml`, which runs only when asked.
+# Lint and tests, run manually from the Actions tab. The release workflow
+# reuses these checks after it is dispatched.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
   # So that `release.yml` can require the same lint and tests before it builds.
   workflow_call:

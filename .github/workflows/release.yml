@@ -1,6 +1,6 @@
 name: Release
 
-# A signed Android release, from a tag. Push `v1.2.3` and this runs the same
+# A signed Android release, from a tag. Dispatch this workflow with a tag; it runs the same
 # lint and tests as `ci.yml`, builds the Play bundle and an APK with pinned
 # toolchains, refuses the build if it is not what a store should get, and leaves
 # a *draft* GitHub release: a person publishes it, after reading what is here.
@@ -20,8 +20,6 @@ name: Release
 # update signed with another key cannot replace it. Keep it, and its passwords,
 # backed up somewhere that is not GitHub.
 on:
-  push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
     inputs:
       release_tag:

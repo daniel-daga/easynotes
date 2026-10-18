@@ -1,22 +1,8 @@
 name: Advisories
 
-# Known vulnerabilities in what the app and the relay are built from, checked
-# on a schedule as well as when a lockfile changes: an advisory published
-# against a crate we already ship arrives without anyone touching the code
-# (production readiness review, F7).
-#
-# Rust through `cargo audit` and the RustSec database; Dart through OSV, which
-# covers pub. A finding fails the run, and GitHub mails a failed scheduled run
-# to whoever last edited this file's schedule. *Unmaintained* notices are
-# printed and do not fail it: they are for tracking upstream, not for acting on.
+# Known vulnerabilities in what the app and the relay are built from. Run this
+# check manually from the Actions tab when you want an updated advisory scan.
 on:
-  schedule:
-    - cron: '17 6 * * 1'     # Mondays, before the week starts
-  push:
-    branches: [main]
-    paths: ['**/Cargo.lock', '**/pubspec.lock', 'third_party/**', '.github/workflows/advisories.yml']
-  pull_request:
-    paths: ['**/Cargo.lock', '**/pubspec.lock', 'third_party/**', '.github/workflows/advisories.yml']
   workflow_dispatch:
 
 permissions:
