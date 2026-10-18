@@ -971,6 +971,57 @@ void main() {
     expect(library.tags, isEmpty);
   });
 
+  testWidgets('reminder bells follow changes in grid, list and search', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    final bell = find.byKey(const Key('reminder-indicator'));
+    expect(bell, findsNothing);
+
+    Future<String> remind() => library.createReminder(
+      noteId: 'groceries',
+      fireAt: DateTime.utc(2030, 1, 1),
+      repeat: ReminderRepeat.never,
+      timezone: 'Etc/UTC',
+    );
+
+    final first = await remind();
+    final second = await remind();
+    await tester.pumpAndSettle();
+    expect(bell, findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('note:groceries')),
+        matching: bell,
+      ),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('Has reminder'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('layout-toggle')));
+    await tester.pumpAndSettle();
+    expect(bell, findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('filter-reminders-has')));
+    await tester.pumpAndSettle();
+    expect(bell, findsOneWidget);
+    expect(find.text('Hardware'), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('search-field')), 'milk');
+    await tester.pumpAndSettle();
+    expect(bell, findsOneWidget);
+    await library.forgetReminder(first);
+    await tester.pumpAndSettle();
+    expect(bell, findsOneWidget);
+    await library.forgetReminder(second);
+    await tester.pumpAndSettle();
+    expect(bell, findsNothing);
+    expect(find.byKey(const Key('no-matches')), findsOneWidget);
+  });
+
   testWidgets('a note can have, edit and remove a reminder', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
