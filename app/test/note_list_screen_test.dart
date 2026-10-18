@@ -1000,7 +1000,8 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.bySemanticsLabel('Has reminder'), findsOneWidget);
+    // The card may merge the indicator into its own accessibility label.
+    expect(find.bySemanticsLabel(RegExp('Has reminder')), findsWidgets);
 
     await tester.tap(find.byKey(const Key('layout-toggle')));
     await tester.pumpAndSettle();

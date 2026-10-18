@@ -352,6 +352,7 @@ void main() {
     final cover = core.current.attachments.first;
     final header = find.byKey(ValueKey('cover:$id:${cover.id}'));
     void expectHeader() {
+      final card = find.byKey(ValueKey('note:$id'));
       expect(header, findsOneWidget);
       expect(
         find.descendant(of: header, matching: find.byType(Image)),
@@ -360,11 +361,12 @@ void main() {
       expect(
         tester.getBottomLeft(header).dy,
         lessThan(tester.getTopLeft(find.descendant(
-          of: find.byKey(ValueKey('note:$id')),
+          of: card,
           matching: find.text('Recipe'),
         )).dy),
       );
-      expect(find.byIcon(Icons.audiotrack_outlined), findsOneWidget);
+      expect(find.descendant(of: card,
+        matching: find.byIcon(Icons.audiotrack_outlined)), findsOneWidget);
     }
     expectHeader();
     await tester.tap(find.byKey(const Key('layout-toggle')));
