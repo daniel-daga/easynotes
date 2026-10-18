@@ -43,6 +43,8 @@ jobs:
   checks:
     name: Lint and tests
     uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ inputs.release_tag || github.ref }}
 
   android:
     name: Android release
@@ -134,16 +136,29 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
+      # Cargokit builds into Gradle's build directory; this caches the Cargo
+      # registry and sources but not the compiled Android libraries.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('app/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
 
       - run: flutter pub get
         working-directory: app
