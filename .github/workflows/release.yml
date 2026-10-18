@@ -269,7 +269,7 @@ jobs:
           name: easynotes-${{ steps.version.outputs.name }}
           path: dist/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 3
 
       # A draft, never a published release: the store upload and the release
       # notes are a person's decision, made after looking at the checks above.
