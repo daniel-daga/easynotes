@@ -672,6 +672,9 @@ void main() {
       );
       addTearDown(() => session.library.dispose());
       final id = await local.createNote();
+      final note = await local.openNote(id);
+      await note.setTitle('Notes before account setup');
+      await note.dispose();
       await session.moveLocalToRelay(relayUrl);
       await synced(local, 'notes without an account never reached the relay');
       expect(local.hasAccount, isFalse);

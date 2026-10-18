@@ -177,6 +177,7 @@ pub enum TransferState {
 pub type TransferMap = HashMap<Transfer, TransferState>;
 
 enum Command {
+    Stop(tokio::sync::oneshot::Sender<()>),
     Kick,
     Fetch(NoteId, AttachmentId, Variant),
     Cancel(AttachmentId),
@@ -192,6 +193,15 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
+    /// Stop after the current store operation, before another queue reuses
+    /// its records. In-flight network work is dropped with the runner.
+    pub async fn stop(&self) {
+        let (done, stopped) = tokio::sync::oneshot::channel();
+        if self.commands.send(Command::Stop(done)).is_ok() {
+            let _ = stopped.await;
+        }
+    }
+
     /// Look again: at the staging records, because an import has just been
     /// saved, and at every note's reach, because a sync status has changed.
     pub fn kick(&self) {
@@ -380,6 +390,10 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
             };
             tokio::select! {
                 command = self.commands.recv() => match command {
+                    Some(Command::Stop(done)) => {
+                        let _ = done.send(());
+                        break;
+                    }
                     Some(command) => self.command(command).await,
                     None => break,
                 },
@@ -393,6 +407,7 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
 
     async fn command(&mut self, command: Command) {
         match command {
+            Command::Stop(_) => unreachable!("handled by run"),
             Command::Kick => self.rescan().await,
             Command::Fetch(note, id, variant) => {
                 let transfer = Transfer {
@@ -518,6 +533,7 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
                 let Some(staged) = self.jobs.get(&transfer).and_then(|j| j.staged.clone()) else {
                     return Step::Done;
                 };
+                let vouched = self.jobs.get(&transfer).and_then(|job| job.vouched);
                 match self.peer.attachment_state(note, id) {
                     Err(e) => Step::Retry(e.to_string()),
                     // Published. Settled once the relay has the descriptor;
@@ -527,12 +543,11 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
                             let _ = self.store.settle(id).await;
                             Step::Done
                         }
-                        _ if self.peer.acknowledged(note) => {
+                        _ if self.peer.acknowledged(note) && vouched.is_some() => {
                             let _ = self.store.settle(id).await;
                             Step::Done
                         }
                         Reach::Synced if self.http_base.is_some() => {
-                            let vouched = self.jobs.get(&transfer).and_then(|j| j.vouched);
                             if vouched.is_some_and(|at| now() < at + REVOUCH) {
                                 Step::Wait
                             } else if room {
@@ -818,3 +833,4 @@ async fn pull<P: TransferPeer, S: MediaStorage>(
     .await?;
     incoming.finish().await
 }
+

@@ -219,6 +219,30 @@ fn start(peer: &Peer, media: &Arc<MediaStore>, relay: Option<&RelayEndpoint>) ->
     queue
 }
 
+#[tokio::test]
+async fn a_published_local_attachment_uploads_even_after_its_note_is_acknowledged() {
+    let blobs = Arc::new(MemoryBlobs::default());
+    let (_relay, endpoint) = relay_with(Some(blobs.clone())).await;
+    let mut core: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();
+    let note = core.create_note(NoteKind::Text).unwrap();
+    let mut app = App::new(core, note, None);
+    let staged = app.import("local.png", &png(8, 8, 500), None);
+    eventually("the local attachment to settle", || {
+        app.state(staged.id) == AttachmentState::Live && app.media.staged().unwrap().is_empty()
+    }).await;
+    app.queue.stop().await;
+    app.media.restage(&staged).unwrap();
+    app.peer.local_only = false;
+    // Let the note reach the relay before starting its replacement queue.
+    app.connect(&endpoint);
+    eventually("the descriptor to be acknowledged", || app.peer.acknowledged(note)).await;
+    app.queue = start(&app.peer, &app.media, Some(&endpoint));
+    eventually("the existing attachment bytes to upload", || {
+        app.media.staged().unwrap().is_empty() && !blobs.all_bytes().is_empty()
+    }).await;
+    assert_eq!(blobs.all_bytes().len(), 1);
+}
+
 async fn relay_with(blobs: Option<Arc<MemoryBlobs>>) -> (Relay, RelayEndpoint) {
     let relay = Relay::serve_with(
         Arc::new(easynotes_relay::MemoryStore::new()),
@@ -676,3 +700,4 @@ async fn an_upload_not_yet_heard_of_is_kept_and_put_back_if_lost() {
     })
     .await;
 }
+

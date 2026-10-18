@@ -433,6 +433,18 @@ impl<R: MediaRows> WebMediaStore<R> {
         Ok(out)
     }
 
+    /// Queue a previously local attachment for its first relay upload. Its
+    /// sealed objects already exist; only the durable staging record is added.
+    pub async fn restage(&self, staged: &Staged) -> Result<()> {
+        staged.media.check()?;
+        self.rows
+            .apply(vec![Change::Put {
+                key: record_key(self.seq.fetch_add(1, Ordering::SeqCst), staged.id),
+                value: seal_record(&self.master, staged)?,
+            }])
+            .await
+    }
+
     async fn record_keys(&self, id: AttachmentId) -> Result<Vec<String>> {
         Ok(self
             .rows
@@ -762,3 +774,4 @@ impl<R: MediaRows> IncomingMedia for WebIncoming<R> {
         Box::pin(WebIncoming::finish(self))
     }
 }
+

@@ -170,110 +170,110 @@ class _AccountScreenState extends State<AccountScreen> {
   Widget build(BuildContext context) {
     final has = widget.library.hasAccount;
     final children = <Widget>[
-          ...has
-              ? [
-                  if (!widget.embedded) ...[
-                    Icon(Icons.devices, size: 48),
-                    SizedBox(height: 16),
-                  ],
-                  Text(
-                    'This device belongs to your account.',
-                    key: Key('account-yes'),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  SizedBox(height: 12),
-                  // It cannot offer to show the words again, and says why, so
-                  // that nobody goes looking for the button.
-                  Text(
-                    'Your notes, colours, labels and pins follow you to any '
-                    'device you set up with the same relay and your recovery '
-                    'phrase. Without a relay, this collection stays on this '
-                    'device. The phrase is '
-                    'not kept anywhere, so it cannot be shown again — the copy '
-                    'you wrote down is the only one.',
-                  ),
-                  SizedBox(height: 16),
-                  ListTile(
-                    key: const Key('profile-name'),
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.badge_outlined),
-                    title: Text(widget.library.profileName ?? 'No name yet'),
-                    subtitle: const Text(
-                      'What people you share notes with see',
-                    ),
-                    trailing: TextButton(
-                      key: const Key('change-name'),
-                      onPressed: _changeName,
-                      child: Text(
-                        widget.library.profileName == null ? 'Set' : 'Change',
-                      ),
-                    ),
-                  ),
-                ]
-              : [
-                  if (!widget.embedded) ...[
-                    const Icon(Icons.phone_android, size: 48),
-                    const SizedBox(height: 16),
-                  ],
-                  Text(
-                    'Access on other devices is not set up.',
-                    key: Key('account-no'),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${widget.profile?.url == null ? 'A relay carries encrypted notes between devices. ' : 'Your relay stores and forwards encrypted notes. '}'
-                    'Create an account so your devices can find and unlock '
-                    'the same notes, or recover them if you lose this device. '
-                    'You need the same relay and your recovery phrase. '
-                    'There is no password and no email: your account is '
-                    'twelve words, which you write down once. Anyone with the '
-                    'words has your notes, and without them nobody can get them '
-                    'back — not even us.',
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton.icon(
-                    key: const Key('create-account-button'),
-                    icon: const Icon(Icons.key),
-                    label: const Text('Create account'),
-                    onPressed: _busy ? null : _create,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    key: const Key('adopt-account-button'),
-                    icon: const Icon(Icons.edit_note),
-                    label: const Text('Use recovery phrase'),
-                    onPressed: _busy ? null : _adopt,
-                  ),
-                ],
-          if (!widget.embedded && widget.profile != null) ...[
-            const SizedBox(height: 24),
-            ListTile(
-              key: const Key('account-relay'),
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.dns_outlined),
-              title: Text(widget.profile!.label),
-              subtitle: Text(
-                widget.profile!.url == null
-                    ? 'Not using a relay. An account here stays on this '
-                          'device until you move this collection to a relay '
-                          'in Sync & devices.'
-                    : 'This account is kept on this relay. To use it on '
-                          'another device, choose the same relay there first.',
+      ...has
+          ? [
+              if (!widget.embedded) ...[
+                Icon(Icons.devices, size: 48),
+                SizedBox(height: 16),
+              ],
+              Text(
+                'This device belongs to your account.',
+                key: Key('account-yes'),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
-            ),
-          ],
-          if (!widget.embedded) const Divider(height: 48),
-          if (widget.embedded)
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: const Text('Account settings'),
-              children: [_deleteTile(has)],
-            )
-          else
-            _deleteTile(has),
-          if (_busy) const LinearProgressIndicator(),
-        ];
+              SizedBox(height: 12),
+              // It cannot offer to show the words again, and says why, so
+              // that nobody goes looking for the button.
+              Text(
+                'Your notes, colours, labels and pins follow you to any '
+                'device you set up with the same relay and your recovery '
+                'phrase. Without a relay, this collection stays on this '
+                'device. The phrase is '
+                'not kept anywhere, so it cannot be shown again — the copy '
+                'you wrote down is the only one.',
+              ),
+              SizedBox(height: 16),
+              ListTile(
+                key: const Key('profile-name'),
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.badge_outlined),
+                title: Text(widget.library.profileName ?? 'No name yet'),
+                subtitle: const Text(
+                  'What people you share notes with see',
+                ),
+                trailing: TextButton(
+                  key: const Key('change-name'),
+                  onPressed: _changeName,
+                  child: Text(
+                    widget.library.profileName == null ? 'Set' : 'Change',
+                  ),
+                ),
+              ),
+            ]
+          : [
+              if (!widget.embedded) ...[
+                const Icon(Icons.phone_android, size: 48),
+                const SizedBox(height: 16),
+              ],
+              Text(
+                'Access on other devices is not set up.',
+                key: Key('account-no'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '${widget.profile?.url == null ? 'A relay carries encrypted notes between devices. ' : 'Your relay stores and forwards encrypted notes. '}'
+                'Create an account so your devices can find and unlock '
+                'the same notes, or recover them if you lose this device. '
+                'You need the same relay and your recovery phrase. '
+                'There is no password and no email: your account is '
+                'twelve words, which you write down once. Anyone with the '
+                'words has your notes, and without them nobody can get them '
+                'back — not even us.',
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                key: const Key('create-account-button'),
+                icon: const Icon(Icons.key),
+                label: const Text('Create account'),
+                onPressed: _busy ? null : _create,
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                key: const Key('adopt-account-button'),
+                icon: const Icon(Icons.edit_note),
+                label: const Text('Use recovery phrase'),
+                onPressed: _busy ? null : _adopt,
+              ),
+            ],
+      if (!widget.embedded && widget.profile != null) ...[
+        const SizedBox(height: 24),
+        ListTile(
+          key: const Key('account-relay'),
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.dns_outlined),
+          title: Text(widget.profile!.label),
+          subtitle: Text(
+            widget.profile!.url == null
+                ? 'Not using a relay. An account here stays on this '
+                      'device until you move this collection to a relay '
+                      'in Sync & devices.'
+                : 'This account is kept on this relay. To use it on '
+                      'another device, choose the same relay there first.',
+          ),
+        ),
+      ],
+      if (!widget.embedded) const Divider(height: 48),
+      if (widget.embedded)
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Account settings'),
+          children: [_deleteTile(has)],
+        )
+      else
+        _deleteTile(has),
+      if (_busy) const LinearProgressIndicator(),
+    ];
     if (widget.embedded) {
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
     }
@@ -284,26 +284,26 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Widget _deleteTile(bool has) =>
-          ListTile(
-            key: const Key('delete-account'),
-            contentPadding: EdgeInsets.zero,
-            enabled: !_busy,
-            leading: Icon(
-              Icons.delete_forever_outlined,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            title: Text(
-              has ? 'Delete account' : 'Delete everything on this device',
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-            subtitle: Text(
-              widget.profile?.url == null
-                  ? 'Removes every note from this device'
-                  : 'Removes the lists you made from the relay and every '
-                        'note from this device',
-            ),
-            onTap: _delete,
-          );
+  ListTile(
+    key: const Key('delete-account'),
+    contentPadding: EdgeInsets.zero,
+    enabled: !_busy,
+    leading: Icon(
+      Icons.delete_forever_outlined,
+      color: Theme.of(context).colorScheme.error,
+    ),
+    title: Text(
+      has ? 'Delete account' : 'Delete everything on this device',
+      style: TextStyle(color: Theme.of(context).colorScheme.error),
+    ),
+    subtitle: Text(
+      widget.profile?.url == null
+          ? 'Removes every note from this device'
+          : 'Removes the lists you made from the relay and every '
+                'note from this device',
+    ),
+    onTap: _delete,
+  );
 }
 
 /// The twelve words, once, and then the check that they were written down.

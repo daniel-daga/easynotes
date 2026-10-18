@@ -3090,7 +3090,7 @@ impl Library {
     /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
     /// for an open relay. Connecting again with another key is how a changed
     /// key takes effect.
-    pub fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
+    pub async fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
         let relay = easynotes_core::sync::RelayEndpoint::parse(&relay)
             .map_err(|e| e.to_string())?
             .http_base;
@@ -3117,6 +3117,35 @@ impl Library {
         }
         // A new engine every time, as each note used to get a new connection.
         self.disconnect()?;
+        // A local runner must finish touching its records before we restore
+        // them for upload. Otherwise it could settle one after it was restored.
+        if let Some(queue) = self.shared.statuses.queue() {
+            queue.stop().await;
+        }
+        self.shared.stop_transfers();
+        let store = self.shared.media_store().await?;
+        // A note with no relay cursor has never uploaded its local media.
+        // Restage every live descriptor before starting its note connection:
+        // after a crash, either the zero cursor or these records retries it.
+        let local_media = {
+            let mut core = self.shared.locked()?;
+            let mut media = Vec::new();
+            for note in core.syncable().map_err(|e| e.to_string())? {
+                if core.sync_cursor(note).map_err(|e| e.to_string())?.last_seq == 0 {
+                    if let Ok(view) = core.view(note) {
+                        media.extend(view.attachments.into_iter().map(|a| Staged {
+                            note,
+                            id: a.id,
+                            media: a.media,
+                        }));
+                    }
+                }
+            }
+            media
+        };
+        for staged in local_media {
+            store.restage(&staged).await.map_err(|e| e.to_string())?;
+        }
         let device = Device::open(self.shared.core.clone(), &relay, access.clone())?;
         *crate::lock::lock(&self.shared.device).map_err(|_| "sync lock poisoned".to_string())? =
             Some(device);
@@ -3140,15 +3169,10 @@ impl Library {
         // The attachment queue, with this relay. Started once the store is
         // open, which in a tab has to be waited for; an import made before
         // then is in the store and the queue finds it when it starts.
-        let shared = self.shared.clone();
         let relay = crate::lock::lock(&self.shared.bound)
             .map_err(|_| "relay lock poisoned")?
             .clone();
-        crate::relay::spawn(async move {
-            if let Ok(store) = shared.media_store().await {
-                shared.start_transfers(store, relay, access);
-            }
-        })?;
+        self.shared.start_transfers(store, relay, access);
         Ok(())
     }
 
@@ -3861,3 +3885,4 @@ fn spawn_watch_status(
         }
     })
 }
+

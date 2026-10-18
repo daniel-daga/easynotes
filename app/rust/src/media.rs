@@ -69,6 +69,14 @@ pub(crate) enum Incoming {
 }
 
 impl Store {
+    pub(crate) async fn restage(&self, staged: &Staged) -> Result<()> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Store::Dir(store) => store.restage(staged),
+            Store::Rows(store) => store.restage(staged).await,
+        }
+    }
+
     /// Seal a file handed over whole — what a browser can hand over, and what
     /// a device is given for a photo it has in memory.
     pub(crate) async fn import(
@@ -255,3 +263,4 @@ impl IncomingMedia for Incoming {
         }
     }
 }
+
