@@ -16,17 +16,20 @@ library;
 
 import 'dart:async';
 
+import 'package:cross_file/cross_file.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/attachments.dart';
 import '../core/note_library.dart';
+import '../core/recording_output.dart';
 import '../core/reminder_scheduler.dart';
 import '../core/relay_profiles.dart';
 import '../core/shared_text.dart';
 import '../core/sync_status.dart';
 import 'about_screen.dart';
+import 'audio_note_recorder.dart';
 import 'attachments.dart';
 import 'sync_devices_screen.dart';
 import 'invites.dart';
@@ -187,6 +190,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// body is rebuilt from it and a controller is not a source of truth.
   final _search = TextEditingController();
   bool _searching = false;
+  bool _addShortcutsExpanded = false;
   bool get _showFilters => _query.trim().isEmpty && _filter == null;
 
   bool _inSearchScope(NoteSummary note) =>
@@ -345,6 +349,59 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (tagName != null) await widget.library.addTag(id, tagName);
     if (!mounted) return;
     await _openNote(id);
+  }
+
+  Future<void> _createAudioNote() async {
+    setState(() => _addShortcutsExpanded = false);
+    final recording = await showAudioNoteRecorder(context);
+    if (recording == null) return;
+    if (!mounted) {
+      await discardRecordingPath(recording.path);
+      return;
+    }
+
+    String? createdNoteId;
+    try {
+      final noteId = await widget.library.createNote(kind: NoteKind.text);
+      createdNoteId = noteId;
+      final tagName = _where.tagName;
+      if (tagName != null) await widget.library.addTag(noteId, tagName);
+      final core = await widget.library.openNote(noteId);
+      try {
+        await core.setTitle('Audio note');
+        if (recording.bytes case final bytes?) {
+          await core.importAttachment(
+            'Voice note.wav',
+            bytes,
+            durationMs: recording.duration.inMilliseconds,
+          );
+        } else {
+          await core.importAttachmentFile(
+            recording.path,
+            'Voice note.wav',
+            durationMs: recording.duration.inMilliseconds,
+          );
+        }
+      } finally {
+        await core.dispose();
+      }
+      if (mounted) await _openNote(noteId);
+    } on Object catch (error) {
+      if (createdNoteId != null) {
+        try {
+          await widget.library.setTrashed(createdNoteId, true);
+        } on Object {
+          // Keep the original save error for the person.
+        }
+      }
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Could not save audio note: $error')),
+        );
+      }
+    } finally {
+      await discardRecordingPath(recording.path);
+    }
   }
 
   Future<void> _manageLabels({bool create = false}) =>
@@ -716,13 +773,56 @@ class _NoteListScreenState extends State<NoteListScreen> {
             floatingActionButton: _where.takesNewNotes && !_searching
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       FloatingActionButton.small(
-                        key: const Key('new-list-button'),
-                        heroTag: 'new-list',
-                        tooltip: 'New checklist',
-                        onPressed: () => _createNote(kind: NoteKind.checklist),
-                        child: const Icon(Icons.check_box_outlined),
+                        key: const Key('toggle-add-shortcuts-button'),
+                        heroTag: 'toggle-add-shortcuts',
+                        tooltip: _addShortcutsExpanded
+                            ? 'Hide shortcuts'
+                            : 'Show shortcuts',
+                        onPressed: () => setState(
+                          () => _addShortcutsExpanded = !_addShortcutsExpanded,
+                        ),
+                        child: Icon(
+                          _addShortcutsExpanded
+                              ? Icons.expand_more
+                              : Icons.expand_less,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 180),
+                        alignment: Alignment.bottomCenter,
+                        curve: Curves.easeOut,
+                        child: _addShortcutsExpanded
+                            ? Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  FloatingActionButton.small(
+                                    key: const Key('new-audio-note-button'),
+                                    heroTag: 'new-audio-note',
+                                    tooltip: 'Add audio note',
+                                    onPressed: _createAudioNote,
+                                    child: const Icon(Icons.mic_none),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  FloatingActionButton.small(
+                                    key: const Key('new-list-button'),
+                                    heroTag: 'new-list',
+                                    tooltip: 'New checklist',
+                                    onPressed: () {
+                                      setState(
+                                        () => _addShortcutsExpanded = false,
+                                      );
+                                      _createNote(kind: NoteKind.checklist);
+                                    },
+                                    child: const Icon(Icons.check_box_outlined),
+                                  ),
+                                  const SizedBox(height: 12),
+                                ],
+                              )
+                            : const SizedBox.shrink(),
                       ),
                       const SizedBox(height: 12),
                       FloatingActionButton(

@@ -4,6 +4,7 @@
          own channel — so a release build could not reach a relay at all, and
          said "offline" rather than "no permission". -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Precise reminders. Since Android 14 this is not granted on install:
