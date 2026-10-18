@@ -975,8 +975,6 @@ void main() {
   testWidgets('reminder bells follow changes in grid, list and search', (
     tester,
   ) async {
-    final semantics = tester.ensureSemantics();
-    addTearDown(semantics.dispose);
     final library = twoLists();
     await pumpList(tester, library);
     final bell = find.byKey(const Key('reminder-indicator'));
@@ -1001,7 +999,13 @@ void main() {
       findsOneWidget,
     );
     // The card may merge the indicator into its own accessibility label.
-    expect(find.bySemanticsLabel(RegExp('Has reminder')), findsWidgets);
+    final semantics = tester.ensureSemantics();
+    await tester.pump();
+    try {
+      expect(find.bySemanticsLabel(RegExp('Has reminder')), findsWidgets);
+    } finally {
+      semantics.dispose();
+    }
 
     await tester.tap(find.byKey(const Key('layout-toggle')));
     await tester.pumpAndSettle();
