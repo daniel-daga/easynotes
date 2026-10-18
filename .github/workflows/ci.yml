@@ -16,6 +16,11 @@ on:
   workflow_dispatch:
   # So that `release.yml` can require the same lint and tests before it builds.
   workflow_call:
+    inputs:
+      checkout_ref:
+        description: Ref to test, such as the release tag
+        required: false
+        type: string
 
 # A pull request that is pushed to again needs only its newest run. `main` keeps
 # every run, so that each commit on it has a result.
@@ -48,6 +53,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.checkout_ref || github.ref }}
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
@@ -111,6 +118,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.checkout_ref || github.ref }}
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
