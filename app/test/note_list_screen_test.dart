@@ -201,6 +201,14 @@ void main() {
     Future<void> ask(WidgetTester tester, String link) async {
       await tester.tap(find.byTooltip('Open navigation menu'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('join-entry')),
+        200,
+        scrollable: find.descendant(
+          of: find.byType(Drawer),
+          matching: find.byType(Scrollable),
+        ),
+      );
       await tester.tap(find.byKey(const Key('join-entry')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('join-link-field')), link);
@@ -266,6 +274,14 @@ void main() {
       expect(find.byKey(const Key('join-button')), findsNothing);
       await tester.tap(find.byTooltip('Open navigation menu'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('join-entry')),
+        200,
+        scrollable: find.descendant(
+          of: find.byType(Drawer),
+          matching: find.byType(Scrollable),
+        ),
+      );
       expect(find.byKey(const Key('join-entry')), findsOneWidget);
     });
 
@@ -898,15 +914,24 @@ void main() {
 
   // -- labels ---------------------------------------------------------------
 
-  /// Put a label on a note the way a person does: hold the card, open the
-  /// dialog, type, add, close.
+  /// Make a label in the manager, then choose it from the note's picker.
   Future<void> labelNote(WidgetTester tester, String id, String label) async {
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('create-label')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('label-field')), label);
+    await tester.tap(find.byKey(const Key('label-add')));
+    await tester.pumpAndSettle();
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await tester.longPress(find.byKey(Key('note:$id')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('action-labels')));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('label-field')), label);
-    await tester.tap(find.byKey(const Key('label-add')));
+    expect(find.byKey(const Key('label-field')), findsNothing);
+    expect(find.byIcon(Icons.edit_outlined), findsNothing);
+    await tester.tap(find.byKey(Key('label-check-$label')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('labels-done')));
     await tester.pumpAndSettle();
@@ -962,13 +987,20 @@ void main() {
     expect(tester.widget<CheckboxListTile>(check).value, isFalse);
   });
 
-  testWidgets('a label that is only whitespace is not a label', (tester) async {
+  testWidgets('the drawer can create the first label and rejects whitespace', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);
-    await labelNote(tester, 'groceries', '   ');
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('edit-labels')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('create-label')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('label-field')), '   ');
+    await tester.tap(find.byKey(const Key('label-add')));
+    await tester.pumpAndSettle();
 
     // The field never reaches the library, so there is nothing to undo.
-    expect(library.calls.where((call) => call.startsWith('addTag')), isEmpty);
+    expect(library.calls.where((call) => call.startsWith('makeTag')), isEmpty);
     expect(library.tags, isEmpty);
   });
 
@@ -1162,7 +1194,7 @@ void main() {
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
   });
 
-  testWidgets('a label can be renamed from the drawer, and its notes keep it', (
+  testWidgets('a label can be renamed in the manager, and its notes keep it', (
     tester,
   ) async {
     final library = twoLists();
@@ -1171,9 +1203,10 @@ void main() {
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('label-menu-errands')));
+    expect(find.byKey(const Key('label-menu-errands')), findsNothing);
+    await tester.tap(find.byKey(const Key('edit-labels')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('label-rename')));
+    await tester.tap(find.byKey(const Key('label-edit-errands')));
     await tester.pumpAndSettle();
 
     await tester.enterText(
@@ -1185,6 +1218,8 @@ void main() {
 
     // One label, under its new name, still on the note that had it.
     expect(library.tags.single.name, 'Chores');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('chip:groceries:Chores')), findsOneWidget);
   });
 
@@ -1210,14 +1245,16 @@ void main() {
     expect(find.byKey(const Key('note:hardware')), findsNothing);
   });
 
-  testWidgets('a label can be thrown away from the drawer', (tester) async {
+  testWidgets('a label can be thrown away in the manager', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);
     await labelNote(tester, 'groceries', 'errands');
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('label-menu-errands')));
+    await tester.tap(find.byKey(const Key('edit-labels')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-edit-errands')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('label-forget')));
     await tester.pumpAndSettle();
@@ -1228,6 +1265,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(library.tags, isEmpty);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     // The note is untouched apart from losing the label.
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
   });

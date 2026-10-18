@@ -31,6 +31,7 @@ import 'attachments.dart';
 import 'sync_devices_screen.dart';
 import 'invites.dart';
 import 'motion.dart';
+import 'label_manager_screen.dart';
 import 'note_appearance.dart';
 import 'note_screen.dart';
 import 'relay_settings_screen.dart';
@@ -346,69 +347,24 @@ class _NoteListScreenState extends State<NoteListScreen> {
     await _openNote(id);
   }
 
-  /// Rename a label, everywhere it is.
-  ///
-  /// Every note keeps it: a membership points at the label's ID and has never
-  /// mentioned its name, which is the whole of why this gesture exists at all.
-  /// Renaming onto a name another label already has merges the two, and the
-  /// message says so rather than letting two chips that read the same quietly
-  /// become one.
-  Future<void> _renameLabel(Tag tag) async {
-    final typed = await showDialog<String>(
-      context: context,
-      builder: (context) => _RenameLabelDialog(tag: tag),
-    );
-    if (typed == null || !mounted) return;
-    final survivor = await widget.library.renameTag(tag.id, typed);
-    if (!mounted) return;
-    if (survivor != null && survivor != tag.id) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Merged "${tag.name}" into "$typed".')),
-      );
-    }
-  }
-
-  /// Throw a label away. The notes that had it are untouched apart from losing
-  /// it, and the confirmation says exactly that — this is the one gesture here
-  /// that changes notes the person is not looking at.
-  Future<void> _forgetLabel(Tag tag) async {
-    final sure = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete "${tag.name}"?'),
-        content: Text(
-          tag.notes == 0
-              ? 'Nothing is labelled "${tag.name}", so nothing else changes.'
-              : 'It comes off ${tag.notes} ${tag.notes == 1 ? 'note' : 'notes'}. '
-                    'The notes themselves are kept.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            key: const Key('confirm-forget-label'),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
+  Future<void> _manageLabels({bool create = false}) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => LabelManagerScreen(
+        library: widget.library,
+        autofocusCreate: create,
       ),
-    );
-    if (sure != true || !mounted) return;
-    await widget.library.forgetTag(tag.id);
-  }
+    ),
+  );
 
-  /// The labels on one note, on a dialog that can put more on and take them off.
-  ///
-  /// Shown with the screen's context rather than the action sheet's, for the
-  /// reason the delete confirmation is: the sheet is popped before this opens.
-  Future<void> _labelsFor(NoteSummary note) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => _LabelsDialog(library: widget.library, note: note),
-    );
-  }
+  /// Notes can choose existing labels; label management lives in the drawer.
+  Future<void> _labelsFor(NoteSummary note) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => LabelManagerScreen(
+        library: widget.library,
+        noteId: note.id,
+      ),
+    ),
+  );
 
   /// The reminders attached to one note. They live in the library rather than
   /// in the card because they are account-document data and may arrive from a
@@ -741,8 +697,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
               },
               tags: tags,
               onChosen: _show,
-              onRename: _renameLabel,
-              onForget: _forgetLabel,
+              onEditLabels: () => _manageLabels(),
+              onCreateLabel: () => _manageLabels(create: true),
               onSyncDevices: _openSyncDevices,
               profile: widget.profile,
               onAbout: _openAbout,
@@ -1592,8 +1548,8 @@ class _Shelves extends StatelessWidget {
     required this.counts,
     required this.tags,
     required this.onChosen,
-    required this.onRename,
-    required this.onForget,
+    required this.onEditLabels,
+    required this.onCreateLabel,
     required this.onSyncDevices,
     required this.profile,
     required this.onAbout,
@@ -1611,8 +1567,8 @@ class _Shelves extends StatelessWidget {
   /// legitimately say `0`.
   final List<Tag> tags;
   final void Function(_Where) onChosen;
-  final void Function(Tag) onRename;
-  final void Function(Tag) onForget;
+  final VoidCallback onEditLabels;
+  final VoidCallback onCreateLabel;
 
   final VoidCallback onSyncDevices;
   final RelayProfile profile;
@@ -1657,60 +1613,42 @@ class _Shelves extends StatelessWidget {
               selected: current.tag == null && shelf == current.shelf,
               onTap: () => go(_Where.shelf(shelf)),
             ),
-          // No heading over an empty list: a person who has never made a label
-          // has nothing to be told about them here, and the place labels are
-          // made is a note.
-          if (tags.isNotEmpty) ...[
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.only(left: 16, bottom: 4),
-              child: Text(
-                'Labels',
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-            ),
-            for (final tag in tags)
-              ListTile(
-                key: Key('label-shelf-${tag.name}'),
-                leading: const Icon(Icons.label_outline),
-                title: Text(tag.name),
-                // The count, and the way to rename or throw the label away.
-                // Here rather than on a card, because a label is not a property
-                // of any one note: renaming it from a note would look like it
-                // only changed that note's copy, and there are no copies.
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('${tag.notes}'),
-                    PopupMenuButton<void>(
-                      key: Key('label-menu-${tag.name}'),
-                      icon: const Icon(Icons.more_vert),
-                      tooltip: 'What to do with "${tag.name}"',
-                      itemBuilder: (context) => [
-                        PopupMenuItem<void>(
-                          key: const Key('label-rename'),
-                          onTap: () => onRename(tag),
-                          child: const ListTile(
-                            leading: Icon(Icons.edit_outlined),
-                            title: Text('Rename'),
-                          ),
-                        ),
-                        PopupMenuItem<void>(
-                          key: const Key('label-forget'),
-                          onTap: () => onForget(tag),
-                          child: const ListTile(
-                            leading: Icon(Icons.label_off_outlined),
-                            title: Text('Delete label'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+          const Divider(),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, right: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Labels', style: Theme.of(context).textTheme.labelMedium),
+                TextButton(
+                  key: const Key('edit-labels'),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    onEditLabels();
+                  },
+                  child: const Text('Edit'),
                 ),
-                selected: current.tag == tag.id,
-                onTap: () => go(_Where.tag(tag.id, tag.name)),
-              ),
-          ],
+              ],
+            ),
+          ),
+          for (final tag in tags)
+            ListTile(
+              key: Key('label-shelf-${tag.name}'),
+              leading: const Icon(Icons.label_outline),
+              title: Text(tag.name),
+              trailing: Text('${tag.notes}'),
+              selected: current.tag == tag.id,
+              onTap: () => go(_Where.tag(tag.id, tag.name)),
+            ),
+          ListTile(
+            key: const Key('create-label'),
+            leading: const Icon(Icons.add),
+            title: const Text('Create new label'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onCreateLabel();
+            },
+          ),
           const Divider(),
           SyncStatusTile(
             watch: watchSync,
@@ -2462,70 +2400,6 @@ class _NoteCardState extends State<_NoteCard> {
   }
 }
 
-/// Ask for a label's new name.
-///
-/// Seeded with the name it has, because a rename is usually a correction rather
-/// than a replacement, and selected so that typing over it still works.
-class _RenameLabelDialog extends StatefulWidget {
-  const _RenameLabelDialog({required this.tag});
-
-  final Tag tag;
-
-  @override
-  State<_RenameLabelDialog> createState() => _RenameLabelDialogState();
-}
-
-class _RenameLabelDialogState extends State<_RenameLabelDialog> {
-  late final _field = TextEditingController(text: widget.tag.name)
-    ..selection = TextSelection(
-      baseOffset: 0,
-      extentOffset: widget.tag.name.length,
-    );
-
-  @override
-  void dispose() {
-    _field.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final typed = _field.text.trim();
-    if (typed.isEmpty) return;
-    Navigator.of(context).pop(typed);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      key: const Key('rename-label-dialog'),
-      title: Text('Rename "${widget.tag.name}"'),
-      content: TextField(
-        key: const Key('rename-label-field'),
-        controller: _field,
-        autofocus: true,
-        maxLength: maxLabelLength,
-        decoration: const InputDecoration(
-          border: OutlineInputBorder(),
-          isDense: true,
-          counterText: '',
-        ),
-        onSubmitted: (_) => _submit(),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const Key('rename-label-confirm'),
-          onPressed: _submit,
-          child: const Text('Rename'),
-        ),
-      ],
-    );
-  }
-}
-
 /// One label on a card. Small, flat and not tappable: a card's own gesture is
 /// opening the note, and a chip that could be pressed would be a second target
 /// inside the first.
@@ -2550,150 +2424,6 @@ class _Chip extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-    );
-  }
-}
-
-/// The labels on one note: which of this person's labels it has, and a field for
-/// one it has not.
-///
-/// It keeps its own copy of what is on the note, which is the one place in this
-/// screen that does. Everything else here is a function of the library's stream,
-/// but a dialog is above the `StreamBuilder` that would rebuild it — so it asks
-/// the library after every change and redraws from the answer. That answer is the
-/// account document's and not this widget's guess, which matters for the case
-/// below: a name typed in a casing this device has already used comes back as
-/// the casing it has.
-class _LabelsDialog extends StatefulWidget {
-  const _LabelsDialog({required this.library, required this.note});
-
-  final NoteLibrary library;
-  final NoteSummary note;
-
-  @override
-  State<_LabelsDialog> createState() => _LabelsDialogState();
-}
-
-class _LabelsDialogState extends State<_LabelsDialog> {
-  final _field = TextEditingController();
-
-  /// What the note has, and every label this device knows, as of the last answer.
-  late Set<String> _on = widget.note.tagIds;
-  late List<Tag> _all = widget.library.tags;
-
-  @override
-  void dispose() {
-    _field.dispose();
-    super.dispose();
-  }
-
-  /// Re-read both from the library. The note's own labels come off the list
-  /// rather than being tracked here, so that a label the core reused under
-  /// another casing is drawn as the label that exists.
-  void _reread() {
-    final summary = widget.library.notes
-        .where((note) => note.id == widget.note.id)
-        .firstOrNull;
-    setState(() {
-      _all = widget.library.tags;
-      _on = summary?.tagIds ?? const <String>{};
-    });
-  }
-
-  /// Toggling is by ID on the way off and by *name* on the way on, and that is
-  /// not an inconsistency: putting a label on goes through the same reuse rule
-  /// a typed name does, so a checkbox and the field below it cannot disagree
-  /// about which label a name means.
-  Future<void> _toggle(Tag tag, bool on) async {
-    if (on) {
-      await widget.library.addTag(widget.note.id, tag.name);
-    } else {
-      await widget.library.removeTag(widget.note.id, tag.id);
-    }
-    if (mounted) _reread();
-  }
-
-  Future<void> _add() async {
-    final typed = _field.text;
-    if (typed.trim().isEmpty) return;
-    await widget.library.addTag(widget.note.id, typed);
-    if (!mounted) return;
-    _field.clear();
-    _reread();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      key: const Key('labels-dialog'),
-      title: const Text('Labels'),
-      // `double.maxFinite` rather than a number: an `AlertDialog` measures its
-      // content's intrinsic width, and the scrollable below cannot report one.
-      // This is the documented way to put a list in a dialog, and it means the
-      // dialog is as wide as it is allowed to be rather than as wide as the
-      // longest label.
-      content: SizedBox(
-        width: double.maxFinite,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: const Key('label-field'),
-                    controller: _field,
-                    autofocus: true,
-                    // The same number the core would cut a name at: a label has to
-                    // fit on a chip, and anything longer is text for the note.
-                    maxLength: maxLabelLength,
-                    decoration: const InputDecoration(
-                      hintText: 'New label',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      counterText: '',
-                    ),
-                    onSubmitted: (_) => _add(),
-                  ),
-                ),
-                IconButton(
-                  key: const Key('label-add'),
-                  icon: const Icon(Icons.add),
-                  tooltip: 'Add this label',
-                  onPressed: _add,
-                ),
-              ],
-            ),
-            if (_all.isNotEmpty)
-              // Bounded, because a dialog cannot be taller than the screen and a
-              // person with forty labels still has to reach the ones at the end.
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  children: [
-                    for (final tag in _all)
-                      CheckboxListTile(
-                        key: Key('label-check-${tag.name}'),
-                        value: _on.contains(tag.id),
-                        title: Text(tag.name),
-                        dense: true,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        onChanged: (on) => _toggle(tag, on ?? false),
-                      ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          key: const Key('labels-done'),
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Done'),
-        ),
-      ],
     );
   }
 }
