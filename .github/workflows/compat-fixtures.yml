@@ -1,0 +1,41 @@
+name: Compatibility fixtures
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: easynotes
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: 1.94.1
+      - name: Install pg_dump 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+      - name: Write the release fixtures
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/easynotes
+        run: cargo test -p easynotes-relay --test compat write_compat_fixtures -- --ignored --nocapture
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compat-v0.1.1
+          path: compat/v0.1.1/
+          if-no-files-found: error
