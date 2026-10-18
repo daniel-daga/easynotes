@@ -14,6 +14,7 @@ library;
 
 import 'dart:async';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -123,6 +124,17 @@ class _NoteScreenState extends State<NoteScreen> {
   List<AttachmentTransfer> _transfers = const [];
   StreamSubscription<List<AttachmentTransfer>>? _transferWatch;
   StreamSubscription<NoteView>? _viewWatch;
+  AudioPlayer? _audioPlayer;
+  StreamSubscription<PlayerState>? _playerStateWatch;
+  StreamSubscription<Duration>? _playerPositionWatch;
+  StreamSubscription<Duration?>? _playerDurationWatch;
+  StreamSubscription<void>? _playerCompleteWatch;
+  String? _playingAttachment;
+  String? _loadingAttachment;
+  String? _playbackUnavailableAttachment;
+  Duration _playbackPosition = Duration.zero;
+  Duration? _playbackDuration;
+  bool _playbackIsPlaying = false;
 
   @override
   void initState() {
@@ -130,7 +142,13 @@ class _NoteScreenState extends State<NoteScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_startEmptyChecklist());
     });
-    _viewWatch = widget.core.watch().listen((_) => _refreshPending());
+    _viewWatch = widget.core.watch().listen((note) {
+      _refreshPending();
+      final id = _playingAttachment;
+      if (id != null && !note.attachments.any((a) => a.id == id)) {
+        unawaited(_stopPlayback());
+      }
+    });
     _transferWatch = widget.library?.watchTransfers().listen((transfers) {
       if (!mounted) return;
       setState(
@@ -149,6 +167,12 @@ class _NoteScreenState extends State<NoteScreen> {
       if (!mounted) return;
       if (!listEquals(pending, _pendingAttachments)) {
         setState(() => _pendingAttachments = pending);
+      }
+      final id = _playingAttachment;
+      if (id != null &&
+          !widget.core.current.attachments.any((a) => a.id == id) &&
+          !pending.any((a) => a.id == id)) {
+        unawaited(_stopPlayback());
       }
     } on Object {
       // The note has gone or the library closed; the screen is leaving.
@@ -346,16 +370,138 @@ class _NoteScreenState extends State<NoteScreen> {
                       .length -
                   1,
           transfers: _transfers,
+          playing:
+              _playingAttachment == audio.id && _playbackIsPlaying,
+          canSeek:
+              _playingAttachment == audio.id && _loadingAttachment == null,
+          loading: _loadingAttachment == audio.id,
+          position: _playingAttachment == audio.id
+              ? _playbackPosition
+              : Duration.zero,
+          duration: _playingAttachment == audio.id ? _playbackDuration : null,
+          onTogglePlayback: () => _togglePlayback(audio),
+          onSeek: (position) => _seekPlayback(audio, position),
+          playbackUnavailable: _playbackUnavailableAttachment == audio.id,
           onAction: (action) => _attachmentAction(audio, action),
           onRetry: _retryTransfers,
         ),
     ],
   );
 
+  void _ensureAudioPlayer() {
+    if (_audioPlayer != null) return;
+    final player = AudioPlayer();
+    _audioPlayer = player;
+    _playerStateWatch = player.onPlayerStateChanged.listen((state) {
+      if (!mounted) return;
+      setState(() {
+        _playbackIsPlaying = state == PlayerState.playing;
+        if (state == PlayerState.playing) _loadingAttachment = null;
+      });
+    });
+    _playerPositionWatch = player.onPositionChanged.listen((position) {
+      if (mounted) setState(() => _playbackPosition = position);
+    });
+    _playerDurationWatch = player.onDurationChanged.listen((duration) {
+      if (mounted) setState(() => _playbackDuration = duration);
+    });
+    _playerCompleteWatch = player.onPlayerComplete.listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _playingAttachment = null;
+        _loadingAttachment = null;
+        _playbackIsPlaying = false;
+        _playbackPosition = Duration.zero;
+      });
+    });
+  }
+
+  Future<void> _togglePlayback(AttachmentView audio) async {
+    _ensureAudioPlayer();
+    final player = _audioPlayer!;
+    try {
+      if (_playingAttachment == audio.id && _loadingAttachment == null) {
+        if (player.state == PlayerState.playing) {
+          await player.pause();
+        } else {
+          await player.resume();
+        }
+        return;
+      }
+      setState(() {
+        _loadingAttachment = audio.id;
+        _playingAttachment = null;
+        _playbackIsPlaying = false;
+        _playbackUnavailableAttachment = null;
+        _playbackPosition = Duration.zero;
+        _playbackDuration = Duration(milliseconds: audio.durationMs ?? 0);
+      });
+      await player.stop();
+      final bytes = await widget.core.readAttachment(audio.id);
+      if (!mounted) return;
+      if (bytes == null) {
+        setState(() => _loadingAttachment = null);
+        _say('This audio is still downloading. Try again when it is here.');
+        return;
+      }
+      setState(() {
+        _playingAttachment = audio.id;
+        _loadingAttachment = audio.id;
+        _playbackIsPlaying = false;
+      });
+      await player.play(BytesSource(bytes, mimeType: audio.mime));
+      if (mounted && _loadingAttachment == audio.id) {
+        setState(() => _loadingAttachment = null);
+      }
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _playingAttachment = null;
+        _loadingAttachment = null;
+        _playbackIsPlaying = false;
+        _playbackUnavailableAttachment = audio.id;
+      });
+      _say('Couldn\'t play this audio on this device: ${_reason(e)}');
+    }
+  }
+
+  Future<void> _seekPlayback(AttachmentView audio, Duration position) async {
+    if (_playingAttachment != audio.id || _audioPlayer == null) return;
+    setState(() => _playbackPosition = position);
+    try {
+      await _audioPlayer!.seek(position);
+    } on Object catch (e) {
+      if (mounted) _say('Couldn\'t seek this audio: ${_reason(e)}');
+    }
+  }
+
+  Future<void> _stopPlayback() async {
+    final player = _audioPlayer;
+    if (player == null) return;
+    if (mounted) {
+      setState(() {
+        _playingAttachment = null;
+        _loadingAttachment = null;
+        _playbackIsPlaying = false;
+        _playbackPosition = Duration.zero;
+      });
+    }
+    try {
+      await player.stop();
+    } on Object {
+      // The note may be closing while its platform player is stopping.
+    }
+  }
+
   @override
   void dispose() {
     unawaited(_viewWatch?.cancel());
     unawaited(_transferWatch?.cancel());
+    unawaited(_playerStateWatch?.cancel());
+    unawaited(_playerPositionWatch?.cancel());
+    unawaited(_playerDurationWatch?.cancel());
+    unawaited(_playerCompleteWatch?.cancel());
+    if (_audioPlayer case final player?) unawaited(player.dispose());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
       focus.dispose();

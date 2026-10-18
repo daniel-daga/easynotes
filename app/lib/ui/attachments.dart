@@ -350,8 +350,7 @@ class _StatusChip extends StatelessWidget {
 /// What an attachment's menu can do.
 enum AttachmentAction { saveCopy, describe, moveEarlier, moveLater, remove }
 
-/// One sound file below the note's content. Playback is not built yet, so
-/// this names the file and offers its menu.
+/// One sound file below the note's content, with controls for its local copy.
 class AttachmentAudioRow extends StatelessWidget {
   const AttachmentAudioRow({
     super.key,
@@ -359,6 +358,14 @@ class AttachmentAudioRow extends StatelessWidget {
     required this.transfers,
     required this.onAction,
     required this.onRetry,
+    required this.playing,
+    required this.canSeek,
+    required this.loading,
+    required this.position,
+    required this.duration,
+    required this.onTogglePlayback,
+    required this.onSeek,
+    this.playbackUnavailable = false,
     this.canMoveEarlier = false,
     this.canMoveLater = false,
   });
@@ -369,6 +376,14 @@ class AttachmentAudioRow extends StatelessWidget {
   final List<AttachmentTransfer> transfers;
   final ValueChanged<AttachmentAction> onAction;
   final VoidCallback onRetry;
+  final bool playing;
+  final bool canSeek;
+  final bool loading;
+  final Duration position;
+  final Duration? duration;
+  final VoidCallback onTogglePlayback;
+  final ValueChanged<Duration> onSeek;
+  final bool playbackUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -377,29 +392,91 @@ class AttachmentAudioRow extends StatelessWidget {
       if (audio.durationMs != null) formatDuration(audio.durationMs!),
       formatSize(audio.size),
     ].join(' · ');
-    return ListTile(
+    final total = duration ?? Duration(milliseconds: audio.durationMs ?? 0);
+    final maxMs = total.inMilliseconds;
+    final valueMs = position.inMilliseconds.clamp(0, maxMs).toInt();
+    return Column(
       key: ValueKey('attachment:${audio.id}'),
-      leading: const Icon(Icons.audiotrack_outlined),
-      title: Semantics(
-        label: audio.name,
-        excludeSemantics: true,
-        child: Text(audio.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ),
-      subtitle: Text(status == null ? facts : '$facts · ${status.text}'),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (status?.retry ?? false)
-            TextButton(onPressed: onRetry, child: const Text('Retry')),
-          AttachmentMenu(
-            pending: audio.pending,
-            onAction: onAction,
-            describe: false,
-            canMoveEarlier: canMoveEarlier,
-            canMoveLater: canMoveLater,
+      children: [
+        ListTile(
+          leading: IconButton(
+            tooltip: loading
+                ? 'Loading audio'
+                : playing
+                ? 'Pause audio'
+                : 'Play audio',
+            onPressed: loading ? null : onTogglePlayback,
+            icon: loading
+                ? const SizedBox.square(
+                    dimension: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    playing
+                        ? Icons.pause_circle_filled
+                        : Icons.play_circle_filled,
+                  ),
           ),
-        ],
-      ),
+          title: Semantics(
+            label: audio.name,
+            excludeSemantics: true,
+            child: Text(
+              audio.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          subtitle: Text(
+            playbackUnavailable
+                ? 'Playback unavailable on this device · $facts'
+                : status == null
+                ? facts
+                : '$facts · ${status.text}',
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (status?.retry ?? false)
+                TextButton(onPressed: onRetry, child: const Text('Retry')),
+              AttachmentMenu(
+                pending: audio.pending,
+                onAction: onAction,
+                describe: false,
+                canMoveEarlier: canMoveEarlier,
+                canMoveLater: canMoveLater,
+              ),
+            ],
+          ),
+        ),
+        if (maxMs > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Text(
+                  formatDuration(valueMs),
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+                Expanded(
+                  child: Slider(
+                    key: ValueKey('audio-seek:${audio.id}'),
+                    min: 0,
+                    max: maxMs.toDouble(),
+                    value: valueMs.toDouble(),
+                    onChanged: canSeek
+                        ? (value) =>
+                              onSeek(Duration(milliseconds: value.round()))
+                        : null,
+                  ),
+                ),
+                Text(
+                  formatDuration(maxMs),
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
