@@ -2075,11 +2075,14 @@ dependencies = [
 
 [[package]]
 name = "rust_lib_easynotes"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "easynotes-core",
  "flutter_rust_bridge",
  "js-sys",
+ "serde",
+ "serde_json",
  "tokio",
  "wasm-bindgen-futures",
 ]

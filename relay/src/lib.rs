@@ -9,6 +9,7 @@ pub mod invite;
 pub mod limit;
 pub mod media;
 pub mod metrics;
+pub mod pairing;
 pub mod protocol;
 pub mod quota;
 pub mod shutdown;

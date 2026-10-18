@@ -230,6 +230,18 @@ abstract class Accounts {
   Future<void> deleteAccount();
 }
 
+/// One-time transfer between two of a person's devices. Secret material stays
+/// inside the Rust core; Dart receives only the relay settings after decryption.
+abstract interface class AccountTransfers {
+  Future<String> beginAccountTransfer(String relayUrl, String? relayAccess);
+  Future<String?> accountTransferRequestCode();
+  Future<void> approveAccountTransfer();
+  Future<void> cancelAccountTransfer();
+  Future<String> beginAccountTransferFromQr(String qr);
+  Future<({String relayUrl, String? relayAccess})?> pollAccountTransferResult();
+  Future<void> adoptAccountTransfer();
+}
+
 /// What a device can do about sharing, on either side of it.
 abstract class Invites implements Accounts {
   /// Everybody with access to a note, owner first.

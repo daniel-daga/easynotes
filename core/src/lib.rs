@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod account;
+pub mod account_transfer;
 pub mod attachment;
 pub mod collaborators;
 pub mod compaction;

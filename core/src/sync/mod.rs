@@ -74,6 +74,13 @@ pub use socket::DeviceSync;
 ))]
 pub mod invite;
 
+/// Short-lived, encrypted account-device pairing rendezvous.
+#[cfg(any(
+    feature = "sync-native",
+    all(feature = "sync-web", target_arch = "wasm32")
+))]
+pub mod pairing;
+
 /// Attachment bytes to and from the relay, over either transport's `call`.
 #[cfg(any(
     feature = "sync-native",

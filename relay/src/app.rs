@@ -90,6 +90,7 @@ pub struct AppState {
     /// assigns sequence numbers, so the corresponding fan-out must keep that
     /// same order even when concurrent websocket handlers append at once.
     append_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    pub(crate) pairings: Mutex<HashMap<String, crate::pairing::Pairing>>,
     /// Tells the sync sessions to close when the relay is stopping.
     pub shutdown: crate::shutdown::Shutdown,
     /// Running counts for `/metrics` ([`crate::metrics`]).
@@ -164,6 +165,7 @@ impl AppState {
             media,
             channels: Mutex::new(HashMap::new()),
             append_locks: Mutex::new(HashMap::new()),
+            pairings: Mutex::new(HashMap::new()),
             shutdown: crate::shutdown::Shutdown::default(),
             metrics: Arc::default(),
             access,
@@ -429,6 +431,18 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         )
         .route("/v1/invites/{invite}/list", post(invite::list))
         .route("/v1/invites/{invite}/withdraw", post(invite::withdraw))
+        .route("/v1/pairings", post(crate::pairing::create))
+        .route("/v1/pairings/{id}/request", post(crate::pairing::request))
+        .route(
+            "/v1/pairings/{id}/poll-request",
+            post(crate::pairing::poll_request),
+        )
+        .route("/v1/pairings/{id}/response", post(crate::pairing::response))
+        .route(
+            "/v1/pairings/{id}/poll-response",
+            post(crate::pairing::poll_response),
+        )
+        .route("/v1/pairings/{id}/close", post(crate::pairing::close))
         .route("/v1/purge", post(purge))
         // Attachment objects (ADR 0027 §4). `status` and `commit` are static
         // segments, so they win over `{index}` in the same place.
@@ -591,7 +605,9 @@ async fn enforce_limits(
     let (limit, bucket) = match req.uri().path() {
         "/v1/challenge" | "/v1/token" | "/v1/purge" => (&config.handshake, Bucket::Handshake),
         "/v1/sync" => (&config.sockets, Bucket::Sockets),
-        path if path.starts_with("/v1/invites") => (&config.invites, Bucket::Invites),
+        path if path.starts_with("/v1/invites") || path.starts_with("/v1/pairings") => {
+            (&config.invites, Bucket::Invites)
+        }
         path if path.starts_with("/v1/media") => (&config.media_rate, Bucket::Media),
         _ => return next.run(req).await,
     };

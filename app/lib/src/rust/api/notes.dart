@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `Peer`, `Shared`, `StatusCell`, `Statuses`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `apply_remote`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
+// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -25,6 +25,10 @@ Uint8List? masterKeyBesideTheDatabase({required String dir}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>>
 abstract class Library implements RustOpaqueInterface {
+  /// Whether a new device has scanned the QR, and the code to compare on
+  /// both screens before approving it.
+  Future<String?> accountTransferRequestCode();
+
   /// Put a label on a note, and return the label it went on under.
   ///
   /// `null` for something that is not a name — whitespace, or nothing — so a
@@ -47,8 +51,26 @@ abstract class Library implements RustOpaqueInterface {
   /// a perfectly good account that has nothing in it.
   Future<void> adoptAccount({required String phrase});
 
+  Future<void> adoptAccountTransfer();
+
   /// Every invite this device has open, to any note.
   List<InviteView> allInvites();
+
+  /// Approve the displayed pairing code and send the encrypted account and
+  /// relay settings to that one-time recipient key.
+  Future<void> approveAccountTransfer();
+
+  /// Start a five-minute pairing. The QR contains no account or relay secret.
+  Future<String> beginAccountTransfer({
+    required String relayUrl,
+    String? relayAccess,
+  });
+
+  /// Scan-side setup. The return code is displayed while the original device
+  /// waits for approval.
+  Future<String> beginAccountTransferFromQr({required String qr});
+
+  Future<void> cancelAccountTransfer();
 
   /// Stop waiting on a join request. The relay keeps the request until the
   /// invite expires; the owner's device may still let this person in, and
@@ -299,6 +321,10 @@ abstract class Library implements RustOpaqueInterface {
   /// Everybody with access to a note, owner first. What the share screen
   /// lists; it shows no devices.
   PeopleView people({required String id});
+
+  /// Poll once for the approved encrypted transfer. The secret remains in
+  /// Rust until `adopt_account_transfer` commits it into the device keyring.
+  Future<AccountTransferSettings?> pollAccountTransferResult();
 
   /// The name this person shares under, once chosen. Asked once, as part of
   /// setting up sharing, and the same on every device of the account.
@@ -562,6 +588,24 @@ abstract class Note implements RustOpaqueInterface {
   Stream<NoteView> watch();
 
   Stream<SyncStatus> watchSync();
+}
+
+class AccountTransferSettings {
+  final String relayUrl;
+  final String? relayAccess;
+
+  const AccountTransferSettings({required this.relayUrl, this.relayAccess});
+
+  @override
+  int get hashCode => relayUrl.hashCode ^ relayAccess.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AccountTransferSettings &&
+          runtimeType == other.runtimeType &&
+          relayUrl == other.relayUrl &&
+          relayAccess == other.relayAccess;
 }
 
 /// Whether an attachment is drawn or played.

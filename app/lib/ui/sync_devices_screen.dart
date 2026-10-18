@@ -4,6 +4,7 @@ import '../core/note_library.dart';
 import '../core/relay_profiles.dart';
 import '../core/sync_status.dart';
 import 'account_screen.dart';
+import 'account_transfer_screen.dart';
 import 'sync_button.dart';
 
 /// Relay delivery and account access answer different questions. Keep them
@@ -15,12 +16,20 @@ class SyncDevicesScreen extends StatelessWidget {
     required this.profile,
     required this.onServer,
     this.onAccountDeleted,
+    this.onMoveLocalToRelay,
+    this.onSetAccess,
+    this.onSwitchRelay = _ignoreRelaySwitch,
   });
 
   final NoteLibrary library;
   final RelayProfile profile;
   final VoidCallback onServer;
   final Future<void> Function()? onAccountDeleted;
+  final Future<void> Function(String, {String? access})? onMoveLocalToRelay;
+  final Future<void> Function(String?)? onSetAccess;
+  final Future<void> Function(String?, {String? access}) onSwitchRelay;
+
+  static Future<void> _ignoreRelaySwitch(String? _, {String? access}) async {}
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -42,7 +51,10 @@ class SyncDevicesScreen extends StatelessWidget {
           ),
         ],
         const Divider(height: 40),
-        Text('Access on other devices', style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Access on other devices',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         const SizedBox(height: 12),
         AccountScreen(
           library: library,
@@ -50,6 +62,32 @@ class SyncDevicesScreen extends StatelessWidget {
           onDeleted: onAccountDeleted,
           embedded: true,
         ),
+        if (library is AccountTransfers) ...[
+          const SizedBox(height: 8),
+          ListTile(
+            key: const Key('account-transfer'),
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.qr_code_2),
+            title: const Text('Add another device'),
+            subtitle: const Text(
+              'Transfer account access with a one-time QR code.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => AccountTransferScreen(
+                  library: library as AccountTransfers,
+                  profile: profile,
+                  onMoveLocalToRelay:
+                      onMoveLocalToRelay ??
+                      (address, {access}) async =>
+                          onSwitchRelay(address, access: access),
+                  onSetAccess: onSetAccess ?? (_) async {},
+                ),
+              ),
+            ),
+          ),
+        ],
         const Divider(height: 40),
         ListTile(
           key: const Key('sync-server-settings'),
@@ -99,11 +137,11 @@ class _RelayStatusState extends State<_RelayStatus> {
           Text(
             !widget.hasRelay
                 ? 'Your notes are saved on this device. Choose a relay to '
-                    'sync them, with the option to move your current notes.'
+                      'sync them, with the option to move your current notes.'
                 : status.state == SyncState.synced && status.pending == 0
                 ? 'Your notes’ encrypted updates have reached your relay.'
                 : 'Your notes stay available on this device. Changes sync '
-                    'to your relay when connected.',
+                      'to your relay when connected.',
           ),
           if (widget.hasRelay && status.lastError != null) ...[
             const SizedBox(height: 12),

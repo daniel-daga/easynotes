@@ -12,6 +12,9 @@ flutter_rust_bridge = "=2.13.0"
 # Only the synchronisation primitives here; the runtime that drives the sync
 # engine is native-only and is pulled in below.
 tokio = { version = "1", default-features = false, features = ["sync"] }
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.23.1"
 
 # The native relay client needs a reactor and a browser tab cannot have one, so
 # the web build gets `sync-web` instead — the same engine over the browser's own

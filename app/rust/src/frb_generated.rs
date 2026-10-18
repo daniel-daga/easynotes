@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1292557766;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1493696106;
 
 // Section: executor
 
@@ -48,6 +48,64 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
+fn wire__crate__api__notes__Library_account_transfer_request_code_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_account_transfer_request_code",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::notes::Library::account_transfer_request_code(
+                            &*api_that_guard,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__notes__Library_add_tag_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -151,6 +209,56 @@ fn wire__crate__api__notes__Library_adopt_account_impl(
         },
     )
 }
+fn wire__crate__api__notes__Library_adopt_account_transfer_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_adopt_account_transfer",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::notes::Library::adopt_account_transfer(&*api_that_guard)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__notes__Library_all_invites_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -194,6 +302,242 @@ fn wire__crate__api__notes__Library_all_invites_impl(
                 let output_ok = crate::api::notes::Library::all_invites(&*api_that_guard)?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__notes__Library_approve_account_transfer_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_approve_account_transfer",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::notes::Library::approve_account_transfer(&*api_that_guard)
+                                .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__notes__Library_begin_account_transfer_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_begin_account_transfer",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            let api_relay_url = <String>::sse_decode(&mut deserializer);
+            let api_relay_access = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::notes::Library::begin_account_transfer(
+                            &*api_that_guard,
+                            api_relay_url,
+                            api_relay_access,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__notes__Library_begin_account_transfer_from_qr_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_begin_account_transfer_from_qr",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            let api_qr = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::notes::Library::begin_account_transfer_from_qr(
+                            &*api_that_guard,
+                            api_qr,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__notes__Library_cancel_account_transfer_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_cancel_account_transfer",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::notes::Library::cancel_account_transfer(&*api_that_guard)
+                                .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
         },
     )
 }
@@ -1579,6 +1923,64 @@ fn wire__crate__api__notes__Library_people_impl(
                 let output_ok = crate::api::notes::Library::people(&*api_that_guard, api_id)?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__notes__Library_poll_account_transfer_result_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Library_poll_account_transfer_result",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Library>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::notes::Library::poll_account_transfer_result(
+                            &*api_that_guard,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
         },
     )
 }
@@ -4555,6 +4957,18 @@ impl SseDecode for String {
     }
 }
 
+impl SseDecode for crate::api::notes::AccountTransferSettings {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_relayUrl = <String>::sse_decode(deserializer);
+        let mut var_relayAccess = <Option<String>>::sse_decode(deserializer);
+        return crate::api::notes::AccountTransferSettings {
+            relay_url: var_relayUrl,
+            relay_access: var_relayAccess,
+        };
+    }
+}
+
 impl SseDecode for crate::api::notes::AttachmentKindView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5062,6 +5476,19 @@ impl SseDecode for Option<String> {
     }
 }
 
+impl SseDecode for Option<crate::api::notes::AccountTransferSettings> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::notes::AccountTransferSettings>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::notes::NoteColour> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5399,117 +5826,159 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__notes__Library_add_tag_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__notes__Library_adopt_account_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__notes__Library_cancel_join_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__notes__Library_check_invite_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__notes__Library_check_join_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__notes__Library_close_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__notes__Library_connect_impl(port, ptr, rust_vec_len, data_len),
-        9 => {
+        1 => wire__crate__api__notes__Library_account_transfer_request_code_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        2 => wire__crate__api__notes__Library_add_tag_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__notes__Library_adopt_account_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__notes__Library_adopt_account_transfer_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        6 => wire__crate__api__notes__Library_approve_account_transfer_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        7 => wire__crate__api__notes__Library_begin_account_transfer_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        8 => wire__crate__api__notes__Library_begin_account_transfer_from_qr_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        9 => wire__crate__api__notes__Library_cancel_account_transfer_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        10 => wire__crate__api__notes__Library_cancel_join_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__notes__Library_check_invite_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__notes__Library_check_join_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__notes__Library_close_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__notes__Library_connect_impl(port, ptr, rust_vec_len, data_len),
+        15 => {
             wire__crate__api__notes__Library_create_account_impl(port, ptr, rust_vec_len, data_len)
         }
-        10 => {
+        16 => {
             wire__crate__api__notes__Library_create_invite_impl(port, ptr, rust_vec_len, data_len)
         }
-        11 => wire__crate__api__notes__Library_create_note_impl(port, ptr, rust_vec_len, data_len),
-        12 => {
+        17 => wire__crate__api__notes__Library_create_note_impl(port, ptr, rust_vec_len, data_len),
+        18 => {
             wire__crate__api__notes__Library_create_reminder_impl(port, ptr, rust_vec_len, data_len)
         }
-        13 => {
+        19 => {
             wire__crate__api__notes__Library_delete_account_impl(port, ptr, rust_vec_len, data_len)
         }
-        14 => wire__crate__api__notes__Library_disconnect_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__notes__Library_empty_trash_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__notes__Library_forget_note_impl(port, ptr, rust_vec_len, data_len),
-        17 => {
+        20 => wire__crate__api__notes__Library_disconnect_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__notes__Library_empty_trash_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__notes__Library_forget_note_impl(port, ptr, rust_vec_len, data_len),
+        23 => {
             wire__crate__api__notes__Library_forget_reminder_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => wire__crate__api__notes__Library_forget_tag_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__notes__Library_make_tag_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__notes__Library_move_note_to_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__notes__Library_note_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__notes__Library_notes_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__notes__Library_read_cover_impl(port, ptr, rust_vec_len, data_len),
-        35 => {
+        24 => wire__crate__api__notes__Library_forget_tag_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__notes__Library_make_tag_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__notes__Library_move_note_to_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__notes__Library_note_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__notes__Library_notes_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__notes__Library_poll_account_transfer_result_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        40 => wire__crate__api__notes__Library_read_cover_impl(port, ptr, rust_vec_len, data_len),
+        42 => {
             wire__crate__api__notes__Library_remove_person_impl(port, ptr, rust_vec_len, data_len)
         }
-        36 => wire__crate__api__notes__Library_remove_tag_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__notes__Library_rename_tag_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__notes__Library_request_join_impl(port, ptr, rust_vec_len, data_len),
-        39 => {
+        43 => wire__crate__api__notes__Library_remove_tag_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__notes__Library_rename_tag_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__notes__Library_request_join_impl(port, ptr, rust_vec_len, data_len),
+        46 => {
             wire__crate__api__notes__Library_retry_transfers_impl(port, ptr, rust_vec_len, data_len)
         }
-        40 => wire__crate__api__notes__Library_search_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__notes__Library_set_archived_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__notes__Library_set_colour_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__notes__Library_set_layout_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__notes__Library_set_pinned_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__notes__Library_set_profile_name_impl(
+        47 => wire__crate__api__notes__Library_search_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__notes__Library_set_archived_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__notes__Library_set_colour_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__notes__Library_set_layout_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__notes__Library_set_pinned_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__notes__Library_set_profile_name_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__api__notes__Library_set_reminder_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__notes__Library_set_ticked_shown_impl(
+        54 => wire__crate__api__notes__Library_set_reminder_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__notes__Library_set_ticked_shown_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__notes__Library_set_trashed_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__notes__Library_stop_sharing_impl(port, ptr, rust_vec_len, data_len),
-        51 => {
+        56 => wire__crate__api__notes__Library_set_trashed_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__api__notes__Library_stop_sharing_impl(port, ptr, rust_vec_len, data_len),
+        58 => {
             wire__crate__api__notes__Library_stop_watching_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => wire__crate__api__notes__Library_transfers_impl(port, ptr, rust_vec_len, data_len),
-        59 => wire__crate__api__notes__Library_watch_notes_impl(port, ptr, rust_vec_len, data_len),
-        60 => wire__crate__api__notes__Library_watch_sync_impl(port, ptr, rust_vec_len, data_len),
-        61 => {
+        64 => wire__crate__api__notes__Library_transfers_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__api__notes__Library_watch_notes_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__api__notes__Library_watch_sync_impl(port, ptr, rust_vec_len, data_len),
+        68 => {
             wire__crate__api__notes__Library_watch_transfers_impl(port, ptr, rust_vec_len, data_len)
         }
-        62 => {
+        69 => {
             wire__crate__api__notes__Library_withdraw_invite_impl(port, ptr, rust_vec_len, data_len)
         }
-        63 => wire__crate__api__notes__Note_add_item_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__api__notes__Note_describe_attachment_impl(
+        70 => wire__crate__api__notes__Note_add_item_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__api__notes__Note_describe_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__notes__Note_edit_body_impl(port, ptr, rust_vec_len, data_len),
-        67 => {
+        72 => wire__crate__api__notes__Note_edit_body_impl(port, ptr, rust_vec_len, data_len),
+        74 => {
             wire__crate__api__notes__Note_import_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        68 => wire__crate__api__notes__Note_import_attachment_file_impl(
+        75 => wire__crate__api__notes__Note_import_attachment_file_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        69 => wire__crate__api__notes__Note_move_attachment_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__api__notes__Note_move_item_impl(port, ptr, rust_vec_len, data_len),
-        71 => wire__crate__api__notes__Note_pending_attachments_impl(
+        76 => wire__crate__api__notes__Note_move_attachment_impl(port, ptr, rust_vec_len, data_len),
+        77 => wire__crate__api__notes__Note_move_item_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__api__notes__Note_pending_attachments_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__api__notes__Note_read_attachment_impl(port, ptr, rust_vec_len, data_len),
-        73 => {
+        79 => wire__crate__api__notes__Note_read_attachment_impl(port, ptr, rust_vec_len, data_len),
+        80 => {
             wire__crate__api__notes__Note_remove_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        74 => wire__crate__api__notes__Note_remove_item_impl(port, ptr, rust_vec_len, data_len),
-        76 => wire__crate__api__notes__Note_set_checked_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__api__notes__Note_set_item_text_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__api__notes__Note_set_kind_impl(port, ptr, rust_vec_len, data_len),
-        79 => wire__crate__api__notes__Note_set_title_impl(port, ptr, rust_vec_len, data_len),
-        80 => wire__crate__api__notes__Note_stop_watching_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__api__notes__Note_watch_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__api__notes__Note_watch_sync_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__api__notes__init_app_impl(port, ptr, rust_vec_len, data_len),
+        81 => wire__crate__api__notes__Note_remove_item_impl(port, ptr, rust_vec_len, data_len),
+        83 => wire__crate__api__notes__Note_set_checked_impl(port, ptr, rust_vec_len, data_len),
+        84 => wire__crate__api__notes__Note_set_item_text_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__api__notes__Note_set_kind_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__api__notes__Note_set_title_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__crate__api__notes__Note_stop_watching_impl(port, ptr, rust_vec_len, data_len),
+        90 => wire__crate__api__notes__Note_watch_impl(port, ptr, rust_vec_len, data_len),
+        91 => wire__crate__api__notes__Note_watch_sync_impl(port, ptr, rust_vec_len, data_len),
+        92 => wire__crate__api__notes__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -5522,32 +5991,32 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        3 => wire__crate__api__notes__Library_all_invites_impl(ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__notes__Library_has_account_impl(ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__notes__Library_invites_impl(ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__notes__Library_layout_impl(ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__notes__Library_listed_impl(ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__notes__Library_open_impl(ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__notes__Library_open_ephemeral_impl(ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__notes__Library_open_in_browser_impl(ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__notes__Library_pending_joins_impl(ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__notes__Library_people_impl(ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__notes__Library_profile_name_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__notes__Library_reminders_impl(ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__notes__Library_send_held_edits_impl(ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__notes__Library_sync_status_impl(ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__notes__Library_tags_impl(ptr, rust_vec_len, data_len),
-        54 => wire__crate__api__notes__Library_take_removals_impl(ptr, rust_vec_len, data_len),
-        55 => {
+        5 => wire__crate__api__notes__Library_all_invites_impl(ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__notes__Library_has_account_impl(ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__notes__Library_invites_impl(ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__notes__Library_layout_impl(ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__notes__Library_listed_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__notes__Library_open_impl(ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__notes__Library_open_ephemeral_impl(ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__notes__Library_open_in_browser_impl(ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__notes__Library_pending_joins_impl(ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__notes__Library_people_impl(ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__notes__Library_profile_name_impl(ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__notes__Library_reminders_impl(ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__notes__Library_send_held_edits_impl(ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__notes__Library_sync_status_impl(ptr, rust_vec_len, data_len),
+        60 => wire__crate__api__notes__Library_tags_impl(ptr, rust_vec_len, data_len),
+        61 => wire__crate__api__notes__Library_take_removals_impl(ptr, rust_vec_len, data_len),
+        62 => {
             wire__crate__api__notes__Library_take_storage_batches_impl(ptr, rust_vec_len, data_len)
         }
-        56 => wire__crate__api__notes__Library_ticked_shown_impl(ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__notes__Library_unwritten_batches_impl(ptr, rust_vec_len, data_len),
-        66 => wire__crate__api__notes__Note_id_impl(ptr, rust_vec_len, data_len),
-        75 => wire__crate__api__notes__Note_send_held_edits_impl(ptr, rust_vec_len, data_len),
-        81 => wire__crate__api__notes__Note_sync_status_impl(ptr, rust_vec_len, data_len),
-        82 => wire__crate__api__notes__Note_view_impl(ptr, rust_vec_len, data_len),
-        86 => wire__crate__api__notes__master_key_beside_the_database_impl(
+        63 => wire__crate__api__notes__Library_ticked_shown_impl(ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__notes__Library_unwritten_batches_impl(ptr, rust_vec_len, data_len),
+        73 => wire__crate__api__notes__Note_id_impl(ptr, rust_vec_len, data_len),
+        82 => wire__crate__api__notes__Note_send_held_edits_impl(ptr, rust_vec_len, data_len),
+        88 => wire__crate__api__notes__Note_sync_status_impl(ptr, rust_vec_len, data_len),
+        89 => wire__crate__api__notes__Note_view_impl(ptr, rust_vec_len, data_len),
+        93 => wire__crate__api__notes__master_key_beside_the_database_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -5588,6 +6057,27 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<Note>> for Note {
     }
 }
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::notes::AccountTransferSettings {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.relay_url.into_into_dart().into_dart(),
+            self.relay_access.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::notes::AccountTransferSettings
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::notes::AccountTransferSettings>
+    for crate::api::notes::AccountTransferSettings
+{
+    fn into_into_dart(self) -> crate::api::notes::AccountTransferSettings {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::notes::AttachmentKindView {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -6367,6 +6857,14 @@ impl SseEncode for String {
     }
 }
 
+impl SseEncode for crate::api::notes::AccountTransferSettings {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.relay_url, serializer);
+        <Option<String>>::sse_encode(self.relay_access, serializer);
+    }
+}
+
 impl SseEncode for crate::api::notes::AttachmentKindView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6772,6 +7270,16 @@ impl SseEncode for Option<String> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <String>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::notes::AccountTransferSettings> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::notes::AccountTransferSettings>::sse_encode(value, serializer);
         }
     }
 }

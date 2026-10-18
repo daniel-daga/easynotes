@@ -17,6 +17,8 @@
 use crate::frb_generated::StreamSink;
 use crate::relay::{on_network, Connection, Device};
 use crate::storage::{Pending, Queue};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use easynotes_core::account_transfer::{OpenedTransfer, TransferKeyPair};
 use easynotes_core::crdt::{Colour, DefaultNoteDoc, Layout, RepeatRule};
 use easynotes_core::ids::{InviteId, ItemId, LabelId, NoteId, ReminderId};
 use easynotes_core::invite::InviteSecret;
@@ -26,6 +28,7 @@ use easynotes_core::sync::invite::{self, Answer};
 use easynotes_core::sync::RequestState;
 use easynotes_core::CoreError;
 use flutter_rust_bridge::frb;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -1846,6 +1849,9 @@ impl OpenLibraries {
                     shared,
                     stop,
                     pending: Arc::new(Pending::default()),
+                    transfer_owner: Mutex::new(None),
+                    transfer_guest: Mutex::new(None),
+                    transfer_result: Mutex::new(None),
                 };
                 // Best effort, and each step regardless of the last: an orphan
                 // that was half disposed already answers "closed" to some of
@@ -1885,6 +1891,38 @@ pub struct Library {
     /// The writes a browser has yet to be given. Empty and never filled on a
     /// device with a disk, where the store writes for itself.
     pending: Arc<Pending>,
+    transfer_owner: Mutex<Option<OwnerTransfer>>,
+    transfer_guest: Mutex<Option<GuestTransfer>>,
+    transfer_result: Mutex<Option<OpenedTransfer>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TransferOffer {
+    version: u8,
+    relay: String,
+    id: String,
+    guest: String,
+    public_key: String,
+}
+
+struct OwnerTransfer {
+    offer: TransferOffer,
+    owner: String,
+    keypair: TransferKeyPair,
+    access: Option<String>,
+    recipient: Option<[u8; 32]>,
+}
+
+#[derive(Clone)]
+struct GuestTransfer {
+    offer: TransferOffer,
+    keypair: TransferKeyPair,
+}
+
+#[derive(Clone, Debug)]
+pub struct AccountTransferSettings {
+    pub relay_url: String,
+    pub relay_access: Option<String>,
 }
 
 impl Library {
@@ -2065,6 +2103,9 @@ impl Library {
             shared,
             stop: Arc::new(AtomicBool::new(false)),
             pending,
+            transfer_owner: Mutex::new(None),
+            transfer_guest: Mutex::new(None),
+            transfer_result: Mutex::new(None),
         })
     }
 
@@ -2702,6 +2743,253 @@ impl Library {
             .adopt_account(&phrase)
             .map_err(|e| e.to_string())?;
         self.shared.connect_new_documents()?;
+        Ok(())
+    }
+
+    /// Start a five-minute pairing. The QR contains no account or relay secret.
+    pub async fn begin_account_transfer(
+        &self,
+        relay_url: String,
+        relay_access: Option<String>,
+    ) -> Result<String, String> {
+        if !self.has_account()? {
+            return Err("Create or restore an account before adding another device.".into());
+        }
+        let (http, access) = self.shared.http_base()?;
+        let parsed =
+            easynotes_core::sync::RelayEndpoint::parse(&relay_url).map_err(|e| e.to_string())?;
+        if parsed.http_base != http {
+            return Err("This device is connected to a different relay.".into());
+        }
+        let id = InviteId::random().encode();
+        let mut guest = [0u8; 32];
+        let mut owner = [0u8; 32];
+        easynotes_core::crypto::random_bytes(&mut guest);
+        easynotes_core::crypto::random_bytes(&mut owner);
+        let keypair = TransferKeyPair::generate();
+        let offer = TransferOffer {
+            version: 1,
+            relay: relay_url,
+            id: id.clone(),
+            guest: URL_SAFE_NO_PAD.encode(guest),
+            public_key: URL_SAFE_NO_PAD.encode(keypair.public_key()),
+        };
+        let open = easynotes_core::sync::pairing::open(http, access, id.clone(), guest, owner, 300);
+        on_network(async move { open.await.map(|_| ()).map_err(|e| e.to_string()) }).await?;
+        let qr = serde_json::to_string(&offer).map_err(|e| e.to_string())?;
+        *self
+            .transfer_owner
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = Some(OwnerTransfer {
+            offer,
+            owner: URL_SAFE_NO_PAD.encode(owner),
+            keypair,
+            access: relay_access,
+            recipient: None,
+        });
+        guest.fill(0);
+        owner.fill(0);
+        Ok(qr)
+    }
+
+    /// Whether a new device has scanned the QR, and the code to compare on
+    /// both screens before approving it.
+    pub async fn account_transfer_request_code(&self) -> Result<Option<String>, String> {
+        let (http, _) = self.shared.http_base()?;
+        let (id, owner) = {
+            let state = self
+                .transfer_owner
+                .lock()
+                .map_err(|_| "transfer state unavailable")?;
+            let state = state.as_ref().ok_or("No device transfer is active.")?;
+            (state.offer.id.clone(), state.owner.clone())
+        };
+        let request_id = id.clone();
+        let result = easynotes_core::sync::pairing::poll_request(http, id, owner);
+        let (public, _) =
+            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let Some(public) = public else {
+            return Ok(None);
+        };
+        let mut state = self
+            .transfer_owner
+            .lock()
+            .map_err(|_| "transfer state unavailable")?;
+        let state = state.as_mut().ok_or("No device transfer is active.")?;
+        let code = state
+            .keypair
+            .verification_code(&public, request_id.as_bytes())
+            .map_err(|e| e.to_string())?;
+        state.recipient = Some(public);
+        Ok(Some(code))
+    }
+
+    /// Approve the displayed pairing code and send the encrypted account and
+    /// relay settings to that one-time recipient key.
+    pub async fn approve_account_transfer(&self) -> Result<(), String> {
+        let (http, id, owner, public, keypair, relay, access) = {
+            let state = self
+                .transfer_owner
+                .lock()
+                .map_err(|_| "transfer state unavailable")?;
+            let state = state.as_ref().ok_or("No device transfer is active.")?;
+            (
+                self.shared.http_base()?.0,
+                state.offer.id.clone(),
+                state.owner.clone(),
+                state
+                    .recipient
+                    .ok_or("No new device has scanned the code.")?,
+                state.keypair.clone(),
+                state.offer.relay.clone(),
+                state.access.clone(),
+            )
+        };
+        let root = self
+            .shared
+            .locked()?
+            .account_root_for_transfer()
+            .map_err(|e| e.to_string())?;
+        let encrypted = keypair
+            .seal(&public, id.as_bytes(), &root, &relay, access.as_deref())
+            .map_err(|e| e.to_string())?;
+        let result = easynotes_core::sync::pairing::send_response(http, id, owner, encrypted);
+        on_network(async move { result.await.map_err(|e| e.to_string()) }).await
+    }
+
+    pub async fn cancel_account_transfer(&self) -> Result<(), String> {
+        let state = self
+            .transfer_owner
+            .lock()
+            .map_err(|_| "transfer state unavailable")?
+            .take();
+        if let Some(state) = state {
+            let http = self.shared.http_base()?.0;
+            let id = state.offer.id;
+            let owner = state.owner;
+            let result = easynotes_core::sync::pairing::close(http, id, owner);
+            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        }
+        *self
+            .transfer_guest
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = None;
+        *self
+            .transfer_result
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = None;
+        Ok(())
+    }
+
+    /// Scan-side setup. The return code is displayed while the original device
+    /// waits for approval.
+    pub async fn begin_account_transfer_from_qr(&self, qr: String) -> Result<String, String> {
+        let offer: TransferOffer =
+            serde_json::from_str(&qr).map_err(|_| "This is not an EasyNotes transfer code.")?;
+        if offer.version != 1 {
+            return Err("Update EasyNotes on both devices to transfer this account.".into());
+        }
+        let endpoint =
+            easynotes_core::sync::RelayEndpoint::parse(&offer.relay).map_err(|e| e.to_string())?;
+        let public: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(&offer.public_key)
+            .map_err(|_| "The transfer code is invalid.")?
+            .try_into()
+            .map_err(|_| "The transfer code is invalid.")?;
+        let token = URL_SAFE_NO_PAD
+            .decode(&offer.guest)
+            .map_err(|_| "The transfer code is invalid.")?;
+        if token.len() != 32 {
+            return Err("The transfer code is invalid.".into());
+        }
+        let keypair = TransferKeyPair::generate();
+        let code = keypair
+            .verification_code(&public, offer.id.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let key = URL_SAFE_NO_PAD.encode(keypair.public_key());
+        let request = easynotes_core::sync::pairing::request(
+            endpoint.http_base,
+            offer.id.clone(),
+            offer.guest.clone(),
+            key,
+        );
+        on_network(async move { request.await.map_err(|e| e.to_string()) }).await?;
+        *self
+            .transfer_guest
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = Some(GuestTransfer { offer, keypair });
+        Ok(code)
+    }
+
+    /// Poll once for the approved encrypted transfer. The secret remains in
+    /// Rust until `adopt_account_transfer` commits it into the device keyring.
+    pub async fn poll_account_transfer_result(
+        &self,
+    ) -> Result<Option<AccountTransferSettings>, String> {
+        if let Some(opened) = self
+            .transfer_result
+            .lock()
+            .map_err(|_| "transfer state unavailable")?
+            .as_ref()
+        {
+            return Ok(Some(AccountTransferSettings {
+                relay_url: opened.relay_url.clone(),
+                relay_access: opened.relay_access.clone(),
+            }));
+        }
+        let state = self
+            .transfer_guest
+            .lock()
+            .map_err(|_| "transfer state unavailable")?
+            .clone()
+            .ok_or("No device transfer is active.")?;
+        let endpoint = easynotes_core::sync::RelayEndpoint::parse(&state.offer.relay)
+            .map_err(|e| e.to_string())?;
+        let id = state.offer.id.clone();
+        let token = state.offer.guest.clone();
+        let transfer_id = id.clone();
+        let result = easynotes_core::sync::pairing::poll_response(endpoint.http_base, id, token);
+        let (encrypted, _) =
+            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let Some(encrypted) = encrypted else {
+            return Ok(None);
+        };
+        let peer: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(&state.offer.public_key)
+            .map_err(|_| "Invalid transfer key.")?
+            .try_into()
+            .map_err(|_| "Invalid transfer key.")?;
+        let opened = state
+            .keypair
+            .open(&peer, transfer_id.as_bytes(), &encrypted)
+            .map_err(|e| e.to_string())?;
+        let settings = AccountTransferSettings {
+            relay_url: opened.relay_url.clone(),
+            relay_access: opened.relay_access.clone(),
+        };
+        *self
+            .transfer_result
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = Some(opened);
+        Ok(Some(settings))
+    }
+
+    pub fn adopt_account_transfer(&self) -> Result<(), String> {
+        let transfer = self
+            .transfer_result
+            .lock()
+            .map_err(|_| "transfer state unavailable")?
+            .take()
+            .ok_or("No approved account transfer is ready.")?;
+        self.shared
+            .locked()?
+            .adopt_account_root(transfer.root)
+            .map_err(|e| e.to_string())?;
+        self.shared.connect_new_documents()?;
+        *self
+            .transfer_guest
+            .lock()
+            .map_err(|_| "transfer state unavailable")? = None;
         Ok(())
     }
 

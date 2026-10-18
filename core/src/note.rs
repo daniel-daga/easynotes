@@ -670,6 +670,19 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.adopt_root(phrase.root())
     }
 
+    pub fn account_root_for_transfer(&self) -> Result<AccountRoot> {
+        self.keyring
+            .account_root()?
+            .ok_or(CoreError::Crypto("this device has no account to transfer"))
+    }
+
+    pub fn adopt_account_root(&mut self, root: AccountRoot) -> Result<()> {
+        if self.has_account() {
+            return Err(CoreError::Crypto("this device already has an account"));
+        }
+        self.adopt_root(root)
+    }
+
     /// Move this device's account document onto the address and key a root
     /// derives, carrying what it already says.
     ///

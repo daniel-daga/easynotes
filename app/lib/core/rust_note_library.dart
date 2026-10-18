@@ -19,7 +19,7 @@ import 'page_visibility_stub.dart'
 import 'rust_note_core.dart';
 import 'sync_status.dart';
 
-class RustNoteLibrary implements NoteLibrary {
+class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   RustNoteLibrary._(this._library, {required this.canJoin, BrowserStore? db})
     : _db = db {
     // One Rust watcher per stream, fanned out to however many widgets want it —
@@ -452,6 +452,39 @@ class RustNoteLibrary implements NoteLibrary {
   @override
   Future<void> adoptAccount(String phrase) =>
       _library.adoptAccount(phrase: phrase);
+
+  @override
+  Future<String> beginAccountTransfer(String relayUrl, String? relayAccess) =>
+      _library.beginAccountTransfer(
+        relayUrl: relayUrl,
+        relayAccess: relayAccess,
+      );
+
+  @override
+  Future<String?> accountTransferRequestCode() =>
+      _library.accountTransferRequestCode();
+
+  @override
+  Future<void> approveAccountTransfer() => _library.approveAccountTransfer();
+
+  @override
+  Future<void> cancelAccountTransfer() => _library.cancelAccountTransfer();
+
+  @override
+  Future<String> beginAccountTransferFromQr(String qr) =>
+      _library.beginAccountTransferFromQr(qr: qr);
+
+  @override
+  Future<({String relayUrl, String? relayAccess})?>
+  pollAccountTransferResult() async {
+    final result = await _library.pollAccountTransferResult();
+    return result == null
+        ? null
+        : (relayUrl: result.relayUrl, relayAccess: result.relayAccess);
+  }
+
+  @override
+  Future<void> adoptAccountTransfer() => _library.adoptAccountTransfer();
 
   @override
   String? get profileName => _library.profileName();

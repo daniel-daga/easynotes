@@ -347,22 +347,21 @@ class _NoteListScreenState extends State<NoteListScreen> {
     await _openNote(id);
   }
 
-  Future<void> _manageLabels({bool create = false}) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (context) => LabelManagerScreen(
-        library: widget.library,
-        autofocusCreate: create,
-      ),
-    ),
-  );
+  Future<void> _manageLabels({bool create = false}) =>
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (context) => LabelManagerScreen(
+            library: widget.library,
+            autofocusCreate: create,
+          ),
+        ),
+      );
 
   /// Notes can choose existing labels; label management lives in the drawer.
   Future<void> _labelsFor(NoteSummary note) => Navigator.of(context).push(
     MaterialPageRoute<void>(
-      builder: (context) => LabelManagerScreen(
-        library: widget.library,
-        noteId: note.id,
-      ),
+      builder: (context) =>
+          LabelManagerScreen(library: widget.library, noteId: note.id),
     ),
   );
 
@@ -454,6 +453,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
           profile: widget.profile,
           onAccountDeleted: widget.onAccountDeleted,
           onServer: _openRelaySettings,
+          onMoveLocalToRelay: widget.onMoveLocalToRelay,
+          onSetAccess: widget.onSetAccess,
+          onSwitchRelay: widget.onSwitchRelay,
         ),
       ),
     );
@@ -2477,4 +2479,3 @@ class _NoteIndicators extends StatelessWidget {
     );
   }
 }
-
