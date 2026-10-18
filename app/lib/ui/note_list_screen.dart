@@ -928,11 +928,15 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   /// The grid, the results or the empty line, whichever this screen is showing.
   Widget _body(List<NoteSummary> all, List<NoteSummary> notes) {
+    final reminders = {
+      for (final reminder in widget.library.reminders) reminder.noteId,
+    };
     if (!_searching) {
       return notes.isEmpty
           ? Center(key: const Key('no-notes'), child: Text(_where.empty))
           : _NoteCollection(
               notes: notes,
+              reminderNoteIds: reminders,
               layout: _layout,
               onTap: _openNote,
               onHold: _actionsFor,
@@ -940,9 +944,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
             );
     }
 
-    final reminders = {
-      for (final reminder in widget.library.reminders) reminder.noteId,
-    };
     final query = _query.trim();
     final scopedNotes = all.where(_inSearchScope).toList();
     return Column(
@@ -955,6 +956,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   library: widget.library,
                   query: query,
                   notes: all,
+                  reminderNoteIds: reminders,
                   layout: _layout,
                   matches: (note) =>
                       _inSearchScope(note) && _matchesFilter(note, reminders),
@@ -966,6 +968,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     for (final note in scopedNotes)
                       if (_matchesFilter(note, reminders)) note,
                   ],
+                  reminderNoteIds: reminders,
                   layout: _layout,
                   onTap: _openNote,
                   onHold: _actionsFor,
@@ -1287,12 +1290,14 @@ class _ColourFacet extends StatelessWidget {
 class _FilteredNotes extends StatelessWidget {
   const _FilteredNotes({
     required this.notes,
+    required this.reminderNoteIds,
     required this.layout,
     required this.onTap,
     required this.onHold,
   });
 
   final List<NoteSummary> notes;
+  final Set<String> reminderNoteIds;
   final NoteLayout layout;
   final void Function(String id) onTap;
   final void Function(NoteSummary note) onHold;
@@ -1305,6 +1310,7 @@ class _FilteredNotes extends StatelessWidget {
         )
       : _NoteCollection(
           notes: notes,
+          reminderNoteIds: reminderNoteIds,
           layout: layout,
           onTap: onTap,
           onHold: onHold,
@@ -1324,6 +1330,7 @@ class _SearchResults extends StatefulWidget {
     required this.library,
     required this.query,
     required this.notes,
+    required this.reminderNoteIds,
     required this.layout,
     required this.matches,
     required this.onTap,
@@ -1333,6 +1340,7 @@ class _SearchResults extends StatefulWidget {
   final NoteLibrary library;
   final String query;
   final List<NoteSummary> notes;
+  final Set<String> reminderNoteIds;
   final NoteLayout layout;
   final bool Function(NoteSummary) matches;
   final void Function(String id) onTap;
@@ -1392,6 +1400,7 @@ class _SearchResultsState extends State<_SearchResults> {
     }
     return _NoteCollection(
       notes: [for (final hit in found) hit.note],
+      reminderNoteIds: widget.reminderNoteIds,
       matched: {for (final hit in found) hit.note.id: hit.matched},
       layout: widget.layout,
       onTap: widget.onTap,
@@ -1404,6 +1413,7 @@ class _SearchResultsState extends State<_SearchResults> {
 class _NoteCollection extends StatelessWidget {
   const _NoteCollection({
     required this.notes,
+    required this.reminderNoteIds,
     required this.layout,
     required this.onTap,
     required this.onHold,
@@ -1412,6 +1422,7 @@ class _NoteCollection extends StatelessWidget {
   });
 
   final List<NoteSummary> notes;
+  final Set<String> reminderNoteIds;
   final NoteLayout layout;
   final void Function(String id) onTap;
   final void Function(NoteSummary note) onHold;
@@ -1435,6 +1446,7 @@ class _NoteCollection extends StatelessWidget {
         _NoteCard(
           key: ValueKey(note.id),
           note: note,
+          hasReminder: reminderNoteIds.contains(note.id),
           matched: matched[note.id],
           onTap: () => onTap(note.id),
           // Held by the wrapper where there is one, because a long press there
@@ -2250,12 +2262,14 @@ class _NoteCard extends StatefulWidget {
   const _NoteCard({
     super.key,
     required this.note,
+    required this.hasReminder,
     required this.onTap,
     this.onHold,
     this.matched,
   });
 
   final NoteSummary note;
+  final bool hasReminder;
   final VoidCallback onTap;
 
   /// The card's menu, when the card is not draggable. Null when it is: there the
@@ -2373,9 +2387,15 @@ class _NoteCardState extends State<_NoteCard> {
                         style: theme.textTheme.bodySmall,
                       ),
                     ],
-                    if (note.images > 0 || note.audio > 0) ...[
+                    if (note.images > 0 ||
+                        note.audio > 0 ||
+                        widget.hasReminder) ...[
                       const SizedBox(height: 8),
-                      _MediaCount(images: note.images, audio: note.audio),
+                      _NoteIndicators(
+                        images: note.images,
+                        audio: note.audio,
+                        hasReminder: widget.hasReminder,
+                      ),
                     ],
                     // The labels, as small chips. On the card and not only in the
                     // drawer, because a note's filing is part of what it is — and
@@ -2678,13 +2698,17 @@ class _LabelsDialogState extends State<_LabelsDialog> {
   }
 }
 
-/// How many pictures and sound files a note holds: quiet icons with counts,
-/// so a card says there is more inside without drawing any of it.
-class _MediaCount extends StatelessWidget {
-  const _MediaCount({required this.images, required this.audio});
+/// Small indicators for the media and personal reminders attached to a note.
+class _NoteIndicators extends StatelessWidget {
+  const _NoteIndicators({
+    required this.images,
+    required this.audio,
+    required this.hasReminder,
+  });
 
   final int images;
   final int audio;
+  final bool hasReminder;
 
   @override
   Widget build(BuildContext context) {
@@ -2700,6 +2724,7 @@ class _MediaCount extends StatelessWidget {
     final said = [
       if (images > 0) images == 1 ? '1 image' : '$images images',
       if (audio > 0) audio == 1 ? '1 sound file' : '$audio sound files',
+      if (hasReminder) 'Has reminder',
     ].join(', ');
     return Semantics(
       label: said,
@@ -2710,6 +2735,13 @@ class _MediaCount extends StatelessWidget {
         children: [
           if (images > 0) count(Icons.image_outlined, images),
           if (audio > 0) count(Icons.audiotrack_outlined, audio),
+          if (hasReminder)
+            Icon(
+              Icons.notifications_outlined,
+              key: const Key('reminder-indicator'),
+              size: 16,
+              color: style?.color,
+            ),
         ],
       ),
     );

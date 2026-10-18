@@ -3,6 +3,7 @@
 /// and in `relay_sync_test.dart`; this is what a person sees and taps.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:easynotes/core/attachment_files.dart';
@@ -339,13 +340,41 @@ void main() {
     await fresh();
     final core = library.core(id);
     await core.setTitle('Recipe');
-    await core.importAttachment('cake.png', png(100), thumbnail: png(40));
+    final picture = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgaPgPAAIDAYAkYfWXAAAAAElFTkSuQmCC',
+    );
+    await core.importAttachment('cake.png', png(100), thumbnail: picture);
+    await core.importAttachment('how.mp3', mp3(100));
     await tester.pumpWidget(
       MaterialApp(home: NoteListScreen(library: library)),
     );
     await tester.pumpAndSettle();
-    final cover = core.current.attachments.single;
-    expect(find.byKey(ValueKey('cover:$id:${cover.id}')), findsOneWidget);
+    final cover = core.current.attachments.first;
+    final header = find.byKey(ValueKey('cover:$id:${cover.id}'));
+    void expectHeader() {
+      expect(header, findsOneWidget);
+      expect(
+        find.descendant(of: header, matching: find.byType(Image)),
+        findsOneWidget,
+      );
+      expect(
+        tester.getBottomLeft(header).dy,
+        lessThan(tester.getTopLeft(find.descendant(
+          of: find.byKey(ValueKey('note:$id')),
+          matching: find.text('Recipe'),
+        )).dy),
+      );
+      expect(find.byIcon(Icons.audiotrack_outlined), findsOneWidget);
+    }
+    expectHeader();
+    await tester.tap(find.byKey(const Key('layout-toggle')));
+    await tester.pumpAndSettle();
+    expectHeader();
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('search-field')), 'Recipe');
+    await tester.pumpAndSettle();
+    expectHeader();
 
     // Gone with the picture.
     await core.removeAttachment(cover.id);
@@ -353,3 +382,4 @@ void main() {
     expect(find.byKey(ValueKey('cover:$id:${cover.id}')), findsNothing);
   });
 }
+

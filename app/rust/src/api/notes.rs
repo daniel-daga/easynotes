@@ -3128,7 +3128,7 @@ impl Library {
         // Restage every live descriptor before starting its note connection:
         // after a crash, either the zero cursor or these records retries it.
         let local_media = {
-            let mut core = self.shared.locked()?;
+            let core = self.shared.locked()?;
             let mut media = Vec::new();
             for note in core.syncable().map_err(|e| e.to_string())? {
                 if core.sync_cursor(note).map_err(|e| e.to_string())?.last_seq == 0 {

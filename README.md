@@ -231,7 +231,7 @@ a temporary process key intended only for local development.
 A relay lets in only devices holding one of its access keys when
 `RELAY_ACCESS_KEYS` names any ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)).
 Its operator hands out a relay link, `https://relay.example/#access=<key>`, which
-goes in Settings → Relay. Set it to `open` to let anyone write; unset is open,
+goes in Sync & devices → Server (relay). Set it to `open` to let anyone write; unset is open,
 with a warning, and the Synology setup refuses to start without it.
 `easynotes-relay access-key` prints a new key. Every relay also holds each client
 address to a write budget, 200 MiB at once and 200 MiB an hour by default

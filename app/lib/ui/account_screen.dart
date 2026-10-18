@@ -626,9 +626,10 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
               profile.url == null
                   ? 'This device is not using a relay, so your notes cannot '
                         'come back until you choose the relay you used before '
-                        'in Relay settings.'
+                        'in Sync & devices → Server (relay).'
                   : 'Your notes come back from ${profile.url}. If you used a '
-                        'different relay before, choose it in Relay settings '
+                        'different relay before, choose it in Sync & devices '
+                        '→ Server (relay) '
                         'first: a phrase restores nothing from another relay. '
                         '${profile.access == null ? 'If this relay has an access key, add it there too: the phrase does not include it.' : 'This relay\'s access key is saved; the phrase does not include it.'}',
               key: const Key('adopt-relay'),
