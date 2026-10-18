@@ -200,6 +200,14 @@ void main() {
     Future<void> ask(WidgetTester tester, String link) async {
       await tester.tap(find.byTooltip('Open navigation menu'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('join-entry')),
+        200,
+        scrollable: find.descendant(
+          of: find.byType(Drawer),
+          matching: find.byType(Scrollable),
+        ),
+      );
       await tester.tap(find.byKey(const Key('join-entry')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('join-link-field')), link);
@@ -265,6 +273,14 @@ void main() {
       expect(find.byKey(const Key('join-button')), findsNothing);
       await tester.tap(find.byTooltip('Open navigation menu'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('join-entry')),
+        200,
+        scrollable: find.descendant(
+          of: find.byType(Drawer),
+          matching: find.byType(Scrollable),
+        ),
+      );
       expect(find.byKey(const Key('join-entry')), findsOneWidget);
     });
 
