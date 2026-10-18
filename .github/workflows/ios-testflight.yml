@@ -22,7 +22,7 @@ env:
 jobs:
   testflight:
     name: Build and upload to TestFlight
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -55,6 +55,17 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Verify iOS 26 SDK
+        run: |
+          xcodebuild -version
+          sdk_version=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iPhoneOS SDK: $sdk_version"
+          sdk_major=${sdk_version%%.*}
+          if [ "$sdk_major" -lt 26 ]; then
+            echo "::error::App Store uploads require the iOS 26 SDK or later; found $sdk_version"
+            exit 1
+          fi
 
       - name: Import Apple distribution certificate
         uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
