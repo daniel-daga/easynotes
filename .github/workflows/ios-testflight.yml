@@ -128,10 +128,24 @@ jobs:
             -exportPath "$RUNNER_TEMP/ipa" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
+      - name: Locate exported IPA
+        id: ipa
+        run: |
+          ipa_count=$(find "$RUNNER_TEMP/ipa" -maxdepth 1 -type f -name '*.ipa' | wc -l | tr -d ' ')
+          if [ "$ipa_count" -ne 1 ]; then
+            echo "::error::Expected exactly one exported IPA, found $ipa_count"
+            find "$RUNNER_TEMP/ipa" -maxdepth 2 -type f -print
+            exit 1
+          fi
+          ipa_path=$(find "$RUNNER_TEMP/ipa" -maxdepth 1 -type f -name '*.ipa' -print -quit)
+          echo "Found exported IPA: $ipa_path"
+          ls -lh "$ipa_path"
+          echo "path=$ipa_path" >> "$GITHUB_OUTPUT"
+
       - name: Upload build to TestFlight
         uses: apple-actions/upload-testflight-build@9af5bd758aaff3f82a372079a38f029d60a7163b # v5.0.0
         with:
-          app-path: ${{ runner.temp }}/ipa/Runner.ipa
+          app-path: ${{ steps.ipa.outputs.path }}
           issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
