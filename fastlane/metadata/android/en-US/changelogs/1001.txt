@@ -1,0 +1,5 @@
+Updates since v0.1.0:
+
+- Streamlines sync and device setup
+- Improves reminder indicators and attachment handling
+- Fixes issues with labels, sharing, and offline changes
