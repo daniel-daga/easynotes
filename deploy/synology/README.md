@@ -1,9 +1,9 @@
 # Deploy the relay on Synology
 
-This runs the relay and Postgres in Synology Container Manager. The relay
-container listens on its Docker network; only the NAS itself can reach it at
-`127.0.0.1:18080`. DSM's reverse proxy provides the public HTTPS endpoint and
-WebSocket upgrade.
+This runs the relay and Postgres in Synology Container Manager, with an optional
+static web app container. The relay listens on its Docker network; only the NAS
+itself can reach it at `127.0.0.1:18080`. DSM's reverse proxy provides the
+public HTTPS endpoint and WebSocket upgrade.
 
 ## 1. Prepare the project on the NAS
 
@@ -14,12 +14,20 @@ keep the repository structure intact.
 
 In that folder, copy `.env.example` to `.env`. Edit `.env`:
 
+- To serve the browser app from this project, build it on a computer with the
+  web toolchain (`just setup-web`, then `just build-web`) and copy the contents
+  of `app/build/web` to the same path in the NAS project folder. The build is
+  static and works across NAS CPU architectures. In `.env`, set
+  `COMPOSE_PROFILES=web` to enable the optional web container; leave it empty
+  to run only the relay and database. `WEB_PORT` defaults to `18081` and is
+  bound to the NAS loopback for DSM's reverse proxy.
+- Set `RELAY_ALLOWED_ORIGINS` to the exact browser-app origin, such as
+  `https://notes.example.net`. This is required for browser-to-relay sync.
+  Native apps do not send browser origins; if you only use native apps, set it
+  to the relay's own HTTPS origin. If the browser app is served from more than
+  one origin, list each exact origin separated by commas.
 - Set `POSTGRES_PASSWORD` to a long random hexadecimal secret. For example,
   generate one on a computer with `openssl rand -hex 32`.
-- Set `RELAY_ALLOWED_ORIGINS` to the exact origin serving the web app, such as
-  `https://notes.example.net`. Use a comma-separated list if the app is served
-  from more than one origin. Native apps do not send browser origins; if you
-  only use native apps, set it to the relay's own HTTPS origin.
 - Set `RELAY_TOKEN_SIGNING_KEY` to a stable random 32-byte key encoded as
   base64url. Generate it once with `openssl rand -base64 32 | tr '+/' '-_' |
   tr -d '=\n'`, store it in `.env`, and keep a protected backup. Every relay
@@ -97,15 +105,31 @@ menu name varies slightly by DSM version) and create a rule:
 - In **Custom Header**, choose **Create → WebSocket** so DSM forwards the
   `Upgrade` and `Connection` headers.
 
-Your router should forward public TCP 443 to the NAS. Do not forward port 18080
-or Postgres port 5432. Keep the relay URL as `wss://your-relay-hostname` in
-clients; the app changes it to `https://` for its HTTP handshake requests.
+If `COMPOSE_PROFILES=web`, add a second reverse proxy rule for the browser app:
+
+- **Source:** HTTPS, the browser app hostname, port 443.
+- **Destination:** HTTP, `127.0.0.1`, port `18081` (or the value of `WEB_PORT`).
+- Assign a valid certificate to this hostname. WebSocket forwarding is not
+  needed for this rule.
+
+The app and relay may use separate hostnames. Set `RELAY_ALLOWED_ORIGINS` to
+the app's exact origin, including `https://` and no path, then recreate the
+relay container after changing `.env`.
+
+Your router should forward public TCP 443 to the NAS. Do not forward ports
+18080, 18081, or Postgres port 5432. Keep the relay URL as
+`wss://your-relay-hostname` in clients; the app changes it to `https://` for
+its HTTP handshake requests.
 
 Check `https://your-relay-hostname/v1/health` returns HTTP 200, and that
 `https://your-relay-hostname/v1/ready` returns HTTP 200 with the relay's
 version and the range of app protocol versions it speaks. Then point a
 client at `https://your-relay-hostname` and verify it can sync; the websocket
 endpoint is `/v1/sync`.
+
+For the browser app, open `https://your-app-hostname` and choose the relay URL
+in **Sync & devices → Set up sync**. The web container serves the static app
+with the cross-origin isolation headers required by threaded WebAssembly.
 
 ## 4. Backups and updates
 

@@ -82,3 +82,17 @@ services:
       # reverse proxy too: it says how much the relay holds, which is nobody
       # else's business.
       - "127.0.0.1:${RELAY_METRICS_PORT:-19090}:9090"
+
+  # Optional browser app. Build `app/build/web` first; the files are mounted
+  # read-only so rebuilding the static app does not require a new image.
+  web:
+    container_name: easynotes-web
+    image: nginx:1.29-alpine
+    profiles: ["web"]
+    restart: unless-stopped
+    volumes:
+      - ./app/build/web:/usr/share/nginx/html:ro
+      - ./deploy/synology/nginx-web.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      # DSM's reverse proxy connects on the NAS itself. Keep this off the LAN.
+      - "127.0.0.1:${WEB_PORT:-18081}:80"
