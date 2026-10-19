@@ -24,6 +24,7 @@ String syncSentence(SyncStatus status) {
     SyncState.connecting => 'Connecting$waiting',
     SyncState.online => 'Catching up$waiting',
     SyncState.synced => status.pending == 0 ? 'Up to date' : 'Sending$waiting',
+    SyncState.paused => 'Waiting until the app is open$waiting',
   };
 }
 
@@ -117,5 +118,6 @@ IconData _syncIcon(SyncStatus status) => switch (status.state) {
   SyncState.connecting => Icons.cloud_queue_outlined,
   SyncState.online => Icons.cloud_sync_outlined,
   SyncState.synced => Icons.cloud_done_outlined,
+  SyncState.paused => Icons.pause_circle_outline,
 };
 

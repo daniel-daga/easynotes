@@ -102,6 +102,26 @@ void main() {
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
   });
 
+  testWidgets('pull to refresh works for an empty relay collection', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteListScreen(
+          library: library,
+          profile: const RelayProfile(
+            id: 'relay',
+            url: 'https://relay.example',
+          ),
+        ),
+      ),
+    );
+    await tester.drag(find.byKey(const Key('no-notes')), const Offset(0, 320));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('syncNow()'));
+  });
+
   testWidgets('an edit from another device changes the card', (tester) async {
     // The point of the list being a stream: nothing here asked for this change,
     // and the grid still shows it.
@@ -409,10 +429,17 @@ void main() {
 
   testWidgets('sync status is available in the home drawer', (tester) async {
     final library = twoLists();
-    await tester.pumpWidget(MaterialApp(home: NoteListScreen(
-      library: library,
-      profile: const RelayProfile(id: 'relay', url: 'https://relay.example'),
-    )));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteListScreen(
+          library: library,
+          profile: const RelayProfile(
+            id: 'relay',
+            url: 'https://relay.example',
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
     library.pushStatus(const SyncStatus(state: SyncState.offline, pending: 3));
     await tester.pumpAndSettle();
@@ -429,10 +456,7 @@ void main() {
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
 
-    expect(
-      find.text('Not syncing, 3 edits waiting'),
-      findsOneWidget,
-    );
+    expect(find.text('Not syncing, 3 edits waiting'), findsOneWidget);
   });
 
   testWidgets('a layout chosen on another device is drawn without a restart', (
@@ -987,7 +1011,9 @@ void main() {
     expect(tester.widget<CheckboxListTile>(check).value, isFalse);
   });
 
-  testWidgets('the drawer can create the first label and rejects whitespace', (tester) async {
+  testWidgets('the drawer can create the first label and rejects whitespace', (
+    tester,
+  ) async {
     final library = twoLists();
     await pumpList(tester, library);
     await tester.tap(find.byTooltip('Open navigation menu'));
@@ -1626,4 +1652,3 @@ void main() {
     expect(find.byKey(const Key('storage-error')), findsOneWidget);
   });
 }
-

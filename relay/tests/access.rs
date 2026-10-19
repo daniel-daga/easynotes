@@ -97,7 +97,7 @@ async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusC
     let client = reqwest::Client::new();
     let key = device.public_key().encode();
     let challenge: serde_json::Value = client
-        .post(format!("{http}/v1/challenge?p=1"))
+        .post(format!("{http}/v1/challenge?p=2"))
         .json(&serde_json::json!({ "device": key }))
         .send()
         .await
@@ -109,7 +109,7 @@ async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusC
     let raw: [u8; 32] = URL_SAFE_NO_PAD.decode(nonce).unwrap().try_into().unwrap();
     let signature = URL_SAFE_NO_PAD.encode(device.sign_challenge(&raw).unwrap());
     client
-        .post(format!("{http}/v1/token?p=1"))
+        .post(format!("{http}/v1/token?p=2"))
         .json(&serde_json::json!({
             "device": key,
             "nonce": nonce,
@@ -185,7 +185,7 @@ async fn every_invite_call_needs_the_key_on_a_gated_relay() {
     });
     let status = reqwest::Client::new()
         .post(format!(
-            "{http}/v1/invites/{}/list?p=1",
+            "{http}/v1/invites/{}/list?p=2",
             secret.id().encode()
         ))
         .json(&body)
@@ -212,7 +212,7 @@ async fn purge_needs_no_key() {
     // purge's authority is the note key, and it can only destroy.
     let relay = gated(&[&RelayAccess::random()]).await;
     let status = reqwest::Client::new()
-        .post(format!("{}/v1/purge?p=1", relay.http_base()))
+        .post(format!("{}/v1/purge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "topics": [] }))
         .send()
         .await
@@ -258,7 +258,7 @@ async fn a_flood_of_appends_is_told_to_back_off_and_disconnected() {
     }
     loop {
         match socket.next().await.unwrap() {
-            Some(Incoming::RateLimited) => break,
+            Some(Incoming::RateLimited { .. }) => break,
             Some(Incoming::Rejected(m)) => panic!("refused otherwise: {m}"),
             Some(_) => {}
             None => panic!("closed without saying why"),
@@ -313,7 +313,7 @@ async fn attachment_chunks_spend_the_same_budget() {
     let (media, sealed) = seal_whole(&key, note, id, Variant::Original, &plain, chunk).unwrap();
     let url = |rest: &str| {
         format!(
-            "{base}/v1/media/{}/{}{rest}?p=1",
+            "{base}/v1/media/{}/{}{rest}?p=2",
             note.encode(),
             media.object.encode()
         )

@@ -39,33 +39,37 @@ pub async fn authenticate(
     access: Option<&RelayAccess>,
     signer: &impl DeviceSigner,
 ) -> Result<String> {
-    let device_key = signer.device_key()?;
-    let device = device_key.encode();
-    let http = reqwest::Client::new();
-
-    let challenge: ChallengeResponse = post_json(
-        &http,
-        &wire::api(http_base, "/challenge"),
-        &wire::ChallengeRequest { device: &device },
-    )
-    .await?;
-
-    let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
-    let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
-
-    let token: TokenResponse = post_json(
-        &http,
-        &wire::api(http_base, "/token"),
-        &wire::TokenRequest {
-            device: &device,
-            nonce: &challenge.nonce,
-            signature: &signature,
-            access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
-        },
-    )
-    .await?;
-
-    Ok(token.token)
+    let auth = async {
+        let device_key = signer.device_key()?;
+        let device = device_key.encode();
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(net)?;
+        let challenge: ChallengeResponse = post_json(
+            &http,
+            &wire::api(http_base, "/challenge"),
+            &wire::ChallengeRequest { device: &device },
+        )
+        .await?;
+        let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
+        let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
+        let token: TokenResponse = post_json(
+            &http,
+            &wire::api(http_base, "/token"),
+            &wire::TokenRequest {
+                device: &device,
+                nonce: &challenge.nonce,
+                signature: &signature,
+                access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
+            },
+        )
+        .await?;
+        Ok::<_, crate::error::CoreError>(token.token)
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), auth)
+        .await
+        .map_err(|_| net("relay authentication timed out after 10 seconds"))?
 }
 
 /// A JSON `POST` that has to succeed. A relay that does not speak this build's
@@ -93,7 +97,10 @@ async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
 /// The invite calls need the status — "expired" and "withdrawn" are answers,
 /// not failures — so it is handed back rather than turned into an error here.
 pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(net)?
         .post(url)
         .header("content-type", "application/json")
         .body(body)
@@ -116,7 +123,10 @@ pub(crate) async fn call(
 ) -> Result<(u16, Vec<u8>)> {
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| crate::error::CoreError::Storage(format!("no method {method}")))?;
-    let mut call = reqwest::Client::new()
+    let mut call = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(net)?
         .request(method, url)
         .bearer_auth(token);
     call = match request {
@@ -147,15 +157,24 @@ pub(crate) struct Socket {
 
 impl Socket {
     pub(crate) async fn open(url: &str) -> Result<Self> {
-        let (inner, _) = tokio_tungstenite::connect_async(url).await.map_err(net)?;
+        let (inner, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio_tungstenite::connect_async(url),
+        )
+        .await
+        .map_err(|_| net("sync socket connection timed out after 10 seconds"))?
+        .map_err(net)?;
         Ok(Self { inner })
     }
 
     pub(crate) async fn send(&mut self, text: String) -> Result<()> {
-        self.inner
-            .send(Message::Text(text.into()))
-            .await
-            .map_err(net)
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            self.inner.send(Message::Text(text.into())),
+        )
+        .await
+        .map_err(|_| net("sync write timed out after 10 seconds"))?
+        .map_err(net)
     }
 
     /// The next text frame, or `None` when the relay closes.

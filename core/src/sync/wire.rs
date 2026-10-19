@@ -98,7 +98,7 @@ pub enum Incoming {
     /// a while ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)
     /// §3). The relay closes the socket after saying so; what was refused is
     /// still in the outbox, and goes again once the engine has backed off.
-    RateLimited,
+    RateLimited { retry_after: std::time::Duration },
 }
 
 /// What the relay refuses a purged topic with, and tells its subscribers.
@@ -139,7 +139,7 @@ pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
 /// (ADR 0029 §3) does not bump it. A client is to keep speaking the version
 /// before this one as well (ADR 0029 §4); while there has only been one
 /// version, there is nothing to fall back to.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// `{base}/v1{path}`, naming the protocol. `path` starts with `/` and carries
 /// no query of its own; one that needs more (the socket's token) appends it
@@ -336,6 +336,9 @@ enum DeviceMessage<'a> {
         key: String,
         signature: String,
     },
+    Refresh {
+        id: &'a str,
+    },
 }
 
 #[derive(Deserialize)]
@@ -365,6 +368,11 @@ enum DeviceReply {
         note: Option<String>,
         message: String,
     },
+    RefreshComplete {
+        id: String,
+        note: String,
+        seq: i64,
+    },
     /// A message type this build does not know: something a newer relay says
     /// that an older client can do without. Skipped, never an error — an
     /// error drops the socket, and a relay that added any message at all
@@ -379,6 +387,11 @@ pub enum Routed {
     /// A refusal the relay could not pin on a note, because the message it
     /// answers could not be read far enough to say which.
     Unrouted(String),
+    Refresh {
+        id: String,
+        note: crate::ids::NoteId,
+        seq: i64,
+    },
 }
 
 /// The URL a device's one socket is opened at.
@@ -401,6 +414,10 @@ pub(crate) fn unsubscribe_note(note: crate::ids::NoteId) -> String {
     device(&DeviceMessage::Unsubscribe {
         note: &note.encode(),
     })
+}
+
+pub(crate) fn refresh(id: &str) -> String {
+    device(&DeviceMessage::Refresh { id })
 }
 
 pub(crate) fn append_note(note: crate::ids::NoteId, envelope: &[u8]) -> String {
@@ -467,7 +484,18 @@ pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
         DeviceReply::Error {
             note: Some(raw),
             message,
-        } if message == RATE_LIMITED => Routed::Note(note(&raw)?, Incoming::RateLimited),
+        } if message == RATE_LIMITED || message.starts_with(&format!("{RATE_LIMITED}:")) => {
+            let retry_after = message
+                .strip_prefix(&format!("{RATE_LIMITED}:"))
+                .and_then(|secs| secs.parse::<u64>().ok())
+                .unwrap_or(1);
+            Routed::Note(
+                note(&raw)?,
+                Incoming::RateLimited {
+                    retry_after: std::time::Duration::from_secs(retry_after),
+                },
+            )
+        }
         DeviceReply::Error { note: raw, message } => {
             let message = said(message);
             match raw.and_then(|raw| crate::ids::NoteId::decode(&raw).ok()) {
@@ -475,6 +503,11 @@ pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
                 None => Routed::Unrouted(message),
             }
         }
+        DeviceReply::RefreshComplete { id, note: raw, seq } => Routed::Refresh {
+            id,
+            note: note(&raw)?,
+            seq,
+        },
     }))
 }
 
@@ -742,10 +775,11 @@ mod tests {
 
     #[test]
     fn a_write_budget_refusal_is_a_reason_to_back_off() {
-        let slow = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"rate_limited"}"#;
+        let slow = r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"rate_limited:7"}"#;
         assert!(matches!(
             routed(slow).unwrap(),
-            Routed::Note(_, Incoming::RateLimited)
+            Routed::Note(_, Incoming::RateLimited { retry_after })
+                if retry_after == std::time::Duration::from_secs(7)
         ));
     }
 

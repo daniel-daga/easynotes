@@ -111,6 +111,48 @@ fn blank_core() -> Core {
     NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap()
 }
 
+#[tokio::test]
+async fn refresh_marker_follows_the_captured_subscription_head() {
+    let (relay, log) = relay().await;
+    let (note, envelope) = an_envelope(32);
+    log.append(&note.encode(), &envelope).await.unwrap();
+
+    let mut sync = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
+        .await
+        .unwrap();
+    sync.subscribe(note, 0).await.unwrap();
+    loop {
+        match tokio::time::timeout(PATIENCE, sync.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        {
+            Routed::Note(id, Incoming::Caught { seq: 1 }) if id == note => break,
+            Routed::Note(_, Incoming::Envelope { .. }) => {}
+            _ => panic!("unexpected catch-up message"),
+        }
+    }
+
+    sync.refresh("refresh-1").await.unwrap();
+    match tokio::time::timeout(PATIENCE, sync.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    {
+        Routed::Refresh {
+            id,
+            note: id_note,
+            seq: 1,
+        } => {
+            assert_eq!(id, "refresh-1");
+            assert_eq!(id_note, note);
+        }
+        _ => panic!("unexpected refresh response"),
+    }
+}
+
 /// The point of the change: twenty notes, one socket, one token.
 #[tokio::test]
 async fn twenty_notes_are_one_socket_and_one_handshake() {
@@ -317,6 +359,7 @@ async fn a_long_backlog_does_not_hold_up_another_note() {
             Routed::Note(_, Incoming::Rejected(m)) | Routed::Unrouted(m) => {
                 panic!("refused: {m}")
             }
+            Routed::Refresh { .. } => panic!("unexpected refresh marker"),
             Routed::Note(n, _) => panic!("a message for a note never subscribed: {n:?}"),
         }
     }

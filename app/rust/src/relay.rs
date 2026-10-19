@@ -170,6 +170,19 @@ impl Device {
     pub fn shutdown(&self) {
         self.sync.shutdown();
     }
+
+    /// Request an ordered refresh barrier for this device's subscriptions.
+    pub fn refresh(
+        &self,
+        id: String,
+    ) -> impl std::future::Future<Output = std::result::Result<(), String>> {
+        let sync = self.sync.clone();
+        async move { sync.refresh(id).await }
+    }
+
+    pub fn set_foreground(&self, foreground: bool) {
+        self.sync.set_foreground(foreground);
+    }
 }
 
 /// One note's subscription on the device's socket.

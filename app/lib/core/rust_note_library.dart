@@ -32,7 +32,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       onError: _notes.addError,
     );
     _syncUpstream = _library.watchSync().listen(
-      (status) => _sync.add(RustNoteCore.toStatus(status)),
+      (status) => _sync.add(_withPause(RustNoteCore.toStatus(status))),
       onError: _sync.addError,
     );
     _transfersUpstream = _library.watchTransfers().listen((transfers) {
@@ -510,6 +510,12 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// reconnect to when it fails.
   String? _relay;
   String? _access;
+  bool _foreground = true;
+  bool _paused = false;
+  bool _suspended = false;
+  int _lifecycleGeneration = 0;
+  Timer? _suspendTimer;
+  Future<void>? _syncNow;
 
   @override
   Future<void> connect(String url, {String? access}) {
@@ -520,6 +526,53 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   @override
   Future<void> disconnect() => _library.disconnect();
+
+  @override
+  Future<void> setForeground(bool foreground) async {
+    if (_foreground == foreground) return;
+    _foreground = foreground;
+    await _library.setForeground(foreground: foreground);
+    final generation = ++_lifecycleGeneration;
+    _suspendTimer?.cancel();
+    if (foreground) {
+      if (_suspended && _relay != null) {
+        _suspended = false;
+        _paused = false;
+        _sync.add(RustNoteCore.toStatus(_library.syncStatus()));
+        await _library.connect(relay: _relay!, access: _access);
+      }
+      return;
+    }
+    _suspendTimer = Timer(const Duration(seconds: 15), () {
+      if (_foreground || generation != _lifecycleGeneration) return;
+      _suspended = true;
+      _paused = true;
+      _sync.add(syncStatus);
+      unawaited(_library.disconnect());
+    });
+    // Start the grace period at hide time. Browser writes and held sync edits
+    // are both asked to flush immediately while the socket remains available.
+    await _library.setForeground(foreground: false);
+    await flush();
+    sendHeldEdits();
+  }
+
+  @override
+  Future<void> syncNow() {
+    final active = _syncNow;
+    if (active != null) return active;
+    final run = _runSyncNow();
+    _syncNow = run;
+    return run.whenComplete(() {
+      if (identical(_syncNow, run)) _syncNow = null;
+    });
+  }
+
+  Future<void> _runSyncNow() async {
+    if (_relay == null) return;
+    await flush();
+    await _library.syncNow();
+  }
 
   @override
   void sendHeldEdits() => _library.sendHeldEdits();
@@ -554,8 +607,18 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
         error: t.error,
       );
 
+  SyncStatus _withPause(SyncStatus status) => _paused
+      ? SyncStatus(
+          state: SyncState.paused,
+          pending: status.pending,
+          lastSeq: status.lastSeq,
+          lastError: null,
+        )
+      : status;
+
   @override
-  SyncStatus get syncStatus => RustNoteCore.toStatus(_library.syncStatus());
+  SyncStatus get syncStatus =>
+      _withPause(RustNoteCore.toStatus(_library.syncStatus()));
 
   @override
   Stream<SyncStatus> watchSync() async* {
@@ -631,6 +694,8 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   @override
   Future<void> dispose() async {
+    _suspendTimer?.cancel();
+    _lifecycleGeneration++;
     if (_disposed) return;
     _disposed = true;
     // The relay connections go first: their engines hold a reference to the

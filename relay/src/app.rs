@@ -249,7 +249,7 @@ fn browser_access(origins: &Origins) -> tower_http::cors::CorsLayer {
         .allow_origin(allow)
         .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::RANGE])
-        .expose_headers([header::CONTENT_RANGE])
+        .expose_headers([header::CONTENT_RANGE, header::RETRY_AFTER])
 }
 
 /// Which pages may drive the handshake.

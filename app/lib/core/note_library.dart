@@ -485,6 +485,13 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Stop syncing. Edits still work and still queue.
   Future<void> disconnect();
 
+  /// Coordinate network work with app visibility. Hiding flushes local writes
+  /// immediately and gives in-flight sync a short grace period to drain.
+  Future<void> setForeground(bool foreground);
+
+  /// Flush pending edits and wait for the current sync snapshot to be caught up.
+  Future<void> syncNow();
+
   /// Send every edit that is waiting for the typing to pause, now.
   ///
   /// Typing reaches the relay a burst at a time rather than a keystroke at a

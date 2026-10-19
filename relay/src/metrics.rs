@@ -78,6 +78,13 @@ pub struct Metrics {
     outdated: AtomicU64,
     /// Requests refused for want of the relay's access key.
     access_refused: AtomicU64,
+    accepted_updates: AtomicU64,
+    accepted_update_bytes: AtomicU64,
+    delivered_updates: AtomicU64,
+    delivered_update_bytes: AtomicU64,
+    active_subscriptions: AtomicU64,
+    refresh_requests: AtomicU64,
+    refresh_completions: AtomicU64,
 }
 
 /// How many protocol versions this relay speaks, and so counts.
@@ -108,6 +115,32 @@ impl Metrics {
 
     pub(crate) fn access_refused(&self) {
         self.access_refused.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn accepted_update(&self, bytes: usize) {
+        self.accepted_updates.fetch_add(1, Relaxed);
+        self.accepted_update_bytes.fetch_add(bytes as u64, Relaxed);
+    }
+
+    pub(crate) fn delivered_update(&self, bytes: usize) {
+        self.delivered_updates.fetch_add(1, Relaxed);
+        self.delivered_update_bytes.fetch_add(bytes as u64, Relaxed);
+    }
+
+    pub(crate) fn subscription_started(&self) {
+        self.active_subscriptions.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn subscription_ended(&self) {
+        self.active_subscriptions.fetch_sub(1, Relaxed);
+    }
+
+    pub(crate) fn refresh_requested(&self) {
+        self.refresh_requests.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn refresh_completed(&self) {
+        self.refresh_completions.fetch_add(1, Relaxed);
     }
 
     /// Count a sync socket as open for as long as the guard lives.
@@ -255,6 +288,48 @@ pub async fn render(state: &AppState) -> String {
         "gauge",
         "Sync sockets open now: roughly, devices online.",
         &one(m.sockets_open.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_active_subscriptions",
+        "gauge",
+        "Active note subscriptions across sync sockets.",
+        &one(m.active_subscriptions.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_updates_accepted_total",
+        "counter",
+        "Accepted encrypted note updates.",
+        &one(m.accepted_updates.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_update_bytes_accepted_total",
+        "counter",
+        "Bytes in accepted encrypted note updates.",
+        &one(m.accepted_update_bytes.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_updates_delivered_total",
+        "counter",
+        "Encrypted note updates queued for subscribed clients.",
+        &one(m.delivered_updates.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_update_bytes_delivered_total",
+        "counter",
+        "Bytes in encrypted note updates queued for subscribed clients.",
+        &one(m.delivered_update_bytes.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_refresh_requests_total",
+        "counter",
+        "Device-level refresh requests.",
+        &one(m.refresh_requests.load(Relaxed)),
+    );
+    family(
+        "easynotes_relay_refresh_completions_total",
+        "counter",
+        "Per-subscription refresh completion markers.",
+        &one(m.refresh_completions.load(Relaxed)),
     );
     family(
         "easynotes_relay_sockets_opened_total",

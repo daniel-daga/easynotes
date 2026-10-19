@@ -33,7 +33,34 @@ class SyncDevicesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Sync & devices')),
+    appBar: AppBar(
+      title: const Text('Sync & devices'),
+      actions: [
+        TextButton.icon(
+          key: const Key('sync-now'),
+          onPressed: profile.url == null
+              ? null
+              : () async {
+                  try {
+                    await library.syncNow();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Sync is up to date.')),
+                      );
+                    }
+                  } on Object catch (error) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Sync did not finish: $error')),
+                      );
+                    }
+                  }
+                },
+          icon: const Icon(Icons.sync),
+          label: const Text('Sync now'),
+        ),
+      ],
+    ),
     body: ListView(
       padding: const EdgeInsets.all(24),
       children: [

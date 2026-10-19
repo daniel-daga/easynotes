@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/invites.dart';
+import '../core/app_visibility.dart';
 import '../core/relay_profiles.dart';
 
 /// One-time pairing from an existing device or QR scan on a new one.
@@ -68,7 +69,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   }
 
   Future<void> _pollOwner() async {
-    if (_busy || _code != null || _approved) return;
+    if (_busy || _code != null || _approved || !appIsForeground.value) return;
     try {
       final code = await widget.library.accountTransferRequestCode();
       if (code != null && mounted) {
@@ -135,7 +136,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   }
 
   Future<void> _pollGuest() async {
-    if (_busy || _approved) return;
+    if (_busy || _approved || !appIsForeground.value) return;
     setState(() => _busy = true);
     try {
       final transfer = await widget.library.pollAccountTransferResult();

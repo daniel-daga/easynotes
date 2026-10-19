@@ -20,8 +20,8 @@ pub const MAX_ENVELOPE_BYTES: usize = 1 << 20;
 /// first, clients that speak the new version follow, and `MIN` rises only when
 /// no client released in the last twelve months still speaks the old one.
 /// `easynotes_relay_protocol_requests_total` says who still does.
-pub const PROTOCOL_MIN: u32 = 1;
-pub const PROTOCOL_MAX: u32 = 1;
+pub const PROTOCOL_MIN: u32 = 2;
+pub const PROTOCOL_MAX: u32 = 2;
 
 /// The body of a `426`: what the client needs to tell "update the app" from
 /// "the relay is too old", which it works out from the range.
@@ -145,6 +145,9 @@ pub enum SyncClientMessage {
         /// Its signature over `easynotes_core::compaction::transcript`, 64 bytes.
         signature: String,
     },
+    /// Snapshot the current heads of this socket's subscriptions and mark each
+    /// one complete after ordered delivery reaches that head.
+    Refresh { id: String },
     /// A message type this relay does not know: something a newer client can
     /// do without. Skipped rather than refused, because a refusal names no
     /// note and so reaches every note on the socket as an error.
@@ -185,6 +188,8 @@ pub enum SyncServerMessage {
         note: Option<String>,
         message: String,
     },
+    /// Ordered backlog delivery has reached this refresh's captured head.
+    RefreshComplete { id: String, note: String, seq: i64 },
 }
 
 // ---------------------------------------------------------------------------

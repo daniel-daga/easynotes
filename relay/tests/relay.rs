@@ -53,7 +53,7 @@ async fn drain(sync: &mut NoteSocket) -> Vec<Vec<u8>> {
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             Some(Incoming::Gone) => panic!("unexpectedly purged"),
-            Some(Incoming::RateLimited) => panic!("unexpectedly rate limited"),
+            Some(Incoming::RateLimited { .. }) => panic!("unexpectedly rate limited"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => return out,
@@ -75,7 +75,7 @@ async fn take(sync: &mut NoteSocket, n: usize) -> Vec<Vec<u8>> {
             Some(Incoming::Reset) => panic!("unexpected relay reset"),
             Some(Incoming::Rejected(m)) => panic!("unexpected rejection: {m}"),
             Some(Incoming::Gone) => panic!("unexpectedly purged"),
-            Some(Incoming::RateLimited) => panic!("unexpectedly rate limited"),
+            Some(Incoming::RateLimited { .. }) => panic!("unexpectedly rate limited"),
             // About compaction, which none of these tests is.
             Some(Incoming::Crowded | Incoming::CompactRefused(_)) => {}
             None => panic!("the relay closed after {} of {n} envelopes", out.len()),
@@ -202,7 +202,7 @@ async fn refuses_a_challenge_signed_by_the_wrong_key() {
 
     let http = reqwest::Client::new();
     let challenge: serde_json::Value = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": real.public_key().encode() }))
         .send()
         .await
@@ -216,7 +216,7 @@ async fn refuses_a_challenge_signed_by_the_wrong_key() {
     let transcript = easynotes_core::crypto::relay_auth_transcript(&nonce);
 
     let response = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&serde_json::json!({
             "device": real.public_key().encode(),
             "nonce": nonce_b64,
@@ -236,7 +236,7 @@ async fn a_challenge_cannot_be_redeemed_twice() {
     let http = reqwest::Client::new();
 
     let challenge: serde_json::Value = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": device.public_key().encode() }))
         .send()
         .await
@@ -255,14 +255,14 @@ async fn a_challenge_cannot_be_redeemed_twice() {
     });
 
     let first = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&body)
         .send()
         .await
         .unwrap();
     assert_eq!(first.status(), 200);
     let second = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&body)
         .send()
         .await
@@ -276,7 +276,7 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
     let device = DeviceIdentity::generate();
     let http = reqwest::Client::new();
     let challenge: serde_json::Value = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": device.public_key().encode() }))
         .send()
         .await
@@ -295,14 +295,14 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
     });
 
     let first = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&body)
         .send()
         .await
         .unwrap();
     assert_eq!(first.status(), 200);
     let replay = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&body)
         .send()
         .await
@@ -310,7 +310,7 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
     assert_eq!(replay.status(), 401);
 
     let raw_challenge: serde_json::Value = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": device.public_key().encode() }))
         .send()
         .await
@@ -321,7 +321,7 @@ async fn authentication_requires_the_shared_transcript_and_rejects_raw_nonce_sig
     let nonce_b64 = raw_challenge["nonce"].as_str().unwrap();
     let raw_signature = b64_encode(&device.sign(&b64_decode(nonce_b64)));
     let raw = http
-        .post(format!("{}/v1/token?p=1", relay.http_base()))
+        .post(format!("{}/v1/token?p=2", relay.http_base()))
         .json(&serde_json::json!({
             "device": device.public_key().encode(),
             "nonce": nonce_b64,
@@ -346,7 +346,7 @@ async fn a_message_type_the_relay_does_not_know_is_skipped() {
     let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
-    let url = format!("{}/v1/sync?p=1&token={token}", relay.ws_base());
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
     let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     type Ws = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -430,7 +430,7 @@ async fn refuses_a_malformed_note_id() {
     let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
         .await
         .unwrap();
-    let url = format!("{}/v1/sync?p=1&token={token}", relay.ws_base());
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
     let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     socket
         .send(Message::text(
@@ -538,7 +538,7 @@ async fn a_browser_may_do_the_handshake() {
     let preflight = http
         .request(
             reqwest::Method::OPTIONS,
-            format!("{}/v1/challenge?p=1", relay.http_base()),
+            format!("{}/v1/challenge?p=2", relay.http_base()),
         )
         .header("Origin", "https://notes.example")
         .header("Access-Control-Request-Method", "POST")
@@ -560,7 +560,7 @@ async fn a_browser_may_do_the_handshake() {
 
     let identity = DeviceIdentity::generate();
     let real = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .header("Origin", "https://notes.example")
         .json(&serde_json::json!({ "device": identity.public_key().encode() }))
         .send()
@@ -593,7 +593,7 @@ async fn an_allowlist_refuses_an_origin_that_is_not_on_it() {
 
     let preflight = |origin: &'static str| {
         let http = http.clone();
-        let url = format!("{}/v1/challenge?p=1", relay.http_base());
+        let url = format!("{}/v1/challenge?p=2", relay.http_base());
         async move {
             http.request(reqwest::Method::OPTIONS, url)
                 .header("Origin", origin)
@@ -641,7 +641,7 @@ async fn a_flood_of_handshakes_is_refused() {
     let http = reqwest::Client::new();
     let identity = DeviceIdentity::generate();
     let ask = || {
-        http.post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        http.post(format!("{}/v1/challenge?p=2", relay.http_base()))
             .json(&serde_json::json!({ "device": identity.public_key().encode() }))
             .send()
     };
@@ -683,14 +683,14 @@ async fn the_two_limits_are_kept_apart() {
 
     // Spend the handshake bucket.
     let first = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": identity.public_key().encode() }))
         .send()
         .await
         .unwrap();
     assert!(first.status().is_success());
     let second = http
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": identity.public_key().encode() }))
         .send()
         .await
@@ -704,7 +704,7 @@ async fn the_two_limits_are_kept_apart() {
     // The assertion is only that it is not a 429, because that is the whole
     // question — anything else means the request got through the limiter.
     let socket = http
-        .get(format!("{}/v1/sync?p=1&token=nonsense", relay.http_base()))
+        .get(format!("{}/v1/sync?p=2&token=nonsense", relay.http_base()))
         .send()
         .await
         .unwrap();
@@ -732,7 +732,7 @@ async fn clients_behind_a_trusted_proxy_are_limited_apart() {
     let http = reqwest::Client::new();
     let identity = DeviceIdentity::generate();
     let ask = |client: &'static str| {
-        http.post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        http.post(format!("{}/v1/challenge?p=2", relay.http_base()))
             .header("X-Forwarded-For", client)
             .json(&serde_json::json!({ "device": identity.public_key().encode() }))
             .send()
@@ -768,7 +768,7 @@ async fn an_untrusted_forwarded_for_is_ignored() {
     let http = reqwest::Client::new();
     let identity = DeviceIdentity::generate();
     let ask = |client: &'static str| {
-        http.post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        http.post(format!("{}/v1/challenge?p=2", relay.http_base()))
             .header("X-Forwarded-For", client)
             .json(&serde_json::json!({ "device": identity.public_key().encode() }))
             .send()
@@ -875,7 +875,7 @@ async fn metrics_count_what_the_relay_does() {
         .await
         .unwrap();
     let refused = reqwest::Client::new()
-        .post(format!("{}/v1/challenge?p=1", relay.http_base()))
+        .post(format!("{}/v1/challenge?p=2", relay.http_base()))
         .json(&serde_json::json!({ "device": identity.public_key().encode() }))
         .send()
         .await
@@ -917,6 +917,18 @@ async fn metrics_count_what_the_relay_does() {
         Some(sealed.len() as u64)
     );
     assert_eq!(metric(&during, "easynotes_relay_sockets_open"), Some(2));
+    assert_eq!(
+        metric(&during, "easynotes_relay_active_subscriptions"),
+        Some(2)
+    );
+    assert_eq!(
+        metric(&during, "easynotes_relay_updates_accepted_total"),
+        Some(1)
+    );
+    assert_eq!(
+        metric(&during, "easynotes_relay_update_bytes_accepted_total"),
+        Some((((sealed.len() * 4) + 2) / 3) as u64)
+    );
     assert_eq!(
         metric(&during, "easynotes_relay_sockets_opened_total"),
         Some(2)

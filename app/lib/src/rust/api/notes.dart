@@ -8,7 +8,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -396,6 +396,10 @@ abstract class Library implements RustOpaqueInterface {
 
   Future<void> setColour({required String id, NoteColour? colour});
 
+  /// Lifecycle entry point for the bridge. Hidden callers flush local work
+  /// and held edits before the Dart coordinator starts its bounded grace.
+  Future<void> setForeground({required bool foreground});
+
   Future<void> setLayout({required NoteLayout layout});
 
   Future<void> setPinned({required String id, required bool pinned});
@@ -433,6 +437,10 @@ abstract class Library implements RustOpaqueInterface {
   /// stream to close — such as Dart cancelling its subscription — waits
   /// forever too.
   Future<void> stopWatching();
+
+  /// Flush held typing and wait up to 30 seconds for the library to report a
+  /// caught-up state with no pending local edits.
+  Future<void> syncNow();
 
   /// Where this device stands with the relay, over all its notes.
   SyncStatus syncStatus();

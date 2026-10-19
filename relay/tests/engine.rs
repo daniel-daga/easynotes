@@ -655,6 +655,7 @@ async fn disconnecting_leaves_the_app_working() {
 fn quick() -> Pacing {
     Pacing {
         quiet: Duration::from_millis(300),
+        min_interval: Duration::ZERO,
         max_hold: Duration::from_secs(60),
     }
 }
@@ -664,6 +665,7 @@ fn quick() -> Pacing {
 fn never() -> Pacing {
     Pacing {
         quiet: Duration::from_secs(3600),
+        min_interval: Duration::ZERO,
         max_hold: Duration::from_secs(3600),
     }
 }
@@ -737,6 +739,7 @@ async fn typing_that_never_pauses_still_goes_at_the_cap() {
         &endpoint,
         Pacing {
             quiet: Duration::from_secs(3600),
+            min_interval: Duration::ZERO,
             max_hold: Duration::from_millis(500),
         },
     );
@@ -759,6 +762,30 @@ async fn typing_that_never_pauses_still_goes_at_the_cap() {
     );
 }
 
+#[tokio::test]
+async fn automatic_typing_batches_respect_minimum_spacing() {
+    let (_relay, log, endpoint) = relay().await;
+    let mut a = App::owner("A");
+    a.connect_paced(
+        &endpoint,
+        Pacing {
+            quiet: Duration::from_millis(20),
+            min_interval: Duration::from_millis(400),
+            max_hold: Duration::from_secs(2),
+        },
+    );
+    a.add_item("");
+    a.wait_until_synced().await;
+    let item = a.item_called("");
+    a.type_into(item, "first");
+    wait_for_head(&log, a.note, 2).await;
+
+    a.type_into(item, "second");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 2);
+    wait_for_head(&log, a.note, 3).await;
+}
+
 /// What the app does going into the background: send what is held now, not
 /// after a pause it may not live to see.
 #[tokio::test]
@@ -777,6 +804,23 @@ async fn a_flush_sends_what_is_held() {
     a.flush();
     a.wait_until_synced().await;
     wait_for_head(&log, a.note, 2).await;
+}
+
+#[tokio::test]
+async fn device_refresh_waits_for_each_subscription_barrier() {
+    let (_relay, _log, endpoint) = relay().await;
+    let mut a = App::owner("A");
+    a.connect(&endpoint);
+    a.add_item("milk");
+    a.wait_until_synced().await;
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        a.handle.as_ref().unwrap().refresh("manual-1".into()),
+    )
+    .await
+    .expect("refresh barrier timed out")
+    .expect("refresh barrier failed");
 }
 
 /// A removal's package already contains held typing. Sending those old-key

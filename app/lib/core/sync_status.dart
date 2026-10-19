@@ -25,6 +25,9 @@ enum SyncState {
 
   /// Connected and caught up.
   synced,
+
+  /// Network work is deliberately suspended while the app is hidden.
+  paused,
 }
 
 @immutable

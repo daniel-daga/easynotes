@@ -730,6 +730,13 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   void sendHeldEdits() => calls.add('sendHeldEdits()');
 
+  @override
+  Future<void> setForeground(bool foreground) async =>
+      calls.add('setForeground($foreground)');
+
+  @override
+  Future<void> syncNow() async => calls.add('syncNow()');
+
   List<AttachmentTransfer> _transferList = const [];
   final _transferStream =
       StreamController<List<AttachmentTransfer>>.broadcast();

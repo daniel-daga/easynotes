@@ -27,6 +27,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/content_sharing.dart';
+import '../core/app_visibility.dart';
 import '../core/invite_links.dart';
 import '../core/relay_profiles.dart';
 import '../core/invites.dart';
@@ -261,7 +262,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   }
 
   void _tick() {
-    if (!mounted) return;
+    if (!mounted || !appIsForeground.value) return;
     setState(_load);
     _refresh();
   }
@@ -270,7 +271,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   /// opened one is let in as a side effect, and drops off the invite table
   /// onto the people table.
   Future<void> _refresh() async {
-    if (_refreshing) return;
+    if (_refreshing || !appIsForeground.value) return;
     _refreshing = true;
     try {
       for (final invite in List.of(_open)) {
@@ -1001,7 +1002,7 @@ class _WaitingDialogState extends State<WaitingDialog> {
   }
 
   Future<void> _check() async {
-    if (_checking || _ended != null) return;
+    if (_checking || _ended != null || !appIsForeground.value) return;
     _checking = true;
     try {
       final check = await widget.invites.checkJoin(widget.join.inviteId);
@@ -1153,7 +1154,7 @@ class _InviteBannersState extends State<InviteBanners> {
   }
 
   Future<void> _check() async {
-    if (_checking) return;
+    if (_checking || !appIsForeground.value) return;
     _checking = true;
     try {
       final joined = <String, _Joined>{};
@@ -1280,4 +1281,3 @@ class _Line extends StatelessWidget {
     );
   }
 }
-

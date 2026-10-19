@@ -36,19 +36,19 @@ use crate::ids::NoteId;
 use crate::note::{NoteCore, Outgoing, SyncCursor};
 use crate::relay_access::RelayAccess;
 use crate::store::{Keyring, OpStore};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// How long to wait before the first reconnection attempt.
-pub const FIRST_RETRY: Duration = Duration::from_millis(250);
+pub const FIRST_RETRY: Duration = Duration::from_secs(1);
 
 /// The ceiling on the backoff. A phone that has been in a tunnel for an hour
 /// should come back within seconds of leaving it, so this stays small.
-pub const MAX_RETRY: Duration = Duration::from_secs(8);
+pub const MAX_RETRY: Duration = Duration::from_secs(60);
 
 /// When an edit made with [`SyncHandle::publish_soon`] goes to the relay.
 ///
@@ -61,6 +61,9 @@ pub const MAX_RETRY: Duration = Duration::from_secs(8);
 pub struct Pacing {
     /// A pause in the typing this long sends what it wrote.
     pub quiet: Duration,
+    /// Minimum time between automatic typing batches. The first batch is not
+    /// spaced from anything and explicit flushes bypass this delay.
+    pub min_interval: Duration,
     /// However long the typing goes on, nothing waits longer than this.
     pub max_hold: Duration,
 }
@@ -68,8 +71,9 @@ pub struct Pacing {
 impl Default for Pacing {
     fn default() -> Self {
         Self {
-            quiet: Duration::from_secs(1),
-            max_hold: Duration::from_secs(10),
+            quiet: Duration::from_secs(3),
+            min_interval: Duration::from_secs(5),
+            max_hold: Duration::from_secs(30),
         }
     }
 }
@@ -466,6 +470,11 @@ enum Command {
     Flush {
         note: Option<NoteId>,
     },
+    Refresh {
+        id: String,
+        complete: oneshot::Sender<std::result::Result<(), String>>,
+    },
+    SetForeground(bool),
     /// Every [`SyncDevice`] is gone. The engine finishes once its last note has.
     Released,
     Shutdown,
@@ -526,6 +535,21 @@ impl SyncDevice {
         let _ = self.commands.send(Command::Flush { note: None });
     }
 
+    /// Request the relay's current heads for all active subscriptions.
+    pub async fn refresh(&self, id: String) -> std::result::Result<(), String> {
+        let (complete, result) = oneshot::channel();
+        self.commands
+            .send(Command::Refresh { id, complete })
+            .map_err(|_| "sync engine stopped".to_string())?;
+        result
+            .await
+            .map_err(|_| "sync engine stopped".to_string())?
+    }
+
+    pub fn set_foreground(&self, foreground: bool) {
+        let _ = self.commands.send(Command::SetForeground(foreground));
+    }
+
     /// Close the connection and finish, whatever notes are still connected.
     pub fn shutdown(&self) {
         let _ = self.commands.send(Command::Shutdown);
@@ -567,6 +591,18 @@ pub struct SyncHandle {
 }
 
 impl SyncHandle {
+    /// Request a relay refresh barrier for this subscription and wait until the
+    /// relay has delivered through its captured head.
+    pub async fn refresh(&self, id: String) -> std::result::Result<(), String> {
+        let (complete, result) = oneshot::channel();
+        self.commands
+            .send(Command::Refresh { id, complete })
+            .map_err(|_| "sync engine stopped".to_string())?;
+        result
+            .await
+            .map_err(|_| "sync engine stopped".to_string())?
+    }
+
     /// Send a sealed envelope to the relay now, and anything held back with it.
     ///
     /// Returns nothing and cannot fail: an edit is already in the log by the time
@@ -723,8 +759,10 @@ impl<P: SyncPeer> SyncEngine<P> {
         let mut device = Device {
             notes: HashMap::new(),
             released: false,
+            foreground: true,
             pacing,
             last_error: None,
+            refreshes: HashMap::new(),
         };
 
         let mut backoff = FIRST_RETRY;
@@ -738,6 +776,9 @@ impl<P: SyncPeer> SyncEngine<P> {
                 continue;
             }
             device.each(|note| note.set_state(SyncState::Connecting));
+            let connected_at = super::timer::now();
+            let mut server_retry_after = None;
+            let retry_ceiling;
             match session(&peer, &endpoint, &mut commands, &mut device).await {
                 Ended::ShutDown => break,
                 // A connection that worked and then went away deserves a quick
@@ -750,19 +791,47 @@ impl<P: SyncPeer> SyncEngine<P> {
                     reason,
                 } => {
                     device.fail(reason);
-                    backoff = FIRST_RETRY;
+                    if super::timer::now().saturating_sub(connected_at) >= Duration::from_secs(30) {
+                        backoff = FIRST_RETRY;
+                        retry_ceiling = FIRST_RETRY;
+                    } else {
+                        retry_ceiling = backoff;
+                        backoff = (backoff * 2).min(MAX_RETRY);
+                    }
                 }
                 Ended::Connected { reason, .. } | Ended::Failed(reason) => {
                     device.fail(reason);
+                    retry_ceiling = backoff;
                     backoff = (backoff * 2).min(MAX_RETRY);
                 }
+                Ended::Throttled(delay) => {
+                    device.fail(THROTTLED.into());
+                    retry_ceiling = backoff;
+                    backoff = (backoff * 2).min(MAX_RETRY);
+                    server_retry_after = Some(delay);
+                }
             }
-            if !wait(Some(backoff), &mut commands, &mut device).await {
+            let delay = server_retry_after.unwrap_or_else(|| randomized_retry(retry_ceiling));
+            if !device.foreground {
+                if !wait(None, &mut commands, &mut device).await {
+                    break;
+                }
+                continue;
+            }
+            if !wait(Some(delay), &mut commands, &mut device).await {
                 break;
             }
         }
         device.each(|note| note.set_state(SyncState::Offline));
     }
+}
+
+/// Jitter the common exponential ceiling so devices do not retry in lockstep.
+fn randomized_retry(ceiling: Duration) -> Duration {
+    use rand::Rng;
+    let max_ms = ceiling.as_millis().min(u64::MAX as u128) as u64;
+    let min_ms = (max_ms / 2).max(1);
+    Duration::from_millis(rand::rng().random_range(min_ms..=max_ms.max(min_ms)))
 }
 
 enum Ended {
@@ -772,6 +841,8 @@ enum Ended {
     /// as being up to date, which is the difference between a connection that
     /// worked and one that was accepted and then fell over.
     Connected { caught: bool, reason: String },
+    /// The relay specified a delay after refusing a write.
+    Throttled(Duration),
     /// We never got connected.
     Failed(String),
 }
@@ -791,7 +862,7 @@ enum Received {
     Reset,
     /// The relay will take no more writes from here for a while. Reconnect
     /// later rather than sooner: the outbox goes again then.
-    Throttled,
+    Throttled(Duration),
 }
 
 /// One connection, from handshake to whatever ends it.
@@ -847,9 +918,9 @@ async fn session<P: SyncPeer>(
                                 reason: "the relay was restored; rebuilding its copy".into(),
                             };
                         }
-                        Ok(Received::Throttled) => {
+                        Ok(Received::Throttled(delay)) => {
                             let _ = sync.close().await;
-                            return Ended::Failed(THROTTLED.into());
+                            return Ended::Throttled(delay);
                         }
                         Ok(Received::Continue) => {}
                         Err(e) => return Ended::Failed(e),
@@ -903,7 +974,7 @@ async fn session<P: SyncPeer>(
             // when a pause or the cap says some note's typing has waited long
             // enough.
             id = device.due() => {
-                if let Err(e) = device.flush(peer, id, &mut sync).await {
+                if let Err(e) = device.flush(peer, id, &mut sync, true).await {
                     return lost(caught, e);
                 }
             },
@@ -925,9 +996,9 @@ async fn session<P: SyncPeer>(
                         }
                         // Not caught, whatever was: that is what makes the
                         // engine back off rather than come straight back.
-                        Ok(Received::Throttled) => {
+                        Ok(Received::Throttled(delay)) => {
                             let _ = sync.close().await;
-                            return lost(false, THROTTLED.into());
+                            return Ended::Throttled(delay);
                         }
                         Err(e) => return lost(caught, e),
                     }
@@ -937,6 +1008,9 @@ async fn session<P: SyncPeer>(
                     // about. Every note hears it, because any of them might
                     // be the one.
                     device.each(|note| note.note_error(message.clone()));
+                }
+                Ok(Some(Routed::Refresh { id, note, .. })) => {
+                    device.refresh_complete(&id, note);
                 }
                 Ok(None) => return lost(caught, "the relay closed the connection".into()),
                 Err(e) => return lost(caught, e.to_string()),
@@ -995,6 +1069,15 @@ async fn wait(
                 Some(Command::Settle { .. }) => {}
                 Some(Command::Reclaim { .. }) => {}
                 Some(Command::Flush { .. }) => {}
+                Some(Command::Refresh { complete, .. }) => {
+                    let _ = complete.send(Err("the relay is not connected".into()));
+                }
+                Some(Command::SetForeground(foreground)) => {
+                    device.foreground = foreground;
+                    if foreground {
+                        return true;
+                    }
+                }
                 Some(Command::Released) => {
                     device.released = true;
                     if device.finished() {
@@ -1009,9 +1092,17 @@ async fn wait(
 /// Everything the engine holds that outlives one connection.
 struct Device {
     notes: HashMap<NoteId, Live>,
+    refreshes: HashMap<
+        String,
+        (
+            HashSet<NoteId>,
+            oneshot::Sender<std::result::Result<(), String>>,
+        ),
+    >,
     /// Every [`SyncDevice`] has been dropped, so no note can be connected
     /// again: once the last one goes, so does the engine.
     released: bool,
+    foreground: bool,
     pacing: Pacing,
     /// Why the last connection ended, for a note connected while there is
     /// none.
@@ -1036,6 +1127,27 @@ impl Device {
             note.on_socket = false;
             note.fail(reason.clone());
         });
+        for (_, (_, complete)) in self.refreshes.drain() {
+            let _ = complete.send(Err(reason.clone()));
+        }
+    }
+
+    fn refresh_complete(&mut self, id: &str, note: NoteId) {
+        let Some((remaining, _complete)) = self.refreshes.get_mut(id) else {
+            return;
+        };
+        remaining.remove(&note);
+        if remaining.is_empty() {
+            let (_, complete) = self.refreshes.remove(id).expect("refresh remains");
+            let _ = complete.send(Ok(()));
+        }
+    }
+
+    fn refresh_drop_note(&mut self, note: NoteId) {
+        let ids: Vec<_> = self.refreshes.keys().cloned().collect();
+        for id in ids {
+            self.refresh_complete(&id, note);
+        }
     }
 
     /// Take a note on, or give one already here its new handle. Returns true if
@@ -1151,6 +1263,7 @@ impl Device {
             }
             Command::Unsubscribe { note, id } => {
                 if self.unsubscribe(note, id) {
+                    self.refresh_drop_note(note);
                     sync.unsubscribe(note).await.map_err(|e| e.to_string())?;
                 }
                 if self.finished() {
@@ -1178,7 +1291,7 @@ impl Device {
                 }
                 live.hold(envelope);
                 if now {
-                    self.flush(peer, note, sync).await?;
+                    self.flush(peer, note, sync, false).await?;
                 }
             }
             Command::Settle { note } => {
@@ -1198,13 +1311,31 @@ impl Device {
                 live.compact_if_due(peer, note);
                 self.send_urgent(sync).await?;
             }
-            Command::Flush { note: Some(note) } => self.flush(peer, note, sync).await?,
+            Command::Flush { note: Some(note) } => self.flush(peer, note, sync, false).await?,
             Command::Flush { note: None } => {
                 let ids: Vec<NoteId> = self.notes.keys().copied().collect();
                 for id in ids {
-                    self.flush(peer, id, sync).await?;
+                    self.flush(peer, id, sync, false).await?;
                 }
             }
+            Command::Refresh { id, complete } => {
+                if self.refreshes.contains_key(&id) {
+                    let _ = complete.send(Err("a refresh is already in progress".into()));
+                    return Ok(Next::Continue);
+                }
+                let remaining: HashSet<_> = self
+                    .notes
+                    .iter()
+                    .filter_map(|(note, live)| live.on_socket.then_some(*note))
+                    .collect();
+                if remaining.is_empty() {
+                    let _ = complete.send(Ok(()));
+                } else {
+                    sync.refresh(&id).await.map_err(|e| e.to_string())?;
+                    self.refreshes.insert(id, (remaining, complete));
+                }
+            }
+            Command::SetForeground(foreground) => self.foreground = foreground,
         }
         Ok(Next::Continue)
     }
@@ -1220,6 +1351,7 @@ impl Device {
         peer: &P,
         id: NoteId,
         sync: &mut DeviceSync,
+        automatic: bool,
     ) -> std::result::Result<(), String> {
         let Some(live) = self.notes.get_mut(&id) else {
             return Ok(());
@@ -1240,6 +1372,9 @@ impl Device {
         live.publish();
         for envelope in &batch {
             sync.append(id, envelope).await.map_err(|e| e.to_string())?;
+        }
+        if automatic {
+            live.last_automatic = Some(super::timer::now());
         }
         Ok(())
     }
@@ -1351,7 +1486,7 @@ impl Device {
                 live.note_error(message);
                 Ok(Received::Continue)
             }
-            Incoming::RateLimited => Ok(Received::Throttled),
+            Incoming::RateLimited { retry_after } => Ok(Received::Throttled(retry_after)),
             Incoming::Crowded => {
                 live.crowded = true;
                 live.compact_if_due(peer, id);
@@ -1425,6 +1560,7 @@ struct Live {
     quiet: Option<super::timer::Timer>,
     /// Started by the first held edit of a batch, and left alone by the rest.
     cap: Option<super::timer::Timer>,
+    last_automatic: Option<Duration>,
     cursor: SyncCursor,
     /// What the store holds, so a cursor that has not moved is not written again.
     saved: SyncCursor,
@@ -1449,6 +1585,7 @@ impl Live {
             pacing,
             quiet: None,
             cap: None,
+            last_automatic: None,
             cursor: SyncCursor::default(),
             saved: SyncCursor::default(),
         }
@@ -1540,7 +1677,14 @@ impl Live {
         if self.held.is_empty() {
             self.cap = Some(super::timer::timer(self.pacing.max_hold));
         }
-        self.quiet = Some(super::timer::timer(self.pacing.quiet));
+        let min_wait = self.last_automatic.map_or(Duration::ZERO, |last| {
+            self.pacing
+                .min_interval
+                .saturating_sub(super::timer::now().saturating_sub(last))
+        });
+        let quiet_or_spacing = self.pacing.quiet.max(min_wait);
+        let maximum_wait = self.pacing.max_hold;
+        self.quiet = Some(super::timer::timer(quiet_or_spacing.min(maximum_wait)));
         self.held.push(envelope);
         self.publish();
     }
@@ -1723,6 +1867,24 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_jitter_stays_between_half_and_full_ceiling() {
+        for ceiling in [1, 2, 4, 8, 16, 32, 60].map(Duration::from_secs) {
+            for _ in 0..100 {
+                let delay = randomized_retry(ceiling);
+                assert!(delay >= ceiling / 2);
+                assert!(delay <= ceiling);
+            }
+        }
+    }
+
+    #[test]
+    fn typing_defaults_use_three_second_quiet_five_second_spacing_and_thirty_second_cap() {
+        assert_eq!(Pacing::default().quiet, Duration::from_secs(3));
+        assert_eq!(Pacing::default().min_interval, Duration::from_secs(5));
+        assert_eq!(Pacing::default().max_hold, Duration::from_secs(30));
+    }
 
     #[test]
     fn a_relay_address_yields_both_schemes() {

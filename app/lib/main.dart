@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'core/address_bar_stub.dart'
     if (dart.library.js_interop) 'core/address_bar.dart'
     as address_bar;
+import 'core/app_visibility.dart';
 import 'core/browser_store.dart';
 import 'core/deep_links.dart';
 import 'core/invite_links.dart';
@@ -245,10 +246,17 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     unawaited(reminders.start());
     joinAlerts = SystemJoinAlerts(library);
     _lifecycle = AppLifecycleListener(
-      onHide: library.sendHeldEdits,
+      onHide: () {
+        appIsForeground.value = false;
+        unawaited(library.setForeground(false));
+      },
       // Also how a grant of exact alarms takes effect: it is made on a system
       // settings page, and coming back is the only sign of it.
-      onResume: () => unawaited(reminders.reconcile()),
+      onResume: () {
+        appIsForeground.value = true;
+        unawaited(library.setForeground(true));
+        unawaited(reminders.reconcile());
+      },
     );
   }
 
@@ -324,4 +332,3 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     );
   }
 }
-

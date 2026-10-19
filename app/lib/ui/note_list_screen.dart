@@ -16,7 +16,6 @@ library;
 
 import 'dart:async';
 
-import 'package:cross_file/cross_file.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -990,8 +989,19 @@ class _NoteListScreenState extends State<NoteListScreen> {
       for (final reminder in widget.library.reminders) reminder.noteId,
     };
     if (!_searching) {
-      return notes.isEmpty
-          ? Center(key: const Key('no-notes'), child: Text(_where.empty))
+      final collection = notes.isEmpty
+          ? LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: SizedBox(
+                  height: constraints.maxHeight,
+                  child: Center(
+                    key: const Key('no-notes'),
+                    child: Text(_where.empty),
+                  ),
+                ),
+              ),
+            )
           : _NoteCollection(
               notes: notes,
               reminderNoteIds: reminders,
@@ -1000,6 +1010,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onHold: _actionsFor,
               onMove: _moveNote,
             );
+      if (_where == const _Where.shelf(_Shelf.notes) &&
+          widget.profile.url != null) {
+        return RefreshIndicator(
+          onRefresh: widget.library.syncNow,
+          child: collection,
+        );
+      }
+      return collection;
     }
 
     final query = _query.trim();

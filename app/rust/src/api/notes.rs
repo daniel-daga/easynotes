@@ -3480,6 +3480,54 @@ impl Library {
         Ok(())
     }
 
+    /// Lifecycle entry point for the bridge. Hidden callers flush local work
+    /// and held edits before the Dart coordinator starts its bounded grace.
+    pub async fn set_foreground(&self, foreground: bool) -> Result<(), String> {
+        if !foreground {
+            self.send_held_edits()?;
+        }
+        if let Some(device) = crate::lock::lock(&self.shared.device)
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .as_ref()
+        {
+            device.set_foreground(foreground);
+        }
+        Ok(())
+    }
+
+    /// Flush held typing and wait up to 30 seconds for the library to report a
+    /// caught-up state with no pending local edits.
+    pub async fn sync_now(&self) -> Result<(), String> {
+        self.send_held_edits()?;
+        static REFRESH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let refresh_id = REFRESH_ID.fetch_add(1, Ordering::Relaxed).to_string();
+        let refresh = crate::lock::lock(&self.shared.device)
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .as_ref()
+            .map(|device| device.refresh(refresh_id));
+        let mut status = self.shared.statuses.overall.subscribe();
+        let wait = async {
+            if let Some(refresh) = refresh {
+                refresh.await?;
+            }
+            loop {
+                let current = status.borrow().clone();
+                if current.pending == 0
+                    && matches!(current.state, SyncState::Synced | SyncState::Empty)
+                {
+                    return Ok(());
+                }
+                status
+                    .changed()
+                    .await
+                    .map_err(|_| "sync status closed".to_string())?;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), wait)
+            .await
+            .map_err(|_| "Sync did not finish within 30 seconds.".to_string())?
+    }
+
     /// Stop syncing everything. Edits still work and still queue; nothing is
     /// lost.
     pub fn disconnect(&self) -> Result<(), String> {
@@ -3499,6 +3547,7 @@ impl Library {
         if let Some(device) = device {
             device.shutdown();
         }
+        self.shared.stop_transfers();
         self.shared.statuses.all_offline();
         Ok(())
     }

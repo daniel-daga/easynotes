@@ -95,8 +95,17 @@ struct Subscription {
     /// Whether `caught` has been said. Once: a replay after a lag is the
     /// relay's business and not a new backlog.
     caught: bool,
+    /// The one refresh barrier currently outstanding for this subscription.
+    refresh: Option<(String, i64)>,
     /// Forwards the note's fan-out into the session. Aborted on unsubscribe.
     forwarder: JoinHandle<()>,
+    metrics: Arc<crate::metrics::Metrics>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.metrics.subscription_ended();
+    }
 }
 
 /// Aborts every forwarder however the session ends, a dropped socket included.
@@ -188,7 +197,10 @@ async fn serve(
                         envelope: URL_SAFE_NO_PAD.encode(&envelope),
                     };
                     match out.try_send(update) {
-                        Ok(()) => sub.last_sent = seq,
+                        Ok(()) => {
+                            state.metrics.delivered_update(envelope.len());
+                            sub.last_sent = seq;
+                        }
                         // No room: the client is not reading. The update is in
                         // the store, so it is left there and sent as backlog
                         // once there is room, rather than held here.
@@ -234,7 +246,7 @@ async fn serve(
             // its `caught`, fits in what is waiting for the socket. `select!`
             // takes it in turn with whatever else is ready, so one chunk goes
             // and then the rest of the socket gets a look.
-            permits = out.reserve_many(BACKLOG_CHUNK + 1), if !backlog.is_empty() => {
+            permits = out.reserve_many(BACKLOG_CHUNK + 2), if !backlog.is_empty() => {
                 let Ok(permits) = permits else { return Ok(()) };
                 let Some(note) = backlog.pop_front() else { continue };
                 if let Some(sub) = subs.0.get_mut(&note) {
@@ -283,6 +295,7 @@ async fn send_chunk(
             seq: stored.seq,
             envelope: URL_SAFE_NO_PAD.encode(&stored.envelope),
         });
+        state.metrics.delivered_update(stored.envelope.len());
         sub.last_sent = sub.last_sent.max(stored.seq);
     }
     if !more {
@@ -294,6 +307,21 @@ async fn send_chunk(
                 note: note.to_string(),
                 seq: sub.last_sent,
             });
+        }
+        if let Some((id, head)) = sub.refresh.take() {
+            if sub.last_sent >= head {
+                let permit = permits.next().expect("a permit for refresh completion");
+                permit.send(SyncServerMessage::RefreshComplete {
+                    id,
+                    note: note.to_string(),
+                    seq: head,
+                });
+                state.metrics.refresh_completed();
+            } else {
+                sub.refresh = Some((id, head));
+                sub.catching_up = true;
+                return Ok(true);
+            }
         }
     }
     Ok(more)
@@ -365,13 +393,16 @@ async fn handle(
                 return Handled::Continue;
             }
             let forwarder = forward(state, note.clone(), fanned.clone());
+            state.metrics.subscription_started();
             subs.0.insert(
                 note.clone(),
                 Subscription {
                     last_sent: since,
                     catching_up: true,
                     caught: false,
+                    refresh: None,
                     forwarder,
+                    metrics: state.metrics.clone(),
                 },
             );
             backlog.push_back(note);
@@ -383,6 +414,42 @@ async fn handle(
                 sub.forwarder.abort();
             }
         }
+        SyncClientMessage::Refresh { id } => {
+            state.metrics.refresh_requested();
+            for (note, sub) in &mut subs.0 {
+                if sub
+                    .refresh
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending == &id)
+                {
+                    continue;
+                }
+                let head = match state.store.head(note).await {
+                    Ok(head) => head,
+                    Err(e) => {
+                        refuse(out, Some(note.clone()), &e.to_string());
+                        continue;
+                    }
+                };
+                sub.refresh = Some((id.clone(), head));
+                if sub.last_sent < head || sub.catching_up {
+                    if !sub.catching_up {
+                        sub.catching_up = true;
+                        backlog.push_back(note.clone());
+                    }
+                } else {
+                    let _ = out
+                        .send(SyncServerMessage::RefreshComplete {
+                            id: id.clone(),
+                            note: note.clone(),
+                            seq: head,
+                        })
+                        .await;
+                    state.metrics.refresh_completed();
+                    sub.refresh = None;
+                }
+            }
+        }
         SyncClientMessage::Append { note, envelope } => {
             // A socket writes only to notes it has subscribed to.
             if !subs.0.contains_key(&note) {
@@ -391,14 +458,15 @@ async fn handle(
             }
             // Charged what was sent, stored or not: a flood of refused appends
             // costs the relay the same work as a flood of accepted ones.
-            if state.spend_writes(client, envelope.len()).is_err() {
-                refuse(out, Some(note), RATE_LIMITED);
+            if let Err(retry_after) = state.spend_writes(client, envelope.len()) {
+                refuse(out, Some(note), &format!("{RATE_LIMITED}:{retry_after}"));
                 return Handled::Close;
             }
             // The sender gets its own append back through the fan-out, like
             // everyone else.
             match app::append(state, &note, &envelope).await {
                 Ok(accepted) => {
+                    state.metrics.accepted_update(envelope.len());
                     if accepted.crowded {
                         let _ = out.try_send(SyncServerMessage::Crowded { note });
                     }

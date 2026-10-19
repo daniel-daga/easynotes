@@ -42,6 +42,11 @@ impl DeviceSync {
         self.socket.send(wire::unsubscribe_note(note)).await
     }
 
+    /// Ask the relay for a per-subscription snapshot barrier.
+    pub async fn refresh(&mut self, id: &str) -> Result<()> {
+        self.socket.send(wire::refresh(id)).await
+    }
+
     /// Hand an envelope for a subscribed note to the relay. It comes back
     /// through [`next`](Self::next) like any other.
     pub async fn append(&mut self, note: NoteId, envelope: &[u8]) -> Result<()> {
