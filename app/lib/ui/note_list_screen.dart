@@ -1486,7 +1486,7 @@ class _SearchResultsState extends State<_SearchResults> {
 }
 
 /// The grid, or the single column. Both draw the same cards.
-class _NoteCollection extends StatelessWidget {
+class _NoteCollection extends StatefulWidget {
   const _NoteCollection({
     required this.notes,
     required this.reminderNoteIds,
@@ -1515,19 +1515,160 @@ class _NoteCollection extends StatelessWidget {
   final Map<String, String> matched;
 
   @override
+  State<_NoteCollection> createState() => _NoteCollectionState();
+}
+
+class _NoteCollectionState extends State<_NoteCollection>
+    with SingleTickerProviderStateMixin {
+  String? _draggedId;
+  String? _targetId;
+  List<NoteSummary>? _dragStartNotes;
+  bool _awaitingDrop = false;
+  List<String>? _expectedDropIds;
+  int _animationGeneration = 0;
+  final Map<String, GlobalKey> _cardKeys = {};
+  Map<String, Offset> _offsets = {};
+  late final AnimationController _positionAnimation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+
+  @override
+  void dispose() {
+    _positionAnimation.dispose();
+    super.dispose();
+  }
+
+  GlobalKey _keyFor(String id) => _cardKeys.putIfAbsent(id, GlobalKey.new);
+
+  Offset? _positionOf(String id) {
+    final object = _cardKeys[id]?.currentContext?.findRenderObject();
+    if (object is! RenderBox || !object.attached) return null;
+    return object.localToGlobal(Offset.zero);
+  }
+
+  Offset _visibleOffset(String id) =>
+      (_offsets[id] ?? Offset.zero) * (1 - _positionAnimation.value);
+
+  /// Preserve each card's current screen position across the reorder, then
+  /// animate its inverse offset back to zero (the FLIP layout animation).
+  void _animateToTarget(String? id) {
+    if (_targetId == id) return;
+    final generation = ++_animationGeneration;
+    _positionAnimation.stop();
+    final oldPositions = {
+      for (final note in widget.notes)
+        if (_positionOf(note.id) case final position?) note.id: position,
+    };
+    final oldOffsets = {
+      for (final note in widget.notes) note.id: _visibleOffset(note.id),
+    };
+    setState(() => _targetId = id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _animationGeneration) return;
+      final offsets = <String, Offset>{};
+      for (final entry in oldPositions.entries) {
+        final current = _positionOf(entry.key);
+        if (current == null) continue;
+        // The current render position still includes the previous transform.
+        final layoutPosition = current - (oldOffsets[entry.key] ?? Offset.zero);
+        final offset = entry.value - layoutPosition;
+        if (offset.distance > 0.5) offsets[entry.key] = offset;
+      }
+      setState(() => _offsets = offsets);
+      _positionAnimation.forward(from: 0);
+    });
+  }
+
+  void _setTarget(String? id) {
+    _animateToTarget(id);
+  }
+
+  void _startDrag(String id) {
+    setState(() {
+      _draggedId = id;
+      _targetId = null;
+      _dragStartNotes = List.of(widget.notes);
+      _awaitingDrop = false;
+      _expectedDropIds = null;
+    });
+  }
+
+  void _finishDrag(bool accepted) {
+    if (_draggedId == null && _targetId == null) return;
+    if (accepted && _targetId != null) {
+      _awaitingDrop = true;
+      _expectedDropIds = _previewOrder(
+        _dragStartNotes ?? widget.notes,
+      ).map((note) => note.id).toList();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _settleAcceptedDrop();
+      });
+      return;
+    }
+    setState(() {
+      _draggedId = null;
+      _dragStartNotes = null;
+    });
+    _animateToTarget(null);
+  }
+
+  @override
+  void didUpdateWidget(_NoteCollection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_awaitingDrop) _settleAcceptedDrop();
+  }
+
+  void _settleAcceptedDrop() {
+    if (!_awaitingDrop) return;
+    final actual = widget.notes.map((note) => note.id).toList();
+    if (!listEquals(_expectedDropIds, actual)) return;
+    setState(() {
+      _awaitingDrop = false;
+      _expectedDropIds = null;
+      _draggedId = null;
+      _targetId = null;
+      _dragStartNotes = null;
+    });
+  }
+
+  List<NoteSummary> _previewOrder(List<NoteSummary> notes) {
+    final draggedId = _draggedId;
+    final targetId = _targetId;
+    if (draggedId == null || targetId == null) return notes;
+    final from = notes.indexWhere((note) => note.id == draggedId);
+    final target = notes.indexWhere((note) => note.id == targetId);
+    if (from < 0 || target < 0 || from == target) return notes;
+
+    final reordered = [...notes];
+    final dragged = reordered.removeAt(from);
+    // A note takes the target's place: moving down lands after it, and moving
+    // up lands before it, as implemented by move_note_to in the core.
+    final targetAfterRemoval = reordered.indexWhere(
+      (note) => note.id == targetId,
+    );
+    final insertion = from < target
+        ? targetAfterRemoval + 1
+        : targetAfterRemoval;
+    reordered.insert(insertion, dragged);
+    return reordered;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final move = onMove;
+    final notes = _previewOrder(widget.notes);
+    final move = widget.onMove;
     final cards = [
       for (final note in notes)
         _NoteCard(
           key: ValueKey(note.id),
           note: note,
-          hasReminder: reminderNoteIds.contains(note.id),
-          matched: matched[note.id],
-          onTap: () => onTap(note.id),
+          hasReminder: widget.reminderNoteIds.contains(note.id),
+          matched: widget.matched[note.id],
+          onTap: () => widget.onTap(note.id),
           // Held by the wrapper where there is one, because a long press there
           // is the start of a drag and only turns into this when nothing moved.
-          onHold: move == null ? () => onHold(note) : null,
+          onHold: move == null ? () => widget.onHold(note) : null,
         ),
     ];
     Widget wrap(_NoteCard card) => move == null
@@ -1535,17 +1676,30 @@ class _NoteCollection extends StatelessWidget {
         : _DraggableCard(
             card: card,
             onMove: move,
-            onHold: () => onHold(card.note),
+            onHold: () => widget.onHold(card.note),
+            onTargetChanged: _setTarget,
+            onDragStarted: () => _startDrag(card.note.id),
+            onDragFinished: _finishDrag,
           );
-    return layout == NoteLayout.grid
-        ? _MasonryGrid(wrap: wrap, children: cards)
+    Widget position(_NoteCard card) => AnimatedBuilder(
+      key: ValueKey(card.note.id),
+      animation: _positionAnimation,
+      builder: (context, child) => Transform.translate(
+        offset: _visibleOffset(card.note.id),
+        transformHitTests: true,
+        child: child,
+      ),
+      child: KeyedSubtree(key: _keyFor(card.note.id), child: wrap(card)),
+    );
+    return widget.layout == NoteLayout.grid
+        ? _MasonryGrid(wrap: position, children: cards)
         : ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
               for (final card in cards)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: wrap(card),
+                  child: position(card),
                 ),
             ],
           );
@@ -1570,11 +1724,17 @@ class _DraggableCard extends StatefulWidget {
     required this.card,
     required this.onMove,
     required this.onHold,
+    required this.onTargetChanged,
+    required this.onDragStarted,
+    required this.onDragFinished,
   });
 
   final _NoteCard card;
   final void Function(String id, String targetId) onMove;
   final VoidCallback onHold;
+  final ValueChanged<String?> onTargetChanged;
+  final VoidCallback onDragStarted;
+  final ValueChanged<bool> onDragFinished;
 
   @override
   State<_DraggableCard> createState() => _DraggableCardState();
@@ -1596,6 +1756,7 @@ class _DraggableCardState extends State<_DraggableCard> {
   void _started() {
     _travelled = 0;
     _moved = false;
+    widget.onDragStarted();
   }
 
   void _updated(DragUpdateDetails details) {
@@ -1604,6 +1765,7 @@ class _DraggableCardState extends State<_DraggableCard> {
   }
 
   void _ended(DraggableDetails details) {
+    widget.onDragFinished(details.wasAccepted);
     // Dropped on nothing, having gone nowhere: the press was a press. A drag
     // that travelled and was refused — across the pin line, or onto empty
     // space — is a drag that missed, and opening a menu under the finger that
@@ -1618,43 +1780,30 @@ class _DraggableCardState extends State<_DraggableCard> {
           details.data.id != _note.id && details.data.pinned == _note.pinned,
       onAcceptWithDetails: (details) =>
           widget.onMove(details.data.id, _note.id),
-      builder: (context, candidates, _) => LayoutBuilder(
-        builder: (context, constraints) => Container(
-          // `foregroundDecoration`, so that the outline is painted over the card
-          // rather than around it: a border that took up space would move every
-          // card below it the moment a drag passed over this one.
-          foregroundDecoration: candidates.isEmpty
-              ? null
-              : BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.primary,
-                    width: 2,
-                  ),
-                ),
-          child: LongPressDraggable<NoteSummary>(
-            data: _note,
-            onDragStarted: _started,
-            onDragUpdate: _updated,
-            onDragEnd: _ended,
-            feedback: SizedBox(
-              width: constraints.maxWidth,
-              child: Opacity(
-                opacity: 0.9,
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: widget.card,
-                ),
+      onMoveWithDetails: (_) => widget.onTargetChanged(_note.id),
+      builder: (context, _, _) => LayoutBuilder(
+        builder: (context, constraints) => LongPressDraggable<NoteSummary>(
+          data: _note,
+          onDragStarted: _started,
+          onDragUpdate: _updated,
+          onDragEnd: _ended,
+          feedback: SizedBox(
+            width: constraints.maxWidth,
+            child: Opacity(
+              opacity: 0.9,
+              child: Material(
+                type: MaterialType.transparency,
+                child: widget.card,
               ),
             ),
-            // The gap the card came out of, so the columns do not close up
-            // underneath the finger holding it.
-            childWhenDragging: Opacity(
-              opacity: 0.3,
-              child: IgnorePointer(child: widget.card),
-            ),
-            child: widget.card,
           ),
+          // The gap the card came out of, so the columns do not close up
+          // underneath the finger holding it.
+          childWhenDragging: Opacity(
+            opacity: 0.3,
+            child: IgnorePointer(child: widget.card),
+          ),
+          child: widget.card,
         ),
       ),
     );
