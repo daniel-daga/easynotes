@@ -120,7 +120,7 @@ pub(crate) async fn call(
     url: &str,
     token: &str,
     request: super::media::Request,
-) -> Result<(u16, Vec<u8>)> {
+) -> Result<(u16, Vec<u8>, Option<std::time::Duration>)> {
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| crate::error::CoreError::Storage(format!("no method {method}")))?;
     let mut call = reqwest::Client::builder()
@@ -143,8 +143,14 @@ pub(crate) async fn call(
     };
     let response = call.send().await.map_err(net)?;
     let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
     let body = response.bytes().await.map_err(net)?;
-    Ok((status, body.to_vec()))
+    Ok((status, body.to_vec(), retry_after))
 }
 
 /// A WebSocket that carries text, and nothing that knows what the text means.

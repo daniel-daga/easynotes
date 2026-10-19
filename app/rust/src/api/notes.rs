@@ -582,6 +582,10 @@ pub struct SyncStatus {
     pub state: SyncState,
     /// Our own edits the relay has not acknowledged yet.
     pub pending: u32,
+    /// Local acknowledgement watermark for refresh completion.
+    pub acknowledged: u64,
+    /// Automatic typing batches sent by the sync engine.
+    pub typing_batches: u64,
     pub last_seq: i64,
     /// Why the last attempt failed, if it did. Shown to the user verbatim, so it
     /// is the relay's or the network's words, not ours.
@@ -594,6 +598,8 @@ impl SyncStatus {
         Self {
             state: SyncState::Offline,
             pending: 0,
+            acknowledged: 0,
+            typing_batches: 0,
             last_seq: 0,
             last_error: None,
         }
@@ -604,6 +610,8 @@ impl SyncStatus {
         Self {
             state: SyncState::Empty,
             pending: 0,
+            acknowledged: 0,
+            typing_batches: 0,
             last_seq: 0,
             last_error: None,
         }
@@ -620,12 +628,16 @@ impl SyncStatus {
         let mut seen = false;
         let mut worst = SyncState::Synced;
         let mut pending = 0u32;
+        let mut acknowledged = 0u64;
+        let mut typing_batches = 0u64;
         let mut last_seq = 0i64;
         let mut last_error = None;
         for status in each {
             seen = true;
             worst = worst.min(status.state);
             pending = pending.saturating_add(status.pending);
+            acknowledged = acknowledged.saturating_add(status.acknowledged);
+            typing_batches = typing_batches.saturating_add(status.typing_batches);
             last_seq = last_seq.max(status.last_seq);
             if last_error.is_none() {
                 last_error.clone_from(&status.last_error);
@@ -642,6 +654,8 @@ impl SyncStatus {
         Self {
             state: worst,
             pending,
+            acknowledged,
+            typing_batches,
             last_seq,
             last_error,
         }
@@ -659,6 +673,8 @@ impl From<easynotes_core::sync::SyncStatus> for SyncStatus {
                 Core::Synced => SyncState::Synced,
             },
             pending: s.pending as u32,
+            acknowledged: s.acknowledged,
+            typing_batches: s.typing_batches,
             last_seq: s.last_seq,
             last_error: s.last_error,
         }
@@ -3496,8 +3512,12 @@ impl Library {
     }
 
     /// Flush held typing and wait up to 30 seconds for the library to report a
-    /// caught-up state with no pending local edits.
+    /// caught-up state and the local acknowledgements captured at start.
     pub async fn sync_now(&self) -> Result<(), String> {
+        let captured = self.shared.statuses.overall.get();
+        let acknowledgement_target = captured
+            .acknowledged
+            .saturating_add(captured.pending as u64);
         self.send_held_edits()?;
         static REFRESH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let refresh_id = REFRESH_ID.fetch_add(1, Ordering::Relaxed).to_string();
@@ -3512,7 +3532,7 @@ impl Library {
             }
             loop {
                 let current = status.borrow().clone();
-                if current.pending == 0
+                if current.acknowledged >= acknowledgement_target
                     && matches!(current.state, SyncState::Synced | SyncState::Empty)
                 {
                     return Ok(());

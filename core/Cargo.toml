@@ -77,7 +77,7 @@ sync-native = ["dep:tokio-tungstenite", "dep:reqwest", "dep:futures-util", "toki
 # transport differs — see `sync::wire` for everything the two share — and the
 # dependencies it needs exist only for wasm32, so the feature is inert
 # elsewhere and the module behind it is `cfg`-ed on the target as well.
-sync-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:futures-util", "tokio/macros"]
+sync-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys", "dep:futures-util", "tokio/macros", "tokio/time"]
 
 [dev-dependencies]
 # Lets this crate's integration tests use `test-support` without every
@@ -109,6 +109,8 @@ web-sys = { version = "0.3.105", optional = true, features = [
     "MessageEvent",
     "Request",
     "RequestInit",
+    "AbortController",
+    "AbortSignal",
     "Response",
     "Headers",
     "Window",

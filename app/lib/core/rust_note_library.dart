@@ -19,6 +19,21 @@ import 'page_visibility_stub.dart'
 import 'rust_note_core.dart';
 import 'sync_status.dart';
 
+/// Process-local observations from the sync coordinator. These stay on device.
+class SyncDiagnostics {
+  const SyncDiagnostics({
+    required this.typingBatches,
+    required this.connectionAttempts,
+    required this.pauseResumeEvents,
+    required this.acknowledgementLatency,
+  });
+
+  final int typingBatches;
+  final int connectionAttempts;
+  final int pauseResumeEvents;
+  final Duration? acknowledgementLatency;
+}
+
 class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   RustNoteLibrary._(this._library, {required this.canJoin, BrowserStore? db})
     : _db = db {
@@ -31,10 +46,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       (notes) => _notes.add(notes.map(_toSummary).toList()),
       onError: _notes.addError,
     );
-    _syncUpstream = _library.watchSync().listen(
-      (status) => _sync.add(_withPause(RustNoteCore.toStatus(status))),
-      onError: _sync.addError,
-    );
+    _syncUpstream = _library.watchSync().listen((status) {
+      final converted = RustNoteCore.toStatus(status);
+      if (converted.state == SyncState.connecting &&
+          _lastObservedSyncState != SyncState.connecting) {
+        _connectionAttempts++;
+      }
+      _lastObservedSyncState = converted.state;
+      _typingBatches = status.typingBatches.toInt();
+      _sync.add(_withPause(converted));
+    }, onError: _sync.addError);
     _transfersUpstream = _library.watchTransfers().listen((transfers) {
       _lastTransfers = [for (final t in transfers) _toTransfer(t)];
       _transfers.add(_lastTransfers);
@@ -513,9 +534,22 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   bool _foreground = true;
   bool _paused = false;
   bool _suspended = false;
+  SyncState? _lastObservedSyncState;
   int _lifecycleGeneration = 0;
   Timer? _suspendTimer;
   Future<void>? _syncNow;
+  int _typingBatches = 0;
+  int _connectionAttempts = 0;
+  int _pauseResumeEvents = 0;
+  Duration? _acknowledgementLatency;
+
+  /// Process-local counters only; these are never uploaded.
+  SyncDiagnostics get diagnostics => SyncDiagnostics(
+    typingBatches: _typingBatches,
+    connectionAttempts: _connectionAttempts,
+    pauseResumeEvents: _pauseResumeEvents,
+    acknowledgementLatency: _acknowledgementLatency,
+  );
 
   @override
   Future<void> connect(String url, {String? access}) {
@@ -531,6 +565,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<void> setForeground(bool foreground) async {
     if (_foreground == foreground) return;
     _foreground = foreground;
+    _pauseResumeEvents++;
     await _library.setForeground(foreground: foreground);
     final generation = ++_lifecycleGeneration;
     _suspendTimer?.cancel();
@@ -570,12 +605,20 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   Future<void> _runSyncNow() async {
     if (_relay == null) return;
+    final started = Stopwatch()..start();
     await flush();
-    await _library.syncNow();
+    try {
+      await _library.syncNow();
+    } finally {
+      started.stop();
+      _acknowledgementLatency = started.elapsed;
+    }
   }
 
   @override
-  void sendHeldEdits() => _library.sendHeldEdits();
+  void sendHeldEdits() {
+    _library.sendHeldEdits();
+  }
 
   @override
   Stream<List<AttachmentTransfer>> watchTransfers() async* {

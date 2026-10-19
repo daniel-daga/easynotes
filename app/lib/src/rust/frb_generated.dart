@@ -4494,13 +4494,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SyncStatus dco_decode_sync_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return SyncStatus(
       state: dco_decode_sync_state(arr[0]),
       pending: dco_decode_u_32(arr[1]),
-      lastSeq: dco_decode_i_64(arr[2]),
-      lastError: dco_decode_opt_String(arr[3]),
+      acknowledged: dco_decode_u_64(arr[2]),
+      typingBatches: dco_decode_u_64(arr[3]),
+      lastSeq: dco_decode_i_64(arr[4]),
+      lastError: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -5385,11 +5387,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_state = sse_decode_sync_state(deserializer);
     var var_pending = sse_decode_u_32(deserializer);
+    var var_acknowledged = sse_decode_u_64(deserializer);
+    var var_typingBatches = sse_decode_u_64(deserializer);
     var var_lastSeq = sse_decode_i_64(deserializer);
     var var_lastError = sse_decode_opt_String(deserializer);
     return SyncStatus(
       state: var_state,
       pending: var_pending,
+      acknowledged: var_acknowledged,
+      typingBatches: var_typingBatches,
       lastSeq: var_lastSeq,
       lastError: var_lastError,
     );
@@ -6236,6 +6242,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_sync_state(self.state, serializer);
     sse_encode_u_32(self.pending, serializer);
+    sse_encode_u_64(self.acknowledged, serializer);
+    sse_encode_u_64(self.typingBatches, serializer);
     sse_encode_i_64(self.lastSeq, serializer);
     sse_encode_opt_String(self.lastError, serializer);
   }
@@ -6784,7 +6792,7 @@ class LibraryImpl extends RustOpaque implements Library {
       RustLib.instance.api.crateApiNotesLibraryStopWatching(that: this);
 
   /// Flush held typing and wait up to 30 seconds for the library to report a
-  /// caught-up state with no pending local edits.
+  /// caught-up state and the local acknowledgements captured at start.
   Future<void> syncNow() =>
       RustLib.instance.api.crateApiNotesLibrarySyncNow(that: this);
 

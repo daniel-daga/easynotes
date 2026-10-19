@@ -57,11 +57,15 @@ fn url(http_base: &str, note: NoteId, media: &MediaRef, rest: &str) -> String {
 
 /// What a status the caller did not expect means, in words a person can be
 /// shown where there are any.
-fn refused(status: u16, body: &[u8]) -> CoreError {
+fn refused(status: u16, body: &[u8], retry_after: Option<std::time::Duration>) -> CoreError {
     if let Some(outdated) = wire::refused(status, body) {
         return outdated;
     }
     match status {
+        429 => retry_after.map_or_else(
+            || CoreError::Storage("relay rate limited this media request".into()),
+            CoreError::RetryAfter,
+        ),
         401 => CoreError::Storage("relay: the device token was refused".into()),
         404 => CoreError::Attachment("the relay does not have this attachment".into()),
         410 => CoreError::Attachment("this note was deleted from the relay".into()),
@@ -98,7 +102,7 @@ pub async fn upload<'c>(
         chunk_size: media.chunk_size,
     })
     .expect("a reservation serialises");
-    let (status, body) = call(
+    let (status, body, retry_after) = call(
         "POST",
         &url(http_base, note, media, ""),
         token,
@@ -112,7 +116,7 @@ pub async fn upload<'c>(
                 "the relay holds another file under this attachment's name".into(),
             ))
         }
-        other => return Err(refused(other, &body)),
+        other => return Err(refused(other, &body, retry_after)),
     }
     let commit = serde_json::to_string(&Commit {
         digest: URL_SAFE_NO_PAD.encode(media.digest),
@@ -120,7 +124,7 @@ pub async fn upload<'c>(
     .expect("a commit serialises");
 
     for _attempt in 0..2 {
-        let (status, body) = call(
+        let (status, body, retry_after) = call(
             "GET",
             &url(http_base, note, media, "/status"),
             token,
@@ -128,7 +132,7 @@ pub async fn upload<'c>(
         )
         .await?;
         if status != 200 {
-            return Err(refused(status, &body));
+            return Err(refused(status, &body, retry_after));
         }
         let now: Status = serde_json::from_slice(&body)
             .map_err(|e| CoreError::Storage(format!("relay: an unreadable media status: {e}")))?;
@@ -137,7 +141,7 @@ pub async fn upload<'c>(
             // this one. Committing again checks it is under our digest.
         } else {
             for index in (0..media.chunks()).filter(|i| !now.received.contains(i)) {
-                let (status, body) = call(
+                let (status, body, retry_after) = call(
                     "PUT",
                     &url(http_base, note, media, &format!("/{index}")),
                     token,
@@ -145,11 +149,11 @@ pub async fn upload<'c>(
                 )
                 .await?;
                 if !(200..300).contains(&status) {
-                    return Err(refused(status, &body));
+                    return Err(refused(status, &body, retry_after));
                 }
             }
         }
-        let (status, body) = call(
+        let (status, body, retry_after) = call(
             "POST",
             &url(http_base, note, media, "/commit"),
             token,
@@ -161,7 +165,7 @@ pub async fn upload<'c>(
             // Missing chunks, or chunks that were not the digest and have been
             // dropped: ask again and send what is needed, once.
             409 => continue,
-            other => return Err(refused(other, &body)),
+            other => return Err(refused(other, &body, retry_after)),
         }
     }
     Err(CoreError::Attachment(
@@ -186,7 +190,7 @@ pub async fn download<I: IncomingMedia>(
 ) -> Result<()> {
     for index in 0..media.chunks() {
         let (at, len) = part(media, index);
-        let (status, body) = call(
+        let (status, body, retry_after) = call(
             "GET",
             &url(http_base, note, media, ""),
             token,
@@ -196,7 +200,7 @@ pub async fn download<I: IncomingMedia>(
         match status {
             206 if body.len() as u64 == len => incoming.write(&body).await?,
             206 | 200 => return Err(CoreError::Crypto("an attachment chunk of the wrong length")),
-            other => return Err(refused(other, &body)),
+            other => return Err(refused(other, &body, retry_after)),
         }
         each();
     }
@@ -238,4 +242,22 @@ pub async fn download_into<S: MediaStorage>(
     let mut incoming = store.incoming(note, media).await?;
     download(http_base, token, note, media, &mut incoming, || {}).await?;
     incoming.finish().await
+}
+
+#[cfg(test)]
+mod retry_after_tests {
+    use super::*;
+
+    #[test]
+    fn a_media_rate_limit_keeps_the_server_retry_delay() {
+        let error = refused(429, b"", Some(std::time::Duration::from_secs(9)));
+        assert!(
+            matches!(error, CoreError::RetryAfter(delay) if delay == std::time::Duration::from_secs(9))
+        );
+    }
+
+    #[test]
+    fn media_access_refusals_remain_terminal() {
+        assert!(matches!(refused(507, b"", None), CoreError::Attachment(_)));
+    }
 }

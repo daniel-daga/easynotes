@@ -56,6 +56,7 @@ use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
 use crate::relay_access::RelayAccess;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,7 +72,7 @@ pub const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 /// The longest a failed transfer waits to be tried again. Longer than the
 /// engine's eight seconds: a transfer that fails is usually a large one on a
 /// poor network, and the note's text does not wait on it.
-pub const MAX_BACKOFF: Duration = Duration::from_secs(120);
+pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// How often a transfer waiting for its note to catch up asks again, in case
 /// the app's [`kick`](TransferQueue::kick) on a status change was missed.
@@ -519,7 +520,7 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
                 Step::Done => self.done(transfer),
                 Step::Wait => self.show(transfer, TransferState::Waiting),
                 Step::Fail(error) => self.fail(transfer, error),
-                Step::Retry(error) => self.back_off(transfer, error),
+                Step::Retry(error) => self.back_off(transfer, error, None),
                 Step::Start => self.start(transfer),
             }
         }
@@ -682,7 +683,11 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
             } else if permanent(&e) {
                 self.fail(transfer, e.to_string());
             } else {
-                self.back_off(transfer, e.to_string());
+                let server_delay = match &e {
+                    CoreError::RetryAfter(delay) => Some(*delay),
+                    _ => None,
+                };
+                self.back_off(transfer, e.to_string(), server_delay);
             }
             return;
         }
@@ -707,7 +712,7 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
                 match step {
                     Step::Done => self.done(transfer),
                     Step::Fail(error) => self.fail(transfer, error),
-                    Step::Retry(error) => self.back_off(transfer, error),
+                    Step::Retry(error) => self.back_off(transfer, error, None),
                     Step::Wait | Step::Start => {}
                 }
             }
@@ -737,11 +742,12 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
         self.show(transfer, TransferState::Failed { error });
     }
 
-    fn back_off(&mut self, transfer: Transfer, error: String) {
+    fn back_off(&mut self, transfer: Transfer, error: String, server_delay: Option<Duration>) {
         if let Some(job) = self.jobs.get_mut(&transfer) {
-            let wait = FIRST_BACKOFF
+            let ceiling = FIRST_BACKOFF
                 .saturating_mul(1 << job.failures.min(16))
                 .min(MAX_BACKOFF);
+            let wait = server_delay.unwrap_or_else(|| randomized_retry(ceiling));
             job.failures += 1;
             job.not_before = Some(now() + wait);
         }
@@ -769,12 +775,46 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
     }
 }
 
+fn randomized_retry(ceiling: Duration) -> Duration {
+    let max_ms = ceiling.as_millis().min(u64::MAX as u128) as u64;
+    let min_ms = (max_ms / 2).max(1);
+    Duration::from_millis(rand::rng().random_range(min_ms..=max_ms.max(min_ms)))
+}
+
 /// Whether a failure is the relay's or the note's answer, rather than the
 /// network's. [`super::media`] says an answer in words as
 /// [`CoreError::Attachment`], and bytes that are not the digest as
 /// [`CoreError::Crypto`]; everything the network does is `Storage`.
 fn permanent(e: &CoreError) -> bool {
     matches!(e, CoreError::Attachment(_) | CoreError::Crypto(_))
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn transfer_retry_delays_are_randomized_within_shared_ceilings() {
+        for ceiling in [1, 2, 4, 8, 16, 32, 60].map(Duration::from_secs) {
+            for _ in 0..100 {
+                let delay = randomized_retry(ceiling);
+                assert!(delay >= ceiling / 2);
+                assert!(delay <= ceiling);
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_retry_ceiling_stops_at_sixty_seconds() {
+        assert_eq!(MAX_BACKOFF, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn server_retry_after_is_transient_and_attachment_refusals_stay_terminal() {
+        assert!(!permanent(&CoreError::RetryAfter(Duration::from_secs(9))));
+        assert!(permanent(&CoreError::Attachment("relay refused".into())));
+        assert!(permanent(&CoreError::Crypto("wrong digest")));
+    }
 }
 
 /// Upload both of an import's variants, reporting each chunk as it goes.

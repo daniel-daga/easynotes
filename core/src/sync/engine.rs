@@ -418,6 +418,12 @@ pub struct SyncStatus {
     /// normal and is the honest thing to show: the work is safe locally and not
     /// yet anywhere else.
     pub pending: usize,
+    /// Monotonic count of this engine's local envelopes acknowledged by echo.
+    /// Used as a refresh watermark so edits made after refresh starts do not
+    /// extend its wait.
+    pub acknowledged: u64,
+    /// Automatic typing batches handed to the transport by this engine.
+    pub typing_batches: u64,
     /// The relay sequence number we have applied up to.
     pub last_seq: i64,
     /// Why the last attempt failed. Kept while offline so the UI can explain
@@ -430,6 +436,8 @@ impl Default for SyncStatus {
         Self {
             state: SyncState::Offline,
             pending: 0,
+            acknowledged: 0,
+            typing_batches: 0,
             last_seq: 0,
             last_error: None,
         }
@@ -1368,6 +1376,9 @@ impl Device {
             return Ok(());
         }
         let batch = live.squash(peer, id, held);
+        if automatic {
+            live.current.typing_batches = live.current.typing_batches.saturating_add(1);
+        }
         live.outbox.extend(batch.iter().cloned());
         live.publish();
         for envelope in &batch {
@@ -1824,7 +1835,11 @@ impl Live {
     /// The relay has our envelope: drop it from the outbox and remember how far
     /// the acknowledgement reaches.
     fn acknowledge(&mut self, counter: u64, envelope: &[u8]) {
+        let before = self.outbox.len();
         self.outbox.retain(|queued| queued != envelope);
+        if self.outbox.len() != before {
+            self.current.acknowledged = self.current.acknowledged.saturating_add(1);
+        }
         self.cursor.sent_upto = Some(match self.cursor.sent_upto {
             Some(sent) => sent.max(counter),
             None => counter,
@@ -1877,6 +1892,40 @@ mod tests {
                 assert!(delay <= ceiling);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_hidden_engine_stays_parked_until_foreground_resumes() {
+        let (commands, mut receiver) = mpsc::unbounded_channel();
+        let mut device = Device {
+            notes: HashMap::new(),
+            released: false,
+            foreground: false,
+            pacing: Pacing::default(),
+            last_error: None,
+            refreshes: HashMap::new(),
+        };
+        let parked = wait(None, &mut receiver, &mut device);
+        tokio::pin!(parked);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut parked)
+            .await
+            .is_err());
+
+        commands.send(Command::SetForeground(true)).unwrap();
+        assert!(parked.await);
+    }
+
+    #[test]
+    fn local_acknowledgement_watermark_advances_once_per_echoed_envelope() {
+        let (status, _watcher) = watch::channel(SyncStatus::default());
+        let mut live = Live::new(1, status, Pacing::default());
+        let envelope = vec![1, 2, 3];
+        live.outbox.push(envelope.clone());
+
+        live.acknowledge(1, &envelope);
+        assert_eq!(live.current.acknowledged, 1);
+        live.acknowledge(1, &envelope);
+        assert_eq!(live.current.acknowledged, 1);
     }
 
     #[test]

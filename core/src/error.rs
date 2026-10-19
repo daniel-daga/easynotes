@@ -39,6 +39,9 @@ pub enum CoreError {
     Crdt(String),
     #[error("storage: {0}")]
     Storage(String),
+    /// A relay supplied an HTTP `Retry-After` value for a transient refusal.
+    #[error("relay rate limited this request; retry after {0:?}")]
+    RetryAfter(std::time::Duration),
     /// An attachment refused, in words a person can be shown: too big, not a
     /// format this release takes, too many on one note.
     #[error("{0}")]

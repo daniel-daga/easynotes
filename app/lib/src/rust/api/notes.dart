@@ -439,7 +439,7 @@ abstract class Library implements RustOpaqueInterface {
   Future<void> stopWatching();
 
   /// Flush held typing and wait up to 30 seconds for the library to report a
-  /// caught-up state with no pending local edits.
+  /// caught-up state and the local acknowledgements captured at start.
   Future<void> syncNow();
 
   /// Where this device stands with the relay, over all its notes.
@@ -1364,6 +1364,12 @@ class SyncStatus {
 
   /// Our own edits the relay has not acknowledged yet.
   final int pending;
+
+  /// Local acknowledgement watermark for refresh completion.
+  final BigInt acknowledged;
+
+  /// Automatic typing batches sent by the sync engine.
+  final BigInt typingBatches;
   final PlatformInt64 lastSeq;
 
   /// Why the last attempt failed, if it did. Shown to the user verbatim, so it
@@ -1373,13 +1379,20 @@ class SyncStatus {
   const SyncStatus({
     required this.state,
     required this.pending,
+    required this.acknowledged,
+    required this.typingBatches,
     required this.lastSeq,
     this.lastError,
   });
 
   @override
   int get hashCode =>
-      state.hashCode ^ pending.hashCode ^ lastSeq.hashCode ^ lastError.hashCode;
+      state.hashCode ^
+      pending.hashCode ^
+      acknowledged.hashCode ^
+      typingBatches.hashCode ^
+      lastSeq.hashCode ^
+      lastError.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1388,6 +1401,8 @@ class SyncStatus {
           runtimeType == other.runtimeType &&
           state == other.state &&
           pending == other.pending &&
+          acknowledged == other.acknowledged &&
+          typingBatches == other.typingBatches &&
           lastSeq == other.lastSeq &&
           lastError == other.lastError;
 }

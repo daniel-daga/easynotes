@@ -5837,11 +5837,15 @@ impl SseDecode for crate::api::notes::SyncStatus {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_state = <crate::api::notes::SyncState>::sse_decode(deserializer);
         let mut var_pending = <u32>::sse_decode(deserializer);
+        let mut var_acknowledged = <u64>::sse_decode(deserializer);
+        let mut var_typingBatches = <u64>::sse_decode(deserializer);
         let mut var_lastSeq = <i64>::sse_decode(deserializer);
         let mut var_lastError = <Option<String>>::sse_decode(deserializer);
         return crate::api::notes::SyncStatus {
             state: var_state,
             pending: var_pending,
+            acknowledged: var_acknowledged,
+            typing_batches: var_typingBatches,
             last_seq: var_lastSeq,
             last_error: var_lastError,
         };
@@ -6804,6 +6808,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::notes::SyncStatus {
         [
             self.state.into_into_dart().into_dart(),
             self.pending.into_into_dart().into_dart(),
+            self.acknowledged.into_into_dart().into_dart(),
+            self.typing_batches.into_into_dart().into_dart(),
             self.last_seq.into_into_dart().into_dart(),
             self.last_error.into_into_dart().into_dart(),
         ]
@@ -7602,6 +7608,8 @@ impl SseEncode for crate::api::notes::SyncStatus {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <crate::api::notes::SyncState>::sse_encode(self.state, serializer);
         <u32>::sse_encode(self.pending, serializer);
+        <u64>::sse_encode(self.acknowledged, serializer);
+        <u64>::sse_encode(self.typing_batches, serializer);
         <i64>::sse_encode(self.last_seq, serializer);
         <Option<String>>::sse_encode(self.last_error, serializer);
     }

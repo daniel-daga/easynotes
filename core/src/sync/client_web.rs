@@ -86,6 +86,8 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
     let init = RequestInit::new();
     init.set_method("POST");
     init.set_body(&JsValue::from_str(&body));
+    let controller = web_sys::AbortController::new().map_err(js)?;
+    init.set_signal(Some(&controller.signal()));
     let request = Request::new_with_str_and_init(url, &init).map_err(js)?;
     // Which is what makes this a preflighted request, and why the relay has to
     // answer an `OPTIONS` — see `browser_access` in the relay.
@@ -94,18 +96,26 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
         .set("content-type", "application/json")
         .map_err(js)?;
 
-    let response: Response = JsFuture::from(fetch(&request)?)
-        .await
-        .map_err(js)?
-        .dyn_into()
-        .map_err(|_| net("fetch did not return a response"))?;
-    let status = response.status();
-    let text = JsFuture::from(response.text().map_err(js)?)
-        .await
-        .map_err(js)?
-        .as_string()
-        .ok_or_else(|| net("the relay's answer was not text"))?;
-    Ok((status, text))
+    let _abort = AbortOnDrop(controller.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let response: Response = JsFuture::from(fetch(&request)?)
+            .await
+            .map_err(js)?
+            .dyn_into()
+            .map_err(|_| net("fetch did not return a response"))?;
+        let status = response.status();
+        let text = JsFuture::from(response.text().map_err(js)?)
+            .await
+            .map_err(js)?
+            .as_string()
+            .ok_or_else(|| net("the relay's answer was not text"))?;
+        Ok((status, text))
+    })
+    .await
+    .map_err(|_| {
+        controller.abort();
+        net("browser request timed out after 60 seconds")
+    })?
 }
 
 /// A call made as a device — its token as a bearer — and the status and body
@@ -120,10 +130,12 @@ pub(crate) async fn call(
     url: &str,
     token: &str,
     request: super::media::Request,
-) -> Result<(u16, Vec<u8>)> {
+) -> Result<(u16, Vec<u8>, Option<std::time::Duration>)> {
     use super::media::Request as Body;
     let init = RequestInit::new();
     init.set_method(method);
+    let controller = web_sys::AbortController::new().map_err(js)?;
+    init.set_signal(Some(&controller.signal()));
     let content_type = match &request {
         Body::Json(body) => {
             init.set_body(&JsValue::from_str(body));
@@ -149,16 +161,40 @@ pub(crate) async fn call(
             .map_err(js)?;
     }
 
-    let response: Response = JsFuture::from(fetch(&request_js)?)
-        .await
-        .map_err(js)?
-        .dyn_into()
-        .map_err(|_| net("fetch did not return a response"))?;
-    let status = response.status();
-    let body = JsFuture::from(response.array_buffer().map_err(js)?)
-        .await
-        .map_err(js)?;
-    Ok((status, js_sys::Uint8Array::new(&body).to_vec()))
+    let _abort = AbortOnDrop(controller.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let response: Response = JsFuture::from(fetch(&request_js)?)
+            .await
+            .map_err(js)?
+            .dyn_into()
+            .map_err(|_| net("fetch did not return a response"))?;
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(std::time::Duration::from_secs);
+        let body = JsFuture::from(response.array_buffer().map_err(js)?)
+            .await
+            .map_err(js)?;
+        Ok((status, js_sys::Uint8Array::new(&body).to_vec(), retry_after))
+    })
+    .await
+    .map_err(|_| {
+        controller.abort();
+        net("browser request timed out after 60 seconds")
+    })?
+}
+
+/// Abort an in-flight fetch when its future is cancelled or its deadline fires.
+struct AbortOnDrop(web_sys::AbortController);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Prove possession of the device key and get a short-lived token.
@@ -171,30 +207,35 @@ pub async fn authenticate(
     access: Option<&RelayAccess>,
     signer: &impl DeviceSigner,
 ) -> Result<String> {
-    let device_key = signer.device_key()?;
-    let device = device_key.encode();
+    let auth = async {
+        let device_key = signer.device_key()?;
+        let device = device_key.encode();
 
-    let challenge: ChallengeResponse = post_json(
-        &wire::api(http_base, "/challenge"),
-        &wire::ChallengeRequest { device: &device },
-    )
-    .await?;
+        let challenge: ChallengeResponse = post_json(
+            &wire::api(http_base, "/challenge"),
+            &wire::ChallengeRequest { device: &device },
+        )
+        .await?;
 
-    let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
-    let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
+        let nonce = wire::decode_challenge_nonce(&challenge.nonce)?;
+        let signature = URL_SAFE_NO_PAD.encode(signer.sign_challenge(&nonce)?);
 
-    let token: TokenResponse = post_json(
-        &wire::api(http_base, "/token"),
-        &wire::TokenRequest {
-            device: &device,
-            nonce: &challenge.nonce,
-            signature: &signature,
-            access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
-        },
-    )
-    .await?;
+        let token: TokenResponse = post_json(
+            &wire::api(http_base, "/token"),
+            &wire::TokenRequest {
+                device: &device,
+                nonce: &challenge.nonce,
+                signature: &signature,
+                access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
+            },
+        )
+        .await?;
 
-    Ok(token.token)
+        Ok::<_, CoreError>(token.token)
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), auth)
+        .await
+        .map_err(|_| net("browser relay authentication timed out after 10 seconds"))?
 }
 
 /// What a handler saw.
@@ -268,12 +309,17 @@ impl Socket {
         // does is wait to be told that it is. A refused connection arrives here
         // as an error or a close rather than as a failure from `WebSocket::new`,
         // which only rejects a URL it cannot parse.
-        match sync.events.recv().await {
-            Some(Event::Open) => {}
-            Some(Event::Failed) | None => return Err(net("the relay could not be reached")),
-            Some(Event::Closed) => return Err(net("the relay closed the connection")),
+        match tokio::time::timeout(std::time::Duration::from_secs(10), sync.events.recv()).await {
+            Err(_) => return Err(net("browser sync socket timed out after 10 seconds")),
+            Ok(Some(Event::Open)) => {}
+            Ok(Some(Event::Failed)) | Ok(None) => {
+                return Err(net("the relay could not be reached"));
+            }
+            Ok(Some(Event::Closed)) => return Err(net("the relay closed the connection")),
             // A message before `onopen` is not something a browser does.
-            Some(Event::Text(_)) => return Err(net("the relay spoke before the socket opened")),
+            Ok(Some(Event::Text(_))) => {
+                return Err(net("the relay spoke before the socket opened"));
+            }
         }
 
         Ok(sync)
