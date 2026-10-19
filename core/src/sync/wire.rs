@@ -206,6 +206,13 @@ pub(crate) fn refused(status: u16, body: &[u8]) -> Option<CoreError> {
     outdated(status, body)
 }
 
+/// An HTTP error from a relay or its reverse proxy. Do not include the body:
+/// proxies commonly return a full HTML error page, which is not useful in the
+/// app's sync status and can be several kilobytes long.
+pub(crate) fn http_error(status: u16) -> CoreError {
+    net(format!("relay returned HTTP {status}"))
+}
+
 #[cfg(test)]
 mod protocol_tests {
     use super::*;

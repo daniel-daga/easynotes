@@ -83,10 +83,7 @@ async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
         return Err(outdated);
     }
     if !(200..300).contains(&status) {
-        return Err(net(format!(
-            "{status} {}",
-            String::from_utf8_lossy(&bytes).trim()
-        )));
+        return Err(wire::http_error(status));
     }
     serde_json::from_slice(&bytes).map_err(|e| net(format!("relay sent nonsense: {e}")))
 }
