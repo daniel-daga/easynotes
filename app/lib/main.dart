@@ -33,7 +33,7 @@ import 'ui/relay_settings_screen.dart';
 
 ThemeData _easyNotesTheme(Brightness brightness) {
   final scheme = ColorScheme.fromSeed(
-    seedColor: const Color(0xFFFFB300),
+    seedColor: brightness == Brightness.light ? Colors.black : Colors.white,
     brightness: brightness,
     dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
   );
