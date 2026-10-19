@@ -10,12 +10,43 @@ import 'package:flutter_test/flutter_test.dart';
 
 // Drive reconciliation explicitly so the test controls the interleaving.
 class QuietLibrary extends FakeNoteLibrary {
+  int reminderWatchCount = 0;
+
   @override
-  Stream<List<Reminder>> watchReminders() => const Stream.empty();
+  Stream<List<Reminder>> watchReminders() {
+    reminderWatchCount++;
+    return const Stream.empty();
+  }
 }
 
 void main() {
   setUpAll(AndroidFlutterLocalNotificationsPlugin.registerWith);
+  test('disposing during startup never watches the retired library', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final entered = Completer<void>();
+    final zone = Completer<String>();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('flutter_timezone'),
+      (_) async {
+        entered.complete();
+        return zone.future;
+      },
+    );
+
+    final library = QuietLibrary();
+    final scheduler = ReminderScheduler(library);
+    final starting = scheduler.start();
+    await entered.future;
+    await scheduler.dispose();
+    zone.complete('UTC');
+    await starting;
+
+    expect(library.reminderWatchCount, 0);
+  });
+
   for (final delete in [true, false]) {
     test(
       'a concurrent ${delete ? 'delete' : 'edit'} wins over an older schedule',

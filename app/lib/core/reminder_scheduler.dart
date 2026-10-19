@@ -28,6 +28,7 @@ class ReminderScheduler {
   StreamSubscription<List<Reminder>>? _updates;
   final Map<String, Timer> _inProcessTimers = {};
   bool _started = false;
+  int _lifecycleGeneration = 0;
   Future<void>? _reconciling;
   bool _reconcileAgain = false;
 
@@ -36,18 +37,24 @@ class ReminderScheduler {
   Future<void> start() async {
     if (_started) return;
     _started = true;
+    final generation = ++_lifecycleGeneration;
     instance = this;
     tz_data.initializeTimeZones();
     final zone = await deviceTimezone();
+    if (!_isCurrent(generation)) return;
     try {
       tz.setLocalLocation(tz.getLocation(zone));
     } on ArgumentError {
       tz.setLocalLocation(tz.UTC);
     }
     await initializeLocalNotifications();
+    if (!_isCurrent(generation)) return;
     _updates = _library.watchReminders().listen((_) => unawaited(reconcile()));
     await reconcile();
   }
+
+  bool _isCurrent(int generation) =>
+      _started && generation == _lifecycleGeneration;
 
   /// Ask only after a person explicitly creates a reminder. A failed request is
   /// not a failed reminder: the account document still syncs and this device
@@ -413,6 +420,7 @@ class ReminderScheduler {
 
   Future<void> dispose({bool cancelScheduled = false}) async {
     _started = false;
+    _lifecycleGeneration++;
     await _updates?.cancel();
     await _reconciling;
     for (final timer in _inProcessTimers.values) {

@@ -168,7 +168,18 @@ class _AccountScreenState extends State<AccountScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final has = widget.library.hasAccount;
+    final bool has;
+    try {
+      has = widget.library.hasAccount;
+    } on Object catch (error) {
+      // A profile switch can close this screen's library while its route is
+      // still leaving the navigator. It has no account UI to show at that
+      // point, and must not rebuild by reading the retired bridge handle.
+      if ('$error'.contains('the library is closed')) {
+        return const SizedBox.shrink();
+      }
+      rethrow;
+    }
     final accountExplanation = widget.profile?.url == null
         ? 'Connect a relay to store encrypted backups. Create an account to '
               'prepare this collection for other devices; use it with a '

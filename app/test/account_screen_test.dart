@@ -68,7 +68,21 @@ class _RefusingLibrary extends FakeNoteLibrary {
   }
 }
 
+class _ClosedLibrary extends FakeNoteLibrary {
+  @override
+  bool get hasAccount => throw StateError('the library is closed');
+}
+
 void main() {
+  testWidgets(
+    'a retiring profile hides account controls before its route leaves',
+    (tester) async {
+      await pumpAccount(tester, _ClosedLibrary());
+      expect(find.byType(AccountScreen), findsOneWidget);
+      expect(find.byType(SizedBox), findsOneWidget);
+    },
+  );
+
   testWidgets('the drawer opens sync and device setup together', (
     tester,
   ) async {

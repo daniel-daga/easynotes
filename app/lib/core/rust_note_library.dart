@@ -564,12 +564,26 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   Future<void> setForeground(bool foreground) async {
     if (_foreground == foreground) return;
+    // Advance before awaiting the bridge. A resume can arrive while a hide is
+    // still flushing; that older hide must not install a stale suspension timer.
+    final generation = ++_lifecycleGeneration;
     _foreground = foreground;
     _pauseResumeEvents++;
-    await _library.setForeground(foreground: foreground);
-    final generation = ++_lifecycleGeneration;
     _suspendTimer?.cancel();
+    await _library.setForeground(foreground: foreground);
+    if (generation != _lifecycleGeneration || _foreground != foreground) return;
     if (foreground) {
+      // A grace timer may have started disconnect just before resume. Wait for
+      // that cancellation to settle before opening the replacement socket.
+      final stopping = _suspensionDisconnect;
+      if (stopping != null) {
+        try {
+          await stopping;
+        } catch (_) {
+          // A failed close still leaves resume responsible for reconnecting.
+        }
+      }
+      if (generation != _lifecycleGeneration || !_foreground) return;
       if (_suspended && _relay != null) {
         _suspended = false;
         _paused = false;
@@ -583,13 +597,28 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       _suspended = true;
       _paused = true;
       _sync.add(syncStatus);
-      unawaited(_library.disconnect());
+      final stopping = _disconnectForSuspension();
+      unawaited(stopping);
     });
     // Start the grace period at hide time. Browser writes and held sync edits
     // are both asked to flush immediately while the socket remains available.
-    await _library.setForeground(foreground: false);
     await flush();
+    if (generation != _lifecycleGeneration || _foreground) return;
     sendHeldEdits();
+  }
+
+  Future<void>? _suspensionDisconnect;
+
+  Future<void> _disconnectForSuspension() async {
+    final stopping = _library.disconnect();
+    _suspensionDisconnect = stopping;
+    try {
+      await stopping;
+    } finally {
+      if (identical(_suspensionDisconnect, stopping)) {
+        _suspensionDisconnect = null;
+      }
+    }
   }
 
   @override

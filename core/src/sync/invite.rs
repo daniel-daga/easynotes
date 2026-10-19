@@ -28,14 +28,95 @@ pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 async fn call<Q: Serialize>(url: &str, body: &Q) -> Result<String> {
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
-    let (status, text) = post(url, body).await?;
-    invite_status(status, &text)?;
-    Ok(text)
+    let mut failures = 0u32;
+    loop {
+        match post(url, body.clone()).await {
+            Ok((status, _text, retry_after)) if transient_invite_status(status) => {
+                let delay = invitation_retry_delay(retry_after, failures);
+                super::timer::sleep(delay).await;
+                failures = failures.saturating_add(1);
+            }
+            Ok((status, text, _retry_after)) => {
+                invite_status(status, &text)?;
+                return Ok(text);
+            }
+            Err(_) => {
+                super::timer::sleep(randomized_retry(failures)).await;
+                failures = failures.saturating_add(1);
+            }
+        }
+    }
 }
 
 async fn call_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let text = call(url, body).await?;
     serde_json::from_str(&text).map_err(|e| wire::net(format!("relay sent nonsense: {e}")))
+}
+
+const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn transient_invite_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..=599).contains(&status)
+}
+
+fn invitation_retry_delay(
+    server_delay: Option<std::time::Duration>,
+    failures: u32,
+) -> std::time::Duration {
+    server_delay.unwrap_or_else(|| randomized_retry(failures))
+}
+
+pub(crate) fn parse_retry_after(value: Option<&str>) -> Option<std::time::Duration> {
+    value?
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
+
+fn randomized_retry(failures: u32) -> std::time::Duration {
+    use rand::Rng;
+    let ceiling = FIRST_RETRY
+        .saturating_mul(1u32 << failures.min(6))
+        .min(MAX_RETRY);
+    let max_ms = ceiling.as_millis() as u64;
+    std::time::Duration::from_millis(rand::rng().random_range((max_ms / 2).max(1)..=max_ms))
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn invitations_retry_only_transient_statuses() {
+        for status in [408, 429, 500, 502, 599] {
+            assert!(transient_invite_status(status));
+        }
+        for status in [400, 401, 403, 404, 409, 410, 413] {
+            assert!(!transient_invite_status(status));
+        }
+    }
+
+    #[test]
+    fn invitation_retry_delays_share_the_transfer_ceilings() {
+        let ceilings = [1, 2, 4, 8, 16, 32, 60].map(std::time::Duration::from_secs);
+        for (failure, ceiling) in ceilings.into_iter().enumerate() {
+            for _ in 0..100 {
+                let delay = randomized_retry(failure as u32);
+                assert!(delay >= ceiling / 2);
+                assert!(delay <= ceiling);
+            }
+        }
+        assert!(randomized_retry(20) <= MAX_RETRY);
+        let server = std::time::Duration::from_secs(23);
+        assert_eq!(invitation_retry_delay(Some(server), 0), server);
+        assert_eq!(
+            parse_retry_after(Some("7")),
+            Some(std::time::Duration::from_secs(7))
+        );
+        assert_eq!(parse_retry_after(Some("invalid")), None);
+        assert_eq!(parse_retry_after(None), None);
+    }
 }
 
 fn unb64(raw: &str) -> Result<Vec<u8>> {

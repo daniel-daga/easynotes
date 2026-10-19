@@ -36,7 +36,11 @@ const browser = await chromium.launch({
 // Playwright times one out, so the whole run is given a ceiling instead.
 const started = Date.now();
 const elapsed = () => Math.round((Date.now() - started) / 1000);
-const step = what => console.log(`--    ${what} (${elapsed()}s)`);
+let currentStep = 'browser startup';
+const step = what => {
+  currentStep = what;
+  console.log(`--    ${what} (${elapsed()}s)`);
+};
 const devices = [];
 setTimeout(async () => {
   console.error(`\ngave up after ${elapsed()}s: a tab stopped answering`);
@@ -111,7 +115,7 @@ async function device(name) {
   // Every tab the device opens, including the one a link is opened in later.
   context.on('page', page => {
     page.on('pageerror', e => d.crashes.push(e.message));
-    page.on('console', m => m.type() === 'error' && d.errors.push(m.text()));
+    page.on('console', m => m.type() === 'error' && d.errors.push(`[${currentStep}] ${m.text()}`));
     page.on('crash', async () => {
       console.error(`\n${d.name}'s tab crashed at ${elapsed()}s`);
       await diagnose();
@@ -138,7 +142,7 @@ async function device(name) {
 /// Add an item to the open list: a new row takes the focus, so it is typed
 /// straight into.
 async function addItem(d, text) {
-  await tap(d, /^\+ Checklist item$/);
+  await tap(d, /^Checklist item$/);
   // Typed into the editing element Flutter focuses for the new row, once it
   // has: before then the first keystrokes go nowhere, and on a slow build
   // "bread" arrives as "read".
@@ -186,7 +190,7 @@ async function cardWith(d, want, timeout = 30_000, not = []) {
 /// Open the list again from its card.
 async function reopen(d) {
   await tap(d, /milk/);
-  await find(d, n => n.text.trim() === '+ Checklist item');
+  await find(d, n => n.text.trim() === 'Checklist item');
 }
 
 /// Open the note from its card, whichever kind it is now, and flip it with
@@ -210,6 +214,7 @@ await configureRelay(a, 'http://127.0.0.1:8080');
 await configureRelay(b, 'http://127.0.0.1:8080');
 
 // --- A makes a list and shares it --------------------------------------------
+await tap(a, /^Show shortcuts$/);
 await tap(a, /^New checklist$/);
 await addItem(a, 'milk');
 await tap(a, /^Share$/);
@@ -227,6 +232,8 @@ check(link.startsWith(url) && link.endsWith('#join#' + link.split('#').pop()), `
 // would only change its fragment and never start the app again.
 step('B closes its tab');
 await b.page.close();
+// Let unload callbacks finish before this profile opens the same database again.
+await new Promise(resolve => setTimeout(resolve, 1000));
 b.page = await b.context.newPage();
 step('B opens the link in a new tab');
 await load(b, link);
@@ -250,7 +257,7 @@ step('B waits to be let in');
 // B's waiting dialog polls, and opens the note when it is let in.
 // It used to stop at "Opening the note" with the note already on the device:
 // see `app/rust/src/lock.rs`.
-await find(b, n => n.text.trim() === '+ Checklist item', { timeout: 30_000 });
+await find(b, n => n.text.trim() === 'Checklist item', { timeout: 30_000 });
 check(true, 'B was let in and the list opened for her');
 
 // --- Both edit it, online ---------------------------------------------------
@@ -320,6 +327,7 @@ check(a.crashes.length === 0, `A threw nothing: ${a.crashes.slice(0, 3).join(' |
 check(b.crashes.length === 0, `B threw nothing: ${b.crashes.slice(0, 3).join(' | ')}`);
 // A panic in a synchronous bridge call is logged, not thrown: the one this
 // test found (see `app/rust/src/lock.rs`) left no page error behind.
+console.log(`A errors: ${a.errors.length}; B errors: ${b.errors.length}`);
 const errors = [...a.errors, ...b.errors];
 check(errors.length === 0, `and logged no errors: ${errors.slice(0, 2).join(' | ').slice(0, 300)}`);
 for (const error of errors) console.error(`\nlogged:\n${error.slice(0, 6000)}`);

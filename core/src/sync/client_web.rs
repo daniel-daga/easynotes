@@ -68,7 +68,7 @@ fn fetch(request: &Request) -> Result<js_sys::Promise> {
 async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let body = serde_json::to_string(body)
         .map_err(|e| CoreError::Storage(format!("unserializable request: {e}")))?;
-    let (status, text) = post(url, body).await?;
+    let (status, text, _) = post(url, body).await?;
     if let Some(outdated) = wire::refused(status, text.as_bytes()) {
         return Err(outdated);
     }
@@ -82,7 +82,10 @@ async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Re
 ///
 /// The invite calls need the status — "expired" and "withdrawn" are answers,
 /// not failures — so it is handed back rather than turned into an error here.
-pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
+pub(crate) async fn post(
+    url: &str,
+    body: String,
+) -> Result<(u16, String, Option<std::time::Duration>)> {
     let init = RequestInit::new();
     init.set_method("POST");
     init.set_body(&JsValue::from_str(&body));
@@ -97,19 +100,25 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
         .map_err(js)?;
 
     let _abort = AbortOnDrop(controller.clone());
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+    super::timer::timeout(std::time::Duration::from_secs(60), async {
         let response: Response = JsFuture::from(fetch(&request)?)
             .await
             .map_err(js)?
             .dyn_into()
             .map_err(|_| net("fetch did not return a response"))?;
         let status = response.status();
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .ok()
+            .flatten()
+            .and_then(|value| super::invite::parse_retry_after(Some(&value)));
         let text = JsFuture::from(response.text().map_err(js)?)
             .await
             .map_err(js)?
             .as_string()
             .ok_or_else(|| net("the relay's answer was not text"))?;
-        Ok((status, text))
+        Ok((status, text, retry_after))
     })
     .await
     .map_err(|_| {
@@ -162,7 +171,7 @@ pub(crate) async fn call(
     }
 
     let _abort = AbortOnDrop(controller.clone());
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+    super::timer::timeout(std::time::Duration::from_secs(60), async {
         let response: Response = JsFuture::from(fetch(&request_js)?)
             .await
             .map_err(js)?
@@ -233,7 +242,7 @@ pub async fn authenticate(
 
         Ok::<_, CoreError>(token.token)
     };
-    tokio::time::timeout(std::time::Duration::from_secs(10), auth)
+    super::timer::timeout(std::time::Duration::from_secs(10), auth)
         .await
         .map_err(|_| net("browser relay authentication timed out after 10 seconds"))?
 }
@@ -309,7 +318,7 @@ impl Socket {
         // does is wait to be told that it is. A refused connection arrives here
         // as an error or a close rather than as a failure from `WebSocket::new`,
         // which only rejects a URL it cannot parse.
-        match tokio::time::timeout(std::time::Duration::from_secs(10), sync.events.recv()).await {
+        match super::timer::timeout(std::time::Duration::from_secs(10), sync.events.recv()).await {
             Err(_) => return Err(net("browser sync socket timed out after 10 seconds")),
             Ok(Some(Event::Open)) => {}
             Ok(Some(Event::Failed)) | Ok(None) => {

@@ -18,6 +18,7 @@ import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
+import 'package:easynotes/core/sync_status.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:easynotes/src/rust/api/notes.dart'
     show Library, NoteKindView, StorageArea, StorageBatch, StorageRow;
@@ -77,6 +78,25 @@ void main() {
   group(
     'the Rust core across the bridge',
     () {
+      test(
+        'overlapping lifecycle transitions do not leave a stale suspension',
+        () async {
+          final library = await openLibraryInTempDir();
+          await Future.wait([
+            library.setForeground(false),
+            Future<void>.delayed(
+              Duration.zero,
+            ).then((_) => library.setForeground(true)),
+          ]);
+          expect(library.syncStatus.state, isNot(SyncState.paused));
+
+          // Repeated transitions and disposal also retire the pending grace timer.
+          await library.setForeground(false);
+          await library.setForeground(true);
+          await library.setForeground(false);
+          await library.dispose();
+        },
+      );
       test('an empty note starts empty', () async {
         final core = await openInTempDir();
         expect(core.current.title, isEmpty);

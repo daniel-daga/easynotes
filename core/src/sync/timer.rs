@@ -5,7 +5,21 @@
 //! cannot be given. This is the one line of the engine that differs between the
 //! two, so it is the only thing behind a `cfg` rather than the loop that uses it.
 
+#[cfg(target_arch = "wasm32")]
+use std::future::Future;
 use std::time::Duration;
+
+/// A deadline that uses the platform's own clock. Tokio's timer asks the
+/// browser for a system clock, which is unsupported by wasm32-unknown-unknown.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn timeout<F: Future>(how_long: Duration, future: F) -> Result<F::Output, ()> {
+    let future = Box::pin(future);
+    let timer = Box::pin(sleep(how_long));
+    match futures_util::future::select(future, timer).await {
+        futures_util::future::Either::Left((result, _)) => Ok(result),
+        futures_util::future::Either::Right(((), _)) => Err(()),
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn sleep(how_long: Duration) {

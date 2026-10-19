@@ -26,7 +26,7 @@ export async function configureRelay(d, url) {
   await tap(d, /^Start with an empty collection$/);
   // Settings closes itself once the new profile is open. If it stays, the
   // switch has not finished, which is a failure and not something to tap past.
-  await find(d, n => n.text.trim() === 'New checklist', { timeout: 30_000 });
+  await find(d, n => n.text.trim() === 'New note', { timeout: 30_000 });
 }
 
 /// Turn the semantics tree on. The placeholder is deliberately off-screen, so
@@ -82,7 +82,7 @@ export async function find(d, match, { timeout = 10_000 } = {}) {
         const html = await d.page.evaluate(() => document.querySelector('flt-semantics-host')?.outerHTML ?? '');
         (await import('node:fs')).writeFileSync(`${process.env.DEBUG_DIR}/${d.name}.html`, html);
       }
-      throw new Error(`${d.name}: nothing matched ${match.what ?? match}\n  on screen: ${(await texts(d)).join(' | ')}`);
+      throw new Error(`${d.name}: nothing matched ${match.what ?? match}\n  on screen: ${(await texts(d)).join(' | ')}\n  page errors: ${(d.crashes ?? []).slice(0, 3).join(' | ')}\n  console errors: ${(d.errors ?? []).slice(0, 3).join(' | ')}`);
     }
     await d.page.waitForTimeout(250);
   }
@@ -90,7 +90,9 @@ export async function find(d, match, { timeout = 10_000 } = {}) {
 
 export async function tap(d, re, options) {
   const n = await find(d, n => re.test(n.text.trim()), options);
-  await d.page.mouse.click(n.x, n.y);
+  const target = d.page.locator('flt-semantics[role="button"]').filter({ hasText: re });
+  if (await target.count()) await target.first().click({ force: true });
+  else await d.page.mouse.click(n.x, n.y);
   await d.page.waitForTimeout(800);
 }
 

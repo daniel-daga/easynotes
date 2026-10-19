@@ -96,7 +96,10 @@ async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
 ///
 /// The invite calls need the status — "expired" and "withdrawn" are answers,
 /// not failures — so it is handed back rather than turned into an error here.
-pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
+pub(crate) async fn post(
+    url: &str,
+    body: String,
+) -> Result<(u16, String, Option<std::time::Duration>)> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -108,8 +111,13 @@ pub(crate) async fn post(url: &str, body: String) -> Result<(u16, String)> {
         .await
         .map_err(net)?;
     let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| super::invite::parse_retry_after(Some(value)));
     let text = response.text().await.map_err(net)?;
-    Ok((status, text))
+    Ok((status, text, retry_after))
 }
 
 /// A call made as a device — its token as a bearer — and the status and body
