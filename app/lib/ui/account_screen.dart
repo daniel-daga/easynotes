@@ -169,6 +169,12 @@ class _AccountScreenState extends State<AccountScreen> {
   @override
   Widget build(BuildContext context) {
     final has = widget.library.hasAccount;
+    final accountExplanation = widget.profile?.url == null
+        ? 'Connect a relay to store encrypted backups. Create an account to '
+              'prepare this collection for other devices; use it with a '
+              'relay to sync notes and share them. '
+        : 'Your relay stores encrypted notes without an account. Create an '
+              'account to use this collection on other devices and share notes. ';
     final children = <Widget>[
       ...has
           ? [
@@ -222,14 +228,10 @@ class _AccountScreenState extends State<AccountScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                '${widget.profile?.url == null ? 'A relay carries encrypted notes between devices. ' : 'Your relay stores and forwards encrypted notes. '}'
-                'Create an account so your devices can find and unlock '
-                'the same notes, or recover them if you lose this device. '
-                'You need the same relay and your recovery phrase. '
-                'There is no password and no email: your account is '
-                'twelve words, which you write down once. Anyone with the '
-                'words has your notes, and without them nobody can get them '
-                'back — not even us.',
+                '$accountExplanation'
+                'Your account is a recovery phrase, not a password or email. '
+                'Write the twelve words down and keep them safe: anyone with '
+                'the phrase can access your notes.',
               ),
               const SizedBox(height: 24),
               FilledButton.icon(
@@ -437,10 +439,11 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
       padding: const EdgeInsets.all(24),
       children: [
         const Text(
-          'Write these twelve words down, in order, on paper. They are the '
-          'only way to put your notes on another device, and they will not be '
-          'shown again. That device also needs your relay, and its access '
-          'key if it has one, which are not part of the words.',
+          'Write these twelve words down, in order, on paper. Use them to '
+          'restore your account on another device. If you can still use this '
+          'device, you can also transfer account access with a one-time QR '
+          'code. The new device needs the same relay and its separate access '
+          'key, if the relay has one. These words will not be shown again.',
         ),
         const SizedBox(height: 20),
         // Two columns of six, numbered, so that a word copied into the wrong

@@ -96,7 +96,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       final move = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Set up sync'),
+          title: const Text('Connect relay'),
           content: Text(
             'Use $target for this collection? Move your current notes, '
             'including attachments, labels and reminders, or keep them in '
@@ -301,6 +301,21 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
           'Switch to a relay',
           style: Theme.of(context).textTheme.titleMedium,
         ),
+        const SizedBox(height: 8),
+        const Text(
+          'A relay stores encrypted backups and can sync notes. You can use '
+          'one without an account; create an account for device access and '
+          'sharing.',
+          key: Key('relay-account-explanation'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'EasyNotes does not provide a relay. Get an address from your '
+          'organization or a relay provider. For sharing, use the same relay '
+          'as the people you share notes with. You can continue on this device '
+          'and connect a relay later.',
+          key: Key('relay-address-help'),
+        ),
         Form(
           key: _form,
           child: Column(
@@ -328,8 +343,8 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Access key (if the relay has one)',
                   helperText:
-                      'A relay link has it already. Leave empty for a relay '
-                      'anyone may use.',
+                      'Get the key from the relay operator. A relay link '
+                      'includes it. Leave empty if the relay is open.',
                   helperMaxLines: 2,
                 ),
                 validator: _validateAccess,
@@ -341,7 +356,9 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 child: FilledButton(
                   key: const Key('switch-relay-button'),
                   onPressed: _switching ? null : _submitUrl,
-                  child: Text(widget.profile.url == null ? 'Set up sync' : 'Switch relay'),
+                  child: Text(
+                    widget.profile.url == null ? 'Connect relay' : 'Switch relay',
+                  ),
                 ),
               ),
             ],

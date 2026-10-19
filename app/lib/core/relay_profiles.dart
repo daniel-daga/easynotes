@@ -37,6 +37,7 @@ class RelayProfiles {
     : _storage = storage ?? const FlutterSecureStorage();
 
   static const _key = 'easynotes.relay-profiles';
+  static const _onboardingKey = 'easynotes.onboarding';
 
   /// Where a profile's access key is kept: one keychain entry per profile, so
   /// that the settings above stay free of secrets and an older build that
@@ -56,13 +57,21 @@ class RelayProfiles {
   final FlutterSecureStorage _storage;
   List<RelayProfile> _profiles = const [];
   String? _selectedId;
+  bool _shouldShowOnboarding = false;
 
   List<RelayProfile> get profiles => List.unmodifiable(_profiles);
+  bool get shouldShowOnboarding => _shouldShowOnboarding;
   RelayProfile get selected =>
       _profiles.singleWhere((p) => p.id == _selectedId);
 
   Future<void> load() async {
     final value = await _storage.read(key: _key);
+    final onboarding = await _storage.read(key: _onboardingKey);
+    _shouldShowOnboarding =
+        onboarding == 'pending' || (value == null && onboarding != 'complete');
+    if (_shouldShowOnboarding && onboarding != 'pending') {
+      await _storage.write(key: _onboardingKey, value: 'pending');
+    }
     var upgraded = false;
     if (value != null) {
       var json = jsonDecode(value) as Map<String, dynamic>;
@@ -107,6 +116,13 @@ class RelayProfiles {
               .id;
       await _save();
     }
+  }
+
+  /// Remember that this installation has chosen how to start. A pending first
+  /// run survives an app restart before the person makes that choice.
+  Future<void> completeOnboarding() async {
+    await _storage.write(key: _onboardingKey, value: 'complete');
+    _shouldShowOnboarding = false;
   }
 
   Future<RelayProfile> select(String? address) async {

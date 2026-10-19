@@ -64,6 +64,23 @@ class SyncDevicesScreen extends StatelessWidget {
     body: ListView(
       padding: const EdgeInsets.all(24),
       children: [
+        const Text(
+          'Your notes are saved on this device. Both steps are optional.',
+          key: Key('setup-intro'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Want backups? Connect a relay. Your notes can be stored there '
+          'without an account.',
+          key: Key('relay-benefit'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Want device sync and sharing? Create an account and use it with '
+          'your relay.',
+          key: Key('account-benefit'),
+        ),
+        const Divider(height: 40),
         Text('Relay sync', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
         // Mount one subscription for the route's lifetime.
@@ -74,7 +91,7 @@ class SyncDevicesScreen extends StatelessWidget {
             key: const Key('set-up-sync'),
             onPressed: onServer,
             icon: const Icon(Icons.sync),
-            label: const Text('Set up sync'),
+            label: const Text('Connect a relay'),
           ),
         ],
         const Divider(height: 40),
@@ -89,7 +106,7 @@ class SyncDevicesScreen extends StatelessWidget {
           onDeleted: onAccountDeleted,
           embedded: true,
         ),
-        if (library is AccountTransfers) ...[
+        if (library is AccountTransfers && library.hasAccount) ...[
           const SizedBox(height: 8),
           ListTile(
             key: const Key('account-transfer'),

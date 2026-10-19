@@ -24,9 +24,12 @@ import 'core/relay_profiles.dart';
 import 'core/relay_session.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
+import 'ui/account_screen.dart';
 import 'ui/about_screen.dart' show registerBundledLicenses;
 import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
+import 'ui/onboarding_screen.dart';
+import 'ui/relay_settings_screen.dart';
 
 ThemeData _easyNotesTheme(Brightness brightness) {
   final scheme = ColorScheme.fromSeed(
@@ -100,6 +103,10 @@ Future<void> main() async {
   if (kIsWeb) address_bar.dropQuery();
   final profiles = RelayProfiles();
   await profiles.load();
+  if (profiles.shouldShowOnboarding &&
+      (initialInvite != null || initialShare != null)) {
+    await profiles.completeOnboarding();
+  }
   if (kIsWeb) {
     runApp(
       const MaterialApp(
@@ -124,6 +131,7 @@ Future<void> main() async {
       ),
       initialInviteLink: initialInvite,
       initialSharedText: initialShare,
+      showOnboarding: profiles.shouldShowOnboarding,
     ),
   );
 }
@@ -194,17 +202,21 @@ class EasyNotesApp extends StatefulWidget {
     required this.session,
     this.initialInviteLink,
     this.initialSharedText,
+    this.showOnboarding = false,
   });
 
   final RelaySession session;
   final String? initialInviteLink;
   final SharedText? initialSharedText;
+  final bool showOnboarding;
 
   @override
   State<EasyNotesApp> createState() => _EasyNotesAppState();
 }
 
 class _EasyNotesAppState extends State<EasyNotesApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
   /// Sends held typing the moment the app stops being seen — backgrounded on a
   /// phone, minimised on a desktop, a tab switched away from in a browser. All
   /// three are `hidden` to Flutter, and it is the last state the app is sure
@@ -212,6 +224,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   AppLifecycleListener? _lifecycle;
   ReminderScheduler? _reminders;
   bool _launchPayloadsDelivered = false;
+  late bool _showOnboarding = widget.showOnboarding;
+  bool _relayConnectedDuringOnboarding = false;
 
   /// Between a library's release and its replacement's install, when nothing
   /// may draw from it: see [_releaseSession].
@@ -231,6 +245,40 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
 
   void _changed() {
     if (mounted) setState(() {});
+  }
+
+  Future<void> _finishOnboarding() async {
+    await _session.profiles.completeOnboarding();
+    if (mounted) setState(() => _showOnboarding = false);
+  }
+
+  Future<void> _createOnboardingAccount() async {
+    await _navigatorKey.currentState!.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => AccountScreen(
+          library: _session.library,
+          profile: _session.profile,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (_session.library.hasAccount) await _finishOnboarding();
+  }
+
+  Future<void> _setUpRelay() async {
+    await _navigatorKey.currentState!.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => RelaySettingsScreen(
+          profile: _session.profile,
+          profiles: _session.profiles.profiles,
+          onSwitchRelay: _session.switchTo,
+          onMoveLocalToRelay: _session.moveLocalToRelay,
+          onSetAccess: _session.setAccess,
+        ),
+      ),
+    );
+    if (!mounted || _session.profile.url == null) return;
+    setState(() => _relayConnectedDuringOnboarding = true);
   }
 
   void _installSession(NoteLibrary library) {
@@ -293,6 +341,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   Widget build(BuildContext context) {
     final library = _session.library;
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'EasyNotes',
       debugShowCheckedModeBanner: false,
       // `fontFamily` names the Roboto bundled in `pubspec.yaml` rather than
@@ -304,6 +353,13 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       darkTheme: _easyNotesTheme(Brightness.dark),
       home: _released
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _showOnboarding
+          ? OnboardingScreen(
+              relayConnected: _relayConnectedDuringOnboarding,
+              onContinue: _finishOnboarding,
+              onSetUpRelay: _setUpRelay,
+              onCreateAccount: _createOnboardingAccount,
+            )
           : _noteList(library),
     );
   }
