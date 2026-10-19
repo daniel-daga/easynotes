@@ -59,6 +59,14 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
     });
   }
 
+  Future<void> _addToNote(String name) async {
+    final noteId = widget.noteId;
+    if (noteId == null || name.trim().isEmpty) return;
+    await _run(() async {
+      await widget.library.addTag(noteId, name);
+    });
+  }
+
   Future<void> _edit(Tag tag) async {
     var deleting = false;
     final name = await showDialog<String>(
@@ -140,10 +148,53 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
               .where((note) => note.id == widget.noteId)
               .firstOrNull;
           final selected = note?.tagIds ?? const <String>{};
+          final query = _field.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+          final exactMatch = query.isNotEmpty && tags.any(
+            (tag) => tag.name.toLowerCase() == query.toLowerCase(),
+          );
+          final visibleTags = _selecting && query.isNotEmpty
+              ? tags
+                    .where(
+                      (tag) => tag.name.toLowerCase().contains(
+                        query.toLowerCase(),
+                      ),
+                    )
+                    .toList()
+              : tags;
           return ListView(
             padding: const EdgeInsets.symmetric(vertical: 16),
             children: [
-              if (!_selecting)
+              if (_selecting)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: TextField(
+                    key: const Key('label-search-field'),
+                    controller: _field,
+                    enabled: !_busy,
+                    maxLength: maxLabelLength,
+                    decoration: InputDecoration(
+                      hintText: 'Search labels',
+                      prefixIcon: const Icon(Icons.search),
+                      border: const OutlineInputBorder(),
+                      counterText: '',
+                      suffixIcon: query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Clear search',
+                              icon: const Icon(Icons.clear),
+                              onPressed: () {
+                                _field.clear();
+                                setState(() {});
+                              },
+                            ),
+                    ),
+                    onChanged: (_) => setState(() {}),
+                    onSubmitted: (_) {
+                      if (!exactMatch) _addToNote(query);
+                    },
+                  ),
+                )
+              else
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
@@ -175,17 +226,28 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                       ),
                     ],
                   ),
+              ),
+              if (_selecting && query.isNotEmpty && !exactMatch)
+                ListTile(
+                  key: const Key('label-add-to-note'),
+                  leading: const Icon(Icons.add),
+                  title: Text('Add label "$query"'),
+                  onTap: _busy || note == null
+                      ? null
+                      : () => _addToNote(query),
                 ),
-              if (tags.isEmpty)
+              if (tags.isEmpty || (visibleTags.isEmpty && query.isNotEmpty))
                 Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    _selecting
+                    tags.isNotEmpty
+                        ? 'No matching labels.'
+                        : _selecting
                         ? 'No labels yet. Create labels from the sidebar.'
                         : 'No labels yet.',
                   ),
                 ),
-              for (final tag in tags)
+              for (final tag in visibleTags)
                 if (_selecting)
                   CheckboxListTile(
                     key: Key('label-check-${tag.name}'),
