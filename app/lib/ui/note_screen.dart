@@ -630,6 +630,18 @@ class _NoteScreenState extends State<NoteScreen> {
         widget.core.setItemText(await _resolve(item.id), t),
     onWriteStateChanged: _itemWriteStateChanged,
     onDelete: () async => _removeItem(await _resolve(item.id)),
+    onBackspaceEmpty: () async {
+      final id = await _resolve(item.id);
+      final items = widget.core.current.items;
+      final index = items.indexWhere((candidate) => candidate.id == id);
+      final previous = index > 0 ? items[index - 1] : null;
+      await _removeItem(id);
+      if (previous != null && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _focusForItem(previous.id).requestFocus();
+        });
+      }
+    },
     onSubmitted: onSubmitted,
   );
 
@@ -1591,6 +1603,7 @@ class _ItemRow extends StatefulWidget {
     required this.onTextChanged,
     required this.onWriteStateChanged,
     required this.onDelete,
+    required this.onBackspaceEmpty,
     this.onSubmitted,
   });
 
@@ -1605,6 +1618,7 @@ class _ItemRow extends StatefulWidget {
   final Future<void> Function(String) onTextChanged;
   final ValueChanged<bool> onWriteStateChanged;
   final VoidCallback onDelete;
+  final Future<void> Function() onBackspaceEmpty;
   final Future<void> Function()? onSubmitted;
 
   @override
@@ -1727,31 +1741,42 @@ class _ItemRowState extends State<_ItemRow> {
           ),
         ],
       ),
-      title: TextField(
-        key: Key('text:${widget.fieldId}'),
-        controller: _controller,
-        focusNode: _focus,
-        textInputAction: widget.onSubmitted == null
-            ? null
-            : TextInputAction.next,
-        decoration: const InputDecoration(
-          border: InputBorder.none,
-          isDense: true,
+      title: Focus(
+        onKeyEvent: (node, event) {
+          if (event is KeyDownEvent &&
+              event.logicalKey == LogicalKeyboardKey.backspace &&
+              _controller.text.isEmpty) {
+            unawaited(widget.onBackspaceEmpty());
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: TextField(
+          key: Key('text:${widget.fieldId}'),
+          controller: _controller,
+          focusNode: _focus,
+          textInputAction: widget.onSubmitted == null
+              ? null
+              : TextInputAction.next,
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            isDense: true,
+          ),
+          style: item.checked
+              ? TextStyle(
+                  decoration: TextDecoration.lineThrough,
+                  color: Theme.of(context).disabledColor,
+                )
+              : null,
+          onChanged: _write,
+          onSubmitted: widget.onSubmitted == null
+              ? (_) => _commit()
+              : (_) => _submit(),
+          // Enter moves the keyboard to the item it makes, and nowhere else.
+          // Flutter's default for `next` would move it at once to whatever
+          // field happens to come next.
+          onEditingComplete: widget.onSubmitted == null ? null : () {},
         ),
-        style: item.checked
-            ? TextStyle(
-                decoration: TextDecoration.lineThrough,
-                color: Theme.of(context).disabledColor,
-              )
-            : null,
-        onChanged: _write,
-        onSubmitted: widget.onSubmitted == null
-            ? (_) => _commit()
-            : (_) => _submit(),
-        // Enter moves the keyboard to the item it makes, and nowhere else.
-        // Flutter's default for `next` would move it at once to whatever
-        // field happens to come next.
-        onEditingComplete: widget.onSubmitted == null ? null : () {},
       ),
       trailing: _focus.hasFocus
           ? IconButton(
