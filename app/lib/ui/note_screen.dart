@@ -37,6 +37,7 @@ class NoteScreen extends StatefulWidget {
     required this.storage,
     required this.noteId,
     required this.invites,
+    this.autofocusBody = false,
     this.library,
     this.onLabels,
     this.onReminders,
@@ -59,6 +60,9 @@ class NoteScreen extends StatefulWidget {
   /// How this note is shared with another person. The device's, like
   /// [storage], because an invite lives on the relay the device talks to.
   final Invites invites;
+
+  /// Put the cursor in the body when opening a freshly created text note.
+  final bool autofocusBody;
 
   /// The note's personal placement and appearance controls. Optional for small
   /// isolated screen previews; the app supplies it when opening a note.
@@ -763,6 +767,7 @@ class _NoteScreenState extends State<NoteScreen> {
     // prompted for as what it is rather than as the place to start typing.
     hint: note.kind == NoteKind.text ? 'Note' : 'Text',
     expands: expands,
+    autofocus: widget.autofocusBody && note.kind == NoteKind.text,
     onEdit: widget.core.editBody,
   );
 
@@ -1445,12 +1450,14 @@ class _BodyField extends StatefulWidget {
     required this.body,
     required this.hint,
     this.expands = false,
+    this.autofocus = false,
     required this.onEdit,
   });
 
   final String body;
   final String hint;
   final bool expands;
+  final bool autofocus;
   final Future<void> Function(String from, String to) onEdit;
 
   @override
@@ -1587,6 +1594,7 @@ class _BodyFieldState extends State<_BodyField> {
       controller: _controller,
       keyboardType: TextInputType.multiline,
       expands: widget.expands,
+      autofocus: widget.autofocus,
       minLines: widget.expands ? null : 1,
       maxLines: null,
       decoration: InputDecoration(

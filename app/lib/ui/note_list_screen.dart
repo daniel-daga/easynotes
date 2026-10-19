@@ -283,7 +283,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// The library keeps the note itself open and syncing; what this disposes is
   /// the watcher behind the screen that has just gone away. Leaking one per
   /// visit would leave a Rust task per note per open, for ever.
-  Future<void> _openNote(String id) async {
+  Future<void> _openNote(String id, {bool autofocusBody = false}) async {
     final core = await widget.library.openNote(id);
     // The list may have gone while the note was opening; the handle then has
     // no screen to go to, and is let go of here rather than leaked.
@@ -299,6 +299,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
           library: widget.library,
           noteId: id,
           invites: widget.library,
+          autofocusBody: autofocusBody,
           relayLink: widget.profile.relayLink,
           onLabels: () async {
             final note = widget.library.notes
@@ -347,7 +348,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final tagName = _where.tagName;
     if (tagName != null) await widget.library.addTag(id, tagName);
     if (!mounted) return;
-    await _openNote(id);
+    await _openNote(id, autofocusBody: kind == NoteKind.text);
   }
 
   Future<void> _createAudioNote() async {
