@@ -995,27 +995,34 @@ class _NoteScreenState extends State<NoteScreen> {
             Expanded(child: isText ? _text(note) : _checklist(note)),
           ],
         ),
-        bottomNavigationBar: library == null || summary == null
-            ? _KindToggleBar(
-                onAttach: _addAttachment,
-                onSend: () => _shareContent(widget.core.current),
-                isText: isText,
-                onKindToggle: _toggleKind,
-              )
-            : _NoteToolbar(
-                onAttach: _addAttachment,
-                onSend: () => _shareContent(widget.core.current),
-                note: summary,
-                library: library,
-                isText: isText,
-                onKindToggle: _toggleKind,
-                onLabels: widget.onLabels,
-                onReminders: widget.onReminders,
-                onTrash: () async {
-                  await library.setTrashed(summary.id, !summary.trashed);
-                  if (mounted) Navigator.of(context).pop();
-                },
-              ),
+        bottomNavigationBar: AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(context).bottom,
+          ),
+          child: library == null || summary == null
+              ? _KindToggleBar(
+                  onAttach: _addAttachment,
+                  onSend: () => _shareContent(widget.core.current),
+                  isText: isText,
+                  onKindToggle: _toggleKind,
+                )
+              : _NoteToolbar(
+                  onAttach: _addAttachment,
+                  onSend: () => _shareContent(widget.core.current),
+                  note: summary,
+                  library: library,
+                  isText: isText,
+                  onKindToggle: _toggleKind,
+                  onLabels: widget.onLabels,
+                  onReminders: widget.onReminders,
+                  onTrash: () async {
+                    await library.setTrashed(summary.id, !summary.trashed);
+                    if (mounted) Navigator.of(context).pop();
+                  },
+                ),
+        ),
       ),
     );
   }
