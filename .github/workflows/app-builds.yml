@@ -12,6 +12,10 @@ on:
         description: Debug APK
         type: boolean
         default: true
+      ios:
+        description: iOS simulator app (unsigned)
+        type: boolean
+        default: false
       linux:
         description: Linux desktop
         type: boolean
@@ -29,6 +33,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ios:
+    name: iOS simulator
+    if: inputs.ios
+    # Pin the runner image so Xcode changes on macos-latest do not silently
+    # change the iOS build environment.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: app
+      # Simulator builds need neither a distribution certificate nor a profile.
+      # This validates the iOS app and bundled Rust library on every requested run.
+      - name: Build the iOS simulator app
+        working-directory: app
+        run: flutter build ios --simulator --release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: easynotes-ios-simulator
+          path: app/build/ios/iphonesimulator/Runner.app
+          if-no-files-found: error
+          retention-days: 14
+
   windows:
     name: Windows
     if: inputs.windows
