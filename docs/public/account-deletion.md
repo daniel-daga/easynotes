@@ -1,5 +1,10 @@
 # Deleting your EasyNotes account
 
+> **Draft for publication.** The support email and deletion steps should be
+> checked against the version of the app you publish.
+
+**Last updated: 17 October 2026**
+
 This page is for anyone who wants their EasyNotes account and data deleted,
 including people who no longer have the app installed. It is the page to give
 Google Play as the app's account-deletion link.
@@ -49,17 +54,25 @@ request; they stay encrypted and unreadable.
   them. Your past edits in them stay part of those lists.
 - **Your other devices.** Each keeps its copy until you delete the account on it
   too. Each is told the account was deleted.
-- **Relay backups, for up to 30 days.** A relay operator may keep encrypted
-  backups for recovering from failures. Deleted data leaves them within 30
-  days. They hold only what the relay held: encrypted notes it cannot read.
+- **Relay backups.** A relay operator may keep encrypted backups, under its
+  own retention policy. The documented EasyNotes Synology backup setup keeps
+  backups for up to 30 days by default; another operator may use a different
+  period. Backups hold only what the relay held: encrypted notes it cannot
+  read.
+- **A deletion marker on the relay.** A small opaque marker remains so that an
+  old device cannot restore a deleted list by syncing it again. It contains no
+  note contents or account name.
 - **What a relay's operator could already see:** that a device connected, when,
   and from which IP address. See the privacy notice under **About and privacy**
   in the app.
 
 ## Questions
 
-The support contact for your version of the app is shown in the app under
-**About and privacy**. Whoever operates your relay is named by its address in
-**Relay settings**.
+For help with the app or this deletion process, email
+[easynotes@fraisl.eu](mailto:easynotes@fraisl.eu). Do not send your recovery
+phrase, password or note contents. Whoever operates your relay is named by its
+address in **Relay settings**; contact that operator about its logs and backup
+retention.
 
-How deletion works in detail: [ADR 0026](../adr/0026-deleting-an-account.md).
+See the [EasyNotes privacy policy](/privacy) for information about the app,
+relays and privacy requests.

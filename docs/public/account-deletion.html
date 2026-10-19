@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How to delete an EasyNotes account and what deletion does and does not remove.">
+  <title>Deleting your EasyNotes account</title>
+  <style>
+    :root { color-scheme: light dark; font: 1rem/1.65 system-ui, sans-serif; }
+    body { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: .35rem; }
+    h2 { margin-top: 2.25rem; }
+    .draft { border-left: .25rem solid #bd6b00; padding: .75rem 1rem; background: color-mix(in srgb, CanvasText 7%, Canvas); }
+    a { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Deleting your EasyNotes account</h1>
+  <p class="draft"><strong>Draft for publication.</strong> Check the support email and deletion steps against the version of the app you publish.</p>
+  <p><strong>Last updated: 17 October 2026</strong></p>
+
+  <p>This page explains how to delete an EasyNotes account and its data. EasyNotes has no usernames, email addresses or passwords. Your account is the twelve-word recovery phrase you wrote down. Notes are encrypted on your device before they reach a relay. A relay operator cannot read their contents or look you up by name or email, so deletion must be requested from a device that can prove control of the account.</p>
+
+  <h2>Delete from the app</h2>
+  <ol>
+    <li>Open EasyNotes, open the menu, and choose <strong>Your devices</strong>.</li>
+    <li>Choose <strong>Delete account</strong>. If this device has no account, choose <strong>Delete everything on this device</strong>.</li>
+    <li>Read the confirmation, type <code>delete</code>, and confirm.</li>
+  </ol>
+  <p>The device must be online and connected to the relay your notes use. If it cannot reach the relay, deletion does not complete and the app asks you to try again.</p>
+
+  <h2>If you no longer have the app or device</h2>
+  <p>Install EasyNotes on another device, choose the same relay in <strong>Relay settings</strong>, then open <strong>Your devices</strong>, choose <strong>I already have twelve words</strong>, and enter your recovery phrase. Once your notes have arrived, delete the account from that device as described above.</p>
+  <p>Without the recovery phrase, nobody can prove the account is theirs, including EasyNotes support. Data on a relay that nobody can prove is yours cannot be deleted on request; it remains encrypted and unreadable.</p>
+
+  <h2>What deletion removes</h2>
+  <ul>
+    <li><strong>Lists and notes you own</strong> are requested to be purged from the relay, including lists you shared. The app waits for the relay to confirm deletion before it wipes this device.</li>
+    <li><strong>Your encrypted account settings</strong>—including colours, labels, pins, reminders and device records—are requested to be purged from the relay.</li>
+    <li><strong>Data on the device you delete from</strong> is wiped, including notes, keys and that device's identity.</li>
+  </ul>
+
+  <h2>What deletion does not remove</h2>
+  <ul>
+    <li><strong>Copies other people already have.</strong> People you shared a list with keep copies on their devices. Those copies stop syncing, and the app tells them the list was deleted.</li>
+    <li><strong>Lists other people shared with you.</strong> They remain with their owner. Your past edits in them remain part of those lists.</li>
+    <li><strong>Your other devices' local copies.</strong> Each device is told the account was deleted, but keeps its local data until you remove the account from that device too.</li>
+    <li><strong>Relay backups.</strong> A relay operator may keep encrypted backups under its own retention policy. The documented EasyNotes Synology backup setup keeps backups for up to 30 days by default; another operator may use a different period. Backups contain encrypted data that the relay cannot read.</li>
+    <li><strong>A deletion marker on the relay.</strong> A small opaque marker remains to stop an old device from re-creating a deleted list by syncing it again. It contains no note contents or account name.</li>
+    <li><strong>Connection information already seen by a relay operator.</strong> A relay can see that a device connected, when it connected and its IP address. The operator controls its logs and retention. See the <a href="/privacy.html">EasyNotes privacy policy</a> and the relay operator's own privacy notice.</li>
+  </ul>
+
+  <h2>Questions</h2>
+  <p>For help with the app or this deletion process, email <a href="mailto:easynotes@fraisl.eu">easynotes@fraisl.eu</a>. Do not send your recovery phrase, password or note contents. The relay operator is identified by its address in <strong>Relay settings</strong>; contact that operator about its logs and backup retention.</p>
+  <p><a href="/privacy.html">Read the EasyNotes privacy policy</a>.</p>
+</main>
+</body>
+</html>
