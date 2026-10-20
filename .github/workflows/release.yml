@@ -19,13 +19,22 @@ name: Release
 # The keystore is the app's identity on every device that installs it: an
 # update signed with another key cannot replace it. Keep it, and its passwords,
 # backed up somewhere that is not GitHub.
+#
+# `test_release` builds what a release would be, from the workspace version
+# instead of a tag, and stops at the artifacts: no compat fixtures are
+# required and no GitHub release is drafted. For trying the pipeline only.
 on:
   workflow_dispatch:
     inputs:
       release_tag:
         description: Existing version tag to build and draft
-        required: true
+        required: false
         type: string
+      test_release:
+        description: Build a test release without a tag (artifacts only)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -86,17 +95,26 @@ jobs:
       # while the version does: MAJOR*1000000 + MINOR*1000 + PATCH. Derived from
       # the tag rather than the run number, so F-Droid rebuilding the same tag
       # arrives at the same number.
-      - name: Version from the tag
+      - name: Version from the tag or the workspace
         id: version
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          TEST_RELEASE: ${{ inputs.test_release }}
         run: |
-          tag="$RELEASE_TAG"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::release tag must match vMAJOR.MINOR.PATCH"
+          if [ "$TEST_RELEASE" = "true" ]; then
+            name=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          else
+            tag="$RELEASE_TAG"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release tag must match vMAJOR.MINOR.PATCH (or set test_release)"
+              exit 1
+            fi
+            name="${tag#v}"
+          fi
+          if [[ ! "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH"
             exit 1
           fi
-          name="${tag#v}"
           IFS=. read -r major minor patch <<< "$name"
           if [ "$minor" -ge 1000 ] || [ "$patch" -ge 1000 ]; then
             echo "::error::minor and patch must be below 1000 for the versionCode scheme"
@@ -110,6 +128,7 @@ jobs:
       # compat-fixtures` and committed before the tag; the Rust version is
       # checked too, because it is what the fixtures are named after.
       - name: Compatibility fixtures for this version
+        if: inputs.test_release != true
         run: |
           name='${{ steps.version.outputs.name }}'
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -276,6 +295,7 @@ jobs:
       # The notes are the store changelog for this versionCode, the same file
       # F-Droid reads, so the two cannot say different things.
       - name: Draft the GitHub release
+        if: inputs.test_release != true
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
