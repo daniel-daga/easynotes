@@ -76,7 +76,8 @@ void main() {
     final library = FakeNoteLibrary(notes: {'note': FakeNoteCore()});
     final id = await library.makeTag('Travel');
     await pumpManager(tester, library, noteId: 'note');
-    expect(find.byType(TextField), findsNothing);
+    expect(find.byKey(const Key('label-search-field')), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
     expect(find.byIcon(Icons.edit_outlined), findsNothing);
     expect(find.byKey(const Key('label-forget')), findsNothing);
 

@@ -72,7 +72,10 @@ void main() {
 
   Future<void> submit(WidgetTester tester, String url) async {
     await tester.enterText(find.byKey(const Key('relay-url-field')), url);
-    await tester.tap(find.byKey(const Key('switch-relay-button')));
+    final button = find.byKey(const Key('switch-relay-button'));
+    await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
+    await tester.tap(button);
     await tester.pumpAndSettle();
   }
 
@@ -204,6 +207,12 @@ void main() {
       'release', (tester) async {
     const plain = RelayProfile(id: 'lan', url: 'http://192.168.1.10:8080');
     await pump(tester, profiles: const [_local, plain], mobileRelease: true);
+    await tester.scrollUntilVisible(
+      find.text('Needs an https:// relay in this version'),
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     expect(
       find.text('Needs an https:// relay in this version'),
       findsOneWidget,

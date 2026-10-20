@@ -121,6 +121,7 @@ void main() {
     );
     final adopt = find.byKey(const Key('adopt-account-button'));
     await tester.ensureVisible(adopt);
+    await tester.pumpAndSettle();
     await tester.tap(adopt);
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('adopt-phrase-field')), findsOneWidget);

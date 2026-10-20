@@ -167,6 +167,8 @@ void main() {
     final library = FakeNoteLibrary();
     await pumpList(tester, library);
 
+    await tester.tap(find.byKey(const Key('toggle-add-shortcuts-button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-list-button')));
     await tester.pumpAndSettle();
 
