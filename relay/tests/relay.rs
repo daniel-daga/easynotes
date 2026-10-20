@@ -927,7 +927,7 @@ async fn metrics_count_what_the_relay_does() {
     );
     assert_eq!(
         metric(&during, "easynotes_relay_update_bytes_accepted_total"),
-        Some((((sealed.len() * 4) + 2) / 3) as u64)
+        Some(((sealed.len() * 4).div_ceil(3)) as u64)
     );
     assert_eq!(
         metric(&during, "easynotes_relay_sockets_opened_total"),

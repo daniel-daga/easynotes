@@ -789,34 +789,6 @@ fn permanent(e: &CoreError) -> bool {
     matches!(e, CoreError::Attachment(_) | CoreError::Crypto(_))
 }
 
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-
-    #[test]
-    fn transfer_retry_delays_are_randomized_within_shared_ceilings() {
-        for ceiling in [1, 2, 4, 8, 16, 32, 60].map(Duration::from_secs) {
-            for _ in 0..100 {
-                let delay = randomized_retry(ceiling);
-                assert!(delay >= ceiling / 2);
-                assert!(delay <= ceiling);
-            }
-        }
-    }
-
-    #[test]
-    fn transfer_retry_ceiling_stops_at_sixty_seconds() {
-        assert_eq!(MAX_BACKOFF, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn server_retry_after_is_transient_and_attachment_refusals_stay_terminal() {
-        assert!(!permanent(&CoreError::RetryAfter(Duration::from_secs(9))));
-        assert!(permanent(&CoreError::Attachment("relay refused".into())));
-        assert!(permanent(&CoreError::Crypto("wrong digest")));
-    }
-}
-
 /// Upload both of an import's variants, reporting each chunk as it goes.
 async fn push<P: TransferPeer, S: MediaStorage>(
     peer: Arc<P>,
@@ -872,4 +844,32 @@ async fn pull<P: TransferPeer, S: MediaStorage>(
     })
     .await?;
     incoming.finish().await
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn transfer_retry_delays_are_randomized_within_shared_ceilings() {
+        for ceiling in [1, 2, 4, 8, 16, 32, 60].map(Duration::from_secs) {
+            for _ in 0..100 {
+                let delay = randomized_retry(ceiling);
+                assert!(delay >= ceiling / 2);
+                assert!(delay <= ceiling);
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_retry_ceiling_stops_at_sixty_seconds() {
+        assert_eq!(MAX_BACKOFF, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn server_retry_after_is_transient_and_attachment_refusals_stay_terminal() {
+        assert!(!permanent(&CoreError::RetryAfter(Duration::from_secs(9))));
+        assert!(permanent(&CoreError::Attachment("relay refused".into())));
+        assert!(permanent(&CoreError::Crypto("wrong digest")));
+    }
 }
