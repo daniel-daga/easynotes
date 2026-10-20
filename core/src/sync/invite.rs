@@ -83,42 +83,6 @@ fn randomized_retry(failures: u32) -> std::time::Duration {
     std::time::Duration::from_millis(rand::rng().random_range((max_ms / 2).max(1)..=max_ms))
 }
 
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-
-    #[test]
-    fn invitations_retry_only_transient_statuses() {
-        for status in [408, 429, 500, 502, 599] {
-            assert!(transient_invite_status(status));
-        }
-        for status in [400, 401, 403, 404, 409, 410, 413] {
-            assert!(!transient_invite_status(status));
-        }
-    }
-
-    #[test]
-    fn invitation_retry_delays_share_the_transfer_ceilings() {
-        let ceilings = [1, 2, 4, 8, 16, 32, 60].map(std::time::Duration::from_secs);
-        for (failure, ceiling) in ceilings.into_iter().enumerate() {
-            for _ in 0..100 {
-                let delay = randomized_retry(failure as u32);
-                assert!(delay >= ceiling / 2);
-                assert!(delay <= ceiling);
-            }
-        }
-        assert!(randomized_retry(20) <= MAX_RETRY);
-        let server = std::time::Duration::from_secs(23);
-        assert_eq!(invitation_retry_delay(Some(server), 0), server);
-        assert_eq!(
-            parse_retry_after(Some("7")),
-            Some(std::time::Duration::from_secs(7))
-        );
-        assert_eq!(parse_retry_after(Some("invalid")), None);
-        assert_eq!(parse_retry_after(None), None);
-    }
-}
-
 fn unb64(raw: &str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
         .decode(raw)
@@ -335,4 +299,40 @@ pub async fn withdraw(
     )
     .await
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn invitations_retry_only_transient_statuses() {
+        for status in [408, 429, 500, 502, 599] {
+            assert!(transient_invite_status(status));
+        }
+        for status in [400, 401, 403, 404, 409, 410, 413] {
+            assert!(!transient_invite_status(status));
+        }
+    }
+
+    #[test]
+    fn invitation_retry_delays_share_the_transfer_ceilings() {
+        let ceilings = [1, 2, 4, 8, 16, 32, 60].map(std::time::Duration::from_secs);
+        for (failure, ceiling) in ceilings.into_iter().enumerate() {
+            for _ in 0..100 {
+                let delay = randomized_retry(failure as u32);
+                assert!(delay >= ceiling / 2);
+                assert!(delay <= ceiling);
+            }
+        }
+        assert!(randomized_retry(20) <= MAX_RETRY);
+        let server = std::time::Duration::from_secs(23);
+        assert_eq!(invitation_retry_delay(Some(server), 0), server);
+        assert_eq!(
+            parse_retry_after(Some("7")),
+            Some(std::time::Duration::from_secs(7))
+        );
+        assert_eq!(parse_retry_after(Some("invalid")), None);
+        assert_eq!(parse_retry_after(None), None);
+    }
 }

@@ -1781,7 +1781,7 @@ class _DraggableCardState extends State<_DraggableCard> {
           details.data.id != _note.id && details.data.pinned == _note.pinned,
       onAcceptWithDetails: (details) =>
           widget.onMove(details.data.id, _note.id),
-      onMoveWithDetails: (_) => widget.onTargetChanged(_note.id),
+      onMove: (_) => widget.onTargetChanged(_note.id),
       builder: (context, _, _) => LayoutBuilder(
         builder: (context, constraints) => LongPressDraggable<NoteSummary>(
           data: _note,

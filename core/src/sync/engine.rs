@@ -1098,15 +1098,16 @@ async fn wait(
 }
 
 /// Everything the engine holds that outlives one connection.
+/// A refresh in progress: the notes it is waiting for, and the channel that
+/// completes when the last one arrives.
+type Refresh = (
+    HashSet<NoteId>,
+    oneshot::Sender<std::result::Result<(), String>>,
+);
+
 struct Device {
     notes: HashMap<NoteId, Live>,
-    refreshes: HashMap<
-        String,
-        (
-            HashSet<NoteId>,
-            oneshot::Sender<std::result::Result<(), String>>,
-        ),
-    >,
+    refreshes: HashMap<String, Refresh>,
     /// Every [`SyncDevice`] has been dropped, so no note can be connected
     /// again: once the last one goes, so does the engine.
     released: bool,
