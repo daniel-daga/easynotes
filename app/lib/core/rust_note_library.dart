@@ -559,6 +559,10 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   }
 
   @override
+  Future<void> verifyRelay(String url, {String? access}) =>
+      _library.verifyRelay(relay: url, access: access);
+
+  @override
   Future<void> disconnect() => _library.disconnect();
 
   @override

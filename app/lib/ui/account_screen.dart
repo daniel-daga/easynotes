@@ -37,12 +37,19 @@ class AccountScreen extends StatefulWidget {
     this.profile,
     this.onDeleted,
     this.embedded = false,
+    this.creating = false,
   });
 
   final Accounts library;
 
   /// Reuse the recovery and account controls inside Sync & devices.
   final bool embedded;
+
+  /// The first-run setup's way in: this is the creation step, not the place
+  /// an account is managed. It is titled for what it does, leaves out the
+  /// device and deletion rows, and closes once there is an account to go
+  /// back to.
+  final bool creating;
 
   /// What the app does once the account is deleted: open this profile again,
   /// empty. Called after this screen has closed itself.
@@ -86,6 +93,10 @@ class _AccountScreenState extends State<AccountScreen> {
       ),
     );
     if (!mounted) return;
+    if (widget.creating) {
+      Navigator.of(context).pop();
+      return;
+    }
     setState(() => _busy = false);
   }
 
@@ -107,6 +118,7 @@ class _AccountScreenState extends State<AccountScreen> {
         'This device is now yours. Your notes arrive when it reaches the relay.',
       );
     }
+    if (widget.creating) Navigator.of(context).pop();
   }
 
   /// Delete the account, if this person says so twice: once in a dialog that
@@ -259,7 +271,7 @@ class _AccountScreenState extends State<AccountScreen> {
                 onPressed: _busy ? null : _adopt,
               ),
             ],
-      if (!widget.embedded && widget.profile != null) ...[
+      if (!widget.creating && !widget.embedded && widget.profile != null) ...[
         const SizedBox(height: 24),
         ListTile(
           key: const Key('account-relay'),
@@ -276,22 +288,26 @@ class _AccountScreenState extends State<AccountScreen> {
           ),
         ),
       ],
-      if (!widget.embedded) const Divider(height: 48),
-      if (widget.embedded)
-        ExpansionTile(
-          tilePadding: EdgeInsets.zero,
-          title: const Text('Account settings'),
-          children: [_deleteTile(has)],
-        )
-      else
-        _deleteTile(has),
+      if (!widget.creating) ...[
+        if (!widget.embedded) const Divider(height: 48),
+        if (widget.embedded)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Account settings'),
+            children: [_deleteTile(has)],
+          )
+        else
+          _deleteTile(has),
+      ],
       if (_busy) const LinearProgressIndicator(),
     ];
     if (widget.embedded) {
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
     }
     return Scaffold(
-      appBar: AppBar(title: const Text('Your devices')),
+      appBar: AppBar(
+        title: Text(widget.creating ? 'Create account' : 'Your devices'),
+      ),
       body: ListView(padding: const EdgeInsets.all(24), children: children),
     );
   }

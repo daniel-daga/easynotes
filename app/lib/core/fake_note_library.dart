@@ -721,6 +721,18 @@ class FakeNoteLibrary implements NoteLibrary {
     pushStatus(const SyncStatus(state: SyncState.connecting));
   }
 
+  /// What [verifyRelay] throws, when a test wants an address that does not
+  /// answer. Null for a relay that does.
+  Object? verifyRelayFails;
+
+  @override
+  Future<void> verifyRelay(String url, {String? access}) async {
+    calls.add(
+      access == null ? 'verifyRelay($url)' : 'verifyRelay($url, $access)',
+    );
+    if (verifyRelayFails case final error?) throw error;
+  }
+
   @override
   Future<void> disconnect() async {
     calls.add('disconnect()');

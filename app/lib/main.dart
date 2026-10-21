@@ -29,14 +29,32 @@ import 'ui/about_screen.dart' show registerBundledLicenses;
 import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
 import 'ui/onboarding_screen.dart';
-import 'ui/relay_settings_screen.dart';
+import 'ui/relay_setup_wizard.dart';
 
 ThemeData _easyNotesTheme(Brightness brightness) {
-  final scheme = ColorScheme.fromSeed(
-    seedColor: brightness == Brightness.light ? Colors.black : Colors.white,
-    brightness: brightness,
-    dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
-  );
+  final light = brightness == Brightness.light;
+  // A black or white seed gives neutral greys, but Material still puts the
+  // accent roles at tone 40 and 80. Pin them to the seed itself — black on
+  // light, white on dark — with containers one step off the surface, so that
+  // a filled button or the FAB reads as ink on paper rather than grey.
+  final accent = light ? Colors.black : Colors.white;
+  final onAccent = light ? Colors.white : Colors.black;
+  final container = light ? const Color(0xFFEFEFEF) : const Color(0xFF262626);
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: accent,
+        brightness: brightness,
+        dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
+      ).copyWith(
+        primary: accent,
+        onPrimary: onAccent,
+        primaryContainer: container,
+        onPrimaryContainer: accent,
+        secondary: accent,
+        onSecondary: onAccent,
+        secondaryContainer: container,
+        onSecondaryContainer: accent,
+      );
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
@@ -71,6 +89,8 @@ ThemeData _easyNotesTheme(Brightness brightness) {
       focusElevation: 3,
       hoverElevation: 4,
       highlightElevation: 5,
+      backgroundColor: scheme.primary,
+      foregroundColor: scheme.onPrimary,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
     ),
   );
@@ -258,6 +278,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
         builder: (_) => AccountScreen(
           library: _session.library,
           profile: _session.profile,
+          creating: true,
         ),
       ),
     );
@@ -266,18 +287,15 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   }
 
   Future<void> _setUpRelay() async {
-    await _navigatorKey.currentState!.push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => RelaySettingsScreen(
-          profile: _session.profile,
-          profiles: _session.profiles.profiles,
+    final connected = await _navigatorKey.currentState!.push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => RelaySetupWizard(
           onSwitchRelay: _session.switchTo,
-          onMoveLocalToRelay: _session.moveLocalToRelay,
-          onSetAccess: _session.setAccess,
+          onVerifyRelay: _session.library.verifyRelay,
         ),
       ),
     );
-    if (!mounted || _session.profile.url == null) return;
+    if (!mounted || connected != true) return;
     setState(() => _relayConnectedDuringOnboarding = true);
   }
 

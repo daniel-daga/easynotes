@@ -482,6 +482,15 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// again with another key is how a changed key takes effect.
   Future<void> connect(String url, {String? access});
 
+  /// Check that the relay at [url] can be reached and will accept this device
+  /// with [access], without connecting this library to it or needing a note.
+  ///
+  /// What first-run setup uses to verify an address before it commits to a
+  /// profile: the engine opens no socket until it has a note, so a fresh
+  /// device has no [syncStatus] to read. Throws with the relay's or the
+  /// network's words when it cannot connect.
+  Future<void> verifyRelay(String url, {String? access});
+
   /// Stop syncing. Edits still work and still queue.
   Future<void> disconnect();
 

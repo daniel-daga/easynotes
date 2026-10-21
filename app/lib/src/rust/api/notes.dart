@@ -483,6 +483,17 @@ abstract class Library implements RustOpaqueInterface {
   /// How many batches are waiting. Zero on a device with a disk, always.
   int unwrittenBatches();
 
+  /// Check that a relay can be reached and will accept this device, without
+  /// binding this library to it or needing a note to sync.
+  ///
+  /// The engine opens no socket until it has a note to sync, so a device
+  /// with no notes — first-run setup — has no connection status to watch.
+  /// This performs the handshake a connection would: prove the device key
+  /// and the access key to the relay, then open and close the sync socket.
+  /// It leaves the library, its bound relay and its selection untouched, so
+  /// a relay that fails the check can be replaced without a profile switch.
+  Future<void> verifyRelay({required String relay, String? access});
+
   /// The note list now, and every version of it after that.
   ///
   /// Every edit reaches it, whether it was made here or arrived from another

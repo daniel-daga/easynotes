@@ -280,6 +280,70 @@ void main() {
     expect(find.byKey(const Key('adopt-account-button')), findsNothing);
   });
 
+  group('the first-run creation step', () {
+    Future<void> pumpCreating(
+      WidgetTester tester,
+      FakeNoteLibrary library,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => AccountScreen(
+                      library: library,
+                      ask: ask,
+                      creating: true,
+                    ),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('is titled for creation, not for managing devices', (
+      tester,
+    ) async {
+      await pumpCreating(tester, FakeNoteLibrary());
+
+      expect(
+        find.descendant(
+          of: find.byType(AppBar),
+          matching: find.text('Create account'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Your devices'), findsNothing);
+      expect(find.byKey(const Key('account-relay')), findsNothing);
+      expect(find.byKey(const Key('delete-account')), findsNothing);
+      expect(find.byKey(const Key('create-account-button')), findsOneWidget);
+    });
+
+    testWidgets('closes once the account is made, so onboarding can go on', (
+      tester,
+    ) async {
+      final library = FakeNoteLibrary();
+      await pumpCreating(tester, library);
+
+      await tester.tap(find.byKey(const Key('create-account-button')));
+      await tester.pumpAndSettle();
+      await tapKey(tester, 'phrase-written');
+      await answer(tester, {2: word(2), 7: word(7), 11: word(11)});
+
+      expect(library.hasAccount, isTrue);
+      expect(find.byType(AccountScreen), findsNothing);
+      expect(find.text('open'), findsOneWidget);
+    });
+  });
+
   group('the relay the account belongs to', () {
     // Each relay has an account of its own, so a phrase restores only from
     // the relay it was made on. The screens say which that is.

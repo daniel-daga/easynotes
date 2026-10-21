@@ -3480,6 +3480,45 @@ impl Library {
         Ok(())
     }
 
+    /// Check that a relay can be reached and will accept this device, without
+    /// binding this library to it or needing a note to sync.
+    ///
+    /// The engine opens no socket until it has a note to sync, so a device
+    /// with no notes — first-run setup — has no connection status to watch.
+    /// This performs the handshake a connection would: prove the device key
+    /// and the access key to the relay, then open and close the sync socket.
+    /// It leaves the library, its bound relay and its selection untouched, so
+    /// a relay that fails the check can be replaced without a profile switch.
+    pub async fn verify_relay(&self, relay: String, access: Option<String>) -> Result<(), String> {
+        let access = match access.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(raw) => Some(
+                RelayAccess::decode(raw)
+                    .map_err(|_| "That is not a relay access key.".to_string())?,
+            ),
+        };
+        let endpoint = easynotes_core::sync::RelayEndpoint::parse(&relay)
+            .map_err(|e| e.to_string())?
+            .with_access(access);
+        // The device key is this profile's, which the relay accepts like any
+        // other: what the check is for is the address and the access key.
+        let peer = self.shared.core.clone();
+        on_network(async move {
+            let token = easynotes_core::sync::authenticate(
+                &endpoint.http_base,
+                endpoint.access.as_ref(),
+                &peer,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let sync = easynotes_core::sync::DeviceSync::connect(&endpoint.ws_base, &token)
+                .await
+                .map_err(|e| e.to_string())?;
+            sync.close().await.map_err(|e| e.to_string())
+        })
+        .await
+    }
+
     /// Send every edit that is waiting for the typing to pause, now.
     ///
     /// For when the app may not get another chance: going into the background,

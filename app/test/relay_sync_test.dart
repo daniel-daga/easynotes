@@ -789,6 +789,30 @@ void main() {
     );
   }, skip: skip);
 
+  group('verifying a relay before committing to one', () {
+    test('a reachable relay answers the handshake', () async {
+      final library = await device();
+      await library.verifyRelay(relayUrl);
+    });
+
+    test('the access key is checked in the handshake, not later', () async {
+      final library = await device();
+      await expectLater(
+        library.verifyRelay(gatedRelayUrl),
+        throwsA(anything),
+      );
+      await library.verifyRelay(gatedRelayUrl, access: _relayKey);
+    });
+
+    test('an address with no relay behind it fails', () async {
+      final library = await device();
+      await expectLater(
+        library.verifyRelay('http://127.0.0.1:1'),
+        throwsA(anything),
+      );
+    });
+  }, skip: skip);
+
   group('a relay with an access key', () {
     test(
       'asks a device without the key for it, and syncs one with it',
