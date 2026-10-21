@@ -64,7 +64,7 @@ impl RelayAccess {
     /// carries it. Padding and surrounding space are forgiven; anything that is
     /// not exactly 32 bytes is not a key.
     pub fn decode(raw: &str) -> Result<Self> {
-        let bad = || CoreError::Storage("that is not a relay access key".into());
+        let bad = || CoreError::Storage("that is not a server access key".into());
         let raw = raw.trim().trim_end_matches('=');
         let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| bad())?;
         let key: [u8; ACCESS_KEY_LEN] = bytes.try_into().map_err(|_| bad())?;

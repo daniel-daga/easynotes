@@ -75,7 +75,7 @@ async fn post_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Re
     if !(200..300).contains(&status) {
         return Err(wire::http_error(status));
     }
-    serde_json::from_str(&text).map_err(|e| net(format!("relay sent nonsense: {e}")))
+    serde_json::from_str(&text).map_err(|e| net(format!("sync server sent nonsense: {e}")))
 }
 
 /// A JSON `POST`, and whatever came back, whatever its status.
@@ -117,7 +117,7 @@ pub(crate) async fn post(
             .await
             .map_err(js)?
             .as_string()
-            .ok_or_else(|| net("the relay's answer was not text"))?;
+            .ok_or_else(|| net("the sync server's answer was not text"))?;
         Ok((status, text, retry_after))
     })
     .await
@@ -244,7 +244,7 @@ pub async fn authenticate(
     };
     super::timer::timeout(std::time::Duration::from_secs(10), auth)
         .await
-        .map_err(|_| net("browser relay authentication timed out after 10 seconds"))?
+        .map_err(|_| net("browser sync server authentication timed out after 10 seconds"))?
 }
 
 /// What a handler saw.
@@ -322,12 +322,12 @@ impl Socket {
             Err(_) => return Err(net("browser sync socket timed out after 10 seconds")),
             Ok(Some(Event::Open)) => {}
             Ok(Some(Event::Failed)) | Ok(None) => {
-                return Err(net("the relay could not be reached"));
+                return Err(net("the sync server could not be reached"));
             }
-            Ok(Some(Event::Closed)) => return Err(net("the relay closed the connection")),
+            Ok(Some(Event::Closed)) => return Err(net("the sync server closed the connection")),
             // A message before `onopen` is not something a browser does.
             Ok(Some(Event::Text(_))) => {
-                return Err(net("the relay spoke before the socket opened"));
+                return Err(net("the sync server spoke before the socket opened"));
             }
         }
 

@@ -307,7 +307,7 @@ impl RelayEndpoint {
     /// otherwise resolve differently from this.
     pub fn parse(url: &str) -> Result<Self> {
         let url = url.trim();
-        let bad = || CoreError::Storage(format!("not a relay address: {url:?}"));
+        let bad = || CoreError::Storage(format!("not a sync server address: {url:?}"));
         let (scheme, rest) = url.split_once("://").ok_or_else(bad)?;
         let (tls, default_port) = match scheme.to_ascii_lowercase().as_str() {
             "http" | "ws" => (false, 80),
@@ -923,7 +923,7 @@ async fn session<P: SyncPeer>(
                             let _ = sync.close().await;
                             return Ended::Connected {
                                 caught: true,
-                                reason: "the relay was restored; rebuilding its copy".into(),
+                                reason: "the sync server was restored; rebuilding its copy".into(),
                             };
                         }
                         Ok(Received::Throttled(delay)) => {
@@ -935,7 +935,7 @@ async fn session<P: SyncPeer>(
                     }
                 }
                 Ok(Some(_)) => {}
-                Ok(None) => return Ended::Failed("the relay closed the connection".into()),
+                Ok(None) => return Ended::Failed("the sync server closed the connection".into()),
                 Err(e) => return Ended::Failed(e.to_string()),
             }
         }
@@ -1000,7 +1000,7 @@ async fn session<P: SyncPeer>(
                         Ok(Received::Caught) => caught = true,
                         Ok(Received::Reset) => {
                             let _ = sync.close().await;
-                            return lost(true, "the relay was restored; rebuilding its copy".into());
+                            return lost(true, "the sync server was restored; rebuilding its copy".into());
                         }
                         // Not caught, whatever was: that is what makes the
                         // engine back off rather than come straight back.
@@ -1020,7 +1020,7 @@ async fn session<P: SyncPeer>(
                 Ok(Some(Routed::Refresh { id, note, .. })) => {
                     device.refresh_complete(&id, note);
                 }
-                Ok(None) => return lost(caught, "the relay closed the connection".into()),
+                Ok(None) => return lost(caught, "the sync server closed the connection".into()),
                 Err(e) => return lost(caught, e.to_string()),
             },
         }
@@ -1078,7 +1078,7 @@ async fn wait(
                 Some(Command::Reclaim { .. }) => {}
                 Some(Command::Flush { .. }) => {}
                 Some(Command::Refresh { complete, .. }) => {
-                    let _ = complete.send(Err("the relay is not connected".into()));
+                    let _ = complete.send(Err("the sync server is not connected".into()));
                 }
                 Some(Command::SetForeground(foreground)) => {
                     device.foreground = foreground;

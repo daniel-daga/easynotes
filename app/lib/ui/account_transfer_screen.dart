@@ -152,7 +152,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         await widget.onSetAccess(transfer.relayAccess);
       } else {
         throw StateError(
-          'Choose the same relay as the original device in Server settings, then scan again.',
+          'Choose the same sync server as the original device in Sync server '
+          'settings, then scan again.',
         );
       }
       await widget.library.adoptAccountTransfer();
@@ -196,7 +197,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         children: [
           Text(
             owner
-                ? 'Scan this QR code with your new device. The account key and relay access key are encrypted for that device. Keep this screen open until you approve the request.'
+                ? 'Scan this QR code with your new device. The account key and server access key are encrypted for that device. Keep this screen open until you approve the request.'
                 : 'Scan the QR code shown by your original device. Both devices will show a matching code; compare them before approving on the original device.',
           ),
           const SizedBox(height: 20),

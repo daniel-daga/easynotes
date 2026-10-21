@@ -90,13 +90,16 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     }
     final target = url ?? 'On this device';
     final destinationExists = widget.profiles.any((p) => p.url == url);
-    final canMove = widget.profile.url == null &&
-        url != null && !destinationExists && widget.onMoveLocalToRelay != null;
+    final canMove =
+        widget.profile.url == null &&
+        url != null &&
+        !destinationExists &&
+        widget.onMoveLocalToRelay != null;
     if (canMove) {
       final move = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Connect relay'),
+          title: const Text('Connect sync server'),
           content: Text(
             'Use $target for this collection? Move your current notes, '
             'including attachments, labels and reminders, or keep them in '
@@ -128,11 +131,11 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Switch relay?'),
+        title: const Text('Switch sync server?'),
         content: Text(
-          'Each relay has separate notes and an account. Your current notes '
-          'stay here, and you can switch back to see them again. '
-          'Pending edits resume syncing when you select this relay again. '
+          'Each sync server has separate notes and an account. Your current '
+          'notes stay here, and you can switch back to see them again. '
+          'Pending edits resume syncing when you select this server again. '
           '${destinationExists ? 'Its saved notes will open. ' : 'This profile starts empty. '}'
           'Switch to $target?',
         ),
@@ -152,7 +155,11 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     await _applySwitch(url, access: access);
   }
 
-  Future<void> _applySwitch(String? url, {String? access, bool move = false}) async {
+  Future<void> _applySwitch(
+    String? url, {
+    String? access,
+    bool move = false,
+  }) async {
     setState(() => _switching = true);
     try {
       if (move) {
@@ -171,9 +178,13 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       // A move may already be durable when starting the connection fails.
       // Return to the live collection instead of keeping stale local settings.
       if (move) Navigator.of(context).popUntil((route) => route.isFirst);
-      messenger.showSnackBar(SnackBar(content: Text(
-        move ? message : 'Could not switch relay: $message',
-      )));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            move ? message : 'Could not switch sync server: $message',
+          ),
+        ),
+      );
     }
   }
 
@@ -193,7 +204,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
           content: Text(
             access == null
                 ? 'Access key removed.'
-                : 'Access key saved. Reconnecting to the relay.',
+                : 'Access key saved. Reconnecting to the sync server.',
           ),
         ),
       );
@@ -233,12 +244,12 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
       if (relay != null && link.url != relay) {
         return (
           access: null,
-          error: 'That link is for another relay: ${link.url}.',
+          error: 'That link is for another sync server: ${link.url}.',
         );
       }
       return (access: link.access, error: null);
     } on FormatException {
-      return (access: null, error: 'That is not an access key or relay link.');
+      return (access: null, error: 'That is not an access key or server link.');
     }
   }
 
@@ -248,7 +259,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'Relay link copied. It lets whoever has it use this relay, so '
+          'Server link copied. It lets whoever has it use this server, so '
           'send it only to people you share lists with.',
         ),
       ),
@@ -271,18 +282,18 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
     }
     if (widget.servedOverHttps && url.startsWith('http://')) {
       return 'This page is served over HTTPS, so the browser will only reach '
-          'a relay whose address starts with https://.';
+          'a sync server whose address starts with https://.';
     }
     if (widget.mobileRelease && url.startsWith('http://')) {
-      return 'Notes only sync over an encrypted connection. Use a relay '
-          'address that starts with https:// or wss://.';
+      return 'Notes only sync over an encrypted connection. Use a sync '
+          'server address that starts with https:// or wss://.';
     }
     return null;
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Server (relay)')),
+    appBar: AppBar(title: const Text('Sync server')),
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -291,29 +302,31 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.check_circle_outline),
           title: Text(widget.profile.label),
-          subtitle: Text(widget.profile.url == null
-              ? 'This collection stays on this device until you set up sync.'
-              : 'Notes in other collections stay separate.'),
+          subtitle: Text(
+            widget.profile.url == null
+                ? 'This collection stays on this device until you set up sync.'
+                : 'Notes in other collections stay separate.',
+          ),
         ),
         if (widget.profile.url != null) ..._accessSection(context),
         const Divider(height: 32),
         Text(
-          'Switch to a relay',
+          'Switch to a sync server',
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 8),
         const Text(
-          'A relay stores encrypted backups and can sync notes. You can use '
-          'one without an account; create an account for device access and '
-          'sharing.',
+          'A sync server stores encrypted backups and can sync notes. You can '
+          'use one without an account; create an account for device access '
+          'and sharing.',
           key: Key('relay-account-explanation'),
         ),
         const SizedBox(height: 8),
         const Text(
-          'EasyNotes does not provide a relay. Get an address from your '
-          'organization or a relay provider. For sharing, use the same relay '
-          'as the people you share notes with. You can continue on this device '
-          'and connect a relay later.',
+          'EasyNotes does not provide a sync server. Get an address from your '
+          'organization or a sync server provider. For sharing, use the same '
+          'server as the people you share notes with. You can continue on '
+          'this device and connect a server later.',
           key: Key('relay-address-help'),
         ),
         Form(
@@ -327,10 +340,10 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 keyboardType: TextInputType.url,
                 autocorrect: false,
                 decoration: const InputDecoration(
-                  labelText: 'Relay URL or relay link',
-                  hintText: 'https://relay.example',
+                  labelText: 'Server address or server link',
+                  hintText: 'https://sync.example.com',
                   helperText:
-                      'Use the same relay as the people you share notes with.',
+                      'Use the same server as the people you share notes with.',
                 ),
                 validator: _validate,
                 onFieldSubmitted: (_) => _submitUrl(),
@@ -341,10 +354,10 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                 enabled: !_switching,
                 autocorrect: false,
                 decoration: const InputDecoration(
-                  labelText: 'Access key (if the relay has one)',
+                  labelText: 'Access key (if the server has one)',
                   helperText:
-                      'Get the key from the relay operator. A relay link '
-                      'includes it. Leave empty if the relay is open.',
+                      'Get the key from whoever runs the server. A server link '
+                      'includes it. Leave empty if the server is open.',
                   helperMaxLines: 2,
                 ),
                 validator: _validateAccess,
@@ -357,7 +370,9 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
                   key: const Key('switch-relay-button'),
                   onPressed: _switching ? null : _submitUrl,
                   child: Text(
-                    widget.profile.url == null ? 'Connect relay' : 'Switch relay',
+                    widget.profile.url == null
+                        ? 'Connect sync server'
+                        : 'Switch sync server',
                   ),
                 ),
               ),
@@ -378,7 +393,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
             subtitle: profile.url == widget.profile.url
                 ? const Text('Selected')
                 : widget.refuses(profile.url)
-                ? const Text('Needs an https:// relay in this version')
+                ? const Text('Needs an https:// server in this version')
                 : null,
             enabled:
                 !_switching &&
@@ -401,9 +416,9 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
         title: Text(link == null ? 'No access key' : 'Access key saved'),
         subtitle: Text(
           link == null
-              ? 'Enough for a relay anyone may use. If this relay asks for a '
-                    'key, enter the one its operator gave you.'
-              : 'Someone you share a list with needs this relay\'s link as '
+              ? 'Enough for a server anyone may use. If this server asks for '
+                    'a key, enter the one whoever runs it gave you.'
+              : 'Someone you share a list with needs this server\'s link as '
                     'well as the invite.',
         ),
       ),
@@ -422,7 +437,7 @@ class _RelaySettingsScreenState extends State<RelaySettingsScreen> {
             OutlinedButton(
               key: const Key('relay-link-copy'),
               onPressed: () => _copyRelayLink(link),
-              child: const Text('Copy relay link'),
+              child: const Text('Copy server link'),
             ),
         ],
       ),
@@ -479,14 +494,14 @@ class _AccessKeyDialogState extends State<_AccessKeyDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Relay access key'),
+    title: const Text('Sync server access key'),
     content: TextField(
       key: const Key('relay-access-dialog-field'),
       controller: _controller,
       autocorrect: false,
       decoration: InputDecoration(
-        labelText: 'Access key or relay link',
-        helperText: 'Whoever runs this relay can give you either.',
+        labelText: 'Access key or server link',
+        helperText: 'Whoever runs this server can give you either.',
         helperMaxLines: 2,
         errorText: _error,
         errorMaxLines: 3,
@@ -506,4 +521,3 @@ class _AccessKeyDialogState extends State<_AccessKeyDialog> {
     ],
   );
 }
-

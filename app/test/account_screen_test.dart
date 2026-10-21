@@ -97,7 +97,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Sync not set up'), findsOneWidget);
     expect(find.text('Sync & devices'), findsOneWidget);
-    expect(find.text('Relay settings'), findsNothing);
+    expect(find.text('Sync server settings'), findsNothing);
     expect(find.text('Your devices'), findsNothing);
 
     await tester.tap(find.byKey(const Key('sync-status')));
@@ -363,7 +363,7 @@ void main() {
         scrollable: find.byType(Scrollable).last,
       );
       expect(find.text('https://relay.example'), findsOneWidget);
-      expect(find.textContaining('choose the same relay'), findsOneWidget);
+      expect(find.textContaining('choose the same server'), findsOneWidget);
     });
 
     testWidgets('restoring says where the notes come from', (tester) async {
@@ -390,7 +390,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('This device is not using a relay'),
+        find.textContaining('This device is not using a sync server'),
         findsOneWidget,
       );
     });
@@ -543,10 +543,9 @@ void main() {
       );
       await openDelete(tester);
       expect(
-        find.textContaining('Nothing here was ever on a relay'),
+        find.textContaining('Nothing here was ever on a sync server'),
         findsOneWidget,
       );
     });
   });
 }
-

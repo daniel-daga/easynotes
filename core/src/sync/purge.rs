@@ -42,10 +42,10 @@ pub async fn purge(http_base: &str, topics: &[(NoteId, Request)]) -> Result<Vec<
         let (status, text, _) = post(&wire::api(http_base, "/purge"), body).await?;
         invite_status(status, &text)?;
         let answer: wire::PurgeResponse = serde_json::from_str(&text)
-            .map_err(|e| wire::net(format!("relay sent nonsense: {e}")))?;
+            .map_err(|e| wire::net(format!("sync server sent nonsense: {e}")))?;
         for entry in answer.refused {
             let note = NoteId::decode(&entry.note)
-                .map_err(|_| wire::net("relay refused a topic it was not asked about"))?;
+                .map_err(|_| wire::net("sync server refused a topic it was not asked about"))?;
             refused.push((note, entry.reason));
         }
     }
@@ -90,7 +90,7 @@ pub async fn purge_all(http_base: &str, plan: &[crate::note::PurgeTarget]) -> Re
     match left.first() {
         None => Ok(()),
         Some((note, reason)) => Err(CoreError::Storage(format!(
-            "the relay kept {} of these ({note}: {reason})",
+            "the sync server kept {} of these ({note}: {reason})",
             left.len()
         ))),
     }

@@ -141,7 +141,7 @@ void main() {
     await enterUrl(tester, 'relay.example');
 
     expect(
-      find.text('Enter a relay URL such as https://relay.example.'),
+      find.text('Enter a server address such as https://sync.example.com.'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('relay-setup-access')), findsNothing);
@@ -156,7 +156,7 @@ void main() {
     await enterAccess(tester, 'nope');
 
     expect(
-      find.text('That is not an access key or relay link.'),
+      find.text('That is not an access key or server link.'),
       findsOneWidget,
     );
     expect(verified, isEmpty);
@@ -171,7 +171,7 @@ void main() {
     await enterAccess(tester, 'https://other.example/#access=$key');
 
     expect(
-      find.text('That link is for another relay: https://other.example.'),
+      find.text('That link is for another sync server: https://other.example.'),
       findsOneWidget,
     );
     expect(verified, isEmpty);
@@ -279,7 +279,7 @@ void main() {
 
     expect(
       find.textContaining(
-        'only reach a relay whose address starts with https://',
+        'only reach a sync server whose address starts with https://',
       ),
       findsOneWidget,
     );

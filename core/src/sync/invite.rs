@@ -50,7 +50,7 @@ async fn call<Q: Serialize>(url: &str, body: &Q) -> Result<String> {
 
 async fn call_json<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let text = call(url, body).await?;
-    serde_json::from_str(&text).map_err(|e| wire::net(format!("relay sent nonsense: {e}")))
+    serde_json::from_str(&text).map_err(|e| wire::net(format!("sync server sent nonsense: {e}")))
 }
 
 const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -86,7 +86,7 @@ fn randomized_retry(failures: u32) -> std::time::Duration {
 fn unb64(raw: &str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
         .decode(raw)
-        .map_err(|_| wire::net("relay sent malformed base64"))
+        .map_err(|_| wire::net("sync server sent malformed base64"))
 }
 
 /// Open an invite on the relay. Returns how many seconds it will last, which
@@ -177,7 +177,9 @@ pub async fn poll(
             Answer::Approved { note, owner }
         }
         (RequestState::Approved, None) => {
-            return Err(wire::net("relay approved a request and sent no grant"))
+            return Err(wire::net(
+                "sync server approved a request and sent no grant",
+            ))
         }
     })
 }

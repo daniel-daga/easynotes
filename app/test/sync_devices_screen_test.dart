@@ -21,14 +21,14 @@ void main() {
     );
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    expect(find.text('Up to date with relay'), findsOneWidget);
+    expect(find.text('Up to date with server'), findsOneWidget);
     expect(find.text('Your devices'), findsNothing);
-    expect(find.text('Relay settings'), findsNothing);
+    expect(find.text('Sync server settings'), findsNothing);
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
     expect(find.text('Up to date'), findsOneWidget);
     expect(
-      find.text('Your notes’ encrypted updates have reached your relay.'),
+      find.text('Your notes’ encrypted updates have reached your server.'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('account-no')), findsOneWidget);
@@ -45,7 +45,7 @@ void main() {
     expect(find.text('Not syncing, 2 edits waiting'), findsOneWidget);
     expect(find.text('Relay unavailable'), findsOneWidget);
     expect(
-      find.text('Your notes’ encrypted updates have reached your relay.'),
+      find.text('Your notes’ encrypted updates have reached your server.'),
       findsNothing,
     );
   });

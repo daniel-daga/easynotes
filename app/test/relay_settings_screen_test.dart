@@ -52,10 +52,12 @@ void main() {
                   profiles: profiles,
                   onSwitchRelay: onSwitch,
                   onSetAccess: onSetAccess,
-                  onMoveLocalToRelay: offerMove ? (url, {access}) async {
-                    moved.add(url);
-                    if (failWith != null) throw failWith!;
-                  } : null,
+                  onMoveLocalToRelay: offerMove
+                      ? (url, {access}) async {
+                          moved.add(url);
+                          if (failWith != null) throw failWith!;
+                        }
+                      : null,
                   servedOverHttps: servedOverHttps,
                   mobileRelease: mobileRelease,
                 ),
@@ -83,7 +85,7 @@ void main() {
       'in its canonical form', (tester) async {
     await pump(tester);
     await submit(tester, 'wss://New.Example/');
-    expect(find.text('Switch relay?'), findsOneWidget);
+    expect(find.text('Switch sync server?'), findsOneWidget);
     expect(find.textContaining('This profile starts empty'), findsOneWidget);
     expect(find.textContaining('Your current notes stay here'), findsOneWidget);
 
@@ -102,7 +104,9 @@ void main() {
     expect(find.textContaining('Its saved notes will open'), findsOneWidget);
   });
 
-  testWidgets('first relay setup can move the current local notes', (tester) async {
+  testWidgets('first relay setup can move the current local notes', (
+    tester,
+  ) async {
     await pump(tester, offerMove: true);
     await submit(tester, 'https://new.example');
     expect(find.byKey(const Key('move-local-notes')), findsOneWidget);
@@ -114,7 +118,9 @@ void main() {
     expect(find.byType(RelaySettingsScreen), findsNothing);
   });
 
-  testWidgets('starting empty keeps local notes in their own collection', (tester) async {
+  testWidgets('starting empty keeps local notes in their own collection', (
+    tester,
+  ) async {
     await pump(tester, offerMove: true);
     await submit(tester, 'https://new.example');
     await tester.tap(find.byKey(const Key('start-empty-collection')));
@@ -132,12 +138,15 @@ void main() {
     expect(moved, isEmpty);
   });
 
-  testWidgets('saved relay collections never offer to move local notes over them', (tester) async {
-    await pump(tester, offerMove: true);
-    await submit(tester, 'https://relay.example');
-    expect(find.byKey(const Key('move-local-notes')), findsNothing);
-    expect(find.textContaining('Its saved notes will open'), findsOneWidget);
-  });
+  testWidgets(
+    'saved relay collections never offer to move local notes over them',
+    (tester) async {
+      await pump(tester, offerMove: true);
+      await submit(tester, 'https://relay.example');
+      expect(find.byKey(const Key('move-local-notes')), findsNothing);
+      expect(find.textContaining('Its saved notes will open'), findsOneWidget);
+    },
+  );
 
   testWidgets('cancelling switches nothing', (tester) async {
     await pump(tester);
@@ -153,7 +162,7 @@ void main() {
   ) async {
     await pump(tester, profile: _relay);
     await submit(tester, 'wss://relay.example');
-    expect(find.text('Switch relay?'), findsNothing);
+    expect(find.text('Switch sync server?'), findsNothing);
     expect(switched, isEmpty);
   });
 
@@ -163,10 +172,10 @@ void main() {
     await pump(tester);
     await submit(tester, 'relay.example');
     expect(
-      find.text('Enter a relay URL such as https://relay.example.'),
+      find.text('Enter a server address such as https://sync.example.com.'),
       findsOneWidget,
     );
-    expect(find.text('Switch relay?'), findsNothing);
+    expect(find.text('Switch sync server?'), findsNothing);
     expect(switched, isEmpty);
   });
 
@@ -177,7 +186,7 @@ void main() {
     await submit(tester, 'http://192.168.1.10:8080');
     expect(
       find.textContaining(
-        'only reach a relay whose address starts with '
+        'only reach a sync server whose address starts with '
         'https://',
       ),
       findsOneWidget,
@@ -185,7 +194,7 @@ void main() {
     expect(switched, isEmpty);
 
     await submit(tester, 'https://relay.example');
-    expect(find.text('Switch relay?'), findsOneWidget);
+    expect(find.text('Switch sync server?'), findsOneWidget);
   });
 
   testWidgets('a released phone app refuses a relay without TLS', (
@@ -200,7 +209,7 @@ void main() {
     expect(switched, isEmpty);
 
     await submit(tester, 'wss://relay.example');
-    expect(find.text('Switch relay?'), findsOneWidget);
+    expect(find.text('Switch sync server?'), findsOneWidget);
   });
 
   testWidgets('a saved plain-http profile cannot be chosen in a phone '
@@ -208,13 +217,13 @@ void main() {
     const plain = RelayProfile(id: 'lan', url: 'http://192.168.1.10:8080');
     await pump(tester, profiles: const [_local, plain], mobileRelease: true);
     await tester.scrollUntilVisible(
-      find.text('Needs an https:// relay in this version'),
+      find.text('Needs an https:// server in this version'),
       100,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
     expect(
-      find.text('Needs an https:// relay in this version'),
+      find.text('Needs an https:// server in this version'),
       findsOneWidget,
     );
     await tester.scrollUntilVisible(
@@ -226,7 +235,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('http://192.168.1.10:8080').last);
     await tester.pumpAndSettle();
-    expect(find.text('Switch relay?'), findsNothing);
+    expect(find.text('Switch sync server?'), findsNothing);
   });
 
   testWidgets('a saved profile is one tap and a confirmation away', (
@@ -258,7 +267,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       find.text(
-        'Could not switch relay: This profile has unsaved local '
+        'Could not switch sync server: This profile has unsaved local '
         'changes.',
       ),
       findsOneWidget,
@@ -318,7 +327,9 @@ void main() {
       await tester.tap(find.byKey(const Key('relay-access-save')));
       await tester.pumpAndSettle();
       expect(
-        find.text('That link is for another relay: https://other.example.'),
+        find.text(
+          'That link is for another sync server: https://other.example.',
+        ),
         findsOneWidget,
       );
 
@@ -344,4 +355,3 @@ void main() {
     });
   });
 }
-

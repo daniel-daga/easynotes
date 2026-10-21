@@ -348,8 +348,8 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     final relay = widget.relayLink;
     final shared = await shareContent(
       relay != null && _withRelayLink
-          ? 'Join my shared note in EasyNotes. First add my relay in '
-                'Sync & devices → Server (relay), with this link: $relay\n\n'
+          ? 'Join my shared note in EasyNotes. First add my sync server in '
+                'Sync & devices → Sync server, with this link: $relay\n\n'
                 'Then open the invite: ${_link(invite)}'
           : 'Join my shared note in EasyNotes: ${_link(invite)}',
     );
@@ -362,7 +362,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     unawaited(
       Clipboard.setData(ClipboardData(text: link)).then(
         (_) => messenger?.showSnackBar(
-          const SnackBar(content: Text('Relay link copied')),
+          const SnackBar(content: Text('Server link copied')),
         ),
         onError: (_) => null,
       ),
@@ -375,16 +375,16 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     children: [
       const SizedBox(height: 8),
       Text(
-        'This relay has an access key. Someone who is not using it yet needs '
-        'its relay link as well as an invite. The link lets them use the '
-        'relay for good, so send it only to people you trust with that.',
+        'This server has an access key. Someone who is not using it yet needs '
+        'its server link as well as an invite. The link lets them use the '
+        'server for good, so send it only to people you trust with that.',
         key: const Key('relay-link-explainer'),
         style: theme.textTheme.bodySmall,
       ),
       SwitchListTile(
         key: const Key('invite-with-relay-link'),
         contentPadding: EdgeInsets.zero,
-        title: const Text('Send the relay link with invites'),
+        title: const Text('Send the server link with invites'),
         value: _withRelayLink,
         onChanged: _busy ? null : (on) => setState(() => _withRelayLink = on),
       ),
@@ -394,7 +394,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
           key: const Key('copy-relay-link'),
           onPressed: () => _copyRelayLink(link),
           icon: const Icon(Icons.key),
-          label: const Text('Copy relay link'),
+          label: const Text('Copy server link'),
         ),
       ),
     ],
@@ -932,11 +932,11 @@ class _JoinDialogState extends State<JoinDialog> {
               padding: const EdgeInsets.only(top: 12),
               child: Text(
                 profile.url == null
-                    ? 'This device is not using a relay, so it cannot join. '
-                          'Choose the relay the link came from in Relay '
-                          'settings.'
+                    ? 'This device is not using a sync server, so it cannot '
+                          'join. Choose the server the link came from in Sync '
+                          'server settings.'
                     : 'Joining through ${profile.url}. The person who sent '
-                          'the link has to use the same relay.',
+                          'the link has to use the same server.',
                 key: const Key('join-relay'),
                 style: Theme.of(context).textTheme.bodySmall,
               ),

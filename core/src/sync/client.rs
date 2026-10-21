@@ -69,7 +69,7 @@ pub async fn authenticate(
     };
     tokio::time::timeout(std::time::Duration::from_secs(10), auth)
         .await
-        .map_err(|_| net("relay authentication timed out after 10 seconds"))?
+        .map_err(|_| net("sync server authentication timed out after 10 seconds"))?
 }
 
 /// A JSON `POST` that has to succeed. A relay that does not speak this build's
@@ -89,7 +89,7 @@ async fn post_json<Q: serde::Serialize, R: serde::de::DeserializeOwned>(
     if !(200..300).contains(&status) {
         return Err(wire::http_error(status));
     }
-    serde_json::from_slice(&bytes).map_err(|e| net(format!("relay sent nonsense: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| net(format!("sync server sent nonsense: {e}")))
 }
 
 /// A JSON `POST`, and whatever came back, whatever its status.

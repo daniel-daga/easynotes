@@ -84,8 +84,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
   }
 
   String get _title => switch (_step) {
-    _Step.url => 'Relay address',
-    _Step.access => 'Relay access key',
+    _Step.url => 'Sync server address',
+    _Step.access => 'Sync server access key',
     _Step.verify => 'Connecting',
   };
 
@@ -98,11 +98,11 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     }
     if (widget.servedOverHttps && url.startsWith('http://')) {
       return 'This page is served over HTTPS, so the browser will only reach '
-          'a relay whose address starts with https://.';
+          'a sync server whose address starts with https://.';
     }
     if (widget.mobileRelease && url.startsWith('http://')) {
-      return 'Notes only sync over an encrypted connection. Use a relay '
-          'address that starts with https:// or wss://.';
+      return 'Notes only sync over an encrypted connection. Use a sync '
+          'server address that starts with https:// or wss://.';
     }
     return null;
   }
@@ -124,12 +124,12 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
       if (link.url != _canonical) {
         return (
           key: null,
-          error: 'That link is for another relay: ${link.url}.',
+          error: 'That link is for another sync server: ${link.url}.',
         );
       }
       return (key: link.access, error: null);
     } on FormatException {
-      return (key: null, error: 'That is not an access key or relay link.');
+      return (key: null, error: 'That is not an access key or server link.');
     }
   }
 
@@ -232,8 +232,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
       padding: const EdgeInsets.all(24),
       children: [
         const Text(
-          'EasyNotes does not provide a relay. Get an address from your '
-          'organization or a relay provider.',
+          'EasyNotes does not provide a sync server. Get an address from your '
+          'organization or a sync server provider.',
           key: Key('relay-setup-intro'),
         ),
         const SizedBox(height: 16),
@@ -244,10 +244,10 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           keyboardType: TextInputType.url,
           autocorrect: false,
           decoration: const InputDecoration(
-            labelText: 'Relay URL',
-            hintText: 'https://relay.example',
+            labelText: 'Server address',
+            hintText: 'https://sync.example.com',
             helperText:
-                'Use the same relay as the people you share notes with.',
+                'Use the same server as the people you share notes with.',
             helperMaxLines: 2,
           ),
           validator: _validateUrl,
@@ -269,13 +269,13 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
       padding: const EdgeInsets.all(24),
       children: [
         Text(
-          'Relay: ${_canonical ?? ''}',
+          'Server: ${_canonical ?? ''}',
           key: const Key('relay-setup-address'),
         ),
         const SizedBox(height: 16),
         const Text(
-          'If the relay operator gave you an access key, enter it here. Leave '
-          'it empty for a relay anyone may use.',
+          'If whoever runs the server gave you an access key, enter it here. '
+          'Leave it empty for a server anyone may use.',
           key: Key('relay-setup-access-help'),
         ),
         const SizedBox(height: 16),
@@ -286,7 +286,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           autocorrect: false,
           decoration: const InputDecoration(
             labelText: 'Access key (optional)',
-            helperText: 'A relay link includes the key and can be pasted here.',
+            helperText:
+                'A server link includes the key and can be pasted here.',
             helperMaxLines: 2,
           ),
           validator: _validateAccess,
@@ -319,7 +320,7 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'This confirms the relay is reachable and accepts your access '
+                'This confirms the server is reachable and accepts your access '
                 'key.',
                 textAlign: TextAlign.center,
               ),
@@ -338,7 +339,7 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
         ),
         const SizedBox(height: 16),
         Text(
-          'Could not connect to this relay',
+          'Could not connect to this sync server',
           key: const Key('relay-setup-failed'),
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.titleMedium,

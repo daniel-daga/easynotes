@@ -245,7 +245,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   ReminderScheduler? _reminders;
   bool _launchPayloadsDelivered = false;
   late bool _showOnboarding = widget.showOnboarding;
-  bool _relayConnectedDuringOnboarding = false;
+  late bool _relayConnectedDuringOnboarding;
+  late bool _accountCreatedDuringOnboarding;
 
   /// Between a library's release and its replacement's install, when nothing
   /// may draw from it: see [_releaseSession].
@@ -256,11 +257,24 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   @override
   void initState() {
     super.initState();
+    // Onboarding can be pending across a restart — the first run was closed
+    // before its last page. Whatever was set up before is still set up, so
+    // the checklist starts from the device rather than from empty.
+    _relayConnectedDuringOnboarding = _session.profile.url != null;
+    _accountCreatedDuringOnboarding = _hasAccount(_session.library);
     _session
       ..onRelease = _releaseSession
       ..onInstall = _installSession
       ..addListener(_changed);
     _installSession(_session.library);
+  }
+
+  static bool _hasAccount(NoteLibrary library) {
+    try {
+      return library.hasAccount;
+    } on Object {
+      return false;
+    }
   }
 
   void _changed() {
@@ -283,7 +297,12 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       ),
     );
     if (!mounted) return;
-    if (_session.library.hasAccount) await _finishOnboarding();
+    // The screen closes either way; only an account that now exists turns the
+    // checklist's second step into a tick and moves onboarding on to its last
+    // page.
+    if (_session.library.hasAccount) {
+      setState(() => _accountCreatedDuringOnboarding = true);
+    }
   }
 
   Future<void> _setUpRelay() async {
@@ -374,6 +393,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
           : _showOnboarding
           ? OnboardingScreen(
               relayConnected: _relayConnectedDuringOnboarding,
+              accountCreated: _accountCreatedDuringOnboarding,
+              serverUrl: _session.profile.url,
               onContinue: _finishOnboarding,
               onSetUpRelay: _setUpRelay,
               onCreateAccount: _createOnboardingAccount,

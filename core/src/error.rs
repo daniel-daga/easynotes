@@ -40,7 +40,7 @@ pub enum CoreError {
     #[error("storage: {0}")]
     Storage(String),
     /// A relay supplied an HTTP `Retry-After` value for a transient refusal.
-    #[error("relay rate limited this request; retry after {0:?}")]
+    #[error("the sync server rate limited this request; retry after {0:?}")]
     RetryAfter(std::time::Duration),
     /// An attachment refused, in words a person can be shown: too big, not a
     /// format this release takes, too many on one note.
@@ -49,17 +49,17 @@ pub enum CoreError {
     /// The relay no longer speaks the protocol this build does (ADR 0029 §4).
     /// Nothing local is affected: the app keeps working and stops syncing
     /// until it is updated.
-    #[error("This relay needs a newer version of EasyNotes. Update the app to sync again; your notes are safe on this device.")]
+    #[error("This sync server needs a newer version of EasyNotes. Update the app to sync again; your notes are safe on this device.")]
     AppOutdated,
     /// The relay is older than anything this build still speaks. Not the
     /// person's to fix with a button: whoever runs the relay has to update it.
-    #[error("This relay runs an older version of EasyNotes than this app can sync with. Ask whoever runs it to update it; your notes are safe on this device.")]
+    #[error("This sync server runs an older version of EasyNotes than this app can sync with. Ask whoever runs it to update it; your notes are safe on this device.")]
     RelayOutdated,
     /// The relay lets in only the people its operator gave its access key
     /// to, and this device has not got it, or has an old one ([ADR
     /// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The person
     /// fixes it in Settings, with the relay link they were given.
-    #[error("This relay needs an access key. Ask whoever runs it for its relay link, and add it under Settings, Relay. Your notes are safe on this device.")]
+    #[error("This sync server needs an access key. Ask whoever runs it for its server link, and add it under Settings, Sync server. Your notes are safe on this device.")]
     AccessRequired,
     #[error("envelope exceeds the {limit} byte cap")]
     TooLarge { limit: usize },

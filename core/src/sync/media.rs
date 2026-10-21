@@ -63,15 +63,15 @@ fn refused(status: u16, body: &[u8], retry_after: Option<std::time::Duration>) -
     }
     match status {
         429 => retry_after.map_or_else(
-            || CoreError::Storage("relay rate limited this media request".into()),
+            || CoreError::Storage("the sync server rate limited this media request".into()),
             CoreError::RetryAfter,
         ),
-        401 => CoreError::Storage("relay: the device token was refused".into()),
-        404 => CoreError::Attachment("the relay does not have this attachment".into()),
-        410 => CoreError::Attachment("this note was deleted from the relay".into()),
-        503 => CoreError::Attachment("this relay does not take attachments".into()),
-        507 => CoreError::Attachment("the relay has no room for this attachment".into()),
-        other => CoreError::Storage(format!("relay: media call answered {other}")),
+        401 => CoreError::Storage("sync server: the device token was refused".into()),
+        404 => CoreError::Attachment("the sync server does not have this attachment".into()),
+        410 => CoreError::Attachment("this note was deleted from the sync server".into()),
+        503 => CoreError::Attachment("this sync server does not take attachments".into()),
+        507 => CoreError::Attachment("the sync server has no room for this attachment".into()),
+        other => CoreError::Storage(format!("sync server: media call answered {other}")),
     }
 }
 
@@ -113,7 +113,7 @@ pub async fn upload<'c>(
         200 | 201 => {}
         409 => {
             return Err(CoreError::Attachment(
-                "the relay holds another file under this attachment's name".into(),
+                "the sync server holds another file under this attachment's name".into(),
             ))
         }
         other => return Err(refused(other, &body, retry_after)),
@@ -134,8 +134,9 @@ pub async fn upload<'c>(
         if status != 200 {
             return Err(refused(status, &body, retry_after));
         }
-        let now: Status = serde_json::from_slice(&body)
-            .map_err(|e| CoreError::Storage(format!("relay: an unreadable media status: {e}")))?;
+        let now: Status = serde_json::from_slice(&body).map_err(|e| {
+            CoreError::Storage(format!("sync server: an unreadable media status: {e}"))
+        })?;
         if now.committed {
             // Committed by an earlier run that did not hear the answer, or by
             // this one. Committing again checks it is under our digest.
@@ -169,7 +170,7 @@ pub async fn upload<'c>(
         }
     }
     Err(CoreError::Attachment(
-        "the relay would not take this attachment whole".into(),
+        "the sync server would not take this attachment whole".into(),
     ))
 }
 

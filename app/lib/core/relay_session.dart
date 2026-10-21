@@ -99,7 +99,7 @@ class RelaySession extends ChangeNotifier {
     if (!old.canJoin) {
       throw StateError(
         'This tab has no storage, so its notes would be lost. Keep it open, '
-        'and switch relay in a tab that has storage.',
+        'and switch sync servers in a tab that has storage.',
       );
     }
     await old.flush();
@@ -167,14 +167,20 @@ class RelaySession extends ChangeNotifier {
   Future<void> _moveLocalToRelay(String address, String? access) async {
     if (_profile.url != null ||
         profiles.profiles.any((p) => p.url == canonicalRelayUrl(address))) {
-      throw StateError('Only a local collection can move to a new relay.');
+      throw StateError(
+        'Only a local collection can move to a new sync server.',
+      );
     }
     if (!_library.canJoin) {
-      throw StateError('This tab has no storage. Keep it open and save its notes first.');
+      throw StateError(
+        'This tab has no storage. Keep it open and save its notes first.',
+      );
     }
     await _library.flush();
     if (_library.storageError != null) {
-      throw StateError('Some changes could not be saved. Your notes have not moved.');
+      throw StateError(
+        'Some changes could not be saved. Your notes have not moved.',
+      );
     }
     _profile = await profiles.moveLocalToRelay(address, access: access);
     // Tell the app about the durable move even if starting sync throws.
@@ -182,8 +188,10 @@ class RelaySession extends ChangeNotifier {
     try {
       await _library.connect(_profile.url!, access: _profile.access);
     } on Object catch (error) {
-      throw StateError('Your collection has moved to ${_profile.url} and is '
-          'available offline. Sync could not start: $error');
+      throw StateError(
+        'Your collection has moved to ${_profile.url} and is '
+        'available offline. Sync could not start: $error',
+      );
     }
   }
 
@@ -194,7 +202,9 @@ class RelaySession extends ChangeNotifier {
   Future<void> setAccess(String? access) async {
     final url = _profile.url;
     if (url == null) {
-      throw StateError('Notes on this device have no relay to give a key to.');
+      throw StateError(
+        'Notes on this device have no sync server to give a key to.',
+      );
     }
     _profile = await profiles.setAccess(_profile, access);
     await _library.connect(url, access: _profile.access);
@@ -231,4 +241,3 @@ class RelaySession extends ChangeNotifier {
     onInstall?.call(restored);
   }
 }
-

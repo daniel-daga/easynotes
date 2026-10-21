@@ -70,18 +70,18 @@ class SyncDevicesScreen extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Want backups? Connect a relay. Your notes can be stored there '
-          'without an account.',
+          'Want backups? Connect a sync server. Your notes can be stored '
+          'there without an account.',
           key: Key('relay-benefit'),
         ),
         const SizedBox(height: 8),
         const Text(
           'Want device sync and sharing? Create an account and use it with '
-          'your relay.',
+          'your sync server.',
           key: Key('account-benefit'),
         ),
         const Divider(height: 40),
-        Text('Relay sync', style: Theme.of(context).textTheme.titleLarge),
+        Text('Sync', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
         // Mount one subscription for the route's lifetime.
         _RelayStatus(library: library, hasRelay: profile.url != null),
@@ -91,7 +91,7 @@ class SyncDevicesScreen extends StatelessWidget {
             key: const Key('set-up-sync'),
             onPressed: onServer,
             icon: const Icon(Icons.sync),
-            label: const Text('Connect a relay'),
+            label: const Text('Connect a sync server'),
           ),
         ],
         const Divider(height: 40),
@@ -137,14 +137,14 @@ class SyncDevicesScreen extends StatelessWidget {
           key: const Key('sync-server-settings'),
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.dns_outlined),
-          title: const Text('Server (relay)'),
+          title: const Text('Sync server'),
           subtitle: Text(profile.label),
           trailing: const Icon(Icons.chevron_right),
           onTap: onServer,
         ),
         const Text(
-          'Each relay has its own collection and account. Switching relays '
-          'opens that collection; your current notes stay in this one.',
+          'Each sync server has its own collection and account. Switching '
+          'servers opens that collection; your current notes stay in this one.',
         ),
       ],
     ),
@@ -180,12 +180,12 @@ class _RelayStatusState extends State<_RelayStatus> {
           const SizedBox(height: 8),
           Text(
             !widget.hasRelay
-                ? 'Your notes are saved on this device. Choose a relay to '
+                ? 'Your notes are saved on this device. Choose a server to '
                       'sync them, with the option to move your current notes.'
                 : status.state == SyncState.synced && status.pending == 0
-                ? 'Your notes’ encrypted updates have reached your relay.'
+                ? 'Your notes’ encrypted updates have reached your server.'
                 : 'Your notes stay available on this device. Changes sync '
-                      'to your relay when connected.',
+                      'to your server when connected.',
           ),
           if (widget.hasRelay && status.lastError != null) ...[
             const SizedBox(height: 12),

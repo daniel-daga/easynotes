@@ -55,7 +55,7 @@ async fn call<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;
     let (status, text, _) = post(url, body).await?;
     invite_status(status, &text)?;
-    serde_json::from_str(&text).map_err(|e| wire::net(format!("relay sent nonsense: {e}")))
+    serde_json::from_str(&text).map_err(|e| wire::net(format!("sync server sent nonsense: {e}")))
 }
 async fn post_empty<Q: Serialize>(url: &str, body: &Q) -> Result<()> {
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;

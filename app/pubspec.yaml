@@ -1,5 +1,5 @@
 name: easynotes
-description: "End-to-end encrypted notes and lists that sync through a relay and share without an email account."
+description: "End-to-end encrypted notes and lists that sync through a sync server and share without an email account."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

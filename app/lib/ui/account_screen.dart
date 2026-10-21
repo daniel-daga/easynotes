@@ -115,7 +115,8 @@ class _AccountScreenState extends State<AccountScreen> {
       // Nothing is on screen yet, and that has to be said, or the first thing
       // a person sees after typing twelve words carefully is an empty grid.
       _say(
-        'This device is now yours. Your notes arrive when it reaches the relay.',
+        'This device is now yours. Your notes arrive when it reaches the '
+        'sync server.',
       );
     }
     if (widget.creating) Navigator.of(context).pop();
@@ -193,11 +194,12 @@ class _AccountScreenState extends State<AccountScreen> {
       rethrow;
     }
     final accountExplanation = widget.profile?.url == null
-        ? 'Connect a relay to store encrypted backups. Create an account to '
-              'prepare this collection for other devices; use it with a '
-              'relay to sync notes and share them. '
-        : 'Your relay stores encrypted notes without an account. Create an '
-              'account to use this collection on other devices and share notes. ';
+        ? 'Connect a sync server to store encrypted backups. Create an '
+              'account to prepare this collection for other devices; use it '
+              'with a sync server to sync notes and share them. '
+        : 'Your sync server stores encrypted notes without an account. Create '
+              'an account to use this collection on other devices and share '
+              'notes. ';
     final children = <Widget>[
       ...has
           ? [
@@ -215,9 +217,9 @@ class _AccountScreenState extends State<AccountScreen> {
               // that nobody goes looking for the button.
               Text(
                 'Your notes, colours, labels and pins follow you to any '
-                'device you set up with the same relay and your recovery '
-                'phrase. Without a relay, this collection stays on this '
-                'device. The phrase is '
+                'device you set up with the same sync server and your '
+                'recovery phrase. Without a server, this collection stays on '
+                'this device. The phrase is '
                 'not kept anywhere, so it cannot be shown again — the copy '
                 'you wrote down is the only one.',
               ),
@@ -227,9 +229,7 @@ class _AccountScreenState extends State<AccountScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.badge_outlined),
                 title: Text(widget.library.profileName ?? 'No name yet'),
-                subtitle: const Text(
-                  'What people you share notes with see',
-                ),
+                subtitle: const Text('What people you share notes with see'),
                 trailing: TextButton(
                   key: const Key('change-name'),
                   onPressed: _changeName,
@@ -280,11 +280,11 @@ class _AccountScreenState extends State<AccountScreen> {
           title: Text(widget.profile!.label),
           subtitle: Text(
             widget.profile!.url == null
-                ? 'Not using a relay. An account here stays on this '
-                      'device until you move this collection to a relay '
+                ? 'Not using a sync server. An account here stays on this '
+                      'device until you move this collection to a sync server '
                       'in Sync & devices.'
-                : 'This account is kept on this relay. To use it on '
-                      'another device, choose the same relay there first.',
+                : 'This account is kept on this sync server. To use it on '
+                      'another device, choose the same server there first.',
           ),
         ),
       ],
@@ -302,7 +302,10 @@ class _AccountScreenState extends State<AccountScreen> {
       if (_busy) const LinearProgressIndicator(),
     ];
     if (widget.embedded) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      );
     }
     return Scaffold(
       appBar: AppBar(
@@ -313,26 +316,25 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Widget _deleteTile(bool has) => ListTile(
-      key: const Key('delete-account'),
-      contentPadding: EdgeInsets.zero,
-      enabled: !_busy,
-      leading: Icon(
-        Icons.delete_forever_outlined,
-        color: Theme.of(context).colorScheme.error,
-      ),
-      title: Text(
-        has ? 'Delete account' : 'Delete everything on this device',
-        style: TextStyle(color: Theme.of(context).colorScheme.error),
-      ),
-      subtitle: Text(
-        widget.profile?.url == null
-            ? 'Removes every note from this device'
-            : 'Removes the lists you made from the relay and every '
-                  'note from this device',
-      ),
-      onTap: _delete,
-    );
-
+    key: const Key('delete-account'),
+    contentPadding: EdgeInsets.zero,
+    enabled: !_busy,
+    leading: Icon(
+      Icons.delete_forever_outlined,
+      color: Theme.of(context).colorScheme.error,
+    ),
+    title: Text(
+      has ? 'Delete account' : 'Delete everything on this device',
+      style: TextStyle(color: Theme.of(context).colorScheme.error),
+    ),
+    subtitle: Text(
+      widget.profile?.url == null
+          ? 'Removes every note from this device'
+          : 'Removes the lists you made from the sync server and every '
+                'note from this device',
+    ),
+    onTap: _delete,
+  );
 }
 
 /// The twelve words, once, and then the check that they were written down.
@@ -469,8 +471,9 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
           'Write these twelve words down, in order, on paper. Use them to '
           'restore your account on another device. If you can still use this '
           'device, you can also transfer account access with a one-time QR '
-          'code. The new device needs the same relay and its separate access '
-          'key, if the relay has one. These words will not be shown again.',
+          'code. The new device needs the same sync server and its separate '
+          'access key, if the server has one. These words will not be shown '
+          'again.',
         ),
         const SizedBox(height: 20),
         // Two columns of six, numbered, so that a word copied into the wrong
@@ -654,14 +657,14 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
             const SizedBox(height: 12),
             Text(
               profile.url == null
-                  ? 'This device is not using a relay, so your notes cannot '
-                        'come back until you choose the relay you used before '
-                        'in Sync & devices → Server (relay).'
+                  ? 'This device is not using a sync server, so your notes '
+                        'cannot come back until you choose the server you used '
+                        'before in Sync & devices → Sync server.'
                   : 'Your notes come back from ${profile.url}. If you used a '
-                        'different relay before, choose it in Sync & devices '
-                        '→ Server (relay) '
-                        'first: a phrase restores nothing from another relay. '
-                        '${profile.access == null ? 'If this relay has an access key, add it there too: the phrase does not include it.' : 'This relay\'s access key is saved; the phrase does not include it.'}',
+                        'different server before, choose it in Sync & devices '
+                        '→ Sync server '
+                        'first: a phrase restores nothing from another server. '
+                        '${profile.access == null ? 'If this server has an access key, add it there too: the phrase does not include it.' : 'This server\'s access key is saved; the phrase does not include it.'}',
               key: const Key('adopt-relay'),
             ),
           ],
@@ -806,11 +809,11 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
             if (relay == null)
               const Text(
                 'Every note on this device is removed, and it cannot be '
-                'undone. Nothing here was ever on a relay.',
+                'undone. Nothing here was ever on a sync server.',
               )
             else ...[
               Text(
-                'Every list you made is removed from the relay at $relay, '
+                'Every list you made is removed from the sync server at $relay, '
                 'including ones you shared. The people you shared them with '
                 'keep what is already on their devices, but it stops syncing.',
               ),
@@ -828,8 +831,8 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
               ],
               const SizedBox(height: 8),
               const Text(
-                'The relay\'s backups may keep encrypted copies for up to '
-                '${DeleteAccountDialog.backupDays} days.',
+                'The sync server\'s backups may keep encrypted copies for up '
+                'to ${DeleteAccountDialog.backupDays} days.',
               ),
               const SizedBox(height: 8),
               const Text('This device is then emptied. It cannot be undone.'),
@@ -865,4 +868,3 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
     );
   }
 }
-

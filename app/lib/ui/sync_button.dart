@@ -101,11 +101,13 @@ class _SyncStatusTileState extends State<SyncStatusTile> {
         key: const Key('sync-status'),
         leading: Icon(_syncIcon(status)),
         title: const Text('Sync & devices'),
-        subtitle: Text(!widget.hasRelay
-            ? 'Sync not set up'
-            : status.state == SyncState.synced && status.pending == 0
-            ? 'Up to date with relay'
-            : syncSentence(status)),
+        subtitle: Text(
+          !widget.hasRelay
+              ? 'Sync not set up'
+              : status.state == SyncState.synced && status.pending == 0
+              ? 'Up to date with server'
+              : syncSentence(status),
+        ),
         onTap: widget.onTap ?? () => showSyncDetail(context, status),
       );
     },
@@ -120,4 +122,3 @@ IconData _syncIcon(SyncStatus status) => switch (status.state) {
   SyncState.synced => Icons.cloud_done_outlined,
   SyncState.paused => Icons.pause_circle_outline,
 };
-

@@ -47,10 +47,10 @@ pub(crate) fn decode_challenge_nonce(
 ) -> Result<[u8; crate::crypto::RELAY_AUTH_NONCE_LEN]> {
     let decoded = URL_SAFE_NO_PAD
         .decode(encoded)
-        .map_err(|_| CoreError::Storage("relay sent a malformed nonce".into()))?;
+        .map_err(|_| CoreError::Storage("sync server sent a malformed nonce".into()))?;
     decoded
         .try_into()
-        .map_err(|_| CoreError::Storage("relay sent a nonce of the wrong length".into()))
+        .map_err(|_| CoreError::Storage("sync server sent a nonce of the wrong length".into()))
 }
 
 #[cfg(test)]
@@ -113,7 +113,7 @@ fn said(message: String) -> String {
         "note_full" => "This note has grown too large for the relay to keep more of it. \
                         Your changes are safe on this device."
             .into(),
-        "relay_full" => "The relay is not accepting new notes right now. \
+        "relay_full" => "The sync server is not accepting new notes right now. \
                          This one is safe on this device."
             .into(),
         _ => message,
@@ -121,7 +121,7 @@ fn said(message: String) -> String {
 }
 
 pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("relay: {e}"))
+    CoreError::Storage(format!("sync server: {e}"))
 }
 
 // -- the protocol version ----------------------------------------------------
@@ -210,7 +210,7 @@ pub(crate) fn refused(status: u16, body: &[u8]) -> Option<CoreError> {
 /// proxies commonly return a full HTML error page, which is not useful in the
 /// app's sync status and can be several kilobytes long.
 pub(crate) fn http_error(status: u16) -> CoreError {
-    net(format!("relay returned HTTP {status}"))
+    net(format!("sync server returned HTTP {status}"))
 }
 
 #[cfg(test)]
@@ -454,7 +454,7 @@ pub(crate) fn compact_note(
 /// is still a refusal, and is passed on unrouted rather than lost. Fields a
 /// known message gains are ignored, so adding one needs no new type.
 pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
-    let nonsense = |what: &str| CoreError::Storage(format!("relay sent nonsense: {what}"));
+    let nonsense = |what: &str| CoreError::Storage(format!("sync server sent nonsense: {what}"));
     let parsed: DeviceReply = serde_json::from_str(text).map_err(|e| nonsense(&e.to_string()))?;
     let note = |raw: &str| crate::ids::NoteId::decode(raw).map_err(|_| nonsense("a bad note id"));
     Ok(Some(match parsed {
@@ -466,7 +466,7 @@ pub(crate) fn parse_routed(text: &str) -> Result<Option<Routed>> {
         } => {
             let envelope = URL_SAFE_NO_PAD
                 .decode(&envelope)
-                .map_err(|_| CoreError::Storage("relay sent a malformed envelope".into()))?;
+                .map_err(|_| CoreError::Storage("sync server sent a malformed envelope".into()))?;
             Routed::Note(note(&raw)?, Incoming::Envelope { seq, envelope })
         }
         DeviceReply::Caught { note: raw, seq } => {
@@ -665,7 +665,7 @@ pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
         409 => Err(CoreError::Invite(said("That was already answered."))),
         413 => Err(CoreError::Invite("That is too large to send.".into())),
         429 => Err(CoreError::Invite(
-            "The relay is busy. Try again in a moment.".into(),
+            "The sync server is busy. Try again in a moment.".into(),
         )),
         other => Err(net(format!("{other} {}", said("")))),
     }

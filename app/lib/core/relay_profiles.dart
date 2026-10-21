@@ -81,7 +81,7 @@ class RelayProfiles {
         // layout would drop whatever the newer one added: every profile
         // listed has a store and a key, so losing one hides its notes.
         throw StateError(
-          'Relay settings were saved by a newer version of EasyNotes '
+          'Sync server settings were saved by a newer version of EasyNotes '
           '(settings version $stored, this build understands $version). '
           'Update the app to open them.',
         );
@@ -172,11 +172,16 @@ class RelayProfiles {
   /// the collection is local; afterwards it belongs to this relay. A fresh
   /// local profile keeps "On this device" separate, with no copied identities.
   /// Existing relay collections are never replaced or merged.
-  Future<RelayProfile> moveLocalToRelay(String address, {String? access}) async {
+  Future<RelayProfile> moveLocalToRelay(
+    String address, {
+    String? access,
+  }) async {
     final local = selected;
     final url = canonicalRelayUrl(address);
     if (local.url != null || _profiles.any((p) => p.url == url)) {
-      throw StateError('Only a local collection can move to a new relay.');
+      throw StateError(
+        'Only a local collection can move to a new sync server.',
+      );
     }
     final key = access == null ? null : normalizeAccessKey(access);
     if (access != null && key == null) {
@@ -241,7 +246,9 @@ String relayLinkFor(String url, String access) =>
   if (hash < 0) return (url: canonicalRelayUrl(raw), access: null);
   final fragment = raw.substring(hash + 1);
   if (!fragment.startsWith(_accessFragment)) {
-    throw FormatException('Enter a relay URL such as https://relay.example.');
+    throw FormatException(
+      'Enter a server address such as https://sync.example.com.',
+    );
   }
   final access = normalizeAccessKey(
     Uri.decodeComponent(fragment.substring(_accessFragment.length)),
@@ -282,7 +289,9 @@ String canonicalRelayUrl(String input) {
       : raw.substring(afterScheme + 3).replaceFirst(RegExp(r'^[^/]*'), '');
   if (raw.contains(RegExp(r'[\s%]')) ||
       rawPath.split('/').any((segment) => segment == '.' || segment == '..')) {
-    throw FormatException('Enter a relay URL such as https://relay.example.');
+    throw FormatException(
+      'Enter a server address such as https://sync.example.com.',
+    );
   }
   final uri = Uri.tryParse(raw);
   if (uri == null ||
@@ -296,7 +305,9 @@ String canonicalRelayUrl(String input) {
       uri.userInfo.isNotEmpty ||
       uri.hasQuery ||
       uri.hasFragment) {
-    throw FormatException('Enter a relay URL such as https://relay.example.');
+    throw FormatException(
+      'Enter a server address such as https://sync.example.com.',
+    );
   }
   final scheme = switch (uri.scheme.toLowerCase()) {
     'ws' => 'http',
@@ -305,7 +316,7 @@ String canonicalRelayUrl(String input) {
   };
   final port = uri.hasPort ? uri.port : null;
   if (port != null && (port < 1 || port > 65535)) {
-    throw FormatException('The relay URL has an invalid port.');
+    throw FormatException('The server address has an invalid port.');
   }
   final normalizedPort =
       (scheme == 'http' && port == 80) || (scheme == 'https' && port == 443)
@@ -319,4 +330,3 @@ String canonicalRelayUrl(String input) {
     path: path,
   ).toString();
 }
-

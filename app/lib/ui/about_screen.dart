@@ -87,12 +87,12 @@ class AboutScreen extends StatelessWidget {
             )
           else ...[
             para(
-              'Your notes sync through the relay at $relay. Whoever runs that '
-              'relay operates it, not the app.',
+              'Your notes sync through the sync server at $relay. Whoever '
+              'runs that server operates it, not the app.',
             ),
             para(
               'Every note is encrypted on this device before it is sent. The '
-              'relay stores and forwards the encrypted copies and cannot read '
+              'server stores and forwards the encrypted copies and cannot read '
               'titles, text, labels, colours or reminders.',
             ),
             para(
@@ -112,14 +112,14 @@ class AboutScreen extends StatelessWidget {
             'your other devices on the same account when they next sync. It '
             'does not remove the copy '
             'held by someone you shared it with, or encrypted copies already '
-            'in a relay\'s history or backups.',
+            'in a server\'s history or backups.',
           ),
           para(
             'Deleting your account, from Sync & devices → Account settings, '
             'removes every list you '
-            'made from the relay, including ones you shared, and everything '
+            'made from the server, including ones you shared, and everything '
             'from this device. Lists others shared with you stay theirs. A '
-            'relay\'s backups may keep encrypted copies for up to 30 days.',
+            'server\'s backups may keep encrypted copies for up to 30 days.',
           ),
           heading('Privacy policy and support'),
           if (privacyPolicyUrl.isEmpty && supportContact.isEmpty)
@@ -194,4 +194,3 @@ class _Copyable extends StatelessWidget {
     ),
   );
 }
-
