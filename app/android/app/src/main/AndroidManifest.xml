@@ -15,6 +15,9 @@
          for alarm-clock and calendar apps. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
+    <!-- Predictive back: without this, Android 13+ sends a plain back button
+         and the note's drag-to-shrink preview (lib/ui/note_expand_route.dart)
+         never gets the start/update/commit events. Ignored below Android 13. -->
     <!-- No backup, cloud or device-to-device: see res/xml/data_extraction_rules.xml. -->
     <application
         android:label="EasyNotes"
@@ -22,6 +25,7 @@
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:enableOnBackInvokedCallback="true"
         android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"

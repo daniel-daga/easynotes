@@ -3,8 +3,9 @@
 ///
 /// The assertions are about rectangles on screen rather than about animation
 /// objects, because the claim is about what is drawn: the surface the tap starts
-/// is the card's, the surface it ends on is the display, and the way back starts
-/// from the display and lands on the card.
+/// is the card's, the surface it ends on is the display, the note inside it is
+/// scaled rather than cropped, and the way back starts from the display and
+/// lands on the card.
 library;
 
 import 'dart:async';
@@ -15,6 +16,7 @@ import 'package:easynotes/ui/note_expand_route.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 FakeNoteLibrary twoLists() => FakeNoteLibrary(
@@ -42,11 +44,22 @@ Future<void> pumpList(
 }
 
 final surface = find.byKey(const Key('note-expanding-surface'));
+final page = find.byKey(const Key('note-expanding-page'));
+final content = find.byKey(const Key('note-expanding-content'));
+final cardCopy = find.byKey(const Key('note-card-copy'));
+final scrim = find.byKey(const Key('note-expanding-scrim'));
 final card = find.byKey(const Key('note:groceries'));
 final cardCover = find.byKey(const Key('note-card-cover:groceries'));
 
 double coverOpacity(WidgetTester tester) =>
     tester.widget<Opacity>(cardCover).opacity;
+
+/// How lit the note's own screen is inside the growing surface.
+double contentOpacity(WidgetTester tester) =>
+    tester.widget<Opacity>(content).opacity;
+
+double cardCopyOpacity(WidgetTester tester) =>
+    tester.widget<Opacity>(cardCopy).opacity;
 
 Size screen(WidgetTester tester) =>
     tester.view.physicalSize / tester.view.devicePixelRatio;
@@ -54,6 +67,32 @@ Size screen(WidgetTester tester) =>
 /// Whether the route showing the note is the growing one.
 bool openedByExpanding(WidgetTester tester) =>
     ModalRoute.of(tester.element(find.byType(NoteScreen))) is NoteExpandRoute;
+
+/// Sends one of Android's predictive-back events to the binding, the way the
+/// engine does when a person drags in from the edge of the screen.
+Future<void> backGesture(
+  WidgetTester tester,
+  String method, {
+  double? progress,
+}) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.backGesture.name,
+    SystemChannels.backGesture.codec.encodeMethodCall(
+      MethodCall(
+        method,
+        progress == null
+            ? null
+            : <String, Object?>{
+                'touchOffset': <double>[0, 300],
+                'progress': progress,
+                'swipeEdge': SwipeEdge.left.index,
+              },
+      ),
+    ),
+    (_) {},
+  );
+  await tester.pump();
+}
 
 void main() {
   testWidgets('a tapped card grows from its own rectangle to the screen', (
@@ -71,16 +110,37 @@ void main() {
     // The first frame is the card, in the card's place.
     expect(tester.getRect(surface), cardRect);
     expect(openedByExpanding(tester), isTrue);
-    // The card itself is not drawn behind the screen that grew out of it.
+    // The card itself is not drawn behind the screen that grew out of it...
     expect(coverOpacity(tester), 0);
+    // ...but a copy of it is drawn inside the surface, so the thing growing is
+    // the card rather than a flat colour.
+    expect(cardCopy, findsOneWidget);
+    expect(cardCopyOpacity(tester), moreOrLessEquals(1, epsilon: .01));
+    // The note's own screen is already laid out at the display's size, scaled
+    // down to the surface's width rather than cropped to it.
+    expect(
+      tester.getRect(page).width,
+      moreOrLessEquals(cardRect.width, epsilon: 1),
+    );
 
-    await tester.pump(const Duration(milliseconds: 120));
+    await tester.pump(const Duration(milliseconds: 30));
+    // The card copy is on its way out while the note is on its way in.
+    expect(cardCopyOpacity(tester), greaterThan(.5));
+    expect(contentOpacity(tester), lessThan(.2));
+
+    await tester.pump(const Duration(milliseconds: 90));
     final middle = tester.getRect(surface);
     expect(middle.width, greaterThan(cardRect.width));
     expect(middle.width, lessThan(screen(tester).width));
+    expect(scrim, findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(cardCopy, findsNothing);
 
     await tester.pumpAndSettle();
     expect(tester.getRect(surface), Offset.zero & screen(tester));
+    expect(tester.getRect(page).width, moreOrLessEquals(screen(tester).width));
+    expect(contentOpacity(tester), 1);
     expect(find.byType(NoteScreen), findsOneWidget);
   });
 
@@ -97,10 +157,24 @@ void main() {
 
     await tester.pageBack();
     await tester.pump();
+    await tester.pump();
+
+    // Nothing of the note is drawn on the way back: what shrinks is a blank
+    // sheet in the note's colour.
+    expect(contentOpacity(tester), 0);
+    expect(scrim, findsNothing);
+    expect(cardCopy, findsNothing);
+
     await tester.pump(const Duration(milliseconds: 120));
     final shrinking = tester.getRect(surface);
     expect(shrinking.width, lessThan(screen(tester).width));
     expect(shrinking.width, greaterThan(cardRect.width));
+
+    // The card arrives inside the surface while there is still surface to
+    // arrive in, rather than appearing when it goes.
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(cardCopy, findsOneWidget);
+    expect(cardCopyOpacity(tester), greaterThan(0));
 
     await tester.pumpAndSettle();
     expect(find.byType(NoteScreen), findsNothing);
@@ -173,6 +247,50 @@ void main() {
     expect(find.byType(NoteScreen), findsOneWidget);
   });
 
+  testWidgets(
+    'a system back drag holds the note at ninety percent and lets go on release',
+    (tester) async {
+      final library = twoLists();
+      await pumpList(tester, library);
+      final cardRect = tester.getRect(card);
+
+      await tester.tap(card);
+      await tester.pumpAndSettle();
+      final full = tester.getRect(surface);
+
+      await backGesture(tester, 'startBackGesture', progress: 0);
+      await backGesture(tester, 'updateBackGestureProgress', progress: .5);
+
+      final held = tester.getRect(surface);
+      expect(held.width, lessThan(full.width));
+      expect(held.width, greaterThan(cardRect.width));
+      // Still the note on screen, still fully drawn, and the list behind it
+      // less dimmed than it was: this is a preview of leaving, not leaving.
+      expect(contentOpacity(tester), 1);
+      expect(tester.widget<ColoredBox>(scrim).color.a, lessThan(.3));
+
+      await backGesture(tester, 'cancelBackGesture');
+      await tester.pumpAndSettle();
+      expect(tester.getRect(surface), full);
+      expect(find.byType(NoteScreen), findsOneWidget);
+      expect(library.core('groceries').disposals, 0);
+
+      await backGesture(tester, 'startBackGesture', progress: 0);
+      await backGesture(tester, 'updateBackGestureProgress', progress: 1);
+      expect(
+        tester.getRect(surface).width,
+        moreOrLessEquals(full.width * .9, epsilon: 1),
+      );
+
+      await backGesture(tester, 'commitBackGesture');
+      await tester.pumpAndSettle();
+
+      expect(find.byType(NoteScreen), findsNothing);
+      expect(coverOpacity(tester), 1);
+      expect(library.core('groceries').disposals, 1);
+    },
+  );
+
   group('the swipe back', () {
     testWidgets('is there on iOS, and dragging past half closes the note', (
       tester,
@@ -196,12 +314,19 @@ void main() {
       final dragged = tester.getRect(surface);
       expect(dragged.width, lessThan(full.width));
       expect(dragged.width, greaterThan(cardRect.width));
+      // The note is still drawn under the finger.
+      expect(contentOpacity(tester), greaterThan(0));
 
       await gesture.moveBy(
         const Offset(240, 0),
         timeStamp: const Duration(milliseconds: 200),
       );
       await gesture.up();
+      await tester.pump();
+      await tester.pump();
+      // Let go: the contents go at once and the rest is a blank sheet.
+      expect(contentOpacity(tester), 0);
+
       await tester.pumpAndSettle();
 
       expect(find.byType(NoteScreen), findsNothing);
@@ -230,6 +355,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(NoteScreen), findsOneWidget);
       expect(tester.getRect(surface), full);
+      expect(contentOpacity(tester), 1);
       expect(library.core('groceries').disposals, 0);
     });
 
