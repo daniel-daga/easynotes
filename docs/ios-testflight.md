@@ -34,6 +34,18 @@ Add these repository secrets:
 | `APPSTORE_CERTIFICATES_FILE_BASE64` | Base64 encoding of the `.p12` file, with no line breaks |
 | `APPSTORE_CERTIFICATES_PASSWORD` | The `.p12` export password |
 
+The workflow also reads the same published-detail variables the Android release
+uses, and refuses to build without them:
+
+| Variable | Value |
+| --- | --- |
+| `EASYNOTES_PRIVACY_URL` | The `https://` privacy policy, shown in the app's *About and privacy* screen |
+| `EASYNOTES_SUPPORT` | The support, security and data-request contact, shown in the same screen |
+
+They are baked into the app at build time as `--dart-define`s (see
+`app/lib/ui/about_screen.dart`), so a store build shows the version, the policy
+URL and the contact rather than "Development build".
+
 For example, on macOS or Linux, encode the certificate with:
 
 ```sh

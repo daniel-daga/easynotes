@@ -1,0 +1,8 @@
+Updates since v0.1.1:
+
+- New first-run setup, and one place to switch sync servers
+- One create button that offers a note or a checklist
+- Labels can be created and renamed in the label manager, and added from a note
+- Secure account transfer by QR code
+- Voice notes: record audio and play it back
+- Note cards open with an animation, and the grid shows when notes last synced

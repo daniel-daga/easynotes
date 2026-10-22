@@ -1,0 +1,91 @@
+# iOS release checklist
+
+**Date:** 2026-10-22 · App: `eu.fraisl.easynotes` · Team `86XL7XR5XV`
+
+The iOS build itself is in place and working: `.github/workflows/ios-testflight.yml`
+builds a signed IPA from the built-in Flutter iOS project, uploads it to App
+Store Connect, and waits for Apple's processing (last green run 2026-10-18).
+This page records what stands between that build and shipping it, and where each
+thing happens. It is the iOS counterpart of
+[`android-release.md`](android-release.md); the shared privacy, security and
+operational gate items are in the
+[production readiness report](production-readiness-2026-09-30.md) and are not
+repeated here.
+
+## Done
+
+- Signed TestFlight build uploads, with a per-run build number.
+- The About screen is wired to `EASYNOTES_VERSION`, `EASYNOTES_PRIVACY_URL` and
+  `EASYNOTES_SUPPORT`; the workflow now bakes all three in (was missing, so
+  early builds said "Development build" with no policy or contact).
+- In-app camera and microphone purpose strings, the `easynotes://` URL scheme,
+  deep-link handling, and the iOS share sheet (see `app/ios/Runner/`).
+- App icons at every size in `app/ios/Runner/Assets.xcassets`.
+- Store copy drafted under `fastlane/metadata/ios/en-US/` (name, subtitle,
+  keywords, description, privacy URL, release notes).
+
+## Still to do, in order
+
+### 1. Fill in the remaining App Store Connect fields
+
+`fastlane/metadata/ios/en-US/` has the copy, but two fields have no value in
+this repository and must be supplied by the operator:
+
+| Field | Where | Notes |
+| --- | --- | --- |
+| Support URL | App Store Connect → App Information | Must be an `http(s)://` URL, unlike the in-app contact (which may be an email). A page on `easynotes.fraisl.eu` is the natural home. |
+| Marketing URL | App Store Connect → App Information | Optional. |
+| App name (display) | App Store Connect | `Info.plist` says `CFBundleDisplayName = "Easynotes"` while the Android title is "EasyNotes". Pick one; the store name should match what users see. |
+| Category (primary/secondary) | App Store Connect | Suggest Productivity. |
+| Age rating | App Store Connect | Answer Apple's questionnaire (the app has no account sign-up and no user-generated public content, which keeps the rating low). |
+| Screenshots | App Store Connect | Required for review; take them from a release build. |
+
+The drafted copy is plain text because the App Store description does not
+render HTML, unlike Google Play's.
+
+### 2. Answer the export-compliance question
+
+The app is end-to-end encrypted. `Info.plist` has no
+`ITSAppUsesNonExemptEncryption` key, so App Store Connect will show its "Export
+Compliance" question when the first build is submitted for review. This is a
+legal/export determination, not a code change: decide whether the app qualifies
+for Apple's exemption and, if so, add
+`<key>ITSAppUsesNonExemptEncryption</key><false/>` to `Info.plist`; otherwise
+file the declaration. Do not leave the question unanswered at submission.
+
+### 3. Complete App Privacy (App Store Connect)
+
+App Store Connect's **App Privacy** section needs the data-collection answers,
+mirroring Play's Data safety. The app has no analytics, advertising or crash
+reporting, but the relay sees IP addresses, a random device key, note IDs,
+timestamps and sizes (see the About screen and
+[ADR 0014](adr/0014-what-the-relay-learns.md)). Fill it from that list, and make
+sure it matches the published privacy policy.
+
+### 4. External beta (TestFlight)
+
+The workflow uploads the build but does not add testers or start a beta review.
+To distribute externally:
+
+- Add internal testers in App Store Connect.
+- For external testing, fill the TestFlight **test information** (what to test,
+  a contact email, review notes) and submit the build for Apple's beta review.
+
+### 5. Run the hardware walkthrough on two iPhones
+
+The Android side is still owed the same thing; for iOS it has never been run at
+all. Repeat the release gate on two physical iPhones against a TLS relay:
+
+share → join → concurrent and offline edits → revoke → attachment add and
+remove (camera, gallery, large file on mobile data, background kill mid-upload)
+→ reinstall → restore from recovery phrase → delete account. Record device, OS
+and build. The camera string in `Info.plist` currently mentions only the QR
+transfer, so confirm the attachment flows do not hit the camera without a
+matching purpose string (attachments use the document picker, not the camera).
+
+### 6. Publish
+
+When everything above is recorded, submit the build for App Store review. Keep
+the launch gate in the readiness report in mind: iOS being built does not by
+itself make the product ready — the privacy policy, operator identity, support
+and security contacts, and the restore drill apply to every store.

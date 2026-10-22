@@ -5,7 +5,9 @@ name: iOS TestFlight
 # does not add testers or start an external beta review.
 #
 # Configure the two APPSTORE_* variables and three APPSTORE_* secrets described
-# in docs/ios-testflight.md before dispatching this workflow.
+# in docs/ios-testflight.md before dispatching this workflow, plus the
+# EASYNOTES_PRIVACY_URL and EASYNOTES_SUPPORT variables the Android release
+# workflow also uses (they are baked into the About screen).
 on:
   workflow_dispatch:
 
@@ -26,16 +28,18 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Check signing and App Store Connect configuration
+      - name: Check signing, App Store Connect and published-detail configuration
         env:
           CERTIFICATE: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
           ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
           API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
           API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          PRIVACY_URL: ${{ vars.EASYNOTES_PRIVACY_URL }}
+          SUPPORT: ${{ vars.EASYNOTES_SUPPORT }}
         run: |
           missing=
-          for name in CERTIFICATE CERTIFICATE_PASSWORD ISSUER_ID API_KEY_ID API_PRIVATE_KEY; do
+          for name in CERTIFICATE CERTIFICATE_PASSWORD ISSUER_ID API_KEY_ID API_PRIVATE_KEY PRIVACY_URL SUPPORT; do
             eval "value=\${$name}"
             [ -n "$value" ] || missing="$missing $name"
           done
@@ -43,6 +47,10 @@ jobs:
             echo "::error::Missing GitHub Actions configuration:$missing. See the iOS TestFlight workflow setup notes."
             exit 1
           fi
+          case "$PRIVACY_URL" in
+            https://*) ;;
+            *) echo "::error::EASYNOTES_PRIVACY_URL must be an https:// URL"; exit 1 ;;
+          esac
 
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
@@ -113,11 +121,21 @@ jobs:
 
       - name: Prepare Flutter iOS build files
         working-directory: app
+        env:
+          PRIVACY_URL: ${{ vars.EASYNOTES_PRIVACY_URL }}
+          SUPPORT: ${{ vars.EASYNOTES_SUPPORT }}
         run: |
           # Start above the existing pubspec build number and make re-runs unique.
           build_number=$((1000 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT))
           echo "BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
-          flutter build ios --release --no-codesign --build-number "$build_number"
+          version=$(sed -n 's/^version: \([0-9][^+]*\)+.*/\1/p' pubspec.yaml)
+          # The About screen (lib/ui/about_screen.dart) reads these at build time;
+          # without them a store build shows "Development build" and no policy
+          # or support contact, which Apple rejects. Same defines as release.yml.
+          flutter build ios --release --no-codesign --build-number "$build_number" \
+            --dart-define=EASYNOTES_VERSION="$version" \
+            --dart-define=EASYNOTES_PRIVACY_URL="$PRIVACY_URL" \
+            --dart-define=EASYNOTES_SUPPORT="$SUPPORT"
 
       - name: Archive and export signed IPA
         working-directory: app/ios

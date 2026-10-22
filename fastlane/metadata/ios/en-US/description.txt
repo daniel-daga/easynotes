@@ -1,0 +1,22 @@
+EasyNotes is notes and checklists in the style of Google Keep, where every note is encrypted on your device before it goes anywhere.
+
+LOCAL FIRST
+EasyNotes starts on your device only. Nothing is sent anywhere until you choose a sync server in Sync settings. There is no built-in cloud and no default server.
+
+SYNC THROUGH A SERVER YOU CHOOSE
+A sync server stores and forwards encrypted notes and cannot read them — not titles, not text, not labels, colours or reminders. You can run one yourself; the server is part of this project's source.
+
+SHARE WITHOUT AN EMAIL ACCOUNT
+Send a link. The first person to open it joins the list, and edits appear live on every device. You can remove people again, and stop sharing altogether.
+
+NO ACCOUNT TO SIGN UP FOR
+Your account is twelve words you write down once. Enter them on another device to get your notes there. Without them nobody can restore your notes, including the server's operator.
+
+Also: labels, colours, pins, an archive, the trash, reminders, offline search, voice notes, and notes shared into it from other apps.
+
+WORTH KNOWING BEFORE YOU START
+• Notes kept only on this device are not backed up. Losing the device loses them.
+• Each sync server keeps its own notes. Switching servers does not move them.
+• Deleting a list or your account removes it from the server, but not the copies held by people you shared it with.
+
+No analytics, no advertising, no crash reporting. Free software under the GNU Affero GPL, version 3 or later.
