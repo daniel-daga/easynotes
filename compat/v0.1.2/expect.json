@@ -1,0 +1,80 @@
+{
+  "version": "0.1.2",
+  "phrase": "early cattle luxury tomorrow off peace cook sponsor primary muscle inmate inspire",
+  "notes": [
+    {
+      "id": "Zp47haXJp400jp74SUDZrw",
+      "kind": "Checklist",
+      "title": "Groceries",
+      "body": "",
+      "items": [
+        [
+          "milk",
+          true
+        ],
+        [
+          "bread",
+          false
+        ],
+        [
+          "olive oil",
+          false
+        ],
+        [
+          "lemons",
+          true
+        ],
+        [
+          "rice",
+          false
+        ],
+        [
+          "coffee",
+          false
+        ],
+        [
+          "apples",
+          false
+        ],
+        [
+          "butter",
+          true
+        ],
+        [
+          "flour",
+          false
+        ],
+        [
+          "tea",
+          false
+        ],
+        [
+          "eggs",
+          false
+        ]
+      ],
+      "colour": "Green",
+      "pinned": true,
+      "shared": true,
+      "attachments": []
+    },
+    {
+      "id": "fcjmnK2zJsy1ZUuqqVL2MA",
+      "kind": "Text",
+      "title": "Letter",
+      "body": "Dear Ben,\n\nThe garden is doing well.\n",
+      "items": [],
+      "colour": null,
+      "pinned": false,
+      "shared": false,
+      "attachments": [
+        {
+          "name": "garden.png",
+          "len": 20000,
+          "sha256": "12351af05a3937cb8fa3f8b9d10658e64078e8770fb744d0acd72e2a27f57919"
+        }
+      ]
+    }
+  ],
+  "invite_link": "easynotes://join#AfW1oYL7eQjFyGJk152CAl3YI_dyi72C_sAkgS3_byKy"
+}
