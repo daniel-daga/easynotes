@@ -107,9 +107,12 @@ local build without `--build-name` says.
 
 ## The release workflow
 
-Push a tag `vMAJOR.MINOR.PATCH` and `.github/workflows/release.yml` runs the CI
-lint and tests, builds the bundle and an APK for arm64, armv7 and x64 with a
-pinned Flutter and Rust, and then refuses the result unless the APK:
+Dispatch `.github/workflows/release.yml` for a tag `vMAJOR.MINOR.PATCH` — from
+Actions, or with `gh workflow run release.yml -f release_tag=v0.1.2`. Pushing
+the tag does **not** start it: the workflow is `workflow_dispatch` only. It
+checks out the tag, runs the CI lint and tests, builds the bundle and an APK for
+arm64, armv7 and x64 with a pinned Flutter and Rust, and then refuses the result
+unless the APK:
 
 - is `eu.fraisl.easynotes` with the tag's `versionCode`, targeting API 36 or
   later, and not debuggable;
@@ -126,8 +129,10 @@ needs; it stops at its first step if any is missing.
 
 ## What this does not prove
 
-That the app works. A release build still has to be installed on real phones
-and taken through the flows in the [production readiness
-review](production-readiness-2026-09-27.md) — install, update over the previous
-release, share, revoke, reinstall and restore — before it is anything but a
-test build.
+That the app works. Install, update over the previous release and the
+downgrade-refusal behaviour were checked on the x86_64 emulator on 2026-10-22
+(0.1.0 → 0.1.1, data kept, same certificate), but a release build still has to
+be installed on real phones and taken through the flows in the [production
+readiness review](production-readiness-2026-09-27.md) — install, update over
+the previous release, share, revoke, reinstall and restore — before it is
+anything but a test build.
