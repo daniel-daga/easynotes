@@ -1,0 +1,80 @@
+{
+  "version": "0.1.3",
+  "phrase": "clog answer wheel raccoon melt cherry ensure real sick such simple muscle",
+  "notes": [
+    {
+      "id": "1jxS5fUWvtILYJ3pVdGg9Q",
+      "kind": "Checklist",
+      "title": "Groceries",
+      "body": "",
+      "items": [
+        [
+          "milk",
+          true
+        ],
+        [
+          "bread",
+          false
+        ],
+        [
+          "olive oil",
+          false
+        ],
+        [
+          "lemons",
+          true
+        ],
+        [
+          "rice",
+          false
+        ],
+        [
+          "coffee",
+          false
+        ],
+        [
+          "apples",
+          false
+        ],
+        [
+          "butter",
+          true
+        ],
+        [
+          "flour",
+          false
+        ],
+        [
+          "tea",
+          false
+        ],
+        [
+          "eggs",
+          false
+        ]
+      ],
+      "colour": "Green",
+      "pinned": true,
+      "shared": true,
+      "attachments": []
+    },
+    {
+      "id": "DSHr5U8-TpGoJ6tZWOFnmw",
+      "kind": "Text",
+      "title": "Letter",
+      "body": "Dear Ben,\n\nThe garden is doing well.\n",
+      "items": [],
+      "colour": null,
+      "pinned": false,
+      "shared": false,
+      "attachments": [
+        {
+          "name": "garden.png",
+          "len": 20000,
+          "sha256": "12351af05a3937cb8fa3f8b9d10658e64078e8770fb744d0acd72e2a27f57919"
+        }
+      ]
+    }
+  ],
+  "invite_link": "easynotes://join#AfLB3eFGF5--GXwi89Yoia7M8dYDZqocV54iZm-uvnE0"
+}
