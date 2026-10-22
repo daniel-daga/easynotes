@@ -34,6 +34,7 @@ import 'sync_devices_screen.dart';
 import 'invites.dart';
 import 'motion.dart';
 import 'label_manager_screen.dart';
+import 'last_synced_footer.dart';
 import 'note_appearance.dart';
 import 'note_screen.dart';
 import 'storage_banner.dart';
@@ -300,6 +301,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
           invites: widget.library,
           autofocusBody: autofocusBody,
           relayLink: widget.profile.relayLink,
+          hasRelay: widget.profile.url != null,
           onLabels: () async {
             final note = widget.library.notes
                 .where((note) => note.id == id)
@@ -799,6 +801,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   onJoined: _joinedInBackground,
                 ),
                 Expanded(child: _body(all, notes)),
+                LastSyncedFooter(
+                  hasRelay: widget.profile.url != null,
+                  initial: widget.library.lastSyncedAt,
+                  watch: widget.library.watchLastSyncedAt,
+                ),
               ],
             ),
           ),

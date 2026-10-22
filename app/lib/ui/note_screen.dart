@@ -27,6 +27,7 @@ import '../core/note_library.dart';
 import '../core/note_view.dart';
 import 'attachments.dart';
 import 'invites.dart';
+import 'last_synced_footer.dart';
 import 'note_appearance.dart';
 import 'storage_banner.dart';
 
@@ -43,6 +44,7 @@ class NoteScreen extends StatefulWidget {
     this.onReminders,
     this.files = const DeviceAttachmentFiles(),
     this.relayLink,
+    this.hasRelay = false,
   });
 
   final NoteCore core;
@@ -50,6 +52,10 @@ class NoteScreen extends StatefulWidget {
   /// The relay's link with its access key, for a guest who needs it as well
   /// as an invite. Null for a relay with no key.
   final String? relayLink;
+
+  /// Whether a relay is configured for this device, so the footer can say when
+  /// it last synced. False for screens with no relay or no library.
+  final bool hasRelay;
 
   /// Where attachments are picked from and saved to.
   final AttachmentFiles files;
@@ -998,6 +1004,12 @@ class _NoteScreenState extends State<NoteScreen> {
               ),
             ),
             Expanded(child: isText ? _text(note) : _checklist(note)),
+            if (library != null)
+              LastSyncedFooter(
+                hasRelay: widget.hasRelay,
+                initial: library.lastSyncedAt,
+                watch: library.watchLastSyncedAt,
+              ),
           ],
         ),
         bottomNavigationBar: AnimatedPadding(

@@ -56,6 +56,7 @@ class FakeNoteLibrary implements NoteLibrary {
 
   final _notes = StreamController<List<NoteSummary>>.broadcast();
   final _sync = StreamController<SyncStatus>.broadcast();
+  final _lastSynced = StreamController<DateTime?>.broadcast();
   final _storageErrors = StreamController<String?>.broadcast();
   String? _storageError;
 
@@ -82,6 +83,7 @@ class FakeNoteLibrary implements NoteLibrary {
 
   List<NoteSummary> _summaries = const [];
   SyncStatus _status = const SyncStatus.offline();
+  DateTime? _lastSyncedAt;
 
   @override
   final bool canJoin;
@@ -795,6 +797,21 @@ class FakeNoteLibrary implements NoteLibrary {
   void pushStatus(SyncStatus status) {
     _status = status;
     _sync.add(status);
+    // The same rule the real library applies: a caught-up status is when a
+    // "last synced" footer can point at.
+    if (status.state == SyncState.synced && status.pending == 0) {
+      _lastSyncedAt = DateTime.now();
+      _lastSynced.add(_lastSyncedAt);
+    }
+  }
+
+  @override
+  DateTime? get lastSyncedAt => _lastSyncedAt;
+
+  @override
+  Stream<DateTime?> watchLastSyncedAt() async* {
+    yield _lastSyncedAt;
+    yield* _lastSynced.stream;
   }
 
   @override
@@ -824,6 +841,7 @@ class FakeNoteLibrary implements NoteLibrary {
     }
     await _notes.close();
     await _sync.close();
+    await _lastSynced.close();
     await _storageErrors.close();
     await _transferStream.close();
   }

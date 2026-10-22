@@ -54,7 +54,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       }
       _lastObservedSyncState = converted.state;
       _typingBatches = status.typingBatches.toInt();
-      _sync.add(_withPause(converted));
+      final published = _withPause(converted);
+      // Caught up with nothing of our own left to send: the moment a footer
+      // saying "last synced" can point at. `paused` never reaches this branch,
+      // because a suspended device is offline.
+      if (published.state == SyncState.synced && published.pending == 0) {
+        _lastSyncedAt = DateTime.now();
+        _lastSynced.add(_lastSyncedAt);
+      }
+      _sync.add(published);
     }, onError: _sync.addError);
     _transfersUpstream = _library.watchTransfers().listen((transfers) {
       _lastTransfers = [for (final t in transfers) _toTransfer(t)];
@@ -185,6 +193,11 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   late final StreamSubscription<List<rust.NoteSummaryView>> _upstream;
   final _sync = StreamController<SyncStatus>.broadcast();
   late final StreamSubscription<rust.SyncStatus> _syncUpstream;
+
+  /// When this session last reached a fully synced state. See
+  /// [NoteLibrary.lastSyncedAt].
+  DateTime? _lastSyncedAt;
+  final _lastSynced = StreamController<DateTime?>.broadcast();
   final _transfers = StreamController<List<AttachmentTransfer>>.broadcast();
   late final StreamSubscription<List<rust.TransferView>> _transfersUpstream;
   List<AttachmentTransfer> _lastTransfers = const [];
@@ -702,6 +715,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     yield* _sync.stream;
   }
 
+  @override
+  DateTime? get lastSyncedAt => _lastSyncedAt;
+
+  @override
+  Stream<DateTime?> watchLastSyncedAt() async* {
+    yield _lastSyncedAt;
+    yield* _lastSynced.stream;
+  }
+
   /// Hand every queued write to the browser and wait for it to land.
   ///
   /// Called on a timer, at open, when the page is hidden, and at close. A
@@ -792,6 +814,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     await _transfersUpstream.cancel();
     await _notes.close();
     await _sync.close();
+    await _lastSynced.close();
     await _transfers.close();
     await _storage.close();
     // And last, the store itself. This has to be asked for: the bridge frees

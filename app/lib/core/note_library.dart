@@ -525,6 +525,20 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   Stream<SyncStatus> watchSync();
 
+  /// When this device last reached a fully synced state: connected, with
+  /// nothing of its own still waiting.
+  ///
+  /// A wall clock, and so the app's question rather than the core's. The core
+  /// measures time with an ordinal because it compiles for a browser, where a
+  /// clock is not something it can rely on; "when was this" belongs to whoever
+  /// has a `DateTime`. It is remembered for the session and not persisted: a
+  /// fresh launch has not synced yet, and null says so rather than claiming an
+  /// old time this device cannot currently stand behind.
+  DateTime? get lastSyncedAt;
+
+  /// [lastSyncedAt] now, and every later value. Emits immediately.
+  Stream<DateTime?> watchLastSyncedAt();
+
   /// Every attachment transfer that has not finished, now and at every
   /// change: uploads of this device's imports, and downloads a screen asked
   /// for by reading an attachment that was not here.
