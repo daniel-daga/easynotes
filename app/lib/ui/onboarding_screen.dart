@@ -10,6 +10,8 @@ library;
 
 import 'package:flutter/material.dart';
 
+import 'setup_widgets.dart';
+
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({
     super.key,
@@ -127,7 +129,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         textAlign: TextAlign.center,
       ),
       const SizedBox(height: 32),
-      const _FeatureRow(
+      const FeatureRow(
         icon: Icons.phone_android,
         title: 'On this device',
         detail:
@@ -135,7 +137,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             'to write them.',
       ),
       const SizedBox(height: 20),
-      const _FeatureRow(
+      const FeatureRow(
         icon: Icons.cloud_outlined,
         title: 'Sync server',
         detail:
@@ -143,7 +145,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             'or a sync server provider.',
       ),
       const SizedBox(height: 20),
-      const _FeatureRow(
+      const FeatureRow(
         icon: Icons.key,
         title: 'Account',
         detail:
@@ -193,7 +195,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           'Both steps are optional. You can change them later in Settings.',
         ),
         const SizedBox(height: 24),
-        _SetupStep(
+        SetupStep(
           key: const Key('onboarding-server-step'),
           number: 1,
           icon: Icons.cloud_outlined,
@@ -205,12 +207,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           enabled: !serverDone,
           onTap: widget.onSetUpRelay,
         ),
-        _Connector(
+        SetupConnector(
           color: serverDone
               ? theme.colorScheme.primary
               : theme.colorScheme.outlineVariant,
         ),
-        _SetupStep(
+        SetupStep(
           key: const Key('onboarding-account-step'),
           number: 2,
           icon: Icons.key,
@@ -286,229 +288,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ],
     );
   }
-}
-
-/// One line of "what this app is", with an icon and a sentence of detail.
-class _FeatureRow extends StatelessWidget {
-  const _FeatureRow({
-    required this.icon,
-    required this.title,
-    required this.detail,
-  });
-
-  final IconData icon;
-  final String title;
-  final String detail;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 40,
-          child: Icon(icon, color: theme.colorScheme.onSurfaceVariant),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                detail,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// A checklist step: outlined and tappable, greyed out and not, or filled and
-/// ticked once it is done.
-///
-/// Done is deliberately a different shape from available — a filled card with
-/// a tick instead of a number and no chevron — so that success is visible
-/// without comparing two shades of the same colour.
-class _SetupStep extends StatelessWidget {
-  const _SetupStep({
-    super.key,
-    required this.number,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.done,
-    required this.enabled,
-    this.onTap,
-  });
-
-  final int number;
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool done;
-  final bool enabled;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final dim = !enabled && !done;
-    final content = done || enabled
-        ? scheme.onSurface
-        : scheme.onSurface.withValues(alpha: 0.45);
-    final detail = done || enabled
-        ? scheme.onSurfaceVariant
-        : scheme.onSurface.withValues(alpha: 0.4);
-
-    return Semantics(
-      button: enabled && !done,
-      enabled: enabled && !done,
-      label: done ? '$title, done' : title,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
-        decoration: BoxDecoration(
-          color: done ? scheme.primaryContainer : scheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: done
-                ? Colors.transparent
-                : dim
-                ? scheme.outlineVariant.withValues(alpha: 0.5)
-                : scheme.outlineVariant,
-          ),
-        ),
-        child: Material(
-          type: MaterialType.transparency,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: enabled && !done ? onTap : null,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeOutCubic,
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: done
-                          ? scheme.primary
-                          : scheme.surfaceContainerHighest,
-                      border: done
-                          ? null
-                          : Border.all(color: scheme.outlineVariant),
-                    ),
-                    child: Center(
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 250),
-                        transitionBuilder: (child, animation) =>
-                            ScaleTransition(scale: animation, child: child),
-                        child: done
-                            ? Icon(
-                                Icons.check,
-                                key: const ValueKey('done'),
-                                size: 20,
-                                color: scheme.onPrimary,
-                              )
-                            : Text(
-                                '$number',
-                                key: const ValueKey('number'),
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  color: dim ? detail : scheme.onSurface,
-                                ),
-                              ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(icon, size: 18, color: detail),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                title,
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  color: content,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 2),
-                        AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 250),
-                          child: Text(
-                            subtitle,
-                            key: ValueKey(subtitle),
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: detail,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (enabled && !done) ...[
-                    const SizedBox(width: 8),
-                    Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The line that joins the two steps, filled once the first is done.
-///
-/// Its left edge sits under the number badges above and below: the page's
-/// padding, the card's padding, half a badge, and half a line.
-class _Connector extends StatelessWidget {
-  const _Connector({required this.color});
-
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(left: 24 + 16 + 17, top: 2, bottom: 2),
-    child: Row(
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOutCubic,
-          width: 2,
-          height: 18,
-          color: color,
-        ),
-      ],
-    ),
-  );
 }
 
 /// Three short marks, the current one widened: which of the three pages this
