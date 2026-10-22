@@ -1735,6 +1735,8 @@ class _ItemRowState extends State<_ItemRow> {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 8),
       minLeadingWidth: 0,
+      dense: true,
+      visualDensity: VisualDensity.compact,
       leading: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
