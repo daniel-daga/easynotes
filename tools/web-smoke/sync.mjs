@@ -33,10 +33,16 @@ const browser = await chromium.launch({
 const page = await (await browser.newContext()).newPage();
 
 const sockets = [];
+/// The sockets the page has not closed. Setup checks a relay before switching
+/// to it, which opens and closes one; only the engine's own connection may
+/// stay open.
+const live = new Set();
 const sent = [];
 const received = [];
 page.on('websocket', ws => {
   sockets.push(ws.url());
+  live.add(ws);
+  ws.on('close', () => live.delete(ws));
   ws.on('framesent', f => sent.push(String(f.payload)));
   ws.on('framereceived', f => received.push(String(f.payload)));
 });
@@ -80,10 +86,18 @@ await page.keyboard.press('Enter');
 // The handshake is two HTTP calls and then a socket, and the relay may be cold.
 await page.waitForTimeout(6000);
 
-// One socket for the device, whatever it syncs (ADR 0017).
-const device = sockets.filter(u => u.includes('/v1/sync'));
-check(device.length === 1, `the tab opened one socket for the device: ${sockets.join(' ') || '(none)'}`);
-check(sockets.length === device.length, 'and no other socket');
+// One open socket for the device, whatever it syncs (ADR 0017). The setup's
+// check of the relay is a socket too, but it is closed before the switch.
+const open = [...live].map(ws => ws.url());
+const device = open.filter(u => u.includes('/v1/sync'));
+check(
+  device.length === 1,
+  `the tab holds one socket for the device: ${open.join(' ') || '(none)'}`,
+);
+check(
+  sockets.every(u => u.includes('/v1/sync')),
+  `and no other socket: ${sockets.join(' ')}`,
+);
 check(
   device.length > 0 && /[?&]token=/.test(device[0]),
   'it carried a token, so the two HTTP calls of the handshake went through CORS',

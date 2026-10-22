@@ -14,15 +14,37 @@ export async function load(d, to) {
   await accessible(d);
 }
 
+/// The first launch opens onboarding before the note list. Walk it to the end
+/// without setting anything up, which is the same choice as skipping both
+/// optional steps. A profile that has already chosen how to start is left
+/// alone.
+export async function dismissOnboarding(d) {
+  if (!(await texts(d)).includes('Next')) return;
+  await tap(d, /^Next$/);
+  const setup = await texts(d);
+  if (setup.includes('Continue offline')) {
+    await tap(d, /^Continue offline$/);
+  } else if (setup.includes('Continue without account')) {
+    await tap(d, /^Continue without account$/);
+  }
+  await tap(d, /^Start writing$/);
+}
+
 /// Select a relay for a fresh browser profile through the same Settings flow a
 /// person uses. Local-only is the default; tests must opt into the relay they
 /// exercise instead of relying on a build-time address.
 export async function configureRelay(d, url) {
+  await dismissOnboarding(d);
   await tap(d, /navigation menu/i);
   await tap(d, /Sync & devices/);
-  await tap(d, /^Set up sync$/);
-  await fill(d, 'Relay URL or relay link', url);
-  await tap(d, /^Set up sync$/);
+  // An unconnected profile starts at the first setup step, but the row below
+  // it reaches both saved servers and a new one, and is what every profile
+  // sees.
+  await tap(d, /Switch server/);
+  await tap(d, /Connect another server/);
+  await fill(d, 'Server address', url);
+  await tap(d, /^Continue$/);
+  await tap(d, /^Connect$/);
   await tap(d, /^Start with an empty collection$/);
   // Settings closes itself once the new profile is open. If it stays, the
   // switch has not finished, which is a failure and not something to tap past.
@@ -97,7 +119,9 @@ export async function tap(d, re, options) {
 }
 
 export async function fill(d, label, value) {
-  const n = await find(d, n => n.field === label);
+  // The aria-label carries the hint under the label, so only its first line
+  // is the name of the field.
+  const n = await find(d, n => n.field.split('\n')[0].trim() === label);
   await d.page.mouse.click(n.x, n.y);
   await d.page.waitForTimeout(400);
   await d.page.keyboard.type(value);
