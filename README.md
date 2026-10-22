@@ -202,7 +202,8 @@ just --list           # everything else
 
 The two-device demo is `just run-relay` in one terminal and `just run-linux` in
 another — twice, if you want two devices. In each app, open the drawer’s
-**Sync & devices → Set up sync** and enter `http://127.0.0.1:8080` (or the URL of your relay).
+**Sync & devices → Switch server → Connect another server** and enter
+`http://127.0.0.1:8080` (or the URL of your relay).
 The URL is saved in the app, so release builds can choose a relay after
 installation.
 

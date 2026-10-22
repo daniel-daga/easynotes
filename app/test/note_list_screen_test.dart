@@ -940,11 +940,30 @@ void main() {
 
   // -- labels ---------------------------------------------------------------
 
+  testWidgets(
+    'the drawer hints at no labels instead of offering to create one',
+    (tester) async {
+      final library = twoLists();
+      await pumpList(tester, library);
+      await tester.tap(find.byTooltip('Open navigation menu'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No labels yet'), findsOneWidget);
+      expect(find.byKey(const Key('create-label')), findsNothing);
+
+      await library.addTag('groceries', 'errands');
+      await tester.pumpAndSettle();
+
+      expect(find.text('No labels yet'), findsNothing);
+      expect(find.byKey(const Key('label-shelf-errands')), findsOneWidget);
+    },
+  );
+
   /// Make a label in the manager, then choose it from the note's picker.
   Future<void> labelNote(WidgetTester tester, String id, String label) async {
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('create-label')));
+    await tester.tap(find.byKey(const Key('edit-labels')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('label-field')), label);
     await tester.tap(find.byKey(const Key('label-add')));
@@ -1021,7 +1040,7 @@ void main() {
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('edit-labels')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('create-label')));
+    await tester.tap(find.byKey(const Key('edit-labels')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('label-field')), '   ');
     await tester.tap(find.byKey(const Key('label-add')));

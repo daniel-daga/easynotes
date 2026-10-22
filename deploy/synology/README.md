@@ -128,7 +128,8 @@ client at `https://your-relay-hostname` and verify it can sync; the websocket
 endpoint is `/v1/sync`.
 
 For the browser app, open `https://your-app-hostname` and choose the relay URL
-in **Sync & devices → Set up sync**. The web container serves the static app
+in **Sync & devices → Switch server → Connect another server**. The web
+container serves the static app
 with the cross-origin isolation headers required by threaded WebAssembly.
 
 ## 4. Backups and updates

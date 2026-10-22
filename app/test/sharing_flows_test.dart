@@ -228,6 +228,7 @@ void main() {
       scaffold.openDrawer();
       await tester.pumpAndSettle();
       await tapKey(tester, 'sync-status');
+      await tapKey(tester, 'sync-setup-account-step');
       await tapKey(tester, 'adopt-account-button');
       await tester.enterText(
         find.byKey(const Key('adopt-phrase-field')),
@@ -335,4 +336,3 @@ void main() {
     expect(library.takeRemovals(), isEmpty);
   });
 }
-

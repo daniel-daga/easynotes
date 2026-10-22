@@ -1,36 +1,37 @@
-/// First-run relay setup: an address, then its access key, then the handshake
+/// Setting up a relay: an address, then its access key, then the handshake
 /// that proves the relay is there — before anything is committed.
+///
+/// The same flow is used everywhere a relay is chosen: the first run connects
+/// to one, Settings connects to another or changes the key of the one in use.
+/// Nothing is committed until the handshake passes, so an abort leaves the
+/// collection where it was.
 library;
 
-import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
+import 'relay_address.dart';
 
-/// Whether the page this app was served from is HTTPS, in which case a browser
-/// will refuse it a plain `http://` or `ws://` relay (mixed content).
+/// What the wizard was opened to do.
+enum RelaySetupMode {
+  /// Use the first relay for a collection that has none. Offers to take the
+  /// notes on this device with it.
+  connect,
+
+  /// Move to another relay. Each relay has notes and an account of its own.
+  switchServer,
+
+  /// Check a new access key for the relay already in use, then keep it.
+  accessKey,
+}
+
+enum _Step { url, access, verify, move }
+
+/// The path from "Set up sync" to a connected relay.
 ///
-/// The same two rules as Settings → Relay, kept here as well so the first-run
-/// path refuses an address for the same reason that screen does.
-bool get _servedOverHttps => kIsWeb && Uri.base.scheme == 'https';
-
-/// Whether this is a release build for a phone, whose operating system refuses
-/// plain `http://` and `ws://` outright.
-bool get _mobileRelease =>
-    kReleaseMode &&
-    !kIsWeb &&
-    (defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS);
-
-enum _Step { url, access, verify }
-
-/// The path from "Set up cloud backups" to a connected relay.
-///
-/// Three screens, in the order a person can answer them: the address, its
-/// access key if the relay has one, then the handshake. Nothing is committed
-/// until the handshake passes, so an abort leaves the collection on "On this
-/// device" with no broken profile behind it.
+/// The address comes first because the key may arrive inside it, and the
+/// handshake comes last because it is the only thing that can prove the first
+/// two were right.
 ///
 /// Pops with `true` once the relay is verified and selected, and with `false`
 /// or null when the person gives up.
@@ -39,10 +40,20 @@ class RelaySetupWizard extends StatefulWidget {
     super.key,
     required this.onSwitchRelay,
     required this.onVerifyRelay,
+    this.onSetAccess,
+    this.onMoveLocalToRelay,
+    this.mode = RelaySetupMode.connect,
+    this.profile,
+    this.profiles = const [],
     bool? servedOverHttps,
     bool? mobileRelease,
-  }) : servedOverHttps = servedOverHttps ?? _servedOverHttps,
-       mobileRelease = mobileRelease ?? _mobileRelease;
+  }) : assert(
+         mode != RelaySetupMode.accessKey ||
+             (onSetAccess != null && profile?.url != null),
+         'changing a key needs a relay and somewhere to keep the key',
+       ),
+       servedOverHttps = servedOverHttps ?? platformServedOverHttps,
+       mobileRelease = mobileRelease ?? platformMobileRelease;
 
   /// Select the relay at a canonical URL, keeping [access] as its key.
   final Future<void> Function(String?, {String? access}) onSwitchRelay;
@@ -50,8 +61,26 @@ class RelaySetupWizard extends StatefulWidget {
   /// Prove the address and key to the relay without committing anything.
   final Future<void> Function(String url, {String? access}) onVerifyRelay;
 
+  /// Keep [access] for the relay already in use, or forget it when null. Only
+  /// needed in [RelaySetupMode.accessKey].
+  final Future<void> Function(String?)? onSetAccess;
+
+  /// Assign the current local collection to a new relay, keeping its notes.
+  /// Never offered for a destination that already exists.
+  final Future<void> Function(String, {String? access})? onMoveLocalToRelay;
+
+  final RelaySetupMode mode;
+
+  /// The profile in use: its address is what an access key belongs to, and
+  /// it is what "already using this server" compares against.
+  final RelayProfile? profile;
+
+  /// The saved profiles, so that "this server starts empty" is only said
+  /// about a server that does.
+  final List<RelayProfile> profiles;
+
   /// A browser page served over HTTPS can only reach a relay with TLS; a
-  /// released phone app likewise. The same rules as Settings → Relay.
+  /// released phone app likewise.
   final bool servedOverHttps;
 
   /// A released phone app cannot reach a relay without TLS either.
@@ -66,7 +95,10 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
   final _url = TextEditingController();
   final _access = TextEditingController();
 
-  _Step _step = _Step.url;
+  late _Step _step = switch (widget.mode) {
+    RelaySetupMode.accessKey => _Step.access,
+    _ => _Step.url,
+  };
 
   /// The address as read at step one, and the key as read at step two. Both
   /// survive a failed verification so a retry does not start over.
@@ -75,6 +107,16 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
 
   bool _busy = false;
   String? _error;
+  String _failureTitle = 'Could not connect to this sync server';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.mode == RelaySetupMode.accessKey) {
+      _canonical = widget.profile?.url;
+      _accessKey = widget.profile?.access;
+    }
+  }
 
   @override
   void dispose() {
@@ -83,55 +125,72 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     super.dispose();
   }
 
+  bool get _changingKey => widget.mode == RelaySetupMode.accessKey;
+
   String get _title => switch (_step) {
-    _Step.url => 'Sync server address',
+    _Step.url =>
+      widget.mode == RelaySetupMode.switchServer
+          ? 'Switch sync server'
+          : 'Sync server address',
     _Step.access => 'Sync server access key',
-    _Step.verify => 'Connecting',
+    _Step.verify => _changingKey ? 'Checking access key' : 'Connecting',
+    _Step.move => 'Your notes',
   };
 
+  /// The host of the address being connected to: what a person recognises.
+  String? get _host {
+    final url = _canonical;
+    if (url == null) return null;
+    final host = Uri.tryParse(url)?.host;
+    return host == null || host.isEmpty ? url : host;
+  }
+
+  /// Whether the current local collection can go to the new relay rather than
+  /// leaving it behind.
+  bool get _canOfferMove {
+    final move = widget.onMoveLocalToRelay;
+    final url = _canonical;
+    return widget.mode == RelaySetupMode.connect &&
+        widget.profile?.url == null &&
+        move != null &&
+        url != null &&
+        !widget.profiles.any((profile) => profile.url == url);
+  }
+
   String? _validateUrl(String? value) {
-    final String url;
-    try {
-      url = parseRelayLink(value ?? '').url;
-    } on FormatException catch (error) {
-      return error.message;
-    }
-    if (widget.servedOverHttps && url.startsWith('http://')) {
-      return 'This page is served over HTTPS, so the browser will only reach '
-          'a sync server whose address starts with https://.';
-    }
-    if (widget.mobileRelease && url.startsWith('http://')) {
-      return 'Notes only sync over an encrypted connection. Use a sync '
-          'server address that starts with https:// or wss://.';
+    final error = relayAddressError(
+      value,
+      servedOverHttps: widget.servedOverHttps,
+      mobileRelease: widget.mobileRelease,
+    );
+    if (error != null) return error;
+    // A typed address that is the one already in use has nowhere to switch
+    // to: saying so here is kinder than a spinner and a screen that does not
+    // change.
+    if (widget.mode == RelaySetupMode.switchServer &&
+        _canonicalOr(value) == widget.profile?.url) {
+      return 'You are already using this sync server.';
     }
     return null;
   }
 
-  String? _validateAccess(String? value) => _readAccess(value ?? '').error;
-
-  /// A key on its own, or a relay link carrying one for the address already
-  /// given — the same reading Settings → Relay does.
-  ({String? key, String? error}) _readAccess(String input) {
-    final raw = input.trim();
-    if (raw.isEmpty) return (key: null, error: null);
-    final plain = normalizeAccessKey(raw);
-    if (plain != null) return (key: plain, error: null);
+  /// [value] as a canonical relay address, without throwing: validation has
+  /// already accepted it.
+  static String? _canonicalOr(String? value) {
     try {
-      final link = parseRelayLink(raw);
-      if (link.access == null) {
-        return (key: null, error: 'That link has no access key in it.');
-      }
-      if (link.url != _canonical) {
-        return (
-          key: null,
-          error: 'That link is for another sync server: ${link.url}.',
-        );
-      }
-      return (key: link.access, error: null);
+      return parseRelayLink(value ?? '').url;
     } on FormatException {
-      return (key: null, error: 'That is not an access key or server link.');
+      return null;
     }
   }
+
+  String? _validateAccess(String? value) =>
+      readAccessKey(value ?? '', relay: _canonical).error;
+
+  /// A key on its own, or a relay link carrying one for the address already
+  /// given.
+  ({String? key, String? error}) _readAccess(String input) =>
+      readAccessKey(input, relay: _canonical);
 
   /// Read the address, and carry an access key that came inside a relay link
   /// into the next step rather than asking for it again.
@@ -151,6 +210,9 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     if (!(_form.currentState?.validate() ?? false)) return;
     final read = _readAccess(_access.text);
     _accessKey = read.key;
+    _failureTitle = _changingKey
+        ? 'Could not check this access key'
+        : 'Could not connect to this sync server';
     setState(() {
       _step = _Step.verify;
       _error = null;
@@ -158,8 +220,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     _verify();
   }
 
-  /// Prove the relay, then commit to it. A failure at either point stays on
-  /// the verification screen with the words that came back.
+  /// Prove the relay, then commit. A failure at either point stays on the
+  /// verification screen with the words that came back.
   Future<void> _verify() async {
     if (_busy) return;
     final url = _canonical;
@@ -170,18 +232,78 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     });
     try {
       await widget.onVerifyRelay(url, access: _accessKey);
-      await widget.onSwitchRelay(url, access: _accessKey);
     } on Object catch (error) {
+      _fail(error);
+      return;
+    }
+    if (_changingKey) {
+      try {
+        await widget.onSetAccess!(_accessKey);
+      } on Object catch (error) {
+        _failureTitle = 'Could not save the access key';
+        _fail(error);
+        return;
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+      return;
+    }
+    if (_canOfferMove) {
+      // Nothing is committed yet: the notes that would come along are a
+      // choice, and it comes after the server has answered.
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = error is StateError ? error.message.toString() : '$error';
+        _step = _Step.move;
       });
+      return;
+    }
+    await _commit(move: false);
+  }
+
+  Future<void> _commit({required bool move}) async {
+    final url = _canonical;
+    if (url == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+      _failureTitle = move
+          ? 'Could not move your notes'
+          : 'Could not switch to this sync server';
+    });
+    try {
+      if (move) {
+        await widget.onMoveLocalToRelay!(url, access: _accessKey);
+      } else {
+        await widget.onSwitchRelay(url, access: _accessKey);
+      }
+    } on Object catch (error) {
+      // A move may already be durable when starting sync fails. Retrying the
+      // same move cannot work — this collection is no longer local — so this
+      // is reported and closed, not offered again.
+      _fail(error, moved: move);
       return;
     }
     if (!mounted) return;
     Navigator.of(context).pop(true);
   }
+
+  /// A move that failed after it was written: the collection is this relay's
+  /// now, so there is nothing to retry here.
+  bool _moveFailed = false;
+
+  void _fail(Object error, {bool moved = false}) {
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _step = _Step.verify;
+      _moveFailed = moved;
+      _error = error is StateError ? error.message.toString() : '$error';
+    });
+  }
+
+  /// Where "go back and try again" goes: the step whose answer was wrong.
+  _Step get _retryStep => _changingKey ? _Step.access : _Step.url;
 
   /// Back one step, or out of the setup from the first.
   void _back() {
@@ -189,11 +311,17 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     switch (_step) {
       case _Step.verify:
         setState(() {
-          _step = _Step.access;
+          _step = _retryStep;
           _error = null;
         });
-      case _Step.access:
+      case _Step.move:
         setState(() => _step = _Step.url);
+      case _Step.access:
+        if (_changingKey) {
+          Navigator.of(context).pop(false);
+        } else {
+          setState(() => _step = _Step.url);
+        }
       case _Step.url:
         Navigator.of(context).pop(false);
     }
@@ -222,6 +350,7 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
         _Step.url => _urlBody(),
         _Step.access => _accessBody(),
         _Step.verify => _verifyBody(),
+        _Step.move => _moveBody(),
       },
     ),
   );
@@ -231,10 +360,14 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     child: ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        const Text(
-          'EasyNotes does not provide a sync server. Get an address from your '
-          'organization or a sync server provider.',
-          key: Key('relay-setup-intro'),
+        Text(
+          widget.mode == RelaySetupMode.switchServer
+              ? 'Each sync server has notes and an account of its own. '
+                    'Switching opens that collection; your notes here stay '
+                    'in this one.'
+              : 'EasyNotes does not provide a sync server. Get an address '
+                    'from your organization or a sync server provider.',
+          key: const Key('relay-setup-intro'),
         ),
         const SizedBox(height: 16),
         TextFormField(
@@ -273,11 +406,29 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           key: const Key('relay-setup-address'),
         ),
         const SizedBox(height: 16),
-        const Text(
-          'If whoever runs the server gave you an access key, enter it here. '
-          'Leave it empty for a server anyone may use.',
-          key: Key('relay-setup-access-help'),
-        ),
+        if (_changingKey)
+          const Text(
+            'The new key is checked with the server before it is saved. '
+            'Leave the field empty to remove the key.',
+            key: Key('relay-setup-access-help'),
+          )
+        else ...[
+          const Text(
+            'If whoever runs the server gave you an access key, enter it here. '
+            'Leave it empty for a server anyone may use.',
+            key: Key('relay-setup-access-help'),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              _destinationExists
+                  ? 'This server already has a collection saved here. Its '
+                        'notes open once you connect.'
+                  : 'This server starts with an empty collection.',
+              key: const Key('relay-setup-destination'),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         TextFormField(
           key: const Key('relay-setup-access'),
@@ -299,9 +450,58 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           onPressed: _submitAccess,
           child: const Text('Connect'),
         ),
+        if (_changingKey && widget.profile?.access != null) ...[
+          const SizedBox(height: 8),
+          TextButton(
+            key: const Key('relay-setup-access-remove'),
+            onPressed: _busy ? null : _removeAccess,
+            child: const Text('Remove access key'),
+          ),
+        ],
       ],
     ),
   );
+
+  bool get _destinationExists =>
+      widget.profiles.any((profile) => profile.url == _canonical);
+
+  /// Forget the key of the relay in use, after saying what that means. No
+  /// verification: there is no key to verify, and the next sync reports a
+  /// server that insists on one.
+  Future<void> _removeAccess() async {
+    final remove = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove access key?'),
+        content: const Text(
+          'The server will be used without a key. If it asks for one, sync '
+          'stops until you enter it again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('relay-setup-access-remove-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (remove != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onSetAccess!(null);
+    } on Object catch (error) {
+      _failureTitle = 'Could not remove the access key';
+      _fail(error);
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
 
   Widget _verifyBody() {
     if (_busy) {
@@ -339,7 +539,7 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
         ),
         const SizedBox(height: 16),
         Text(
-          'Could not connect to this sync server',
+          _failureTitle,
           key: const Key('relay-setup-failed'),
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.titleMedium,
@@ -351,21 +551,68 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 24),
-        FilledButton(
-          key: const Key('relay-setup-retry'),
-          onPressed: () => setState(() {
-            _step = _Step.url;
-            _error = null;
-          }),
-          child: const Text('Go back and try again'),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          key: const Key('relay-setup-abort'),
-          onPressed: _abort,
-          child: const Text('Abort setup'),
-        ),
+        if (_moveFailed)
+          FilledButton(
+            key: const Key('relay-setup-close'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Close'),
+          )
+        else ...[
+          FilledButton(
+            key: const Key('relay-setup-retry'),
+            onPressed: () => setState(() {
+              _step = _retryStep;
+              _error = null;
+            }),
+            child: const Text('Go back and try again'),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton(
+            key: const Key('relay-setup-abort'),
+            onPressed: _abort,
+            child: const Text('Abort setup'),
+          ),
+        ],
       ],
     );
   }
+
+  /// The last question for a first relay: take the notes already here along,
+  /// or keep them where they are. The server has answered by this point, so
+  /// neither answer can be wasted on a typo.
+  Widget _moveBody() => ListView(
+    padding: const EdgeInsets.all(24),
+    children: [
+      Icon(
+        Icons.folder_copy_outlined,
+        size: 48,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      const SizedBox(height: 16),
+      Text(
+        'What about the notes on this device?',
+        key: const Key('relay-setup-move-question'),
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+      const SizedBox(height: 12),
+      Text(
+        'They can move to ${_host ?? 'this server'}, attachments, labels and '
+        'reminders included. Moved notes stay available offline here.',
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 24),
+      FilledButton(
+        key: const Key('move-local-notes'),
+        onPressed: _busy ? null : () => _commit(move: true),
+        child: const Text('Move my current notes'),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        key: const Key('start-empty-collection'),
+        onPressed: _busy ? null : () => _commit(move: false),
+        child: const Text('Start with an empty collection'),
+      ),
+    ],
+  );
 }

@@ -102,7 +102,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('account-no')), findsOneWidget);
+    expect(find.text('Works once a sync server is connected.'), findsOneWidget);
   });
 
   testWidgets('shows all twelve words, numbered, once', (tester) async {

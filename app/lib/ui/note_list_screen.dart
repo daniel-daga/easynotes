@@ -36,7 +36,6 @@ import 'motion.dart';
 import 'label_manager_screen.dart';
 import 'note_appearance.dart';
 import 'note_screen.dart';
-import 'relay_settings_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
 
@@ -404,15 +403,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
   }
 
-  Future<void> _manageLabels({bool create = false}) =>
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (context) => LabelManagerScreen(
-            library: widget.library,
-            autofocusCreate: create,
-          ),
-        ),
-      );
+  Future<void> _manageLabels() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => LabelManagerScreen(library: widget.library),
+    ),
+  );
 
   /// Notes can choose existing labels; label management lives in the drawer.
   Future<void> _labelsFor(NoteSummary note) => Navigator.of(context).push(
@@ -508,8 +503,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
         builder: (context) => SyncDevicesScreen(
           library: widget.library,
           profile: widget.profile,
+          profiles: widget.profiles.profiles,
           onAccountDeleted: widget.onAccountDeleted,
-          onServer: _openRelaySettings,
           onMoveLocalToRelay: widget.onMoveLocalToRelay,
           onSetAccess: widget.onSetAccess,
           onSwitchRelay: widget.onSwitchRelay,
@@ -518,18 +513,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
     if (mounted) setState(() {});
   }
-
-  Future<void> _openRelaySettings() => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (context) => RelaySettingsScreen(
-        profile: widget.profile,
-        profiles: widget.profiles.profiles,
-        onSwitchRelay: widget.onSwitchRelay,
-        onMoveLocalToRelay: widget.onMoveLocalToRelay,
-        onSetAccess: widget.onSetAccess,
-      ),
-    ),
-  );
 
   Future<void> _openAbout() => Navigator.of(context).push(
     MaterialPageRoute<void>(
@@ -757,7 +740,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
               tags: tags,
               onChosen: _show,
               onEditLabels: () => _manageLabels(),
-              onCreateLabel: () => _manageLabels(create: true),
               onSyncDevices: _openSyncDevices,
               profile: widget.profile,
               onAbout: _openAbout,
@@ -1819,7 +1801,6 @@ class _Shelves extends StatelessWidget {
     required this.tags,
     required this.onChosen,
     required this.onEditLabels,
-    required this.onCreateLabel,
     required this.onSyncDevices,
     required this.profile,
     required this.onAbout,
@@ -1838,7 +1819,6 @@ class _Shelves extends StatelessWidget {
   final List<Tag> tags;
   final void Function(_Where) onChosen;
   final VoidCallback onEditLabels;
-  final VoidCallback onCreateLabel;
 
   final VoidCallback onSyncDevices;
   final RelayProfile profile;
@@ -1901,6 +1881,17 @@ class _Shelves extends StatelessWidget {
               ],
             ),
           ),
+          if (tags.isEmpty)
+            Padding(
+              key: const Key('no-labels'),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Text(
+                'No labels yet',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
           for (final tag in tags)
             ListTile(
               key: Key('label-shelf-${tag.name}'),
@@ -1910,15 +1901,6 @@ class _Shelves extends StatelessWidget {
               selected: current.tag == tag.id,
               onTap: () => go(_Where.tag(tag.id, tag.name)),
             ),
-          ListTile(
-            key: const Key('create-label'),
-            leading: const Icon(Icons.add),
-            title: const Text('Create new label'),
-            onTap: () {
-              Navigator.of(context).pop();
-              onCreateLabel();
-            },
-          ),
           const Divider(),
           SyncStatusTile(
             watch: watchSync,

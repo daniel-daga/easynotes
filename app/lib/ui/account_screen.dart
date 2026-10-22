@@ -36,14 +36,10 @@ class AccountScreen extends StatefulWidget {
     this.ask,
     this.profile,
     this.onDeleted,
-    this.embedded = false,
     this.creating = false,
   });
 
   final Accounts library;
-
-  /// Reuse the recovery and account controls inside Sync & devices.
-  final bool embedded;
 
   /// The first-run setup's way in: this is the creation step, not the place
   /// an account is managed. It is titled for what it does, leaves out the
@@ -203,10 +199,8 @@ class _AccountScreenState extends State<AccountScreen> {
     final children = <Widget>[
       ...has
           ? [
-              if (!widget.embedded) ...[
-                Icon(Icons.devices, size: 48),
-                SizedBox(height: 16),
-              ],
+              const Icon(Icons.devices, size: 48),
+              const SizedBox(height: 16),
               Text(
                 'This device belongs to your account.',
                 key: Key('account-yes'),
@@ -240,10 +234,8 @@ class _AccountScreenState extends State<AccountScreen> {
               ),
             ]
           : [
-              if (!widget.embedded) ...[
-                const Icon(Icons.phone_android, size: 48),
-                const SizedBox(height: 16),
-              ],
+              const Icon(Icons.phone_android, size: 48),
+              const SizedBox(height: 16),
               Text(
                 'Access on other devices is not set up.',
                 key: Key('account-no'),
@@ -271,7 +263,7 @@ class _AccountScreenState extends State<AccountScreen> {
                 onPressed: _busy ? null : _adopt,
               ),
             ],
-      if (!widget.creating && !widget.embedded && widget.profile != null) ...[
+      if (!widget.creating && widget.profile != null) ...[
         const SizedBox(height: 24),
         ListTile(
           key: const Key('account-relay'),
@@ -288,25 +280,9 @@ class _AccountScreenState extends State<AccountScreen> {
           ),
         ),
       ],
-      if (!widget.creating) ...[
-        if (!widget.embedded) const Divider(height: 48),
-        if (widget.embedded)
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('Account settings'),
-            children: [_deleteTile(has)],
-          )
-        else
-          _deleteTile(has),
-      ],
+      if (!widget.creating) ...[const Divider(height: 48), _deleteTile(has)],
       if (_busy) const LinearProgressIndicator(),
     ];
-    if (widget.embedded) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: children,
-      );
-    }
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.creating ? 'Create account' : 'Your devices'),
