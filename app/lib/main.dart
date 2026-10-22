@@ -37,6 +37,10 @@ ThemeData _easyNotesTheme(Brightness brightness) {
   // accent roles at tone 40 and 80. Pin them to the seed itself — black on
   // light, white on dark — with containers one step off the surface, so that
   // a filled button or the FAB reads as ink on paper rather than grey.
+  //
+  // The monochrome variant is what makes the greys actually neutral: tonal
+  // spot forces chroma 6 at the seed's hue, and an achromatic seed reports
+  // hue 0 (red) for black, leaving the surfaces with a warm cast.
   final accent = light ? Colors.black : Colors.white;
   final onAccent = light ? Colors.white : Colors.black;
   final container = light ? const Color(0xFFEFEFEF) : const Color(0xFF262626);
@@ -44,7 +48,7 @@ ThemeData _easyNotesTheme(Brightness brightness) {
       ColorScheme.fromSeed(
         seedColor: accent,
         brightness: brightness,
-        dynamicSchemeVariant: DynamicSchemeVariant.tonalSpot,
+        dynamicSchemeVariant: DynamicSchemeVariant.monochrome,
       ).copyWith(
         primary: accent,
         onPrimary: onAccent,
