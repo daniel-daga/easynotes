@@ -105,6 +105,12 @@ only goes up while the version does and a rebuild of the same tag — F-Droid's,
 for instance — arrives at the same number. `pubspec.yaml`'s version is what a
 local build without `--build-name` says.
 
+Before tagging, write this version's compatibility record and commit it:
+`just compat-fixtures`, or dispatch the **Compatibility fixtures** workflow and
+unpack its artifact into `compat/`. The release workflow refuses a tag without
+`compat/v<version>/`, and later builds read it back ([ADR
+0029](adr/0029-compatibility-across-releases.md)).
+
 ## The release workflow
 
 Dispatch `.github/workflows/release.yml` for a tag `vMAJOR.MINOR.PATCH` — from
