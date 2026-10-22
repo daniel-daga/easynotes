@@ -863,6 +863,10 @@ class _NoteScreenState extends State<NoteScreen> {
               key: const Key('add-list-entry'),
               contentPadding: const EdgeInsets.symmetric(horizontal: 8),
               minLeadingWidth: 0,
+              // Same density as _ItemRow, so the label lines up with the text
+              // field: compact trims the tile's horizontal inset by 4.
+              dense: true,
+              visualDensity: VisualDensity.compact,
               leading: const Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
