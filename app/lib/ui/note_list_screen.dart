@@ -761,61 +761,28 @@ class _NoteListScreenState extends State<NoteListScreen> {
                       // that the screen is the notes and one button; the button
                       // that asks for them is the one that says what they make.
                       AnimatedSize(
-                        duration: const Duration(milliseconds: 180),
+                        duration: EasyMotion.fast,
                         alignment: Alignment.bottomCenter,
-                        curve: Curves.easeOut,
+                        curve: EasyMotion.enter,
                         child: _addShortcutsExpanded
-                            ? Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  FloatingActionButton.small(
-                                    key: const Key('new-audio-note-button'),
-                                    heroTag: 'new-audio-note',
-                                    tooltip: 'Add audio note',
-                                    onPressed: _createAudioNote,
-                                    child: const Icon(Icons.mic_none),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  FloatingActionButton.small(
-                                    key: const Key('new-list-button'),
-                                    heroTag: 'new-list',
-                                    tooltip: 'New checklist',
-                                    onPressed: () {
-                                      setState(
-                                        () => _addShortcutsExpanded = false,
-                                      );
-                                      _createNote(kind: NoteKind.checklist);
-                                    },
-                                    child: const Icon(Icons.check_box_outlined),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  FloatingActionButton.small(
-                                    key: const Key('new-text-note-button'),
-                                    heroTag: 'new-text-note',
-                                    tooltip: 'New note',
-                                    onPressed: () {
-                                      setState(
-                                        () => _addShortcutsExpanded = false,
-                                      );
-                                      _createNote();
-                                    },
-                                    child: const Icon(Icons.notes_outlined),
-                                  ),
-                                  const SizedBox(height: 12),
-                                ],
+                            ? _NoteTypeMenu(
+                                onCreateText: () {
+                                  setState(() => _addShortcutsExpanded = false);
+                                  _createNote();
+                                },
+                                onCreateList: () {
+                                  setState(() => _addShortcutsExpanded = false);
+                                  _createNote(kind: NoteKind.checklist);
+                                },
+                                onCreateAudio: _createAudioNote,
                               )
                             : const SizedBox.shrink(),
                       ),
-                      FloatingActionButton.extended(
-                        key: const Key('new-note-button'),
-                        heroTag: 'new-note',
-                        tooltip: _addShortcutsExpanded
-                            ? 'Hide note types'
-                            : 'Create note',
+                      _CreateNoteButton(
+                        expanded: _addShortcutsExpanded,
                         onPressed: () => setState(
                           () => _addShortcutsExpanded = !_addShortcutsExpanded,
                         ),
-                        label: const Text('+ Create note'),
                       ),
                     ],
                   )
@@ -2728,6 +2695,215 @@ class _NoteIndicators extends StatelessWidget {
               color: style?.color,
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// The kinds of note that can be made, revealed from the bottom up.
+///
+/// It is mounted only while the menu is open and animates itself in: one
+/// controller drives a short wave, each type fading and rising in turn, so the
+/// type nearest the button leads and the one furthest away follows.
+class _NoteTypeMenu extends StatefulWidget {
+  const _NoteTypeMenu({
+    required this.onCreateText,
+    required this.onCreateList,
+    required this.onCreateAudio,
+  });
+
+  final VoidCallback onCreateText;
+  final VoidCallback onCreateList;
+  final VoidCallback onCreateAudio;
+
+  @override
+  State<_NoteTypeMenu> createState() => _NoteTypeMenuState();
+}
+
+class _NoteTypeMenuState extends State<_NoteTypeMenu>
+    with SingleTickerProviderStateMixin {
+  /// The gap between one type arriving and the next, as a fraction of the
+  /// controller's run, and how much of that run one type takes.
+  static const _stagger = 0.16;
+  static const _span = 0.5;
+  static const _wave = Duration(milliseconds: 320);
+
+  late final AnimationController _controller;
+  late final Animation<double> _textEntrance;
+  late final Animation<double> _listEntrance;
+  late final Animation<double> _audioEntrance;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: _wave);
+    _textEntrance = _entrance(0);
+    _listEntrance = _entrance(1);
+    _audioEntrance = _entrance(2);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    // A reduced-motion setting takes the wave away, not the types.
+    _controller.duration = EasyMotion.duration(context, _wave);
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Animation<double> _entrance(int order) {
+    final start = order * _stagger;
+    return CurvedAnimation(
+      parent: _controller,
+      curve: Interval(
+        start,
+        (start + _span).clamp(0.0, 1.0),
+        curve: EasyMotion.enter,
+      ),
+    );
+  }
+
+  Widget _type({
+    required Key key,
+    required String heroTag,
+    required String label,
+    required IconData icon,
+    required Animation<double> entrance,
+    required VoidCallback onPressed,
+  }) {
+    return FadeTransition(
+      opacity: entrance,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.35),
+          end: Offset.zero,
+        ).animate(entrance),
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: FloatingActionButton.extended(
+            key: key,
+            heroTag: heroTag,
+            tooltip: label,
+            onPressed: onPressed,
+            icon: Icon(icon),
+            label: Text(label),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Top to bottom: audio, list, text. The wave rises from the text
+          // type nearest the button, so its order is the last.
+          _type(
+            key: const Key('new-audio-note-button'),
+            heroTag: 'new-audio-note',
+            label: 'Audio',
+            icon: Icons.mic_none,
+            entrance: _audioEntrance,
+            onPressed: widget.onCreateAudio,
+          ),
+          _type(
+            key: const Key('new-list-button'),
+            heroTag: 'new-list',
+            label: 'List',
+            icon: Icons.check_box_outlined,
+            entrance: _listEntrance,
+            onPressed: widget.onCreateList,
+          ),
+          _type(
+            key: const Key('new-text-note-button'),
+            heroTag: 'new-text-note',
+            label: 'Text',
+            icon: Icons.notes_outlined,
+            entrance: _textEntrance,
+            onPressed: widget.onCreateText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The button that opens the note types, and the label that says what it makes.
+///
+/// Pressed, the plus turns into a cross while the label is clipped away, so it
+/// becomes a bare button that folds the types back up again.
+class _CreateNoteButton extends StatelessWidget {
+  const _CreateNoteButton({required this.expanded, required this.onPressed});
+
+  final bool expanded;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Tooltip(
+      message: expanded ? 'Hide note types' : 'Create note',
+      child: Material(
+        color: scheme.primary,
+        elevation: 3,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: const Key('new-note-button'),
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Rotating a plus by an eighth of a turn is how it becomes a
+                // cross, so the icon morphs rather than being swapped.
+                AnimatedRotation(
+                  turns: expanded ? 0.125 : 0,
+                  duration: EasyMotion.fast,
+                  curve: EasyMotion.enter,
+                  child: Icon(Icons.add, color: scheme.onPrimary),
+                ),
+                // The label keeps its width and is clipped from the right as
+                // the button contracts, so it disappears with the plus.
+                ClipRect(
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 1, end: expanded ? 0 : 1),
+                    duration: EasyMotion.fast,
+                    curve: EasyMotion.enter,
+                    builder: (context, value, child) => Align(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: value,
+                      child: child,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(
+                        'Create note',
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: scheme.onPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
