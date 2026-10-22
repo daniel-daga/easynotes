@@ -14,6 +14,7 @@ import '../core/relay_profiles.dart';
 import '../core/sync_status.dart';
 import 'account_screen.dart';
 import 'account_transfer_screen.dart';
+import 'last_synced_footer.dart';
 import 'relay_setup_wizard.dart';
 import 'server_switcher_screen.dart';
 import 'setup_widgets.dart';
@@ -95,17 +96,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sync & devices'),
-        actions: [
-          TextButton.icon(
-            key: const Key('sync-now'),
-            onPressed: !_connected ? null : _syncNow,
-            icon: const Icon(Icons.sync),
-            label: const Text('Sync now'),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Sync & devices')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),
@@ -117,6 +108,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
                 stream: _sync,
                 connected: _connected,
                 host: _host,
+                onSyncNow: _syncNow,
               ),
               if (_fullySetUp)
                 _FullySetUpLine(host: _host)
@@ -473,12 +465,14 @@ class _StatusCard extends StatelessWidget {
     required this.stream,
     required this.connected,
     required this.host,
+    required this.onSyncNow,
   });
 
   final NoteLibrary library;
   final Stream<SyncStatus> stream;
   final bool connected;
   final String host;
+  final Future<void> Function() onSyncNow;
 
   @override
   Widget build(BuildContext context) => StreamBuilder<SyncStatus>(
@@ -500,7 +494,7 @@ class _StatusCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Icon(
                 connected
@@ -538,6 +532,31 @@ class _StatusCard extends StatelessWidget {
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ],
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: LastSyncedFooter(
+                            hasRelay: connected,
+                            initial: library.lastSyncedAt,
+                            watch: library.watchLastSyncedAt,
+                            padding: const EdgeInsets.only(top: 6),
+                            textAlign: TextAlign.start,
+                          ),
+                        ),
+                        TextButton.icon(
+                          key: const Key('sync-now'),
+                          onPressed: connected ? onSyncNow : null,
+                          icon: const Icon(Icons.sync, size: 18),
+                          label: const Text('Sync now'),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            minimumSize: const Size(0, 36),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

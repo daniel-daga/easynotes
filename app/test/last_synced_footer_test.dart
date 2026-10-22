@@ -1,4 +1,4 @@
-/// The "last synced" line, and the two screens it sits at the bottom of.
+/// The "last synced" line, and the Sync & devices card it sits in.
 library;
 
 import 'package:easynotes/core/fake_note_library.dart';
@@ -93,7 +93,7 @@ void main() {
     expect(find.textContaining('Last synced'), findsOneWidget);
   });
 
-  testWidgets('the note list shows it once synced', (tester) async {
+  testWidgets('the note list leaves it to Sync & devices', (tester) async {
     final library = FakeNoteLibrary();
     await tester.pumpWidget(
       MaterialApp(
@@ -104,15 +104,14 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('last-synced')), findsNothing);
 
     library.pushStatus(const SyncStatus(state: SyncState.synced));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('last-synced')), findsOneWidget);
+    expect(find.byKey(const Key('last-synced')), findsNothing);
   });
 
-  testWidgets('the note screen shows it once synced', (tester) async {
+  testWidgets('the note screen leaves it to Sync & devices', (tester) async {
     final library = FakeNoteLibrary();
     final id = await library.createNote();
     await tester.pumpWidget(
@@ -123,16 +122,14 @@ void main() {
           noteId: id,
           invites: library,
           library: library,
-          hasRelay: true,
         ),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('last-synced')), findsNothing);
 
     library.pushStatus(const SyncStatus(state: SyncState.synced));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('last-synced')), findsOneWidget);
+    expect(find.byKey(const Key('last-synced')), findsNothing);
   });
 }

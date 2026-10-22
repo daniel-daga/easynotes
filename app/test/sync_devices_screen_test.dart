@@ -122,6 +122,26 @@ void main() {
     expect(find.byKey(const Key('adopt-phrase-field')), findsOneWidget);
   });
 
+  testWidgets('the status card holds the last sync and the sync button', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary()
+      ..pushStatus(const SyncStatus(state: SyncState.synced));
+    await pump(tester, library);
+
+    final card = find.byType(Card);
+    expect(card, findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.byKey(const Key('last-synced'))),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: card, matching: find.byKey(const Key('sync-now'))),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Last synced'), findsOneWidget);
+  });
+
   testWidgets('manual refresh is available only for relay profiles', (
     tester,
   ) async {
@@ -166,7 +186,14 @@ void main() {
     expect(find.text('No access key'), findsOneWidget);
 
     library.verifyRelayFails = 'the server refused this key';
-    await tester.tap(find.byKey(const Key('relay-access-change')));
+    final access = find.byKey(const Key('relay-access-change'));
+    await tester.scrollUntilVisible(
+      access,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(access);
     await tester.pumpAndSettle();
     expect(find.byType(RelaySetupWizard), findsOneWidget);
 

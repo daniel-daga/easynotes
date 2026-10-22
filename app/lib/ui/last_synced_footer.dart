@@ -1,9 +1,8 @@
-/// A quiet line at the bottom of a screen saying when this device last had
-/// everything the relay knows.
+/// A quiet line saying when this device last had everything the relay knows.
 ///
 /// The app's clock rather than the core's ([NoteLibrary.lastSyncedAt]): the
 /// engine measures time with an ordinal because it compiles for a browser, and
-/// a footer is the one thing here that needs a `DateTime`.
+/// this line is the one thing here that needs a `DateTime`.
 ///
 /// Drawn only when there is a relay to have synced with, and only once this
 /// session has actually synced. Hiding it before then is the honest choice: a
@@ -20,6 +19,8 @@ class LastSyncedFooter extends StatefulWidget {
     required this.hasRelay,
     required this.initial,
     required this.watch,
+    this.padding = const EdgeInsets.fromLTRB(16, 4, 16, 8),
+    this.textAlign = TextAlign.center,
   });
 
   /// Whether a relay is configured at all. Without one there is nothing this
@@ -31,6 +32,12 @@ class LastSyncedFooter extends StatefulWidget {
 
   /// [NoteLibrary.watchLastSyncedAt], opened when this mounts.
   final Stream<DateTime?> Function() watch;
+
+  /// The space around the line.
+  final EdgeInsetsGeometry padding;
+
+  /// Where the line sits when it has more width than it needs.
+  final TextAlign textAlign;
 
   @override
   State<LastSyncedFooter> createState() => _LastSyncedFooterState();
@@ -83,10 +90,10 @@ class _LastSyncedFooterState extends State<LastSyncedFooter> {
     final theme = Theme.of(context);
     return Padding(
       key: const Key('last-synced'),
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      padding: widget.padding,
       child: Text(
         lastSyncedLabel(at, DateTime.now()),
-        textAlign: TextAlign.center,
+        textAlign: widget.textAlign,
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
