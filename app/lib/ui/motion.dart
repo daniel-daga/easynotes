@@ -4,8 +4,18 @@ import 'package:flutter/material.dart';
 abstract final class EasyMotion {
   static const fast = Duration(milliseconds: 180);
   static const medium = Duration(milliseconds: 300);
+
+  /// A card growing into the screen, or shrinking back into it. Longer than
+  /// [medium] because it covers the whole display, and because the eye has to
+  /// follow one surface all the way rather than two that cross.
+  static const expand = Duration(milliseconds: 340);
+
   static const enter = Curves.easeOutCubic;
   static const exit = Curves.easeInCubic;
+
+  /// The curve for a surface that changes shape: off the card quickly, then a
+  /// long settle onto the screen, so it lands rather than stops.
+  static const transform = Curves.easeInOutCubicEmphasized;
 
   static Duration duration(BuildContext context, Duration preferred) =>
       MediaQuery.maybeOf(context)?.disableAnimations ?? false

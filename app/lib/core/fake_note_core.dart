@@ -278,8 +278,13 @@ class FakeNoteCore implements NoteCore {
     _sync.add(status);
   }
 
+  /// How many times the screen has let go of this note. Every open hands out a
+  /// handle, and a handle never let go of leaves a Rust task per visit.
+  int disposals = 0;
+
   @override
   Future<void> dispose() async {
+    disposals++;
     await _controller.close();
     await _sync.close();
   }

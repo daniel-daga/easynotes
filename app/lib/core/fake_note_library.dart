@@ -81,6 +81,10 @@ class FakeNoteLibrary implements NoteLibrary {
   /// gesture reached the library rather than only changing pixels.
   final List<String> calls = [];
 
+  /// Holds [openNote] at the door when set, so a test can act while the note is
+  /// still opening.
+  Completer<void>? openGate;
+
   List<NoteSummary> _summaries = const [];
   SyncStatus _status = const SyncStatus.offline();
   DateTime? _lastSyncedAt;
@@ -421,6 +425,9 @@ class FakeNoteLibrary implements NoteLibrary {
   @override
   Future<NoteCore> openNote(String noteId) async {
     calls.add('openNote($noteId)');
+    // A test can hold a note at the door to see what the screen does while it
+    // is still opening — a real core has to go and fetch it.
+    await openGate?.future;
     return _cores[noteId] ?? (throw StateError('no note $noteId'));
   }
 

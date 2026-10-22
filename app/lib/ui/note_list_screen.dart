@@ -21,6 +21,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/attachments.dart';
+import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/recording_output.dart';
 import '../core/reminder_scheduler.dart';
@@ -36,6 +37,7 @@ import 'motion.dart';
 import 'label_manager_screen.dart';
 import 'last_synced_footer.dart';
 import 'note_appearance.dart';
+import 'note_expand_route.dart';
 import 'note_screen.dart';
 import 'storage_banner.dart';
 import 'sync_button.dart';
@@ -181,6 +183,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// once: “You no longer have access to ‘Groceries’.”
   StreamSubscription<List<NoteSummary>>? _removalSubscription;
 
+  /// The note whose screen is open, if one is.
+  ///
+  /// Its card stays where it is but draws nothing: the screen opened from it is
+  /// the same surface, and two of them on screen at once would be one too many.
+  /// The card keeps its place in the layout so the trip back has somewhere to
+  /// land, even after an edit re-sorted the list behind the open screen.
+  final _expandedNoteId = ValueNotifier<String?>(null);
+
+  /// The render object of each card, so the expand route can ask where a card
+  /// is — at the tap, and again when the screen starts shrinking back.
+  final Map<String, GlobalKey> _cardKeys = {};
+
   /// The search box, when it is open, and what is in it.
   ///
   /// Not remembered the way the layout is: a colour is a decision about a note
@@ -241,7 +255,17 @@ class _NoteListScreenState extends State<NoteListScreen> {
     _shareSubscription?.cancel();
     _removalSubscription?.cancel();
     _search.dispose();
+    _expandedNoteId.dispose();
     super.dispose();
+  }
+
+  GlobalKey _cardKeyFor(String id) => _cardKeys.putIfAbsent(id, GlobalKey.new);
+
+  /// Where a card is on screen now, or null if it is not on screen at all.
+  Rect? _cardRect(String id) {
+    final object = _cardKeys[id]?.currentContext?.findRenderObject();
+    if (object is! RenderBox || !object.attached) return null;
+    return object.localToGlobal(Offset.zero) & object.size;
   }
 
   void _openSearch() => setState(() {
@@ -280,20 +304,41 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   /// Open a note, and hold the handle open only while its screen is on top.
   ///
-  /// The library keeps the note itself open and syncing; what this disposes is
-  /// the watcher behind the screen that has just gone away. Leaking one per
-  /// visit would leave a Rust task per note per open, for ever.
-  Future<void> _openNote(String id, {bool autofocusBody = false}) async {
-    final core = await widget.library.openNote(id);
-    // The list may have gone while the note was opening; the handle then has
-    // no screen to go to, and is let go of here rather than leaked.
-    if (!mounted) {
-      await core.dispose();
-      return;
-    }
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => NoteScreen(
+  /// The screen is pushed before the core has answered, rather than after: the
+  /// card the person tapped is already growing into that space, and a tap that
+  /// does nothing until a round trip finishes reads as a tap that missed. The
+  /// core's handle is let go of when the screen closes — including a screen that
+  /// was closed again before the note opened, which would otherwise leak a Rust
+  /// task per visit, for ever.
+  ///
+  /// [origin] is the card the tap landed on. Notes opened from anywhere else —
+  /// a share, a link, the button that makes one — pass null and get the shared
+  /// fade instead of growing from a card that is not there.
+  Future<void> _openNote(
+    String id, {
+    bool autofocusBody = false,
+    Rect? origin,
+  }) async {
+    final theme = Theme.of(context);
+    final summary = widget.library.notes
+        .where((note) => note.id == id)
+        .firstOrNull;
+    final tint = noteColourTint(context, summary?.colour);
+    final cardColour =
+        tint ?? theme.cardTheme.color ?? theme.colorScheme.surfaceContainerLow;
+    final screenColour = tint ?? theme.scaffoldBackgroundColor;
+    final navigator = Navigator.of(context);
+    final opening = widget.library.openNote(id);
+    final route = NoteExpandRoute<void>(
+      settings: RouteSettings(name: 'note/$id'),
+      origin: origin,
+      resolveOrigin: () => _cardRect(id),
+      startColor: cardColour,
+      endColor: screenColour,
+      builder: (context) => _OpeningNote(
+        opening: opening,
+        colour: screenColour,
+        builder: (core) => NoteScreen(
           core: core,
           storage: widget.library,
           library: widget.library,
@@ -317,7 +362,22 @@ class _NoteListScreenState extends State<NoteListScreen> {
         ),
       ),
     );
-    await core.dispose();
+    _expandedNoteId.value = id;
+    try {
+      await navigator.push<void>(route);
+    } finally {
+      // The list can have gone while the note was on top — an account deleted
+      // from under it, say — and its notifier with it.
+      if (mounted && _expandedNoteId.value == id) {
+        _expandedNoteId.value = null;
+      }
+      try {
+        await (await opening).dispose();
+      } on Object {
+        // The screen has already said it could not open the note; there is no
+        // handle to let go of.
+      }
+    }
   }
 
   /// Make a note of what another app shared, and open it: on the main shelf,
@@ -966,7 +1026,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
               notes: notes,
               reminderNoteIds: reminders,
               layout: _layout,
-              onTap: _openNote,
+              cardKey: _cardKeyFor,
+              expanded: _expandedNoteId,
+              onTap: (id, origin) => _openNote(id, origin: origin),
               onHold: _actionsFor,
               onMove: _moveNote,
             );
@@ -994,9 +1056,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   notes: all,
                   reminderNoteIds: reminders,
                   layout: _layout,
+                  cardKey: _cardKeyFor,
+                  expanded: _expandedNoteId,
                   matches: (note) =>
                       _inSearchScope(note) && _matchesFilter(note, reminders),
-                  onTap: _openNote,
+                  onTap: (id, origin) => _openNote(id, origin: origin),
                   onHold: _actionsFor,
                 )
               : _FilteredNotes(
@@ -1006,7 +1070,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   ],
                   reminderNoteIds: reminders,
                   layout: _layout,
-                  onTap: _openNote,
+                  cardKey: _cardKeyFor,
+                  expanded: _expandedNoteId,
+                  onTap: (id, origin) => _openNote(id, origin: origin),
                   onHold: _actionsFor,
                 ),
         ),
@@ -1019,6 +1085,50 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// what is on screen is a shelf or a label and the order is over the lot.
   void _moveNote(String id, String targetId) {
     widget.library.moveNoteTo(id, targetId);
+  }
+}
+
+/// The note screen, from the first frame of the tap rather than from when the
+/// core answers.
+///
+/// Opening a note is a round trip; waiting for it before the screen exists made
+/// the tap feel unanswered for as long as that took. The expand route's surface
+/// is already the note's colour, so this fills it with the same chrome — an app
+/// bar with a way back — and swaps in the real screen when the note is open.
+class _OpeningNote extends StatelessWidget {
+  const _OpeningNote({
+    required this.opening,
+    required this.colour,
+    required this.builder,
+  });
+
+  final Future<NoteCore> opening;
+  final Color colour;
+  final Widget Function(NoteCore core) builder;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<NoteCore>(
+      future: opening,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            backgroundColor: colour,
+            appBar: AppBar(backgroundColor: colour),
+            body: const Center(child: Text('Could not open this note.')),
+          );
+        }
+        final core = snapshot.data;
+        if (core == null) {
+          return Scaffold(
+            key: const Key('note-opening'),
+            backgroundColor: colour,
+            appBar: AppBar(backgroundColor: colour),
+          );
+        }
+        return builder(core);
+      },
+    );
   }
 }
 
@@ -1328,6 +1438,8 @@ class _FilteredNotes extends StatelessWidget {
     required this.notes,
     required this.reminderNoteIds,
     required this.layout,
+    required this.cardKey,
+    required this.expanded,
     required this.onTap,
     required this.onHold,
   });
@@ -1335,7 +1447,11 @@ class _FilteredNotes extends StatelessWidget {
   final List<NoteSummary> notes;
   final Set<String> reminderNoteIds;
   final NoteLayout layout;
-  final void Function(String id) onTap;
+  final GlobalKey Function(String id) cardKey;
+
+  /// The note whose screen is open, whose card must not draw behind it.
+  final ValueListenable<String?> expanded;
+  final void Function(String id, Rect? origin) onTap;
   final void Function(NoteSummary note) onHold;
 
   @override
@@ -1348,6 +1464,8 @@ class _FilteredNotes extends StatelessWidget {
           notes: notes,
           reminderNoteIds: reminderNoteIds,
           layout: layout,
+          cardKey: cardKey,
+          expanded: expanded,
           onTap: onTap,
           onHold: onHold,
         );
@@ -1368,6 +1486,8 @@ class _SearchResults extends StatefulWidget {
     required this.notes,
     required this.reminderNoteIds,
     required this.layout,
+    required this.cardKey,
+    required this.expanded,
     required this.matches,
     required this.onTap,
     required this.onHold,
@@ -1378,8 +1498,12 @@ class _SearchResults extends StatefulWidget {
   final List<NoteSummary> notes;
   final Set<String> reminderNoteIds;
   final NoteLayout layout;
+  final GlobalKey Function(String id) cardKey;
+
+  /// The note whose screen is open, whose card must not draw behind it.
+  final ValueListenable<String?> expanded;
   final bool Function(NoteSummary) matches;
-  final void Function(String id) onTap;
+  final void Function(String id, Rect? origin) onTap;
   final void Function(NoteSummary note) onHold;
 
   @override
@@ -1439,6 +1563,8 @@ class _SearchResultsState extends State<_SearchResults> {
       reminderNoteIds: widget.reminderNoteIds,
       matched: {for (final hit in found) hit.note.id: hit.matched},
       layout: widget.layout,
+      cardKey: widget.cardKey,
+      expanded: widget.expanded,
       onTap: widget.onTap,
       onHold: widget.onHold,
     );
@@ -1451,6 +1577,8 @@ class _NoteCollection extends StatefulWidget {
     required this.notes,
     required this.reminderNoteIds,
     required this.layout,
+    required this.cardKey,
+    required this.expanded,
     required this.onTap,
     required this.onHold,
     this.onMove,
@@ -1460,7 +1588,19 @@ class _NoteCollection extends StatefulWidget {
   final List<NoteSummary> notes;
   final Set<String> reminderNoteIds;
   final NoteLayout layout;
-  final void Function(String id) onTap;
+
+  /// Where each card's render object lives, owned by the list screen so that
+  /// the expand route can measure the card it is growing out of — and, on the
+  /// way back, the card as it is by then.
+  final GlobalKey Function(String id) cardKey;
+
+  /// The note whose screen is open. Its card keeps its place but draws
+  /// nothing, because the screen above it *is* that card.
+  final ValueListenable<String?> expanded;
+
+  /// A tap, with where the card was at the time: the expand route grows from
+  /// that rectangle rather than from the note's place in an abstract list.
+  final void Function(String id, Rect? origin) onTap;
   final void Function(NoteSummary note) onHold;
 
   /// Where a card was dropped: the note that moved, and the note it landed on.
@@ -1486,7 +1626,6 @@ class _NoteCollectionState extends State<_NoteCollection>
   bool _awaitingDrop = false;
   List<String>? _expectedDropIds;
   int _animationGeneration = 0;
-  final Map<String, GlobalKey> _cardKeys = {};
   Map<String, Offset> _offsets = {};
   late final AnimationController _positionAnimation = AnimationController(
     vsync: this,
@@ -1499,12 +1638,19 @@ class _NoteCollectionState extends State<_NoteCollection>
     super.dispose();
   }
 
-  GlobalKey _keyFor(String id) => _cardKeys.putIfAbsent(id, GlobalKey.new);
+  GlobalKey _keyFor(String id) => widget.cardKey(id);
 
   Offset? _positionOf(String id) {
-    final object = _cardKeys[id]?.currentContext?.findRenderObject();
+    final object = _keyFor(id).currentContext?.findRenderObject();
     if (object is! RenderBox || !object.attached) return null;
     return object.localToGlobal(Offset.zero);
+  }
+
+  /// The card's rectangle on screen, for the route that grows out of it.
+  Rect? _rectOf(String id) {
+    final object = _keyFor(id).currentContext?.findRenderObject();
+    if (object is! RenderBox || !object.attached) return null;
+    return object.localToGlobal(Offset.zero) & object.size;
   }
 
   Offset _visibleOffset(String id) =>
@@ -1616,6 +1762,13 @@ class _NoteCollectionState extends State<_NoteCollection>
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<String?>(
+      valueListenable: widget.expanded,
+      builder: (context, expandedId, _) => _build(context, expandedId),
+    );
+  }
+
+  Widget _build(BuildContext context, String? expandedId) {
     final notes = _previewOrder(widget.notes);
     final move = widget.onMove;
     final cards = [
@@ -1625,7 +1778,8 @@ class _NoteCollectionState extends State<_NoteCollection>
           note: note,
           hasReminder: widget.reminderNoteIds.contains(note.id),
           matched: widget.matched[note.id],
-          onTap: () => widget.onTap(note.id),
+          hidden: note.id == expandedId,
+          onTap: () => widget.onTap(note.id, _rectOf(note.id)),
           // Held by the wrapper where there is one, because a long press there
           // is the start of a drag and only turns into this when nothing moved.
           onHold: move == null ? () => widget.onHold(note) : null,
@@ -2433,11 +2587,13 @@ class _NoteCard extends StatefulWidget {
     required this.onTap,
     this.onHold,
     this.matched,
+    this.hidden = false,
   });
 
   final NoteSummary note;
   final bool hasReminder;
   final VoidCallback onTap;
+  final bool hidden;
 
   /// The card's menu, when the card is not draggable. Null when it is: there the
   /// long press is the drag, and [_DraggableCard] decides whether it was a press
@@ -2463,165 +2619,177 @@ class _NoteCardState extends State<_NoteCard> {
     // Only a list counts what it is not showing: a text note's preview is lines
     // of prose, and "+3 more" under a paragraph would be counting items it
     // does not have.
-    final hidden = isList ? note.items - note.preview.length : 0;
-    return AnimatedScale(
-      scale: _pressed ? .975 : 1,
-      duration: EasyMotion.duration(context, EasyMotion.fast),
-      curve: EasyMotion.enter,
-      child: Card(
-        margin: EdgeInsets.zero,
-        clipBehavior: Clip.antiAlias,
-        color: noteColourTint(context, note.colour),
-        child: InkWell(
-          key: Key('note:${note.id}'),
-          onTap: widget.onTap,
-          onLongPress: widget.onHold,
-          onHighlightChanged: (pressed) {
-            if (_pressed != pressed) setState(() => _pressed = pressed);
-          },
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (note.cover case final cover?)
-                NoteCover(
-                  noteId: note.id,
-                  attachment: cover,
-                  width: note.coverWidth,
-                  height: note.coverHeight,
-                ),
-              Padding(
-                padding: const EdgeInsets.all(12),
+    final notShown = isList ? note.items - note.preview.length : 0;
+    return ExcludeSemantics(
+      excluding: widget.hidden,
+      child: IgnorePointer(
+        ignoring: widget.hidden,
+        child: Opacity(
+          key: Key('note-card-cover:${note.id}'),
+          // Not drawn while its own screen is open: the screen above is this
+          // card, grown. It keeps its place so the way back has a landing spot.
+          opacity: widget.hidden ? 0 : 1,
+          child: AnimatedScale(
+            scale: _pressed ? .975 : 1,
+            duration: EasyMotion.duration(context, EasyMotion.fast),
+            curve: EasyMotion.enter,
+            child: Card(
+              margin: EdgeInsets.zero,
+              clipBehavior: Clip.antiAlias,
+              color: noteColourTint(context, note.colour),
+              child: InkWell(
+                key: Key('note:${note.id}'),
+                onTap: widget.onTap,
+                onLongPress: widget.onHold,
+                onHighlightChanged: (pressed) {
+                  if (_pressed != pressed) setState(() => _pressed = pressed);
+                },
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (note.title.isNotEmpty || note.pinned)
-                      Row(
+                    if (note.cover case final cover?)
+                      NoteCover(
+                        noteId: note.id,
+                        attachment: cover,
+                        width: note.coverWidth,
+                        height: note.coverHeight,
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (note.title.isNotEmpty)
-                            Expanded(
+                          if (note.title.isNotEmpty || note.pinned)
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (note.title.isNotEmpty)
+                                  Expanded(
+                                    child: Text(
+                                      note.title,
+                                      style: theme.textTheme.titleMedium,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  )
+                                else
+                                  const Spacer(),
+                                if (note.pinned)
+                                  Icon(
+                                    Icons.push_pin,
+                                    key: const Key('pinned'),
+                                    size: 16,
+                                    color: theme.textTheme.bodySmall?.color,
+                                  ),
+                              ],
+                            ),
+                          if (note.title.isNotEmpty && note.preview.isNotEmpty)
+                            const SizedBox(height: 6),
+                          for (final text in note.preview)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 1),
                               child: Text(
-                                note.title,
-                                style: theme.textTheme.titleMedium,
-                                maxLines: 2,
+                                isList ? '• $text' : text,
+                                style: theme.textTheme.bodyMedium,
+                                maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
-                            )
-                          else
-                            const Spacer(),
-                          if (note.pinned)
-                            Icon(
-                              Icons.push_pin,
-                              key: const Key('pinned'),
-                              size: 16,
-                              color: theme.textTheme.bodySmall?.color,
                             ),
-                        ],
-                      ),
-                    if (note.title.isNotEmpty && note.preview.isNotEmpty)
-                      const SizedBox(height: 6),
-                    for (final text in note.preview)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: Text(
-                          isList ? '• $text' : text,
-                          style: theme.textTheme.bodyMedium,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    if (hidden > 0)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          '+$hidden more',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ),
-                    if (note.title.isEmpty && note.preview.isEmpty)
-                      Text(
-                        isList ? 'Untitled checklist' : 'Empty note',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: theme.disabledColor,
-                        ),
-                      ),
-                    if (isList && note.items > 0) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        '${note.checked} of ${note.items} done',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ],
-                    if (note.images > 0 ||
-                        note.audio > 0 ||
-                        widget.hasReminder) ...[
-                      const SizedBox(height: 8),
-                      _NoteIndicators(
-                        images: note.images,
-                        audio: note.audio,
-                        hasReminder: widget.hasReminder,
-                      ),
-                    ],
-                    // The labels, as small chips. On the card and not only in the
-                    // drawer, because a note's filing is part of what it is — and
-                    // because a shared list that one person has labelled looks the
-                    // same to everyone else, which is the whole point of the account
-                    // document.
-                    if (note.archived && !note.trashed) ...[
-                      const SizedBox(height: 8),
-                      const _Chip(label: 'Archived'),
-                    ],
-                    if (note.tags.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 4,
-                        runSpacing: 4,
-                        children: [
-                          for (final tag in note.tags)
-                            _Chip(
-                              // Keyed on the name, because that is what a test and a
-                              // person both look for; the label's identity is on the
-                              // summary and is what every gesture uses.
-                              key: Key('chip:${note.id}:${tag.name}'),
-                              label: tag.name,
+                          if (notShown > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                '+$notShown more',
+                                style: theme.textTheme.bodySmall,
+                              ),
                             ),
-                        ],
-                      ),
-                    ],
-                    // Only when the match is not already on the card: a hit on the
-                    // title, or on one of the four items the preview shows, needs no
-                    // second copy of itself underneath.
-                    if (widget.matched != null &&
-                        widget.matched != note.title &&
-                        !note.preview.contains(widget.matched)) ...[
-                      const SizedBox(height: 6),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.search,
-                            size: 14,
-                            color: theme.textTheme.bodySmall?.color,
-                          ),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(
-                              widget.matched!,
-                              key: Key('matched:${note.id}'),
+                          if (note.title.isEmpty && note.preview.isEmpty)
+                            Text(
+                              isList ? 'Untitled checklist' : 'Empty note',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: theme.disabledColor,
+                              ),
+                            ),
+                          if (isList && note.items > 0) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              '${note.checked} of ${note.items} done',
                               style: theme.textTheme.bodySmall,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
                             ),
-                          ),
+                          ],
+                          if (note.images > 0 ||
+                              note.audio > 0 ||
+                              widget.hasReminder) ...[
+                            const SizedBox(height: 8),
+                            _NoteIndicators(
+                              images: note.images,
+                              audio: note.audio,
+                              hasReminder: widget.hasReminder,
+                            ),
+                          ],
+                          // The labels, as small chips. On the card and not only in the
+                          // drawer, because a note's filing is part of what it is — and
+                          // because a shared list that one person has labelled looks the
+                          // same to everyone else, which is the whole point of the account
+                          // document.
+                          if (note.archived && !note.trashed) ...[
+                            const SizedBox(height: 8),
+                            const _Chip(label: 'Archived'),
+                          ],
+                          if (note.tags.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 4,
+                              runSpacing: 4,
+                              children: [
+                                for (final tag in note.tags)
+                                  _Chip(
+                                    // Keyed on the name, because that is what a test and a
+                                    // person both look for; the label's identity is on the
+                                    // summary and is what every gesture uses.
+                                    key: Key('chip:${note.id}:${tag.name}'),
+                                    label: tag.name,
+                                  ),
+                              ],
+                            ),
+                          ],
+                          // Only when the match is not already on the card: a hit on the
+                          // title, or on one of the four items the preview shows, needs no
+                          // second copy of itself underneath.
+                          if (widget.matched != null &&
+                              widget.matched != note.title &&
+                              !note.preview.contains(widget.matched)) ...[
+                            const SizedBox(height: 6),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  Icons.search,
+                                  size: 14,
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    widget.matched!,
+                                    key: Key('matched:${note.id}'),
+                                    style: theme.textTheme.bodySmall,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
-                    ],
+                    ),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),
