@@ -1,178 +1,84 @@
 # EasyNotes
 
-A Google Keep–style notes and lists app where every note is end-to-end
-encrypted, lists can be edited live by several people, and sharing needs no
-email account. See [`docs/design.md`](docs/design.md) for the product and
-architecture.
+End-to-end encrypted notes and lists — a Google Keep–style app where every note
+is encrypted on the device, lists can be edited live by several people, and
+sharing needs no email account.
 
-**Status: not production-ready ([2026-09-30 review](docs/production-readiness-2026-09-30.md)).
-Slices 1 and 2 are complete, and attachments ([ADR 0027](docs/adr/0027-attachments.md))
-work on native and on the web. Android has been built and exercised on a Pixel;
-signed `release.yml` drafts up to `v0.1.2` exist but none has been published,
-iOS builds upload to TestFlight but have not been exercised on a device or
-submitted for review ([iOS checklist](docs/ios-release.md)), and the full
-hardware demo remains open.**
-The vertical spike works — one Rust core for crypto, CRDT, storage and sync,
-driving a Flutter UI on Linux
-desktop and in a browser, with a relay that stores and forwards ciphertext and
-nothing else. [`docs/slice-02-results.md`](docs/slice-02-results.md) is the honest
-account of where that got to, including what it did not do. The remaining Slice
-3 work is recorded in [`docs/plan-slice-03.md`](docs/plan-slice-03.md): finish
-the platform and hardware checks, including iOS and the Pixel invite flow.
+[![CI](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml/badge.svg)](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](COPYING.md)
 
-The app now opens on a grid of lists rather than on the single note Slice 1
-had: make one, join someone else's and it is added rather than swapped in, and
-every one of them syncs. Hold a card and it offers the palette, a pin, the
-archive and the trash — all of them *personal*, in a private account document of
-this device's own, so colouring a shared shopping list does not recolour it for
-whoever else is on it. Keep holding and the card comes up with your finger:
-drop it on another and it takes that one's place, which is the same document
-and the same privacy — where a list sits in your grid is yours, not the
-household's. Edits go to a relay as they are made — typing once it pauses, as one
-envelope rather than one per keystroke ([ADR 0016](docs/adr/0016-batching-edits.md)),
-and every note over one socket per device rather than one each ([ADR 0017](docs/adr/0017-one-socket-per-device.md)) —
-an edit made with no network waits in the local log and goes when there is one, and the app says
-which of the two it is. It keeps them in SQLite, with the note keys and the
-device identity wrapped by a master key rather than sitting in files beside the
-log, and a device that has a Slice 1 directory is carried into the database the
-first time it opens. In a browser the same rows, sealed the same way, go into
-IndexedDB — so a tab that is closed and opened again has the list it had, which
-until now it did not. [ADR 0011](docs/adr/0011-the-web-store.md) says what it
-took to fit an asynchronous database behind a synchronous trait, and the one
-promise a browser makes more weakly than a phone: an edit is kept shortly after
-it is made rather than by the time it returns. A tab going away empties the
-queue rather than waiting for the next tick, which narrows that window without
-closing it — and on the rare occasion a browser refuses to store an edit at all,
-out of quota or with its database cleared underneath the tab, the app says so
-across the top of whichever screen is open instead of carrying on looking saved. A log that has grown past a few hundred edits is compacted
-to a snapshot when the note is opened, minus whatever the relay has not
-acknowledged yet — which is the only copy of those edits anywhere.
+One Rust core handles crypto, CRDT merging, storage and sync. It drives a
+Flutter UI on Android, iOS, Linux, Windows and the web, and talks to a relay
+that stores and forwards ciphertext and nothing else.
 
-There is a search box, and it reads a sealed index of every note's title and
-text rather than a network: type a word and the lists holding it come back, with
-the line that matched on them, in an aeroplane. That index is also what the grid
-is drawn from, so listing notes no longer means opening them — a household's ten
-lists appear in under a millisecond and two hundred in nine, where two hundred
-used to take most of a second. [ADR 0009](docs/adr/0009-search-index.md) says how
-it stays honest about a note it has not opened, and what is now the slowest thing
-a launch does.
+---
 
-A note in the trash can be deleted for good, one at a time or all at once, and
-that means gone: the log, the snapshot, the search entry that held its text, the
-key that opened it and this person's placement of it. [ADR
-0010](docs/adr/0010-forgetting-a-note.md) says in what order, and why a `DELETE`
-alone was not enough — it leaves the bytes in the file, which a test now reads
-the file to check. The deletion marker syncs through this person's encrypted
-account document, so their other devices purge their copies when they sync. It
-cannot erase relay history, backups or a guest's copy; the confirmation says
-that clearly.
+> **Status: not production-ready.** Slices 1 and 2 are complete, and
+> attachments work on native and on the web. Android has been built and
+> exercised on a Pixel; signed release drafts up to `v0.1.2` exist but none has
+> been published. iOS builds upload to TestFlight but have not run on a device,
+> and the full hardware demo is open. See the
+> [production readiness report](docs/production-readiness-2026-09-30.md),
+> [`docs/slice-02-results.md`](docs/slice-02-results.md) and
+> [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
 
-A browser is a device like any other now: it keeps its notes and it syncs them,
-over the WebSocket the tab lends it rather than a TCP socket it cannot open. The
-engine above the socket is the same code either way — only the transport differs
-— and the relay learned to answer the handshake for a page, which it could not
-before.
+> **Not audited.** There has been one internal review of the cryptography, and no
+> external audit. Do not rely on EasyNotes for anything where a flaw would put
+> someone at risk. See [`SECURITY.md`](SECURITY.md).
 
-Notes can be labelled, and a label is a shelf: hold a card, type a name, and the
-drawer grows an entry with that label's notes on it — with a search made there
-searching only them, and a note made there getting the label rather than
-appearing and vanishing. Labels are personal like the colours, for the same
-reason and in the same document.
+## Features
 
-A label is a thing rather than a word: it has an identity of its own and its name
-hangs off it, so it can be **renamed** — every note keeps it, because nothing
-that records a membership has ever mentioned the name — and it outlives the notes
-that carried it, so taking it off the last one leaves an empty shelf rather than
-deleting it behind your back. Renaming a label onto a name another already has
-merges the two, which is also the repair for the one duplicate two offline
-devices can make. Throwing a label away is a separate gesture from emptying it,
-and it says how many notes it is about to come off. [ADR
-0008](docs/adr/0008-account-document.md) says why the name is a register rather
-than the key, and what the shape before it could not do.
+- **Text notes and checklists**, offline-first: every action works without a
+  network and syncs later. Edits are batched (one envelope per pause, not per
+  keystroke — [ADR 0016](docs/adr/0016-batching-edits.md)) and ride a single
+  socket per device ([ADR 0017](docs/adr/0017-one-socket-per-device.md)).
+- **End-to-end encryption** on every update: XChaCha20-Poly1305, signed with
+  each author's Ed25519 device key, verified before decryption.
+- **Live collaboration** through single-use, self-expiring invite links that
+  carry no note key ([ADR 0015](docs/adr/0015-invites.md),
+  [ADR 0025](docs/adr/0025-links-that-let-people-in.md)).
+- **Sharing with people, not phones** — a collaborator is an account, so one
+  person's several devices are one entry, and revocation rotates the note key
+  ([ADR 0023](docs/adr/0023-access-packages.md)).
+- **Personal placement**: colours, labels, pins, archive and trash are private
+  to each device's account document, so colouring a shared list doesn't change
+  it for anyone else ([ADR 0008](docs/adr/0008-account-document.md)).
+- **Labels** that are things, not words — renamable, mergeable, and able to
+  outlive the notes that carry them.
+- **Local full-text search** over a sealed index, which also draws the note
+  grid ([ADR 0009](docs/adr/0009-search-index.md)).
+- **Attachments** — photos and audio files encrypted in chunks under their own
+  key, transferred over HTTP ([ADR 0027](docs/adr/0027-attachments.md)).
+- **Reminders** as synced account state, scheduled locally
+  ([ADR 0019](docs/adr/0019-reminders.md)).
+- **Two devices from twelve words** — a BIP-39 recovery phrase that derives the
+  account document ([ADR 0013](docs/adr/0013-recovery-phrase.md)).
+- **Permanent deletion** of notes from the log, snapshot, index and key
+  ([ADR 0010](docs/adr/0010-forgetting-a-note.md)).
+- **Self-hostable relay** with storage quotas, per-address rate limits,
+  Prometheus metrics, graceful shutdown and an optional access-key gate.
 
-**There is such a thing as one person's two devices now.** An account is twelve
-words — a BIP-39 recovery phrase, generated once and shown once — and everything
-it derives is the account document's key and the ID it syncs under. A second
-device that can say the words arrives at the same document, and therefore at the
-same colours, labels, pins and placements, and at the note keys it needs to
-*open* the notes rather than only store them. The relay is told none of this: two
-devices of one person are two unrelated device keys to it, indistinguishable from
-two people sharing a note. [ADR 0013](docs/adr/0013-recovery-phrase.md) says what
-the phrase derives and — just as much the point — what it deliberately does not,
-and [ADR 0014](docs/adr/0014-what-the-relay-learns.md) says what the relay is not
-told and what that costs.
+## Architecture
 
-**A list is shared by a link now, and the link is not the key.** Share makes an
-invite link that carries one secret and no note key. Whoever opens it first
-joins under their name, and the owner's device lets them in without anyone
-tapping Approve; the key is handed over sealed to that one person. A link works
-once, for one account — anybody else who opens it is told it has been used —
-and stops after seven days. The relay that holds the invite in between cannot
-read who joined or which note it is for, and is never told which devices are on
-either side. [ADR 0015](docs/adr/0015-invites.md) and [ADR
-0025](docs/adr/0025-links-that-let-people-in.md) have the decisions and what
-they cost: a leaked link lets its finder in until the owner removes them, the
-owner's device has to be reachable to let anyone in, both sides poll rather
-than being woken, and the link is pasted rather than tapped until the platforms
-register it.
+The app is local-first: each device holds its full data and merges changes with
+a CRDT; the relay stores and forwards encrypted updates.
 
-**A note is shared with people, not phones.** A collaborator is an account under
-the name its owner chose, so Anna on two phones is one entry, and a phone she
-restores from her twelve words gets back every note shared with her without
-asking anyone. The owner can remove one person, and everyone else keeps the note
-and does nothing. Every change to who can read a note is an *access package*: one
-envelope, signed by the note's owner key, with the whole list, a key for each
-person on it and, when anyone leaves, a fresh key with the note sealed under it.
-Every device works out which package is current from the packages alone, so the
-relay still checks nothing and learns no names, member IDs or head count. [ADR
-0023](docs/adr/0023-access-packages.md) has the format and what Remove can and
-cannot promise; [the plan](docs/plan-account-collaboration.md) has the flows.
+```mermaid
+flowchart LR
+  A[Flutter UI] --> B[Rust core<br/>crypto · CRDT · store · sync]
+  B --> C[(Local encrypted store<br/>SQLite / IndexedDB)]
+  B -- encrypted updates --> D[Relay<br/>Rust/axum · WebSocket]
+  D --> E[(Postgres + media dir<br/>ciphertext only)]
+  D -- encrypted updates --> F[Other devices<br/>and collaborators]
+```
 
-What is built is the core of it, with the property the whole item exists for held
-against both CRDT backends: two devices adopted from one phrase agree about a
-note's contents *and* about its placement. What is not built yet is the wiring —
-nothing subscribes to the account document over a relay, and the app has no
-screen for any of it, which includes the forced backup check that makes somebody
-write the phrase down while it still exists. Reminders now complete the first
-local account-document feature beyond placement: they sync as private account
-state and schedule locally, with push wake-ups deliberately deferred.
+Each note is its own CRDT document. An edit becomes a CRDT update, is encrypted
+under that note's key, and is sent to the relay under an opaque note ID. The
+relay appends it to the note's log and forwards it to connected subscribers;
+offline devices fetch what they missed on reconnect. Clients periodically
+upload encrypted snapshots so the log can be compacted.
 
-Android now builds and runs on a Pixel. Real-device Wi-Fi sync and local data
-surviving an offline force-stop/relaunch have been verified; the invite approval
-flow still needs a successful Pixel check, and iOS needs a Mac. See the current
-hardware notes in [`docs/pixel-demo-2026-09-23.md`](docs/pixel-demo-2026-09-23.md)
-and the remaining work in [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
-
-Portable text sharing is available: text notes share as plain text, checklists
-share as Markdown task lists, and pasting task-list Markdown into a text note
-then switching to checklist mode keeps checked items. The other direction works
-too: text shared *into* EasyNotes from another app's share sheet (Android, or
-an installed web app through the Web Share Target) becomes a new note, and a
-checklist shared out and back in comes back as a checklist. The details are in
-[`docs/plan-text-interchange.md`](docs/plan-text-interchange.md); the
-Google Keep Takeout importer is deferred.
-
-A note can hold photos and sound files ([ADR
-0027](docs/adr/0027-attachments.md), [the plan](docs/plan-attachments.md)).
-Each file is encrypted in chunks under a key of its own. That key is carried in
-the note's encrypted updates, like its text, and the bytes travel to the relay
-separately, over HTTP. A file reaches anyone else on the note only after the
-relay holds all of it, and an import made offline waits for the relay. The
-same transfer queue runs on a device, over a directory, and in a tab, over an
-IndexedDB database of its own.
-
-The editor has **Add attachment**, a picture gallery above the title with a
-full-screen viewer, and rows for sound files. Upload and download states show
-on each item, and a card shows the note's first picture. Not built yet: an
-audio player, the camera, and paste and drop. A removed attachment's bytes
-leave the relay about a week after the compaction its removal asks for
-([ADR 0027](docs/adr/0027-attachments.md) §5).
-
-`just web-shared-text` verifies the browser's incoming share route: text and
-checklists keep their content and checked state after reload, and a consumed
-share URL does not create a duplicate note. It needs a web build, but no relay.
-
-## Layout
+### Repository layout
 
 ```
 core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform policy.
@@ -187,13 +93,38 @@ tools/   Measurement helpers and build checks that are not part of the product.
 That is what keeps the security-critical code auditable, and it is not
 negotiable.
 
-## Getting started
+## Security
 
-Windows desktop build instructions and validation limits are in
-[`docs/windows-desktop.md`](docs/windows-desktop.md). `just build-windows`
-produces an unpackaged x64 app; `just run-windows` runs a development build.
+Every note has its own key, wrapped by a master key held in the OS keychain (or
+the browser's nearest equivalent). The recovery phrase derives the account
+root, but **not** the note keys — those stay random and ride inside the account
+document's ciphertext, so they can be rotated and shared keys have somewhere to
+live. Every update is encrypted with XChaCha20-Poly1305 and signed with the
+author's Ed25519 device key; receivers verify the signature before they
+decrypt, and the AAD binds the note, the author and a counter so an envelope
+cannot be moved between notes or re-attributed.
 
-Needs a stable Rust toolchain, Flutter, and [`just`](https://github.com/casey/just).
+The relay holds no keys and never sees plaintext. It may check a token, a size,
+and that an envelope's note ID matches the note it was sent for — nothing else.
+`the_relay_never_sees_plaintext` enforces that against the actual bytes on the
+wire, and the same check runs against the local database and its write-ahead
+log. What the relay does learn is documented in
+[ADR 0014](docs/adr/0014-what-the-relay-learns.md).
+
+For scope, reporting, and the known limitations, see
+[`SECURITY.md`](SECURITY.md). The design schedules an external audit before 1.0
+and nothing here should be relied on until then.
+
+## Prerequisites
+
+- A stable Rust toolchain
+- [Flutter](https://flutter.dev)
+- [`just`](https://github.com/casey/just)
+
+The web build additionally needs a nightly toolchain and `wasm-pack`;
+`just setup-web` installs them plus `wasm-bindgen-cli`.
+
+## Development
 
 ```sh
 just test-core        # the core and everything under it, no Flutter needed
@@ -203,99 +134,94 @@ just run-linux        # the app on Linux desktop, over the real core
 just --list           # everything else
 ```
 
-The two-device demo is `just run-relay` in one terminal and `just run-linux` in
-another — twice, if you want two devices. In each app, open the drawer’s
+Set `DATABASE_URL` to run the relay on Postgres and include its tests; without
+it they skip, and a green run without it is a run that skipped the tests that
+matter there.
+
+**Two-device demo:** run `just run-relay` in one terminal and `just run-linux`
+in another — twice for two devices. In each app, open the drawer's
 **Sync & devices → Switch server → Connect another server** and enter
-`http://127.0.0.1:8080` (or the URL of your relay).
-The URL is saved in the app, so release builds can choose a relay after
-installation.
+`http://127.0.0.1:8080`.
 
-On a new install, notes start in **On this device** until a relay is selected.
-Setup offers to move the current local collection to the new relay or start
-with an empty collection and keep the local notes separate. Moved notes remain
-available offline. Each relay has its own notes and account; switching relays
-leaves both collections available. Relay sync uploads encrypted updates even
-without an account. An account and its recovery phrase let another device find
-and unlock the same notes, using the same relay. To share a list, open it, press the share
-button and send the link it makes. The link carries no key: the first person to
-open it joins, and nobody after them can ([ADR 0015](docs/adr/0015-invites.md),
-[ADR 0023](docs/adr/0023-access-packages.md),
-[ADR 0025](docs/adr/0025-links-that-let-people-in.md)).
+On a new install, notes start **On this device** until a relay is selected. An
+account and its recovery phrase let a second device find and unlock the same
+notes on the same relay. To share a list, open it and send the link the share
+button makes — the link carries no key: the first person to open it joins, and
+nobody after them can.
 
-The relay's Postgres tests skip unless `DATABASE_URL` is set. CI sets it, and
-they are the only cover for the concurrency in sequence allocation — so a green
-run without it is a run that skipped the tests that matter there.
+### Web build
 
-Production relays should set `RELAY_TOKEN_SIGNING_KEY` to a stable base64url
-encoding of 32 random bytes. The same value must be shared by every relay
-instance and kept across restarts so signed device tokens remain valid; the
-Synology setup documents key generation, storage and rotation. Without it, the relay uses
-a temporary process key intended only for local development.
+```sh
+just setup-web        # nightly toolchain, wasm-pack, wasm-bindgen-cli
+just build-web        # threaded-WASM web app
+```
 
-A relay lets in only devices holding one of its access keys when
-`RELAY_ACCESS_KEYS` names any ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)).
-Its operator hands out a relay link, `https://relay.example/#access=<key>`, which
-goes in Sync & devices → Server (relay). Set it to `open` to let anyone write; unset is open,
-with a warning, and the Synology setup refuses to start without it.
-`easynotes-relay access-key` prints a new key. Every relay also holds each client
-address to a write budget, 200 MiB at once and 200 MiB an hour by default
-(`RELAY_WRITE_BURST`, `RELAY_WRITE_PER_HOUR`).
+The web build needs `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` when served, because the
+WebAssembly is threaded and will not start without cross-origin isolation.
 
-A relay stops taking *new* notes once every note together holds 16 GiB. Notes it
-already has keep working. `RELAY_STORAGE_CEILING` sets that ceiling in bytes, or
-`off` removes it. Each note's live log is capped at 32 MiB. Members keep far
-below that by compacting it when the relay asks
-([ADR 0024](docs/adr/0024-relay-storage-quota.md)).
+Four browser recipes exercise the result headlessly (each needs `just build-web`
+first): `just web-smoke`, `just web-sync-smoke`, `just web-converge` and
+`just web-storage-failure`. `just web-shared-text` verifies the incoming share
+route. `just bench-web` measures opening a device in a browser.
 
-Attachment bytes live apart from the log, in `RELAY_MEDIA_DIR`, and are backed
-up with the database. Without it a relay on Postgres turns attachments off, and
-one in memory keeps them in memory. `RELAY_MEDIA_PER_NOTE` (1 GiB) and
-`RELAY_MEDIA_CEILING` (64 GiB, or `off`) bound them
-([ADR 0027](docs/adr/0027-attachments.md) §4).
+## Running a relay
 
-The relay rate-limits its unauthenticated doors per client address. Behind a
-reverse proxy every client has the proxy's address, so name the proxy in
-`RELAY_TRUSTED_PROXIES` (addresses or CIDR ranges, comma separated): from those
-peers, and only those, the relay reads the client from `X-Forwarded-For`.
+The relay is a single binary, `easynotes-relay`. It stores in memory unless
+`DATABASE_URL` names a Postgres database. Configuration is by environment
+variable:
 
-On `SIGTERM` or Ctrl-C the relay stops taking connections, closes every sync
-socket cleanly so devices reconnect on their own, and gives requests in flight
-`RELAY_DRAIN_SECONDS` (8) to finish. `easynotes-relay check` asks a running
-relay's `/v1/ready` and exits 0 or 1, for a container health check.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | unset (in-memory) | Postgres connection string |
+| `RELAY_ADDR` | `127.0.0.1:8080` | Listen address (the Docker image sets `0.0.0.0:8080`) |
+| `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
+| `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
+| `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)) |
+| `RELAY_WRITE_BURST` | 200 MiB | Bytes one client address may write at once |
+| `RELAY_WRITE_PER_HOUR` | 200 MiB/hr | Sustained write budget per address (`off` for none) |
+| `RELAY_STORAGE_CEILING` | 16 GiB | Total live-log bytes before the relay refuses new notes (`off` for none) |
+| `RELAY_MEDIA_DIR` | unset | Where attachment bytes live; back up with the database |
+| `RELAY_MEDIA_PER_NOTE` | 1 GiB | Attachment bytes one note may hold |
+| `RELAY_MEDIA_CEILING` | 64 GiB | Attachment bytes all notes may hold together (`off` for none) |
+| `RELAY_TRUSTED_PROXIES` | unset | Addresses/CIDRs to trust `X-Forwarded-For` from, so clients behind a proxy aren't one rate-limit bucket |
+| `RELAY_RATE_LIMIT` | on | `off` answers as fast as asked (development only) |
+| `RELAY_DRAIN_SECONDS` | 8 | Graceful-shutdown drain before exiting on `SIGTERM` |
+| `RELAY_METRICS_ADDR` | unset | Serves Prometheus `/metrics` on a separate listener (e.g. `0.0.0.0:9090`) |
 
-`RELAY_METRICS_ADDR` (for example `0.0.0.0:9090`) serves Prometheus metrics at
-`/metrics` on a listener of its own, kept off the public one: storage and
-attachment bytes against their ceilings, open sockets, rate-limit and quota
-refusals, and responses by status class. Example alerts, at 80% of each
-ceiling among others, are in
-[`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml).
+Generate keys with `easynotes-relay access-key` for access keys, and
+`openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'` for the token signing
+key.
 
-For a small private deployment on a Synology NAS, see
-[`deploy/synology/README.md`](deploy/synology/README.md). It builds the relay
-container, runs Postgres with persistent storage, and uses DSM's reverse proxy
-for HTTPS and WebSockets.
+The relay answers `/v1/health` (process up), `/v1/ready` (process up and
+database answering), and `/metrics`. `easynotes-relay check` asks `/v1/ready`
+and exits 0 or 1 — the container health check.
 
-The web build needs a nightly toolchain and a few extras; `just setup-web`
-installs them, then `just build-web`. Four recipes then run the result in a
-headless browser: `just web-smoke` checks that what a tab writes to IndexedDB is
-there when it is reloaded, `just web-sync-smoke` starts a relay and checks
-that a tab reaches it, publishes, and is acknowledged, and `just web-converge`
-has two tabs share a list through an invite link and edit it, online and
-offline, until they agree, then switch it to text and back. `just
-web-storage-failure` makes IndexedDB itself refuse each write of a deletion in
-turn and checks that no note is ever left half deleted. Whatever serves the result must send
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp`, because the WebAssembly is
-threaded and will not start without cross-origin isolation.
+## Deployment
 
-`just bench-web` is the fifth, and it needs none of that build: it compiles the
-core alone for WebAssembly and measures what opening a device costs a tab —
-reading the database, replaying the account document, and unsealing one index
-entry a note. Two hundred notes is about 148 ms, five sixths of it IndexedDB.
-[ADR 0011](docs/adr/0011-the-web-store.md) has the table and what it means for
-reading the whole database at open.
+For a small private deployment on a Synology NAS — building the relay container,
+running Postgres with persistent storage, DSM's reverse proxy for HTTPS and
+WebSockets, backups, monitoring and key rotation — see
+[`deploy/synology/README.md`](deploy/synology/README.md).
 
-## Decisions
+The container image is built from the root `Dockerfile` and runs the relay as a
+non-root user. Prometheus alert rules (at 80% of each ceiling, among others)
+are in [`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml).
+
+Production relays should set `RELAY_TOKEN_SIGNING_KEY` to a stable key shared by
+every instance, and `RELAY_ACCESS_KEYS` to restrict writes. The Synology Compose
+file refuses to start without both.
+
+## Documentation
+
+- [Design document](docs/design.md) — product and architecture
+- [Production readiness report](docs/production-readiness-2026-09-30.md)
+- [Security policy](SECURITY.md) and [crypto review](docs/crypto-review.md)
+- [Synology deployment](deploy/synology/README.md)
+- [Windows desktop](docs/windows-desktop.md), [Android release](docs/android-release.md), [iOS release](docs/ios-release.md)
+- [Decision records](docs/adr/) — see the table below
+
+### Decision records
 
 | | |
 | --- | --- |
@@ -329,49 +255,14 @@ reading the whole database at open.
 | [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet |
 | [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
 
-## Security, in one paragraph
+## Reporting a vulnerability
 
-Each note has its own key, and a master key — kept in the OS keychain, or in a
-browser in the nearest thing one has — wraps those, the device seed, and the
-account root on this device. The account root is what a recovery phrase derives;
-the phrase itself is never stored anywhere, which is why losing it cannot be
-recovered from and why the relay cannot help. Note keys are **not** derived from
-it — they stay random and ride inside the account document's ciphertext, so that
-a key can be rotated later, and so that a key somebody else shared with you has
-somewhere to live. Every update is encrypted with XChaCha20-Poly1305 and
-signed with the author's Ed25519 device key; a receiver **verifies the signature
-before it decrypts**, and the AAD binds the note, the author and a counter, so an
-envelope cannot be moved between notes or re-attributed. The relay holds no keys.
-It may check a token, a size, and that an envelope's note ID matches the note it
-was sent for — it may not check anything else, and it never sees plaintext. Its
-handshake answers any origin by default, so that a page can do it at all; that
-costs nothing, because a token needs a signature over the relay's nonce and a
-hostile page has no device key to make one with — and a deployment that knows
-which page it serves can name it in `RELAY_ALLOWED_ORIGINS` anyway. What a
-public relay did need is a limit on how often a stranger may knock: the
-handshake and opening a socket are a token bucket per address now, on by
-default and off in every test.
-`the_relay_never_sees_plaintext` enforces that against the actual bytes on the
-wire rather than trusting the claim, and the same check runs against the local
-database and its write-ahead log. The one thing on this device that holds a note
-in a form the CRDT did not produce — the search index — is sealed under that
-note's own key, so it cannot be read by anything that could not already read the
-note, and cannot outlive access to it. Deleting a note removes all of that and
-overwrites it rather than unlinking it, which
-`a_forgotten_note_is_not_in_the_database_or_its_wal` checks against the actual
-bytes of both databases; in a browser it is one range delete over the rows a
-note has, and what a browser does with the freed space is the browser's, which
-[ADR 0011](docs/adr/0011-the-web-store.md) says along with the rest of what the
-web is weaker at —  the master key there is obfuscation over `localStorage` and
-is not claimed to be more; account devices purge their copies when the deletion
-marker syncs, and a note shared with someone else remains readable to them if
-they already copied or decrypted it, but
-future access can be revoked by rotating the note key and replacing the history
-with an owner-authorized snapshot. The sync engine that moves those envelopes
-holds no keys and cannot read one: it hands every arrival to the core, which
-verifies before it decrypts.
+Please report privately through GitHub's **Security → Report a vulnerability**,
+not a public issue. See [`SECURITY.md`](SECURITY.md) for scope, expectations and
+safe harbour.
 
-This has **not** been audited. The design doc schedules an external review before
-1.0, and nothing here should be relied on until then. To report a
-vulnerability, see [`SECURITY.md`](SECURITY.md).
+## Licence
 
+EasyNotes is free software under the GNU Affero General Public License,
+version 3 or later ([`LICENSE`](LICENSE)). Bundled third-party components keep
+their own compatible licences; see [`COPYING.md`](COPYING.md).
