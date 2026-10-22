@@ -88,7 +88,9 @@ test-relay:
 # database, since the relay's dump is part of the set; take a pg_dump of the
 # same major version as CI's Postgres (16), or the dump may not restore there.
 # It will not overwrite a set: COMPAT_REPLACE=1 does, and is only for a version
-# not yet tagged.
+# not yet tagged. Without `pg_dump` 16 and an empty database, dispatch the
+# Compatibility fixtures workflow instead; it writes the same directory and
+# uploads it as an artifact.
 compat-fixtures:
     cargo test -p easynotes-relay --test compat write_compat_fixtures -- --ignored --nocapture
 
