@@ -392,7 +392,11 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       // has a use for.
       theme: _easyNotesTheme(Brightness.light),
       darkTheme: _easyNotesTheme(Brightness.dark),
-      home: _released
+      // A library being swapped underneath onboarding is no reason to replace
+      // the screen: onboarding draws nothing from it, and replacing it would
+      // throw away the step a person is on — after connecting a sync server
+      // they would be back at the intro.
+      home: _released && !_showOnboarding
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : _showOnboarding
           ? OnboardingScreen(

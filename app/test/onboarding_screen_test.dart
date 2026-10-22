@@ -161,11 +161,13 @@ void main() {
     expect(continued, 1);
   });
 
-  testWidgets('the checklist can go back to the intro', (tester) async {
+  testWidgets('the checklist has no way back to the intro', (tester) async {
     await tester.pumpWidget(app());
     await openSetup(tester);
-    await tap(tester, find.byKey(const Key('onboarding-back')));
 
-    expect(find.byKey(const Key('onboarding-welcome')), findsOneWidget);
+    // Going forward is a choice made with the buttons here; the intro is not
+    // something to return to.
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
+    expect(find.byKey(const Key('onboarding-welcome')), findsNothing);
   });
 }

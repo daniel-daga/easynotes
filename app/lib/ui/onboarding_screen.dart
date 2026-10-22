@@ -178,17 +178,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final accountOpen = serverDone && !accountDone;
     return _PageBody(
       children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: IconButton(
-            key: const Key('onboarding-back'),
-            tooltip: 'Back',
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => _show(_intro),
-            padding: EdgeInsets.zero,
-            alignment: Alignment.centerLeft,
-          ),
-        ),
         Text('Set up sync', style: theme.textTheme.headlineSmall),
         const SizedBox(height: 8),
         const Text(
