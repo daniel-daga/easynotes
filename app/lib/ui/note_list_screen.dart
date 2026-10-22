@@ -757,22 +757,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      FloatingActionButton.small(
-                        key: const Key('toggle-add-shortcuts-button'),
-                        heroTag: 'toggle-add-shortcuts',
-                        tooltip: _addShortcutsExpanded
-                            ? 'Hide shortcuts'
-                            : 'Show shortcuts',
-                        onPressed: () => setState(
-                          () => _addShortcutsExpanded = !_addShortcutsExpanded,
-                        ),
-                        child: Icon(
-                          _addShortcutsExpanded
-                              ? Icons.expand_more
-                              : Icons.expand_less,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
+                      // The kinds of note are folded away until asked for, so
+                      // that the screen is the notes and one button; the button
+                      // that asks for them is the one that says what they make.
                       AnimatedSize(
                         duration: const Duration(milliseconds: 180),
                         alignment: Alignment.bottomCenter,
@@ -802,17 +789,33 @@ class _NoteListScreenState extends State<NoteListScreen> {
                                     child: const Icon(Icons.check_box_outlined),
                                   ),
                                   const SizedBox(height: 12),
+                                  FloatingActionButton.small(
+                                    key: const Key('new-text-note-button'),
+                                    heroTag: 'new-text-note',
+                                    tooltip: 'New note',
+                                    onPressed: () {
+                                      setState(
+                                        () => _addShortcutsExpanded = false,
+                                      );
+                                      _createNote();
+                                    },
+                                    child: const Icon(Icons.notes_outlined),
+                                  ),
+                                  const SizedBox(height: 12),
                                 ],
                               )
                             : const SizedBox.shrink(),
                       ),
-                      const SizedBox(height: 12),
-                      FloatingActionButton(
+                      FloatingActionButton.extended(
                         key: const Key('new-note-button'),
                         heroTag: 'new-note',
-                        tooltip: 'New note',
-                        onPressed: _createNote,
-                        child: const Icon(Icons.add),
+                        tooltip: _addShortcutsExpanded
+                            ? 'Hide note types'
+                            : 'Create note',
+                        onPressed: () => setState(
+                          () => _addShortcutsExpanded = !_addShortcutsExpanded,
+                        ),
+                        label: const Text('+ Create note'),
                       ),
                     ],
                   )

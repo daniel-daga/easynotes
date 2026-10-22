@@ -146,13 +146,32 @@ void main() {
     expect(find.text('• jam'), findsOneWidget);
   });
 
-  testWidgets('the new-note button makes a text note and opens it', (
+  testWidgets('the create-note button reveals the note types', (tester) async {
+    final library = FakeNoteLibrary();
+    await pumpList(tester, library);
+
+    // Folded away until asked for.
+    expect(find.byKey(const Key('new-text-note-button')), findsNothing);
+    expect(find.byKey(const Key('new-list-button')), findsNothing);
+    expect(find.byKey(const Key('new-audio-note-button')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('new-note-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('new-text-note-button')), findsOneWidget);
+    expect(find.byKey(const Key('new-list-button')), findsOneWidget);
+    expect(find.byKey(const Key('new-audio-note-button')), findsOneWidget);
+  });
+
+  testWidgets('a text note from the revealed types is made and opened', (
     tester,
   ) async {
     final library = FakeNoteLibrary();
     await pumpList(tester, library);
 
     await tester.tap(find.byKey(const Key('new-note-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-text-note-button')));
     await tester.pumpAndSettle();
 
     expect(library.calls, contains('createNote(text)'));
@@ -167,7 +186,7 @@ void main() {
     final library = FakeNoteLibrary();
     await pumpList(tester, library);
 
-    await tester.tap(find.byKey(const Key('toggle-add-shortcuts-button')));
+    await tester.tap(find.byKey(const Key('new-note-button')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('new-list-button')));
     await tester.pumpAndSettle();
@@ -1191,6 +1210,8 @@ void main() {
 
     // Otherwise it would be made, drawn, and gone on the next frame.
     await tester.tap(find.byKey(const Key('new-note-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-text-note-button')));
     await tester.pumpAndSettle();
     expect(library.calls, contains('addTag(note-0, errands)'));
   });
