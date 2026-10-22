@@ -94,8 +94,7 @@ void main() {
     expect(library.tags.single.name, 'Trips');
     await library.forgetTag(id);
     await tester.pumpAndSettle();
-    expect(find.text('No labels yet. Create labels from the sidebar.'),
-        findsOneWidget);
+    expect(find.text('No labels yet.'), findsOneWidget);
   });
 
   testWidgets('cancelling deletion keeps the label and its notes', (tester) async {

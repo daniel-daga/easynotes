@@ -10,12 +10,10 @@ class LabelManagerScreen extends StatefulWidget {
     super.key,
     required this.library,
     this.noteId,
-    this.autofocusCreate = false,
   });
 
   final NoteLibrary library;
   final String? noteId;
-  final bool autofocusCreate;
 
   @override
   State<LabelManagerScreen> createState() => _LabelManagerScreenState();
@@ -207,7 +205,6 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                         child: TextField(
                           key: const Key('label-field'),
                           controller: _field,
-                          autofocus: widget.autofocusCreate,
                           enabled: !_busy,
                           maxLength: maxLabelLength,
                           decoration: const InputDecoration(
@@ -242,8 +239,6 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                   child: Text(
                     tags.isNotEmpty
                         ? 'No matching labels.'
-                        : _selecting
-                        ? 'No labels yet. Create labels from the sidebar.'
                         : 'No labels yet.',
                   ),
                 ),
