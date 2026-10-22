@@ -8,8 +8,8 @@ architecture.
 **Status: not production-ready ([2026-09-30 review](docs/production-readiness-2026-09-30.md)).
 Slices 1 and 2 are complete, and attachments ([ADR 0027](docs/adr/0027-attachments.md))
 work on native and on the web. Android has been built and exercised on a Pixel;
-signed `release.yml` drafts for `v0.1.0` and `v0.1.1` exist but none has been
-published, iOS still needs a Mac, and the full hardware demo remains open.**
+signed `release.yml` drafts up to `v0.1.2` exist but none has been published,
+iOS still needs a Mac, and the full hardware demo remains open.**
 The vertical spike works — one Rust core for crypto, CRDT, storage and sync,
 driving a Flutter UI on Linux
 desktop and in a browser, with a relay that stores and forwards ciphertext and
