@@ -591,6 +591,101 @@ void main() {
     );
   });
 
+  testWidgets('a carried card leaves a gap the size of the card', (
+    tester,
+  ) async {
+    // The card that was picked up is what the finger is holding, drawn once in
+    // the overlay. What stays in the grid is a hole, not a faded second copy
+    // for the drop target to find under the pointer.
+    final library = twoLists();
+    await pumpList(tester, library);
+    final card = tester.getSize(find.byKey(const Key('note:hardware')));
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('note:hardware'))),
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+
+    expect(find.byKey(const Key('drag-placeholder')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('drag-placeholder'))),
+      card,
+      reason: 'the gap should be the card, so nothing jumps when it appears',
+    );
+
+    await gesture.moveBy(const Offset(0, 60));
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('the grid holds its columns still while a card is carried', (
+    tester,
+  ) async {
+    // Re-balancing on every preview moves the cards under the finger, which
+    // changes where the finger is pointing. Only the gap moves until the drop.
+    final library = twoLists();
+    await pumpList(tester, library);
+    final before = tester.getRect(find.byKey(const Key('note:groceries')));
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('note:hardware'))),
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+    await gesture.moveTo(
+      tester.getCenter(find.byKey(const Key('note:groceries'))),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getRect(find.byKey(const Key('note:groceries'))),
+      before,
+      reason: 'the card it will land after should not move before the drop',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
+  });
+
+  testWidgets('the preview does not chase the gap it makes', (tester) async {
+    // The gap sits under the pointer once the preview moves to it. If the gap
+    // were also a target, answering it would put the preview back where the
+    // drag started, and the next pointer event would move it again.
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('note:hardware'))),
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+    await gesture.moveTo(
+      tester.getCenter(find.byKey(const Key('note:groceries'))),
+    );
+    await tester.pumpAndSettle();
+
+    final gap = find.byKey(const Key('drag-placeholder'));
+    final preview = tester.getRect(gap);
+    // It landed after Groceries, in Groceries' column.
+    expect(
+      preview.top,
+      greaterThan(tester.getRect(find.byKey(const Key('note:groceries'))).top),
+    );
+
+    await gesture.moveTo(preview.center);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getRect(gap),
+      preview,
+      reason: 'resting on the gap is not a new drop target',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
+  });
+
   testWidgets('a card released without moving still opens its menu', (
     tester,
   ) async {

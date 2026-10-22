@@ -1616,6 +1616,10 @@ class _NoteCollectionState extends State<_NoteCollection>
   String? _draggedId;
   String? _targetId;
   List<NoteSummary>? _dragStartNotes;
+
+  /// How tall the carried card was when it was picked up, so the gap it leaves
+  /// is exactly the size of the card that left it.
+  double? _dragHeight;
   bool _awaitingDrop = false;
   List<String>? _expectedDropIds;
   int _animationGeneration = 0;
@@ -1649,10 +1653,10 @@ class _NoteCollectionState extends State<_NoteCollection>
   Offset _visibleOffset(String id) =>
       (_offsets[id] ?? Offset.zero) * (1 - _positionAnimation.value);
 
-  /// Preserve each card's current screen position across the reorder, then
-  /// animate its inverse offset back to zero (the FLIP layout animation).
-  void _animateToTarget(String? id) {
-    if (_targetId == id) return;
+  /// Apply [change] to the layout, preserving each card's current screen
+  /// position across it and then animating its inverse offset back to zero
+  /// (the FLIP layout animation).
+  void _animateLayoutChange(VoidCallback change) {
     final generation = ++_animationGeneration;
     _positionAnimation.stop();
     final oldPositions = {
@@ -1662,7 +1666,7 @@ class _NoteCollectionState extends State<_NoteCollection>
     final oldOffsets = {
       for (final note in widget.notes) note.id: _visibleOffset(note.id),
     };
-    setState(() => _targetId = id);
+    setState(change);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || generation != _animationGeneration) return;
       final offsets = <String, Offset>{};
@@ -1679,15 +1683,28 @@ class _NoteCollectionState extends State<_NoteCollection>
     });
   }
 
+  void _animateToTarget(String? id) {
+    if (_targetId == id) return;
+    _animateLayoutChange(() => _targetId = id);
+  }
+
   void _setTarget(String? id) {
+    // The drop has already happened; the preview belongs to the pointer that
+    // let go, and the library's answer is on its way.
+    if (_awaitingDrop) return;
+    // A target is only replaced, never cleared on the way out of a card: the
+    // gap can end up under the finger, and a preview that went back to the
+    // start would move it out again on the next pointer event.
     _animateToTarget(id);
   }
 
   void _startDrag(String id) {
+    final height = _rectOf(id)?.height;
     setState(() {
       _draggedId = id;
       _targetId = null;
       _dragStartNotes = List.of(widget.notes);
+      _dragHeight = height;
       _awaitingDrop = false;
       _expectedDropIds = null;
     });
@@ -1705,11 +1722,21 @@ class _NoteCollectionState extends State<_NoteCollection>
       });
       return;
     }
-    setState(() {
+    _clearDrag();
+  }
+
+  /// Let the grid go back to the order it is actually in, animating the cards
+  /// from where the preview left them.
+  void _clearDrag() {
+    if (_draggedId == null && _targetId == null) return;
+    _animateLayoutChange(() {
       _draggedId = null;
+      _targetId = null;
       _dragStartNotes = null;
+      _dragHeight = null;
+      _awaitingDrop = false;
+      _expectedDropIds = null;
     });
-    _animateToTarget(null);
   }
 
   @override
@@ -1721,13 +1748,20 @@ class _NoteCollectionState extends State<_NoteCollection>
   void _settleAcceptedDrop() {
     if (!_awaitingDrop) return;
     final actual = widget.notes.map((note) => note.id).toList();
-    if (!listEquals(_expectedDropIds, actual)) return;
-    setState(() {
+    // Either the list now says what the preview predicted, or it has changed
+    // to something else. Waiting only for the first answer would leave the
+    // preview on screen for good if the library resolved the move another way.
+    final start = _dragStartNotes?.map((note) => note.id).toList();
+    final settled =
+        listEquals(_expectedDropIds, actual) || !listEquals(start, actual);
+    if (!settled) return;
+    _animateLayoutChange(() {
       _awaitingDrop = false;
       _expectedDropIds = null;
       _draggedId = null;
       _targetId = null;
       _dragStartNotes = null;
+      _dragHeight = null;
     });
   }
 
@@ -1782,6 +1816,9 @@ class _NoteCollectionState extends State<_NoteCollection>
         ? card
         : _DraggableCard(
             card: card,
+            dragging: card.note.id == _draggedId,
+            placeholderHeight: _dragHeight,
+            pendingTargetId: _targetId,
             onMove: move,
             onHold: () => widget.onHold(card.note),
             onTargetChanged: _setTarget,
@@ -1793,13 +1830,23 @@ class _NoteCollectionState extends State<_NoteCollection>
       animation: _positionAnimation,
       builder: (context, child) => Transform.translate(
         offset: _visibleOffset(card.note.id),
-        transformHitTests: true,
+        // While a card is being carried, a target is worked out from where
+        // the cards will settle, not from where they are sliding to. Following
+        // the animation makes the card under the finger change on its own,
+        // and the preview changes with it.
+        transformHitTests: _draggedId == null,
         child: child,
       ),
       child: KeyedSubtree(key: _keyFor(card.note.id), child: wrap(card)),
     );
     return widget.layout == NoteLayout.grid
-        ? _MasonryGrid(wrap: position, children: cards)
+        ? _MasonryGrid(
+            wrap: position,
+            draggedId: _draggedId,
+            targetId: _targetId,
+            dragOrder: _dragStartNotes,
+            children: cards,
+          )
         : ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
@@ -1826,6 +1873,11 @@ class _NoteCollectionState extends State<_NoteCollection>
 /// so dragging a pinned card among the unpinned ones would write a move that
 /// nothing on screen could show — the card would spring back to the top and look
 /// broken. Unpin it and it lands where it was dropped.
+///
+/// A carried card is not drawn again in place: its brick is a gap the size of
+/// the card, which is also where it would land. The gap accepts the carried
+/// card, because letting go there is letting go on the preview's target; it
+/// never accepts any other card.
 class _DraggableCard extends StatefulWidget {
   const _DraggableCard({
     required this.card,
@@ -1834,6 +1886,9 @@ class _DraggableCard extends StatefulWidget {
     required this.onTargetChanged,
     required this.onDragStarted,
     required this.onDragFinished,
+    this.dragging = false,
+    this.placeholderHeight,
+    this.pendingTargetId,
   });
 
   final _NoteCard card;
@@ -1842,6 +1897,19 @@ class _DraggableCard extends StatefulWidget {
   final ValueChanged<String?> onTargetChanged;
   final VoidCallback onDragStarted;
   final ValueChanged<bool> onDragFinished;
+
+  /// Whether this is the card under the finger. It draws the gap it left
+  /// rather than itself.
+  final bool dragging;
+
+  /// The card's height when it was picked up, so the gap it leaves is the
+  /// size of the card that left it and the grid does not jump as it appears.
+  final double? placeholderHeight;
+
+  /// Where a drop would land right now, while this card is the one being
+  /// carried. Letting go over the gap is letting go over this card's own
+  /// target: the gap is drawn where the drop will land.
+  final String? pendingTargetId;
 
   @override
   State<_DraggableCard> createState() => _DraggableCardState();
@@ -1880,14 +1948,31 @@ class _DraggableCardState extends State<_DraggableCard> {
     if (!details.wasAccepted && !_moved) widget.onHold();
   }
 
+  /// Whether a drop of [dragged] here would mean something: not on itself, and
+  /// not across the pin line.
+  bool _accepts(NoteSummary dragged) =>
+      dragged.id != _note.id && dragged.pinned == _note.pinned;
+
   @override
   Widget build(BuildContext context) {
+    final pending = widget.pendingTargetId;
     return DragTarget<NoteSummary>(
-      onWillAcceptWithDetails: (details) =>
-          details.data.id != _note.id && details.data.pinned == _note.pinned,
-      onAcceptWithDetails: (details) =>
-          widget.onMove(details.data.id, _note.id),
-      onMove: (_) => widget.onTargetChanged(_note.id),
+      onWillAcceptWithDetails: (details) => widget.dragging
+          ? pending != null && details.data.id == _note.id
+          : _accepts(details.data),
+      onAcceptWithDetails: (details) {
+        final target = widget.dragging ? pending : _note.id;
+        if (target != null) widget.onMove(details.data.id, target);
+      },
+      onMove: (details) {
+        // Rejected targets are told about the pointer too. Only a card that
+        // would take the drop may move the preview; otherwise crossing the
+        // pin line, or moving over the gap, would reorder the grid for a drop
+        // that cannot happen. Over the gap the target is already decided.
+        if (!widget.dragging && _accepts(details.data)) {
+          widget.onTargetChanged(_note.id);
+        }
+      },
       builder: (context, _, _) => LayoutBuilder(
         builder: (context, constraints) => LongPressDraggable<NoteSummary>(
           data: _note,
@@ -1904,14 +1989,40 @@ class _DraggableCardState extends State<_DraggableCard> {
               ),
             ),
           ),
-          // The gap the card came out of, so the columns do not close up
-          // underneath the finger holding it.
-          childWhenDragging: Opacity(
-            opacity: 0.3,
-            child: IgnorePointer(child: widget.card),
+          // The gap the card came out of, exactly as tall as the card was, so
+          // the columns close up around a hole rather than around a faded copy
+          // of the card that is under the finger. It is drawn where the card
+          // will land, so letting go on it commits the target already chosen.
+          childWhenDragging: SizedBox(
+            height: widget.placeholderHeight ?? 0,
+            child: widget.placeholderHeight == null
+                ? null
+                : const _DropPlaceholder(),
           ),
           child: widget.card,
         ),
+      ),
+    );
+  }
+}
+
+/// The hole a carried card leaves behind.
+///
+/// It is drawn where the card will land, so letting go over it commits the
+/// drop already chosen. It never chooses a different target: a card cannot be
+/// dropped onto itself.
+class _DropPlaceholder extends StatelessWidget {
+  const _DropPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      child: Card(
+        key: const Key('drag-placeholder'),
+        margin: EdgeInsets.zero,
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
       ),
     );
   }
@@ -2500,10 +2611,20 @@ class _Swatch extends StatelessWidget {
 /// title and up to four preview lines — so it can be *estimated* exactly well
 /// enough to balance the columns, with no measurement and no package. The cost
 /// is that columns can end up slightly uneven; the alternative costs a frame.
+///
+/// While a card is being carried the balancing pauses: see [dragOrder].
 class _MasonryGrid extends StatelessWidget {
-  const _MasonryGrid({required this.wrap, required this.children});
+  const _MasonryGrid({
+    required this.wrap,
+    required this.children,
+    this.draggedId,
+    this.targetId,
+    this.dragOrder,
+  });
 
   /// The cards, unwrapped, because the estimate below reads what is on them.
+  /// While a card is being carried this is the preview order: the carried card
+  /// is in it, at the place it would land, and draws itself as a gap.
   final List<_NoteCard> children;
 
   /// What actually goes in the column: the card, or the card made draggable.
@@ -2511,17 +2632,48 @@ class _MasonryGrid extends StatelessWidget {
   /// about a note's contents and not about what is wrapped around it.
   final Widget Function(_NoteCard) wrap;
 
+  /// The card under the finger, if any.
+  final String? draggedId;
+
+  /// The card it would land on, if any.
+  final String? targetId;
+
+  /// The order the notes were in when the drag began.
+  ///
+  /// While a card is carried the grid stops balancing itself and works from
+  /// this order instead: every other card stays in the column it was in, so
+  /// only the gap the card left and the gap it will fill move. Re-running the
+  /// balancing on each preview would shuffle cards between columns under the
+  /// finger, and the card under the finger is what decides the next target.
+  final List<NoteSummary>? dragOrder;
+
   /// Roughly what a card will take: the padding and title, a line per preview
   /// item, and the matched line when it is a search result. Units are arbitrary
   /// and only ever compared with each other.
-  static double _estimate(_NoteCard card) =>
+  static double _estimate(NoteSummary note, String? matched) =>
       64 +
-      (card.note.title.isEmpty ? 0 : 28) +
-      card.note.preview.length * 22 +
-      (card.matched == null ? 0 : 22) +
+      (note.title.isEmpty ? 0 : 28) +
+      note.preview.length * 22 +
+      (matched == null ? 0 : 22) +
       // One row of chips, whatever the number: they wrap, and a card with eight
       // labels on it is rarer than the error in guessing how many rows they take.
-      (card.note.tags.isEmpty ? 0 : 30);
+      (note.tags.isEmpty ? 0 : 30);
+
+  /// The column each note sat in, worked out the way the grid would balance
+  /// itself. Used only while dragging, to hold the columns still.
+  static Map<String, int> _columnsAt(int columns, List<NoteSummary> order) {
+    final heights = List.filled(columns, 0.0);
+    final columnOf = <String, int>{};
+    for (final note in order) {
+      var shortest = 0;
+      for (var i = 1; i < columns; i++) {
+        if (heights[i] < heights[shortest]) shortest = i;
+      }
+      columnOf[note.id] = shortest;
+      heights[shortest] += _estimate(note, null);
+    }
+    return columnOf;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2534,19 +2686,38 @@ class _MasonryGrid extends StatelessWidget {
             ? 2
             : (constraints.maxWidth / 260).floor().clamp(2, 4);
         final buckets = List.generate(columns, (_) => <Widget>[]);
-        final heights = List.filled(columns, 0.0);
-        for (final card in children) {
-          var shortest = 0;
-          for (var i = 1; i < columns; i++) {
-            if (heights[i] < heights[shortest]) shortest = i;
+        Widget brick(_NoteCard card) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: wrap(card),
+        );
+
+        final dragged = draggedId;
+        final order = dragOrder;
+        if (dragged != null && order != null) {
+          final columnOf = _columnsAt(columns, order);
+          final landing = targetId;
+          int columnFor(_NoteCard card) {
+            final id = card.note.id;
+            if (id != dragged) return (columnOf[id] ?? 0).clamp(0, columns - 1);
+            // The carried card goes where it would land, and the card it left
+            // behind closes up. Everyone else stays put.
+            final destination = landing == null ? null : columnOf[landing];
+            return (destination ?? columnOf[id] ?? 0).clamp(0, columns - 1);
           }
-          buckets[shortest].add(
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: wrap(card),
-            ),
-          );
-          heights[shortest] += _estimate(card);
+
+          for (final card in children) {
+            buckets[columnFor(card)].add(brick(card));
+          }
+        } else {
+          final heights = List.filled(columns, 0.0);
+          for (final card in children) {
+            var shortest = 0;
+            for (var i = 1; i < columns; i++) {
+              if (heights[i] < heights[shortest]) shortest = i;
+            }
+            buckets[shortest].add(brick(card));
+            heights[shortest] += _estimate(card.note, card.matched);
+          }
         }
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
