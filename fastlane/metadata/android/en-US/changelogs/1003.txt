@@ -1,0 +1,7 @@
+Updates since v0.1.2:
+
+- Notes open with an animation that grows out of their card
+- The grid holds still while a note is dragged
+- Last synced time and Sync now live in the Sync & devices status card
+- Tighter spacing for checklist items
+- Android 13+: the system back gesture previews closing a note
