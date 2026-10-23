@@ -1,0 +1,4 @@
+Updates since v0.1.4:
+
+- Opening a note is quicker and lands in one piece: the whole shape grows at once, instead of the height trailing behind the width
+- Closing is a little faster, to match

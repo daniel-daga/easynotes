@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # The build number is the Android versionCode: it must go up with every
 # release a store sees, and never be reused. Release builds take both from
 # the tag (see .github/workflows/release.yml); this is what a local build says.
-version: 0.1.4+1004
+version: 0.1.5+1005
 
 environment:
   sdk: ^3.9.2
