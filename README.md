@@ -15,9 +15,10 @@ that stores and forwards ciphertext and nothing else.
 
 > **Status: not production-ready.** Slices 1 and 2 are complete, and
 > attachments work on native and on the web. Android has been built and
-> exercised on a Pixel; signed release drafts up to `v0.1.2` exist but none has
-> been published. iOS builds upload to TestFlight but have not run on a device,
-> and the full hardware demo is open. See the
+> exercised on a Pixel 10 Pro, where the signed `v0.1.5` draft installs, updates
+> and restores from the recovery phrase; none of the drafts up to `v0.1.5` has
+> been published, and the two-phone sharing journey is open. iOS builds upload
+> to TestFlight but have not run on a device. See the
 > [production readiness report](docs/production-readiness-2026-09-30.md),
 > [`docs/slice-02-results.md`](docs/slice-02-results.md) and
 > [`docs/plan-slice-03.md`](docs/plan-slice-03.md).

@@ -133,12 +133,21 @@ Publishing it, and uploading the bundle to Play's internal track, is a
 person's decision. The top of the workflow lists the secrets and variables it
 needs; it stops at its first step if any is missing.
 
-## What this does not prove
+## What has been checked, and what has not
 
-That the app works. Install, update over the previous release and the
-downgrade-refusal behaviour were checked on the x86_64 emulator on 2026-10-22
-(0.1.0 → 0.1.1, data kept, same certificate), but a release build still has to
-be installed on real phones and taken through the flows in the [production
-readiness review](production-readiness-2026-09-27.md) — install, update over
-the previous release, share, revoke, reinstall and restore — before it is
-anything but a test build.
+Install, update over the previous release, the downgrade refusal, and a
+reinstall with a restore from the recovery phrase were checked on a **Pixel 10
+Pro running Android 16 on 2026-10-23**, with the signed `v0.1.5` draft over
+`v0.1.4` (`versionCode` 1005 over 1004). The note and its text survived the
+update, the certificate was unchanged, and the downgrade was refused.
+
+The same install, update and downgrade sequence, from `0.1.0` through `0.1.2`,
+had run on the `Medium_Phone` x86_64 emulator (Android 16 / API 36) on
+2026-10-22.
+
+This is not the whole app working. The sharing journey — share, join, offline
+edits, revoke, attachments and account deletion — still has to pass on two
+physical phones against a TLS relay, and no draft has been published or
+uploaded to Play. That is launch gate item 2; publishing and the Play upload
+are also still open. See the [production readiness
+report](production-readiness-2026-09-30.md#launch-gate-updated).
