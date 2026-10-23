@@ -74,9 +74,11 @@ class NoteExpandRoute<T> extends PageRoute<T> {
     required this.startColor,
     required this.endColor,
     this.cardBuilder,
+    this.cardSize,
     this.onLanded,
     super.settings,
-  }) : _begin = origin;
+  }) : _begin = origin,
+       _cardSize = cardSize;
 
   final WidgetBuilder builder;
 
@@ -86,6 +88,15 @@ class NoteExpandRoute<T> extends PageRoute<T> {
   /// faded out as the note arrives. Null when the note was not opened from a
   /// card, in which case the surface is plain colour until the note appears.
   final WidgetBuilder? cardBuilder;
+
+  /// The size the card is laid out at, which is not always the size of [origin].
+  ///
+  /// A card is drawn a shade inside its box while it is pressed, so the trip
+  /// starts from a slightly smaller rectangle than the card's own. The copy is
+  /// still built at the card's size and scaled down to that rectangle: laid out
+  /// at the smaller one it would be a card asked to draw more than it has room
+  /// for.
+  final Size? cardSize;
 
   /// Called just before the shrinking surface lands on the card.
   ///
@@ -109,6 +120,10 @@ class NoteExpandRoute<T> extends PageRoute<T> {
 
   /// The card as it was last measured, which the animation interpolates from.
   Rect? _begin;
+
+  /// The size the card copy is laid out at. Follows [_begin] on the way back,
+  /// where the card may have been edited or re-laid out behind the screen.
+  Size? _cardSize;
 
   /// The display, as the last frame saw it. Kept because a close can begin from
   /// a gesture callback, outside a layout, and the rectangle it starts from has
@@ -238,20 +253,27 @@ class NoteExpandRoute<T> extends PageRoute<T> {
     );
   }
 
-  /// Where the note's contents are, against the trip's own progress. They
-  /// arrive in the first half of the trip and are fully there by the time the
-  /// surface is most of the screen: a line of text is never read while it is
-  /// being resized.
-  double _contentOpacity(double t) =>
-      EasyMotion.enter.transform(((t - .15) / .4).clamp(0.0, 1.0));
-
-  /// Where the card copy is, against the trip's own progress. It leaves a little
-  /// faster than the note arrives, so the two are never equally lit.
+  /// Where the card copy is, against the trip's own progress.
+  ///
+  /// It goes early, while the surface is still card-shaped, and it goes
+  /// completely: by the time the surface is a third of the display there is
+  /// nothing written on it. Two versions of the same words at two different
+  /// sizes, cross-fading in the same place, is a double image — and the card's
+  /// words, scaled up to the surface's width, are by far the louder of the two.
   double _cardOpacity(double t) =>
-      (1 - EasyMotion.exit.transform((t / .35).clamp(0.0, 1.0))).clamp(
+      (1 - EasyMotion.exit.transform((t / .18).clamp(0.0, 1.0))).clamp(
         0.0,
         1.0,
       );
+
+  /// Where the note's contents are, against the trip's own progress.
+  ///
+  /// They wait for the card to be gone — a few frames of blank surface between
+  /// the two, no more — and then arrive through the rest of the growth, so a
+  /// line of text is never read while it is being resized, and never read over
+  /// the card's line that it is turning into.
+  double _contentOpacity(double t) =>
+      EasyMotion.enter.transform(((t - .22) / .34).clamp(0.0, 1.0));
 
   void _beginClose() {
     if (_closing) return;
@@ -273,7 +295,10 @@ class NoteExpandRoute<T> extends PageRoute<T> {
     // landing on the empty place it used to hold would look like a miss.
     final card = resolveOrigin();
     _fadeClose = card == null;
-    if (card != null) _begin = card;
+    if (card != null) {
+      _begin = card;
+      _cardSize = card.size;
+    }
   }
 
   /// Re-measure the card before an edge swipe, so the trip has a landing place
@@ -511,7 +536,7 @@ class NoteExpandRoute<T> extends PageRoute<T> {
                                       // The card's own size, so the copy is laid
                                       // out once and moved with the surface
                                       // rather than re-laid out at every size.
-                                      size: from.size,
+                                      size: _cardSize ?? from.size,
                                       child: RepaintBoundary(
                                         child: Builder(builder: cardBuilder!),
                                       ),

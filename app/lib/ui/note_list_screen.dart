@@ -354,8 +354,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
     // Measured after the wait, not before it: the list may have moved under
     // the finger in the meantime, and the surface has to start where the card
-    // is now.
-    final card = origin == null ? null : _cardRect(id) ?? origin;
+    // is now — at the size it is drawn, which is still a hair inside its box
+    // while the press is easing back out.
+    final measured = origin == null ? null : _cardRect(id) ?? origin;
+    final card = measured == null ? null : _asPressed(measured);
     final theme = Theme.of(context);
     final summary = widget.library.notes
         .where((note) => note.id == id)
@@ -394,6 +396,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
       startColor: cardColour,
       endColor: screenColour,
       cardBuilder: cardCopy,
+      cardSize: measured?.size,
       onLanded: () {
         // Put the real card back while the surface still covers it. Waiting
         // for the push to return would leave a frame with no card at all
@@ -429,9 +432,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
         ),
       ),
     );
-    _expandedNoteId.value = id;
+    // Hide the card once the surface that replaces it has been painted, and not
+    // before: the navigator gives a new route its first frame one frame later
+    // than the list notices anything, so hiding it here and now would put a
+    // frame of empty list between the card going and the card arriving. The
+    // growing surface starts as the card's own rectangle, so the card is
+    // covered from that first frame and there is nothing to see underneath it.
+    final pushed = navigator.push<void>(route);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _expandedNoteId.value = id;
+    });
     try {
-      await navigator.push<void>(route);
+      await pushed;
     } finally {
       // The list can have gone while the note was on top — an account deleted
       // from under it, say — and its notifier with it.
@@ -1904,9 +1916,7 @@ class _NoteCollectionState extends State<_NoteCollection>
           hasReminder: widget.reminderNoteIds.contains(note.id),
           matched: widget.matched[note.id],
           hidden: note.id == expandedId,
-          // The card is still a hair inside its box when the finger leaves
-          // it, so that is the size the trip has to start from.
-          onTap: () => widget.onTap(note.id, _asPressed(_rectOf(note.id))),
+          onTap: () => widget.onTap(note.id, _rectOf(note.id)),
           // Held by the wrapper where there is one, because a long press there
           // is the start of a drag and only turns into this when nothing moved.
           onHold: move == null ? () => widget.onHold(note) : null,

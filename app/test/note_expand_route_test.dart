@@ -107,8 +107,13 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    // The first frame is the card, in the card's place.
-    expect(tester.getRect(surface), cardRect);
+    // The first frame is the card, in the card's place — at the size it is
+    // drawn while the press eases back out, a shade inside its box.
+    expect(tester.getRect(surface).center, cardRect.center);
+    expect(
+      tester.getRect(surface).width,
+      moreOrLessEquals(cardRect.width * .975, epsilon: 1),
+    );
     expect(openedByExpanding(tester), isTrue);
     // The card itself is not drawn behind the screen that grew out of it...
     expect(coverOpacity(tester), 0);
@@ -120,18 +125,16 @@ void main() {
     // down to the surface's width rather than cropped to it.
     expect(
       tester.getRect(page).width,
-      moreOrLessEquals(cardRect.width, epsilon: 1),
+      moreOrLessEquals(tester.getRect(surface).width, epsilon: 1),
     );
 
     await tester.pump(const Duration(milliseconds: 30));
-    // The card copy is on its way out while the note is on its way in.
-    expect(cardCopyOpacity(tester), greaterThan(.5));
-    expect(contentOpacity(tester), lessThan(.2));
-
-    await tester.pump(const Duration(milliseconds: 45));
-    // What is left of the card is filling the surface exactly, not sitting at
+    // The card copy is on its way out while the note is still to arrive, and
+    // what is left of it is filling the surface exactly, rather than sitting at
     // its old size inside a surface that has moved on: the two are one thing
-    // growing, fading from one into the other.
+    // growing.
+    expect(cardCopyOpacity(tester), greaterThan(.5));
+    expect(contentOpacity(tester), 0);
     expect(
       tester.getRect(cardCopy).width,
       moreOrLessEquals(tester.getRect(surface).width, epsilon: 1),
@@ -142,15 +145,40 @@ void main() {
     expect(middle.width, greaterThan(cardRect.width));
     expect(middle.width, lessThan(screen(tester).width));
     expect(scrim, findsOneWidget);
+    // The card has gone by now, and the note's own words are the only ones on
+    // the surface: no ghost of both at once.
+    expect(cardCopy, findsNothing);
+    final arriving = contentOpacity(tester);
+    expect(arriving, greaterThan(0));
 
     await tester.pump(const Duration(milliseconds: 60));
-    expect(cardCopy, findsNothing);
+    expect(contentOpacity(tester), greaterThan(arriving));
 
     await tester.pumpAndSettle();
     expect(tester.getRect(surface), Offset.zero & screen(tester));
     expect(tester.getRect(page).width, moreOrLessEquals(screen(tester).width));
     expect(contentOpacity(tester), 1);
     expect(find.byType(NoteScreen), findsOneWidget);
+  });
+
+  testWidgets('the card is never gone while the surface is not there', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.tap(card);
+    // The navigator gives a new route its first frame a frame after the list
+    // hears about it. Hiding the card on the tap left exactly one frame of
+    // empty list between the card going and the card arriving.
+    for (var frame = 0; frame < 6; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(
+        coverOpacity(tester) == 1 || surface.evaluate().isNotEmpty,
+        isTrue,
+        reason: 'frame $frame after the tap had neither card nor surface',
+      );
+    }
   });
 
   testWidgets('the surface rides the animation rather than being rebuilt', (

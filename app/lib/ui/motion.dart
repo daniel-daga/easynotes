@@ -20,7 +20,12 @@ abstract final class EasyMotion {
 
   /// The curve for a surface that changes shape: off the card quickly, then a
   /// long settle onto the screen, so it lands rather than stops.
-  static const transform = Curves.easeInOutCubicEmphasized;
+  ///
+  /// The same shape as [enter], and deliberately so. The surface and what comes
+  /// to rest on it have to slow down together: a curve that is all but finished
+  /// a third of the way through leaves the content fading in over a surface
+  /// that has stopped moving, which reads as two events rather than one trip.
+  static const transform = Curves.easeOutCubic;
 
   static Duration duration(BuildContext context, Duration preferred) =>
       MediaQuery.maybeOf(context)?.disableAnimations ?? false
