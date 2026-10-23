@@ -128,6 +128,15 @@ void main() {
     expect(cardCopyOpacity(tester), greaterThan(.5));
     expect(contentOpacity(tester), lessThan(.2));
 
+    await tester.pump(const Duration(milliseconds: 45));
+    // What is left of the card is filling the surface exactly, not sitting at
+    // its old size inside a surface that has moved on: the two are one thing
+    // growing, fading from one into the other.
+    expect(
+      tester.getRect(cardCopy).width,
+      moreOrLessEquals(tester.getRect(surface).width, epsilon: 1),
+    );
+
     await tester.pump(const Duration(milliseconds: 90));
     final middle = tester.getRect(surface);
     expect(middle.width, greaterThan(cardRect.width));
@@ -205,10 +214,16 @@ void main() {
     expect(shrinking.width, greaterThan(cardRect.width));
 
     // The card arrives inside the surface while there is still surface to
-    // arrive in, rather than appearing when it goes.
+    // arrive in, rather than appearing when it goes — and it arrives filling
+    // the surface, so the hand-over to the card on the list is a cross-fade
+    // rather than a jump in size.
     await tester.pump(const Duration(milliseconds: 100));
     expect(cardCopy, findsOneWidget);
     expect(cardCopyOpacity(tester), greaterThan(0));
+    expect(
+      tester.getRect(cardCopy).width,
+      moreOrLessEquals(tester.getRect(surface).width, epsilon: 1),
+    );
 
     await tester.pumpAndSettle();
     expect(find.byType(NoteScreen), findsNothing);

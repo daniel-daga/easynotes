@@ -7,10 +7,12 @@
 ///
 /// The trip follows Google Keep's container transform. The rectangle grows from
 /// the card to the display along a slight arc, the corner radius eases away,
-/// and two things cross-fade inside it: a copy of the card, at the size it was,
-/// and the note screen, laid out at full size but scaled down to the rectangle's
-/// width. Growing the card's *content* would make a small screen out of a large
-/// one; scaling the screen down makes a small screen out of a screen.
+/// and two things cross-fade inside it: a copy of the card and the note screen.
+/// Both are laid out once — the card at the size it was, the screen at the
+/// display's size — and scaled to the rectangle's width for every frame, so the
+/// two are one surface at two stages rather than a card inside a window
+/// growing around it. Growing the card's *content* would make a small screen
+/// out of a large one; scaling both makes a small surface out of a smaller one.
 ///
 /// Coming back is not the same trip played backwards. The note's contents go
 /// first — within a frame or two — leaving a blank surface in the note's colour,
@@ -52,10 +54,10 @@ const double _kPreviewRadius = 28;
 /// coordinates — until it covers the display.
 ///
 /// The route paints the card's colour for the whole trip, draws a copy of the
-/// card on top of it while the surface is still card-sized, and scales the
-/// screen's content up inside it, so nothing is ever a small screen stretched
-/// to a large one: the surface changes size, and what is on it arrives when
-/// there is room.
+/// card inside it — laid out at the size the card was and scaled with the
+/// surface — and scales the screen's content the same way, so nothing is ever a
+/// small screen stretched to a large one: the surface changes size, and what is
+/// on it arrives when there is room.
 ///
 /// Going back uses the same geometry, but not the same picture: the note's
 /// contents leave at once, the blank surface left behind is what shrinks, and it
@@ -411,63 +413,88 @@ class NoteExpandRoute<T> extends PageRoute<T> {
                 borderRadius: BorderRadius.circular(radius),
                 child: ColoredBox(
                   color: colour,
-                  child: TickerMode(
-                    // The note is invisible on the way out: nothing inside it —
-                    // a blinking cursor, a progress ring — should keep waking
-                    // the frames it is no longer seen in.
-                    enabled: !_closing,
-                    child: IgnorePointer(
-                      // The note is invisible on the way out, and a screen that
-                      // cannot be seen should not be able to be tapped or read.
-                      ignoring: _closing,
-                      child: ExcludeSemantics(
-                        excluding: _closing,
-                        child: Opacity(
-                          key: const Key('note-expanding-content'),
-                          opacity: noteOpacity.clamp(0.0, 1.0),
-                          child: FittedBox(
-                            // The note screen is laid out at its final size from
-                            // the first frame; the growing rectangle only
-                            // reveals it, at the rectangle's width rather than
-                            // cropped to it. Since the rectangle keeps the
-                            // display's aspect ratio, this is a uniform scale.
-                            fit: BoxFit.fitWidth,
-                            alignment: Alignment.topLeft,
-                            child: SizedBox.fromSize(
-                              key: const Key('note-expanding-page'),
-                              size: full.size,
-                              // Scaled, not laid out again: the screen keeps the
-                              // same constraints all the way, so this tells the
-                              // compositor to move a picture it already has
-                              // rather than to draw a screen every frame.
-                              child: RepaintBoundary(child: page),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // The note screen, laid out at the display's size from the
+                      // first frame and scaled to whatever the surface is now.
+                      Positioned.fill(
+                        key: const ValueKey('note-expanding-page-layer'),
+                        child: TickerMode(
+                          // The note is invisible on the way out: nothing inside
+                          // it — a blinking cursor, a progress ring — should
+                          // keep waking the frames it is not seen in.
+                          enabled: !_closing,
+                          child: IgnorePointer(
+                            // The note is invisible on the way out, and a screen
+                            // that cannot be seen should not be able to be
+                            // tapped or read.
+                            ignoring: _closing,
+                            child: ExcludeSemantics(
+                              excluding: _closing,
+                              child: Opacity(
+                                key: const Key('note-expanding-content'),
+                                opacity: noteOpacity.clamp(0.0, 1.0),
+                                child: FittedBox(
+                                  // The note screen is laid out at its final
+                                  // size from the first frame; the growing
+                                  // rectangle only reveals it, at the
+                                  // rectangle's width rather than cropped to it.
+                                  // Since the rectangle keeps the display's
+                                  // aspect ratio, this is a uniform scale.
+                                  fit: BoxFit.fitWidth,
+                                  alignment: Alignment.topLeft,
+                                  child: SizedBox.fromSize(
+                                    key: const Key('note-expanding-page'),
+                                    size: full.size,
+                                    // Scaled, not laid out again: the screen
+                                    // keeps the same constraints all the way, so
+                                    // this tells the compositor to move a
+                                    // picture it already has rather than to
+                                    // draw a screen every frame.
+                                    child: RepaintBoundary(child: page),
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
+                      // The card, laid out at the size it was and scaled by the
+                      // same rule as the note, so the two are one surface rather
+                      // than a card left behind inside a growing window. It
+                      // fades out as the note arrives, and back in just before
+                      // the landing, when the surface is the card's size again.
+                      if (cardBuilder != null && cardOpacity > 0)
+                        Positioned.fill(
+                          key: const ValueKey('note-expanding-card-layer'),
+                          child: IgnorePointer(
+                            child: ExcludeSemantics(
+                              child: Opacity(
+                                key: const Key('note-card-copy'),
+                                opacity: cardOpacity,
+                                child: FittedBox(
+                                  fit: BoxFit.fitWidth,
+                                  alignment: Alignment.topLeft,
+                                  child: SizedBox.fromSize(
+                                    // The card's own size, so the copy is laid
+                                    // out once and moved with the surface
+                                    // rather than re-laid out at every size.
+                                    size: from.size,
+                                    child: RepaintBoundary(
+                                      child: Builder(builder: cardBuilder!),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
             ),
-            // The card, at the place and size it had when it was tapped, fading
-            // out as the note arrives and back in just before the landing. It
-            // is always inside the surface while it is drawn: it is the card's
-            // own rectangle, and the surface starts and ends there.
-            if (cardBuilder != null && cardOpacity > 0)
-              Positioned.fromRect(
-                key: const ValueKey('note-expanding-card-layer'),
-                rect: from,
-                child: IgnorePointer(
-                  child: ExcludeSemantics(
-                    child: Opacity(
-                      key: const Key('note-card-copy'),
-                      opacity: cardOpacity,
-                      child: Builder(builder: cardBuilder!),
-                    ),
-                  ),
-                ),
-              ),
           ],
         );
       },
