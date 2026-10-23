@@ -210,6 +210,13 @@ fn owner_record(key: NoteKey) -> account::NoteRecord {
     account::NoteRecord::Owner { owner_seed, key }
 }
 
+/// The notes of a selection once each, in the order they were given: a note
+/// named twice is one note changed once.
+fn distinct(ids: &[NoteId]) -> impl Iterator<Item = NoteId> + '_ {
+    let mut seen = HashSet::new();
+    ids.iter().copied().filter(move |id| seen.insert(*id))
+}
+
 /// The stored shape of both, which is strings so a row stays readable JSON.
 #[derive(Serialize, Deserialize)]
 struct StoredInvite {
@@ -1441,11 +1448,27 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     pub fn set_colour(&mut self, id: NoteId, colour: Option<Colour>) -> Result<()> {
-        self.apply_account(AccountEdit::SetColour { note: id, colour })
+        self.set_colour_many(&[id], colour)
+    }
+
+    /// Colour every note in `ids` at once: one envelope for the selection.
+    pub fn set_colour_many(&mut self, ids: &[NoteId], colour: Option<Colour>) -> Result<()> {
+        let edits = distinct(ids)
+            .map(|note| AccountEdit::SetColour { note, colour })
+            .collect();
+        self.apply_account_batch(edits)
     }
 
     pub fn set_pinned(&mut self, id: NoteId, pinned: bool) -> Result<()> {
-        self.apply_account(AccountEdit::SetPinned { note: id, pinned })
+        self.set_pinned_many(&[id], pinned)
+    }
+
+    /// Pin or unpin every note in `ids` at once.
+    pub fn set_pinned_many(&mut self, ids: &[NoteId], pinned: bool) -> Result<()> {
+        let edits = distinct(ids)
+            .map(|note| AccountEdit::SetPinned { note, pinned })
+            .collect();
+        self.apply_account_batch(edits)
     }
 
     /// Every label this person has, with how many notes carry each.
@@ -1586,26 +1609,60 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// label that disappeared because somebody tidied up the one note carrying
     /// it is a thing to explain.
     pub fn remove_tag(&mut self, id: NoteId, label: LabelId) -> Result<()> {
-        // A membership the migration has not reached is named rather than
-        // pointed at, so taking it off means removing the old key as well —
-        // otherwise the label would come back on the next launch.
-        let placement = self.placement(id);
-        for tag in &placement.legacy_tags {
-            if self.placements.label_named(tag) == Some(label) {
-                self.apply_account(AccountEdit::DropLegacyTag {
+        self.remove_tag_many(&[id], label)
+    }
+
+    /// Take a label off every note in `ids` at once. Notes that never had it
+    /// are skipped, as [`NoteCore::remove_tag`] skips one.
+    pub fn remove_tag_many(&mut self, ids: &[NoteId], label: LabelId) -> Result<()> {
+        let mut edits = Vec::new();
+        for id in distinct(ids) {
+            // A membership the migration has not reached is named rather than
+            // pointed at, so taking it off means removing the old key as well —
+            // otherwise the label would come back on the next launch.
+            let placement = self.placement(id);
+            for tag in &placement.legacy_tags {
+                if self.placements.label_named(tag) == Some(label) {
+                    edits.push(AccountEdit::DropLegacyTag {
+                        note: id,
+                        tag: tag.clone(),
+                    });
+                }
+            }
+            if placement.tags.contains(&label) {
+                edits.push(AccountEdit::SetTag {
                     note: id,
-                    tag: tag.clone(),
-                })?;
+                    label,
+                    on: false,
+                });
             }
         }
-        if !placement.tags.contains(&label) {
-            return Ok(());
-        }
-        self.apply_account(AccountEdit::SetTag {
-            note: id,
+        self.apply_account_batch(edits)
+    }
+
+    /// Put a label on every note in `ids` at once, and return the label it
+    /// went on under — made in the same envelope if nothing has the name yet.
+    /// `None`, and nothing written, for a name that is not a name.
+    pub fn add_tag_many(&mut self, ids: &[NoteId], tag: &str) -> Result<Option<LabelId>> {
+        let Some(name) = account::normalise_tag(tag) else {
+            return Ok(None);
+        };
+        let mut edits = Vec::new();
+        let label = match self.placements.label_named(&name) {
+            Some(label) => label,
+            None => {
+                let label = LabelId::random();
+                edits.push(AccountEdit::SetLabelName { label, name });
+                label
+            }
+        };
+        edits.extend(distinct(ids).map(|note| AccountEdit::SetTag {
+            note,
             label,
-            on: false,
-        })
+            on: true,
+        }));
+        self.apply_account_batch(edits)?;
+        Ok(Some(label))
     }
 
     /// Rename a label. Every note carrying it keeps it.
@@ -1748,10 +1805,24 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// unpins it, as Keep does: a note cannot be both out of the way and held at
     /// the top.
     pub fn set_archived(&mut self, id: NoteId, archived: bool) -> Result<()> {
-        if archived && self.placement(id).pinned {
-            self.set_pinned(id, false)?;
+        self.set_archived_many(&[id], archived)
+    }
+
+    /// Archive or unarchive every note in `ids` at once. The pinned ones are
+    /// unpinned in the same envelope, so no peer sees a note both archived and
+    /// held at the top.
+    pub fn set_archived_many(&mut self, ids: &[NoteId], archived: bool) -> Result<()> {
+        let mut edits = Vec::new();
+        for note in distinct(ids) {
+            if archived && self.placement(note).pinned {
+                edits.push(AccountEdit::SetPinned {
+                    note,
+                    pinned: false,
+                });
+            }
+            edits.push(AccountEdit::SetArchived { note, archived });
         }
-        self.apply_account(AccountEdit::SetArchived { note: id, archived })
+        self.apply_account_batch(edits)
     }
 
     /// Throw a note away, or take it back out.
@@ -1761,10 +1832,37 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// [`NoteCore::forget_note`] is the irreversible one, and the trash is what
     /// it is reached from.
     pub fn set_trashed(&mut self, id: NoteId, trashed: bool) -> Result<()> {
-        if trashed && self.placement(id).pinned {
-            self.set_pinned(id, false)?;
+        self.set_trashed_many(&[id], trashed)
+    }
+
+    /// Throw every note in `ids` away at once, or take them all back out.
+    /// Unpins the way [`NoteCore::set_archived_many`] does.
+    pub fn set_trashed_many(&mut self, ids: &[NoteId], trashed: bool) -> Result<()> {
+        let mut edits = Vec::new();
+        for note in distinct(ids) {
+            if trashed && self.placement(note).pinned {
+                edits.push(AccountEdit::SetPinned {
+                    note,
+                    pinned: false,
+                });
+            }
+            edits.push(AccountEdit::SetTrashed { note, trashed });
         }
-        self.apply_account(AccountEdit::SetTrashed { note: id, trashed })
+        self.apply_account_batch(edits)
+    }
+
+    /// Forget every note in `ids`, one after another. Returns how many.
+    ///
+    /// Not one envelope, unlike the other `_many` calls: each note's
+    /// [`AccountEdit::DeleteNote`] marker is that note's recovery record
+    /// ([ADR 0010](../../docs/adr/0010-forgetting-a-note.md)), and a note whose
+    /// local cleanup failed has to be findable on its own.
+    pub fn forget_notes(&mut self, ids: &[NoteId]) -> Result<usize> {
+        let ids: Vec<_> = distinct(ids).collect();
+        for id in &ids {
+            self.forget_note(*id)?;
+        }
+        Ok(ids.len())
     }
 
     // -- forgetting a note --------------------------------------------------
@@ -1980,10 +2078,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// list while removing from it is how a note gets missed.
     pub fn empty_trash(&mut self) -> Result<usize> {
         let trashed = self.trashed_notes()?;
-        for id in &trashed {
-            self.forget_note(*id)?;
-        }
-        Ok(trashed.len())
+        self.forget_notes(&trashed)
     }
 
     /// Move a note so that it lands at `to_index` in the grid's order.
@@ -2075,7 +2170,39 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)): the relay hearing about
     /// it is a separate thing from it being safe.
     fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
-        let target = match &edit {
+        if let Some(note) = Self::edited_note(&edit).filter(|note| self.is_deleted_note(*note)) {
+            return Err(CoreError::UnknownNote(note.encode()));
+        }
+        let update = self.account.doc.apply_local(&edit)?;
+        self.seal_account_update(update)
+    }
+
+    /// Apply several changes to the account document as one: one transaction,
+    /// one envelope, one refresh of the list.
+    ///
+    /// What a selection of notes is changed with. One edit per note sealed on
+    /// its own would put a run of envelopes in the log for one gesture, redraw
+    /// the grid once for each, and let a peer see half a selection archived.
+    /// Every edit is checked before anything is written, so a batch naming a
+    /// deleted note changes nothing at all.
+    fn apply_account_batch(&mut self, edits: Vec<AccountEdit>) -> Result<()> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        for edit in &edits {
+            if let Some(note) = Self::edited_note(edit).filter(|note| self.is_deleted_note(*note)) {
+                return Err(CoreError::UnknownNote(note.encode()));
+            }
+        }
+        let writes: Vec<_> = edits.iter().flat_map(AccountEdit::writes).collect();
+        let update = self.account.doc.write(&writes)?;
+        self.seal_account_update(update)
+    }
+
+    /// The note an edit is about, if it is about one that a deleted note must
+    /// refuse.
+    fn edited_note(edit: &AccountEdit) -> Option<NoteId> {
+        match edit {
             AccountEdit::SetColour { note, .. }
             | AccountEdit::SetPinned { note, .. }
             | AccountEdit::SetArchived { note, .. }
@@ -2095,12 +2222,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             | AccountEdit::ForgetReminder { .. }
             | AccountEdit::SetProfileName { .. }
             | AccountEdit::SetSetting { .. } => None,
-        };
-        if let Some(note) = target.filter(|note| self.is_deleted_note(*note)) {
-            return Err(CoreError::UnknownNote(note.encode()));
         }
-        let update = self.account.doc.apply_local(&edit)?;
-        self.seal_account_update(update)
     }
 
     /// Seal one account-document update into the log and refresh what is drawn

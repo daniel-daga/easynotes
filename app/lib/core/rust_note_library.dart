@@ -453,6 +453,38 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     return count;
   }
 
+  @override
+  Future<void> setColourMany(List<String> noteIds, NoteColour? colour) =>
+      _library.setColourMany(ids: noteIds, colour: _toRustColour(colour));
+
+  @override
+  Future<void> setPinnedMany(List<String> noteIds, bool pinned) =>
+      _library.setPinnedMany(ids: noteIds, pinned: pinned);
+
+  @override
+  Future<void> setArchivedMany(List<String> noteIds, bool archived) =>
+      _library.setArchivedMany(ids: noteIds, archived: archived);
+
+  @override
+  Future<void> setTrashedMany(List<String> noteIds, bool trashed) =>
+      _library.setTrashedMany(ids: noteIds, trashed: trashed);
+
+  @override
+  Future<String?> addTagMany(List<String> noteIds, String name) =>
+      _library.addTagMany(ids: noteIds, tag: name);
+
+  @override
+  Future<void> removeTagMany(List<String> noteIds, String labelId) =>
+      _library.removeTagMany(ids: noteIds, label: labelId);
+
+  @override
+  Future<int> forgetNotes(List<String> noteIds) async {
+    final count = await _library.forgetNotes(ids: noteIds);
+    await flush();
+    if (_storageError != null) throw StateError(_storageError!);
+    return count;
+  }
+
   /// Read straight through to Rust, like [notes]: the account document is the
   /// only copy of this, and a cached one would be stale the moment another
   /// screen changed it.

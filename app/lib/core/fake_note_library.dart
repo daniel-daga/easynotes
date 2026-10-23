@@ -600,6 +600,81 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  Future<void> setColourMany(List<String> noteIds, NoteColour? colour) async {
+    calls.add('setColourMany(${noteIds.join(', ')}; ${colour?.name})');
+    for (final id in noteIds) {
+      _placement(id).colour = colour;
+    }
+    _emit();
+  }
+
+  @override
+  Future<void> setPinnedMany(List<String> noteIds, bool pinned) async {
+    calls.add('setPinnedMany(${noteIds.join(', ')}; $pinned)');
+    for (final id in noteIds) {
+      _placement(id).pinned = pinned;
+    }
+    _emit();
+  }
+
+  @override
+  Future<void> setArchivedMany(List<String> noteIds, bool archived) async {
+    calls.add('setArchivedMany(${noteIds.join(', ')}; $archived)');
+    for (final id in noteIds) {
+      final placement = _placement(id);
+      placement.archived = archived;
+      if (archived) placement.pinned = false;
+    }
+    _emit();
+  }
+
+  @override
+  Future<void> setTrashedMany(List<String> noteIds, bool trashed) async {
+    calls.add('setTrashedMany(${noteIds.join(', ')}; $trashed)');
+    for (final id in noteIds) {
+      final placement = _placement(id);
+      placement.trashed = trashed;
+      if (trashed) placement.pinned = false;
+    }
+    _emit();
+  }
+
+  @override
+  Future<String?> addTagMany(List<String> noteIds, String name) async {
+    calls.add('addTagMany(${noteIds.join(', ')}; $name)');
+    final wanted = _normalise(name);
+    if (wanted == null) return null;
+    final label = _labelNamed(wanted) ?? _mint(wanted);
+    for (final id in noteIds) {
+      _placement(id).tags.add(label);
+    }
+    _emit();
+    return label;
+  }
+
+  @override
+  Future<void> removeTagMany(List<String> noteIds, String labelId) async {
+    calls.add('removeTagMany(${noteIds.join(', ')}; $labelId)');
+    for (final id in noteIds) {
+      _placement(id).tags.remove(labelId);
+    }
+    _emit();
+  }
+
+  @override
+  Future<int> forgetNotes(List<String> noteIds) async {
+    calls.add('forgetNotes(${noteIds.join(', ')})');
+    if (refuseDeletion case final error?) throw error;
+    final ids = noteIds.toSet();
+    for (final id in ids) {
+      _reminders.removeWhere((_, reminder) => reminder.noteId == id);
+      _forget(id);
+    }
+    _emit();
+    return ids.length;
+  }
+
+  @override
   Future<int> emptyTrash() async {
     calls.add('emptyTrash()');
     if (refuseDeletion case final error?) throw error;

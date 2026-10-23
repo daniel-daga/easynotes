@@ -19,6 +19,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/attachments.dart';
 import '../core/note_core.dart';
@@ -218,6 +219,20 @@ class _NoteListScreenState extends State<NoteListScreen> {
   // One selection across all categories; a new search cannot combine filters.
   ({String hint, bool Function(NoteSummary, Set<String>) matches})? _filter;
 
+  /// The cards picked by a long press, by note ID.
+  ///
+  /// There is no separate "selecting" switch: the screen is selecting exactly
+  /// when something is selected, so letting go of the last card is the way
+  /// out as well as the close button. Replaced rather than changed in place,
+  /// so the collections below can tell one selection from the next.
+  Set<String> _selected = const {};
+  bool get _selecting => _selected.isNotEmpty;
+
+  /// Whether a note is on what this screen is showing right now — the shelf,
+  /// or the search's scope — which is what a selection may hold.
+  bool _inView(NoteSummary note) =>
+      _searching ? _inSearchScope(note) : _where.holds(note);
+
   String get _searchHint =>
       _filter?.hint ??
       (_where.shelf == _Shelf.trash
@@ -276,6 +291,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   void _openSearch() => setState(() {
     _searching = true;
+    _selected = const {};
   });
 
   void _closeSearch() {
@@ -283,6 +299,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     _search.clear();
     setState(() {
       _searching = false;
+      _selected = const {};
       _where = const _Where.shelf(_Shelf.notes);
       _query = '';
       _filter = null;
@@ -337,6 +354,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     // nothing else stops it being pressed again.
     if (_openingNoteId != null) return;
     _openingNoteId = id;
+    _clearSelection();
     final opening = widget.library.openNote(id);
     NoteCore? ready;
     try {
@@ -573,7 +591,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   /// Show one label's notes, or go back to a shelf. Either way the drawer is the
   /// only way in, so it closes itself.
-  void _show(_Where where) => setState(() => _where = where);
+  ///
+  /// A selection belongs to the shelf it was made on, so going somewhere else
+  /// lets go of it; the same shelf under a new name (a renamed label) keeps it.
+  void _show(_Where where) => setState(() {
+    if (where != _where) _selected = const {};
+    _where = where;
+  });
 
   /// Ask to join a list by its invite link, and wait to be let in. A tapped
   /// link arrives as [initialLink] and is only confirmed; without one, the
@@ -672,26 +696,184 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (mounted) setState(() {});
   }
 
-  /// Delete one note for good, if this person says so a second time.
+  // -- selecting cards ------------------------------------------------------
+  //
+  // A long press that goes nowhere picks a card up into a selection; one that
+  // moves is a drag. While anything is selected a tap or a press adds or takes
+  // away a card, nothing can be dragged, and the app bar becomes the actions
+  // for the selection.
+
+  /// A long press that did not turn into a drag.
+  void _hold(NoteSummary note) {
+    if (_selecting) {
+      _toggle(note.id);
+      return;
+    }
+    HapticFeedback.selectionClick();
+    setState(() => _selected = {note.id});
+  }
+
+  void _toggle(String id) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _selected = _selected.contains(id)
+          ? ({..._selected}..remove(id))
+          : {..._selected, id};
+    });
+  }
+
+  void _clearSelection() {
+    if (!_selecting || !mounted) return;
+    setState(() => _selected = const {});
+  }
+
+  void _selectAll(List<NoteSummary> notes) =>
+      setState(() => _selected = {for (final note in notes) note.id});
+
+  /// The selection as notes, in the order they are drawn, without any that
+  /// have left what is on screen since they were picked.
+  List<NoteSummary> _selectedIn(List<NoteSummary> all) => [
+    for (final note in all)
+      if (_selected.contains(note.id) && _inView(note)) note,
+  ];
+
+  /// "Note" or "3 notes", for a sentence that starts with it.
+  static String _counted(int count) => count == 1 ? 'Note' : '$count notes';
+
+  /// Run a change to the selection, and say so if it did not happen.
+  Future<bool> _change(Future<void> Function() action) async {
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(content: Text('Could not update the notes: $error')),
+          );
+      }
+      return false;
+    }
+  }
+
+  /// Say what was done to the selection, with a way to take it back.
+  void _undoable(String what, Future<void> Function() undo) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(
+        key: const Key('selection-done'),
+        content: Text(what),
+        action: SnackBarAction(label: 'Undo', onPressed: () => _change(undo)),
+      ),
+    );
+  }
+
+  /// Move the selection between shelves: into or out of the archive, into or
+  /// out of the trash.
+  ///
+  /// Going into either unpins, in the core, so the pins are written down here
+  /// first: undoing has to put back what the person had, not what the core
+  /// left.
+  Future<void> _shelveSelected(
+    List<NoteSummary> notes, {
+    required Future<void> Function(List<String> ids, bool on) move,
+    required bool on,
+    required String done,
+  }) async {
+    final ids = [for (final note in notes) note.id];
+    final pinned = [
+      for (final note in notes)
+        if (note.pinned) note.id,
+    ];
+    _clearSelection();
+    if (!await _change(() => move(ids, on))) return;
+    _undoable('${_counted(ids.length)} $done', () async {
+      await move(ids, !on);
+      if (pinned.isNotEmpty) await widget.library.setPinnedMany(pinned, true);
+    });
+  }
+
+  Future<void> _archiveSelected(List<NoteSummary> notes, bool archived) =>
+      _shelveSelected(
+        notes,
+        move: widget.library.setArchivedMany,
+        on: archived,
+        done: archived ? 'archived' : 'unarchived',
+      );
+
+  Future<void> _trashSelected(List<NoteSummary> notes, bool trashed) =>
+      _shelveSelected(
+        notes,
+        move: widget.library.setTrashedMany,
+        on: trashed,
+        done: trashed ? 'moved to trash' : 'restored',
+      );
+
+  /// Pin the selection, or unpin it when every note in it is pinned already.
+  Future<void> _pinSelected(List<NoteSummary> notes) async {
+    final pin = notes.any((note) => !note.pinned);
+    final ids = [for (final note in notes) note.id];
+    _clearSelection();
+    await _change(() => widget.library.setPinnedMany(ids, pin));
+  }
+
+  /// Colour the selection. The selection stays, so a colour that looked
+  /// wrong on the cards can be changed again straight away.
+  Future<void> _colourSelected(List<NoteSummary> notes) async {
+    final colours = {for (final note in notes) note.colour};
+    final chosen = await showModalBottomSheet<_Chosen<NoteColour?>>(
+      context: context,
+      builder: (context) => SafeArea(
+        key: const Key('colour-sheet'),
+        child: _ColourRow(
+          // Marked only when the whole selection already shares it.
+          chosen: colours.length == 1 ? colours.single : null,
+          anyChosen: colours.length == 1,
+          onChosen: (colour) => Navigator.of(context).pop(_Chosen(colour)),
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final ids = [for (final note in notes) note.id];
+    await _change(() => widget.library.setColourMany(ids, chosen.value));
+  }
+
+  Future<void> _labelSelected(List<NoteSummary> notes) =>
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (context) => LabelManagerScreen(
+            library: widget.library,
+            noteIds: {for (final note in notes) note.id},
+          ),
+        ),
+      );
+
+  /// Delete the selection for good, if this person says so a second time.
   ///
   /// The confirmation is not ceremony. It is the only thing between a long press
-  /// and a list nobody can get back, and it is where the promise the app cannot
+  /// and lists nobody can get back, and it is where the promise the app cannot
   /// keep gets said out loud: deleting a shared list here does not delete it for
   /// whoever it was shared with, because their copy is theirs and under a key
   /// they hold.
-  Future<void> _forget(NoteSummary note) async {
-    final title = note.title.trim();
+  Future<void> _forgetSelected(List<NoteSummary> notes) async {
+    final title = notes.length == 1 ? notes.single.title.trim() : '';
     final confirmed = await _confirmDelete(
-      question: title.isEmpty
+      question: notes.length > 1
+          ? 'Delete ${notes.length} notes permanently?'
+          : title.isEmpty
           ? 'Delete this note permanently?'
           : 'Delete "$title" for good?',
       action: 'Delete',
     );
     if (!confirmed || !mounted) return;
+    _clearSelection();
     try {
-      await widget.library.forgetNote(note.id);
+      await widget.library.forgetNotes([for (final note in notes) note.id]);
     } catch (error) {
-      _deletionFailed('Could not finish deleting it: $error.');
+      _deletionFailed('Could not finish deleting them: $error.');
     }
   }
 
@@ -719,15 +901,19 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// again is therefore always safe, and the message says so.
   void _deletionFailed(String what) {
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(
-        key: const Key('deletion-failed'),
-        content: Text(
-          '$what Anything still in the trash is whole and can be deleted '
-          'again.',
+    // In front of whatever was being said, such as how to undo moving the
+    // note to the trash: this is the one that needs reading now.
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: const Key('deletion-failed'),
+          content: Text(
+            '$what Anything still in the trash is whole and can be deleted '
+            'again.',
+          ),
         ),
-      ),
-    );
+      );
   }
 
   Future<bool> _confirmDelete({
@@ -770,23 +956,109 @@ class _NoteListScreenState extends State<NoteListScreen> {
     return confirmed ?? false;
   }
 
-  /// The actions for one note, on a sheet that comes up from the bottom.
+  /// The app bar while cards are selected: how many, a way out, and what can
+  /// be done to them.
   ///
-  /// A long press rather than a button on every card: a card is mostly the
-  /// note, and nine of ten visits to this screen are to read one or open one.
-  Future<void> _actionsFor(NoteSummary note) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => _NoteActions(
-        note: note,
-        library: widget.library,
-        onLabels: () => _labelsFor(note),
-        onReminders: () => _remindersFor(note),
-        // Handed down rather than called from the sheet: the confirmation
-        // outlives the sheet that asked for it, so it has to be shown with the
-        // screen's context and not with one that is about to be popped.
-        onForget: () => _forget(note),
+  /// The actions follow the notes rather than the shelf, because a search can
+  /// select from the grid and the archive at once. Thrown-away notes can only
+  /// be brought back or deleted for good; anything else can be coloured,
+  /// labelled, archived or thrown away.
+  AppBar _selectionBar(List<NoteSummary> selected, List<NoteSummary> shown) {
+    final count = selected.length;
+    final trashed = selected.isNotEmpty && selected.every((n) => n.trashed);
+    final archived = selected.isNotEmpty && selected.every((n) => n.archived);
+    final pin = selected.any((note) => !note.pinned);
+    final canSelectAll = !_searching && shown.length > count;
+    return AppBar(
+      leading: IconButton(
+        key: const Key('selection-close'),
+        icon: const Icon(Icons.close),
+        tooltip: 'Clear selection',
+        onPressed: _clearSelection,
       ),
+      title: EasyEntrance(
+        child: Text(
+          '$count',
+          key: const Key('selection-count'),
+          semanticsLabel: '$count selected',
+        ),
+      ),
+      actions: trashed
+          ? [
+              IconButton(
+                key: const Key('bulk-restore'),
+                icon: const Icon(Icons.restore_from_trash),
+                tooltip: 'Restore',
+                onPressed: () => _trashSelected(selected, false),
+              ),
+              IconButton(
+                key: const Key('bulk-delete-forever'),
+                icon: const Icon(Icons.delete_forever_outlined),
+                tooltip: 'Delete permanently',
+                onPressed: () => _forgetSelected(selected),
+              ),
+              if (canSelectAll)
+                IconButton(
+                  key: const Key('bulk-select-all'),
+                  icon: const Icon(Icons.select_all),
+                  tooltip: 'Select all',
+                  onPressed: () => _selectAll(shown),
+                ),
+            ]
+          : [
+              IconButton(
+                key: const Key('bulk-colour'),
+                icon: const Icon(Icons.palette_outlined),
+                tooltip: 'Colour',
+                onPressed: () => _colourSelected(selected),
+              ),
+              IconButton(
+                key: const Key('bulk-labels'),
+                icon: const Icon(Icons.label_outline),
+                tooltip: 'Labels',
+                onPressed: () => _labelSelected(selected),
+              ),
+              IconButton(
+                key: const Key('bulk-archive'),
+                icon: Icon(
+                  archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+                ),
+                tooltip: archived ? 'Unarchive' : 'Archive',
+                onPressed: () => _archiveSelected(selected, !archived),
+              ),
+              IconButton(
+                key: const Key('bulk-trash'),
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Move to trash',
+                onPressed: () => _trashSelected(selected, true),
+              ),
+              PopupMenuButton<VoidCallback>(
+                key: const Key('selection-more'),
+                tooltip: 'More',
+                onSelected: (action) => action(),
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    key: const Key('bulk-pin'),
+                    value: () => _pinSelected(selected),
+                    child: Text(pin ? 'Pin' : 'Unpin'),
+                  ),
+                  // A reminder is a time for one note; several notes at the
+                  // same minute is not something anybody has asked for.
+                  if (count == 1)
+                    PopupMenuItem(
+                      key: const Key('bulk-reminders'),
+                      value: () => _remindersFor(selected.single),
+                      child: const Text('Reminders'),
+                    ),
+                  if (canSelectAll)
+                    PopupMenuItem(
+                      key: const Key('bulk-select-all'),
+                      value: () => _selectAll(shown),
+                      child: const Text('Select all'),
+                    ),
+                ],
+              ),
+            ],
     );
   }
 
@@ -832,51 +1104,74 @@ class _NoteListScreenState extends State<NoteListScreen> {
             if (mounted) _show(_Where.tag(standing.id, standing.name));
           });
         }
+        // A selected note that has left the screen — archived from another
+        // device, say — is let go of, so the bar never counts what is not
+        // there to see.
+        final selected = _selectedIn(all);
+        if (selected.length != _selected.length) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            final kept = {
+              for (final note in _selectedIn(widget.library.notes)) note.id,
+            };
+            if (kept.length != _selected.length) {
+              setState(() => _selected = kept);
+            }
+          });
+        }
         return PopScope(
-          canPop: !_searching,
+          canPop: !_searching && !_selecting,
           onPopInvokedWithResult: (didPop, result) {
-            if (!didPop && _searching) _closeSearch();
+            if (didPop) return;
+            // Back lets go of a selection first, and closes a search after.
+            if (_selecting) {
+              _clearSelection();
+            } else if (_searching) {
+              _closeSearch();
+            }
           },
           child: Scaffold(
-            drawerEnableOpenDragGesture: !_searching,
-            appBar: AppBar(
-              automaticallyImplyLeading: !_searching,
-              titleSpacing: _searching ? 8 : null,
-              title: EasyEntrance(
-                key: _searching
-                    ? const ValueKey('search-input')
-                    : ValueKey('search-launcher:${_where.title}'),
-                child: _searching
-                    ? _searchInput(autofocus: true)
-                    : _searchLauncher(),
-              ),
-              actions: [
-                if (!_searching) ...[
-                  IconButton(
-                    key: const Key('layout-toggle'),
-                    icon: Icon(
-                      _layout == NoteLayout.grid
-                          ? Icons.view_agenda_outlined
-                          : Icons.grid_view,
+            drawerEnableOpenDragGesture: !_searching && !_selecting,
+            appBar: _selecting
+                ? _selectionBar(selected, notes)
+                : AppBar(
+                    automaticallyImplyLeading: !_searching,
+                    titleSpacing: _searching ? 8 : null,
+                    title: EasyEntrance(
+                      key: _searching
+                          ? const ValueKey('search-input')
+                          : ValueKey('search-launcher:${_where.title}'),
+                      child: _searching
+                          ? _searchInput(autofocus: true)
+                          : _searchLauncher(),
                     ),
-                    tooltip: _layout == NoteLayout.grid
-                        ? 'Show as a list'
-                        : 'Show as a grid',
-                    onPressed: _toggleLayout,
+                    actions: [
+                      if (!_searching) ...[
+                        IconButton(
+                          key: const Key('layout-toggle'),
+                          icon: Icon(
+                            _layout == NoteLayout.grid
+                                ? Icons.view_agenda_outlined
+                                : Icons.grid_view,
+                          ),
+                          tooltip: _layout == NoteLayout.grid
+                              ? 'Show as a list'
+                              : 'Show as a grid',
+                          onPressed: _toggleLayout,
+                        ),
+                        // Only where there is a trash and something in it. An empty
+                        // trash with a button to empty it invites the one gesture that
+                        // cannot be undone, for no result.
+                        if (_where.shelf == _Shelf.trash && notes.isNotEmpty)
+                          IconButton(
+                            key: const Key('empty-trash-button'),
+                            icon: const Icon(Icons.delete_sweep_outlined),
+                            tooltip: 'Empty the trash',
+                            onPressed: () => _emptyTrash(notes.length),
+                          ),
+                      ],
+                    ],
                   ),
-                  // Only where there is a trash and something in it. An empty
-                  // trash with a button to empty it invites the one gesture that
-                  // cannot be undone, for no result.
-                  if (_where.shelf == _Shelf.trash && notes.isNotEmpty)
-                    IconButton(
-                      key: const Key('empty-trash-button'),
-                      icon: const Icon(Icons.delete_sweep_outlined),
-                      tooltip: 'Empty the trash',
-                      onPressed: () => _emptyTrash(notes.length),
-                    ),
-                ],
-              ],
-            ),
             drawer: _Shelves(
               current: _where,
               counts: {
@@ -898,7 +1193,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
             // Only where a new note would land. One made while looking at the
             // trash would appear in a grid that is not on screen, and one made
             // while searching would appear in results it does not match.
-            floatingActionButton: _where.takesNewNotes && !_searching
+            floatingActionButton:
+                _where.takesNewNotes && !_searching && !_selecting
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -1107,9 +1403,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
               layout: _layout,
               cardKey: _cardKeyFor,
               expanded: _expandedNoteId,
-              onTap: (id, origin) => _openNote(id, origin: origin),
-              onHold: _actionsFor,
-              onMove: _moveNote,
+              selected: _selected,
+              onTap: _tap,
+              onHold: _hold,
+              // Nothing is carried while cards are selected: a long press
+              // there adds a card to the selection instead.
+              onMove: _selecting ? null : _moveNote,
             );
       if (_where == const _Where.shelf(_Shelf.notes) &&
           widget.profile.url != null) {
@@ -1139,8 +1438,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   expanded: _expandedNoteId,
                   matches: (note) =>
                       _inSearchScope(note) && _matchesFilter(note, reminders),
-                  onTap: (id, origin) => _openNote(id, origin: origin),
-                  onHold: _actionsFor,
+                  selected: _selected,
+                  onTap: _tap,
+                  onHold: _hold,
                 )
               : _FilteredNotes(
                   notes: [
@@ -1151,13 +1451,19 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   layout: _layout,
                   cardKey: _cardKeyFor,
                   expanded: _expandedNoteId,
-                  onTap: (id, origin) => _openNote(id, origin: origin),
-                  onHold: _actionsFor,
+                  selected: _selected,
+                  onTap: _tap,
+                  onHold: _hold,
                 ),
         ),
       ],
     );
   }
+
+  /// A tap opens a note, or — while cards are selected — adds it to the
+  /// selection or takes it away.
+  void _tap(String id, Rect? origin) =>
+      _selecting ? _toggle(id) : _openNote(id, origin: origin);
 
   /// A card was dropped on another. The library is told which two notes they
   /// were and works out the order key; nothing here counts positions, because
@@ -1543,6 +1849,7 @@ class _FilteredNotes extends StatelessWidget {
     required this.layout,
     required this.cardKey,
     required this.expanded,
+    required this.selected,
     required this.onTap,
     required this.onHold,
   });
@@ -1554,6 +1861,7 @@ class _FilteredNotes extends StatelessWidget {
 
   /// The note whose screen is open, whose card must not draw behind it.
   final ValueListenable<String?> expanded;
+  final Set<String> selected;
   final void Function(String id, Rect? origin) onTap;
   final void Function(NoteSummary note) onHold;
 
@@ -1569,6 +1877,7 @@ class _FilteredNotes extends StatelessWidget {
           layout: layout,
           cardKey: cardKey,
           expanded: expanded,
+          selected: selected,
           onTap: onTap,
           onHold: onHold,
         );
@@ -1592,6 +1901,7 @@ class _SearchResults extends StatefulWidget {
     required this.cardKey,
     required this.expanded,
     required this.matches,
+    required this.selected,
     required this.onTap,
     required this.onHold,
   });
@@ -1606,6 +1916,7 @@ class _SearchResults extends StatefulWidget {
   /// The note whose screen is open, whose card must not draw behind it.
   final ValueListenable<String?> expanded;
   final bool Function(NoteSummary) matches;
+  final Set<String> selected;
   final void Function(String id, Rect? origin) onTap;
   final void Function(NoteSummary note) onHold;
 
@@ -1668,6 +1979,7 @@ class _SearchResultsState extends State<_SearchResults> {
       layout: widget.layout,
       cardKey: widget.cardKey,
       expanded: widget.expanded,
+      selected: widget.selected,
       onTap: widget.onTap,
       onHold: widget.onHold,
     );
@@ -1684,9 +1996,13 @@ class _NoteCollection extends StatefulWidget {
     required this.expanded,
     required this.onTap,
     required this.onHold,
+    this.selected = const {},
     this.onMove,
     this.matched = const {},
   });
+
+  /// The notes picked by a long press, whose cards are drawn as picked.
+  final Set<String> selected;
 
   final List<NoteSummary> notes;
   final Set<String> reminderNoteIds;
@@ -1852,6 +2168,12 @@ class _NoteCollectionState extends State<_NoteCollection>
   @override
   void didUpdateWidget(_NoteCollection oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Reordering was switched off under a drag that had not been dropped —
+    // a selection started — so there is no drop to wait for.
+    if (widget.onMove == null && oldWidget.onMove != null) {
+      _clearDrag();
+      return;
+    }
     if (_awaitingDrop) _settleAcceptedDrop();
   }
 
@@ -1916,6 +2238,7 @@ class _NoteCollectionState extends State<_NoteCollection>
           hasReminder: widget.reminderNoteIds.contains(note.id),
           matched: widget.matched[note.id],
           hidden: note.id == expandedId,
+          selected: widget.selected.contains(note.id),
           onTap: () => widget.onTap(note.id, _rectOf(note.id)),
           // Held by the wrapper where there is one, because a long press there
           // is the start of a drag and only turns into this when nothing moved.
@@ -1973,10 +2296,10 @@ class _NoteCollectionState extends State<_NoteCollection>
 /// A card that can be picked up, and that a picked-up card can be dropped on.
 ///
 /// The gesture is Keep's, and it has to do two jobs with one press: holding a
-/// card lifts it, and letting go without having moved it opens the card's menu.
-/// They cannot be two gestures — a long press that both starts a drag and opens
-/// a sheet is one pointer in two places — so the drag is the gesture and the
-/// menu is what a drag that went nowhere means.
+/// card lifts it, and letting go without having moved it selects the card.
+/// They cannot be two gestures — a long press that both starts a drag and
+/// selects is one pointer in two places — so the drag is the gesture and the
+/// selection is what a drag that went nowhere means.
 ///
 /// A drop is refused across the pin line. Pinned notes are drawn first but share
 /// one order with the rest ([ADR 0008](../../../docs/adr/0008-account-document.md)),
@@ -2053,8 +2376,8 @@ class _DraggableCardState extends State<_DraggableCard> {
     widget.onDragFinished(details.wasAccepted);
     // Dropped on nothing, having gone nowhere: the press was a press. A drag
     // that travelled and was refused — across the pin line, or onto empty
-    // space — is a drag that missed, and opening a menu under the finger that
-    // was aiming somewhere else would be a surprise.
+    // space — is a drag that missed, and selecting the card under a finger
+    // that was aiming somewhere else would be a surprise.
     if (!details.wasAccepted && !_moved) widget.onHold();
   }
 
@@ -2282,146 +2605,49 @@ class _Shelves extends StatelessWidget {
   }
 }
 
-/// What can be done to one note, without opening it.
-class _NoteActions extends StatelessWidget {
-  const _NoteActions({
-    required this.note,
-    required this.library,
-    required this.onLabels,
-    required this.onReminders,
-    required this.onForget,
-  });
-
-  final NoteSummary note;
-  final NoteLibrary library;
-
-  /// Ask the screen for the label dialog. Handed down for the reason [onForget]
-  /// is: it outlives this sheet, which is popped before it opens.
-  final Future<void> Function() onLabels;
-
-  final Future<void> Function() onReminders;
-
-  /// Ask the screen to delete this note for good. Not `library.forgetNote`
-  /// directly: it has to be confirmed first, and the confirmation is shown after
-  /// this sheet has gone.
-  final Future<void> Function() onForget;
-
-  @override
-  Widget build(BuildContext context) {
-    void run(Future<void> Function() action) {
-      Navigator.of(context).pop();
-      action();
-    }
-
-    return SafeArea(
-      key: const Key('note-actions'),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 64,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  _Swatch(
-                    colour: null,
-                    chosen: note.colour == null,
-                    onTap: () => run(() => library.setColour(note.id, null)),
-                  ),
-                  for (final colour in NoteColour.values)
-                    _Swatch(
-                      colour: colour,
-                      chosen: note.colour == colour,
-                      onTap: () =>
-                          run(() => library.setColour(note.id, colour)),
-                    ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            if (!note.trashed)
-              ListTile(
-                key: const Key('action-pin'),
-                leading: Icon(
-                  note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                ),
-                title: Text(note.pinned ? 'Unpin' : 'Pin'),
-                onTap: () =>
-                    run(() => library.setPinned(note.id, !note.pinned)),
-              ),
-            if (!note.trashed)
-              ListTile(
-                key: const Key('action-labels'),
-                leading: const Icon(Icons.label_outline),
-                title: const Text('Labels'),
-                subtitle: note.tags.isEmpty
-                    ? null
-                    : Text(
-                        [for (final tag in note.tags) tag.name].join(', '),
-                        maxLines: 1,
-                      ),
-                onTap: () => run(onLabels),
-              ),
-            if (!note.trashed)
-              ListTile(
-                key: const Key('action-reminders'),
-                leading: const Icon(Icons.notifications_outlined),
-                title: const Text('Reminders'),
-                onTap: () => run(onReminders),
-              ),
-            if (!note.trashed)
-              ListTile(
-                key: const Key('action-archive'),
-                leading: Icon(
-                  note.archived
-                      ? Icons.unarchive_outlined
-                      : Icons.archive_outlined,
-                ),
-                title: Text(note.archived ? 'Unarchive' : 'Archive'),
-                onTap: () =>
-                    run(() => library.setArchived(note.id, !note.archived)),
-              ),
-            ListTile(
-              key: const Key('action-trash'),
-              leading: Icon(
-                note.trashed ? Icons.restore_from_trash : Icons.delete_outline,
-              ),
-              title: Text(note.trashed ? 'Restore' : 'Move to trash'),
-              // Nothing is deleted: the note stays on the device and keeps
-              // syncing, and what changes is that this person stops seeing it.
-              subtitle: note.trashed
-                  ? null
-                  : const Text('Removed from the notes view'),
-              onTap: () =>
-                  run(() => library.setTrashed(note.id, !note.trashed)),
-            ),
-            // Only from the trash. Throwing a note away and deleting it for good
-            // are one gesture apart everywhere else, and one of them cannot be
-            // taken back — so the reversible one has to happen first.
-            if (note.trashed)
-              ListTile(
-                key: const Key('action-delete-forever'),
-                leading: Icon(
-                  Icons.delete_forever_outlined,
-                  color: Theme.of(context).colorScheme.error,
-                ),
-                title: Text(
-                  'Delete permanently',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-                subtitle: const Text('Gone from this device, with no undo'),
-                onTap: () => run(onForget),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
+/// A choice from a sheet that can itself be "nothing": no colour is a colour
+/// to choose, and must not read as the sheet being dismissed.
+@immutable
+class _Chosen<T> {
+  const _Chosen(this.value);
+  final T value;
 }
 
-/// The small editor behind the note action. It deliberately uses the platform
+/// Every colour a note can be, and none, in a row to pick from.
+class _ColourRow extends StatelessWidget {
+  const _ColourRow({
+    required this.chosen,
+    required this.anyChosen,
+    required this.onChosen,
+  });
+
+  /// The colour to mark as current, if [anyChosen]. Null there is "no
+  /// colour", which is a choice too.
+  final NoteColour? chosen;
+
+  /// False when the notes do not share a colour, so nothing is marked.
+  final bool anyChosen;
+  final ValueChanged<NoteColour?> onChosen;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 64,
+    child: ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      children: [
+        for (final colour in <NoteColour?>[null, ...NoteColour.values])
+          _Swatch(
+            colour: colour,
+            chosen: anyChosen && chosen == colour,
+            onTap: () => onChosen(colour),
+          ),
+      ],
+    ),
+  );
+}
+
+/// The small editor behind the reminders action. It deliberately uses the platform
 /// date and time pickers: reminder entry is a calendar operation, and text
 /// fields make an invalid date easier to enter than a valid one.
 class _RemindersDialog extends StatefulWidget {
@@ -2907,6 +3133,7 @@ class _NoteCard extends StatefulWidget {
     this.onHold,
     this.matched,
     this.hidden = false,
+    this.selected = false,
   });
 
   final NoteSummary note;
@@ -2914,10 +3141,14 @@ class _NoteCard extends StatefulWidget {
   final VoidCallback onTap;
   final bool hidden;
 
-  /// The card's menu, when the card is not draggable. Null when it is: there the
-  /// long press is the drag, and [_DraggableCard] decides whether it was a press
-  /// after all.
+  /// Selecting the card, when the card is not draggable. Null when it is: there
+  /// the long press is the drag, and [_DraggableCard] decides whether it was a
+  /// press after all.
   final VoidCallback? onHold;
+
+  /// Whether the card is in the selection: outlined and ticked, at the same
+  /// size, so picking cards never moves the grid.
+  final bool selected;
 
   /// The line a search matched, when this card is a result. Shown because the
   /// preview is four items and the match may be the twelfth.
@@ -2946,22 +3177,84 @@ class _NoteCardState extends State<_NoteCard> {
             scale: _pressed ? _kPressedScale : 1,
             duration: EasyMotion.duration(context, EasyMotion.fast),
             curve: EasyMotion.enter,
-            child: Card(
-              margin: EdgeInsets.zero,
-              clipBehavior: Clip.antiAlias,
-              color: noteColourTint(context, note.colour),
-              child: InkWell(
-                key: Key('note:${note.id}'),
-                onTap: widget.onTap,
-                onLongPress: widget.onHold,
-                onHighlightChanged: (pressed) {
-                  if (_pressed != pressed) setState(() => _pressed = pressed);
-                },
-                child: _NoteCardFace(
-                  note: note,
-                  hasReminder: widget.hasReminder,
-                  matched: widget.matched,
-                ),
+            child: Semantics(
+              selected: widget.selected,
+              child: Stack(
+                fit: StackFit.passthrough,
+                children: [
+                  Card(
+                    margin: EdgeInsets.zero,
+                    clipBehavior: Clip.antiAlias,
+                    color: noteColourTint(context, note.colour),
+                    child: InkWell(
+                      key: Key('note:${note.id}'),
+                      onTap: widget.onTap,
+                      onLongPress: widget.onHold,
+                      onHighlightChanged: (pressed) {
+                        if (_pressed != pressed) {
+                          setState(() => _pressed = pressed);
+                        }
+                      },
+                      child: _NoteCardFace(
+                        note: note,
+                        hasReminder: widget.hasReminder,
+                        matched: widget.matched,
+                      ),
+                    ),
+                  ),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: _SelectedMark(selected: widget.selected),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What a selected card wears over itself: an outline in the accent colour and
+/// a tick in the corner. Drawn on top rather than as the card's border, so a
+/// card is the same size picked or not and the masonry never shifts under it.
+class _SelectedMark extends StatelessWidget {
+  const _SelectedMark({required this.selected});
+
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final shape = theme.cardTheme.shape;
+    final radius = shape is RoundedRectangleBorder
+        ? shape.borderRadius
+        : BorderRadius.circular(16);
+    return AnimatedOpacity(
+      key: selected ? const Key('card-selected') : null,
+      opacity: selected ? 1 : 0,
+      duration: EasyMotion.duration(context, EasyMotion.fast),
+      curve: EasyMotion.enter,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          border: Border.all(color: scheme.primary, width: 3),
+        ),
+        child: Align(
+          alignment: Alignment.topRight,
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: scheme.primary,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.check, size: 16, color: scheme.onPrimary),
               ),
             ),
           ),

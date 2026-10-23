@@ -739,6 +739,39 @@ void main() {
         },
       );
 
+      test('a selection is changed and deleted across the bridge', () async {
+        final library = await openLibraryInTempDir();
+        final a = await library.createNote();
+        final b = await library.createNote();
+        final kept = await library.createNote();
+        NoteSummary of(String id) =>
+            library.notes.firstWhere((note) => note.id == id);
+
+        await library.setPinned(a, true);
+        await library.setColourMany([a, b], NoteColour.red);
+        final label = await library.addTagMany([a, b], ' Errands ');
+        expect(label, isNotNull);
+        expect(library.tags.single.name, 'Errands');
+        expect(library.tags.single.notes, 2);
+
+        await library.setArchivedMany([a, b], true);
+        for (final id in [a, b]) {
+          expect(of(id).colour, NoteColour.red);
+          expect(of(id).archived, isTrue);
+          expect(of(id).pinned, isFalse, reason: 'archiving unpins');
+        }
+        await library.setArchivedMany([a, b], false);
+        await library.setPinnedMany([a], true);
+        expect(of(a).pinned, isTrue);
+        await library.removeTagMany([a, b], label!);
+        expect(library.tags.single.notes, 0);
+
+        await library.setTrashedMany([a, b], true);
+        expect(of(a).trashed && of(b).trashed, isTrue);
+        expect(await library.forgetNotes([a, b]), 2);
+        expect(library.notes.map((note) => note.id), [kept]);
+      });
+
       test('nothing readable is written to disk', () async {
         final dir = await Directory.systemTemp.createTemp('easynotes-secrets');
         addTearDown(() => dir.delete(recursive: true));

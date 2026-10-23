@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
@@ -37,6 +37,10 @@ abstract class Library implements RustOpaqueInterface {
   /// one this device already has *is* that label, and the UI has to draw the
   /// label that exists rather than the casing that was typed.
   Future<String?> addTag({required String id, required String tag});
+
+  /// Put a label on every note named, and return the label it went on
+  /// under. `null` for a name that is not a name.
+  Future<String?> addTagMany({required List<String> ids, required String tag});
 
   /// Adopt the account twelve words name, keeping what this device already
   /// has.
@@ -195,6 +199,11 @@ abstract class Library implements RustOpaqueInterface {
   /// sync. A collaborator's separate account and relay history remain. See
   /// `docs/adr/0010-forgetting-a-note.md`.
   Future<void> forgetNote({required String id});
+
+  /// Permanently delete every note named. Returns how many. Each goes the
+  /// way [`Library::forget_note`] does — socket first, then rows — so this is
+  /// a loop here rather than one call into the core.
+  Future<int> forgetNotes({required List<String> ids});
 
   /// Remove one reminder without touching any other reminder on its note.
   Future<void> forgetReminder({required String reminder});
@@ -357,6 +366,11 @@ abstract class Library implements RustOpaqueInterface {
   /// purpose.
   Future<void> removeTag({required String id, required String label});
 
+  Future<void> removeTagMany({
+    required List<String> ids,
+    required String label,
+  });
+
   /// Rename a label. Every note carrying it keeps it, because a membership
   /// points at the ID and has never mentioned the name.
   ///
@@ -394,7 +408,14 @@ abstract class Library implements RustOpaqueInterface {
 
   Future<void> setArchived({required String id, required bool archived});
 
+  Future<void> setArchivedMany({
+    required List<String> ids,
+    required bool archived,
+  });
+
   Future<void> setColour({required String id, NoteColour? colour});
+
+  Future<void> setColourMany({required List<String> ids, NoteColour? colour});
 
   /// Lifecycle entry point for the bridge. Hidden callers flush local work
   /// and held edits before the Dart coordinator starts its bounded grace.
@@ -403,6 +424,8 @@ abstract class Library implements RustOpaqueInterface {
   Future<void> setLayout({required NoteLayout layout});
 
   Future<void> setPinned({required String id, required bool pinned});
+
+  Future<void> setPinnedMany({required List<String> ids, required bool pinned});
 
   Future<void> setProfileName({required String name});
 
@@ -423,6 +446,11 @@ abstract class Library implements RustOpaqueInterface {
   /// still syncing, and what has changed is that this person does not see it.
   /// [`Library::forget_note`] is the irreversible one.
   Future<void> setTrashed({required String id, required bool trashed});
+
+  Future<void> setTrashedMany({
+    required List<String> ids,
+    required bool trashed,
+  });
 
   /// Remove everyone but the owner, and cancel every open invite to the
   /// note. The invites need the relay; a withdrawal that cannot reach it

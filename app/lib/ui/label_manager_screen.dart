@@ -2,18 +2,22 @@ import 'package:flutter/material.dart';
 
 import '../core/note_library.dart';
 
-/// Manage the account's labels, or choose existing labels for one note.
+/// Manage the account's labels, or choose existing labels for some notes.
 ///
-/// With [noteId], label definitions are read-only: only note membership changes.
+/// With [noteId] or [noteIds], label definitions are read-only: only note
+/// membership changes. For several notes a label is ticked when every one has
+/// it, dashed when some do, and ticking it puts it on all of them.
 class LabelManagerScreen extends StatefulWidget {
   const LabelManagerScreen({
     super.key,
     required this.library,
     this.noteId,
+    this.noteIds,
   });
 
   final NoteLibrary library;
   final String? noteId;
+  final Set<String>? noteIds;
 
   @override
   State<LabelManagerScreen> createState() => _LabelManagerScreenState();
@@ -24,7 +28,29 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
   late final _notes = widget.library.watchNotes();
   bool _busy = false;
 
-  bool get _selecting => widget.noteId != null;
+  /// The notes whose labels are being chosen; empty when managing labels.
+  Set<String> get _ids =>
+      widget.noteIds ?? {if (widget.noteId case final id?) id};
+
+  bool get _selecting => _ids.isNotEmpty;
+
+  /// One note goes through the one-note calls, several through the calls that
+  /// change them all at once.
+  Future<void> _add(List<String> ids, String name) async {
+    if (ids.length == 1) {
+      await widget.library.addTag(ids.single, name);
+    } else {
+      await widget.library.addTagMany(ids, name);
+    }
+  }
+
+  Future<void> _remove(List<String> ids, String label) async {
+    if (ids.length == 1) {
+      await widget.library.removeTag(ids.single, label);
+    } else {
+      await widget.library.removeTagMany(ids, label);
+    }
+  }
 
   @override
   void dispose() {
@@ -58,12 +84,16 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
   }
 
   Future<void> _addToNote(String name) async {
-    final noteId = widget.noteId;
-    if (noteId == null || name.trim().isEmpty) return;
-    await _run(() async {
-      await widget.library.addTag(noteId, name);
-    });
+    final ids = _present();
+    if (ids.isEmpty || name.trim().isEmpty) return;
+    await _run(() => _add(ids, name));
   }
+
+  /// The chosen notes this device still has, in the library's order.
+  List<String> _present() => [
+    for (final note in widget.library.notes)
+      if (_ids.contains(note.id)) note.id,
+  ];
 
   Future<void> _edit(Tag tag) async {
     var deleting = false;
@@ -142,20 +172,32 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
         initialData: widget.library.notes,
         builder: (context, snapshot) {
           final tags = widget.library.tags;
-          final note = widget.library.notes
-              .where((note) => note.id == widget.noteId)
-              .firstOrNull;
-          final selected = note?.tagIds ?? const <String>{};
+          final notes = [
+            for (final note in widget.library.notes)
+              if (_ids.contains(note.id)) note,
+          ];
+          final ids = [for (final note in notes) note.id];
+          // How many of the chosen notes carry each label.
+          final carrying = <String, int>{};
+          for (final note in notes) {
+            for (final id in note.tagIds) {
+              carrying[id] = (carrying[id] ?? 0) + 1;
+            }
+          }
+          bool? ticked(String label) => switch (carrying[label] ?? 0) {
+            0 => false,
+            final count when count == notes.length => true,
+            _ => null,
+          };
           final query = _field.text.trim().replaceAll(RegExp(r'\s+'), ' ');
-          final exactMatch = query.isNotEmpty && tags.any(
-            (tag) => tag.name.toLowerCase() == query.toLowerCase(),
-          );
+          final exactMatch =
+              query.isNotEmpty &&
+              tags.any((tag) => tag.name.toLowerCase() == query.toLowerCase());
           final visibleTags = _selecting && query.isNotEmpty
               ? tags
                     .where(
-                      (tag) => tag.name.toLowerCase().contains(
-                        query.toLowerCase(),
-                      ),
+                      (tag) =>
+                          tag.name.toLowerCase().contains(query.toLowerCase()),
                     )
                     .toList()
               : tags;
@@ -223,13 +265,13 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                       ),
                     ],
                   ),
-              ),
+                ),
               if (_selecting && query.isNotEmpty && !exactMatch)
                 ListTile(
                   key: const Key('label-add-to-note'),
                   leading: const Icon(Icons.add),
                   title: Text('Add label "$query"'),
-                  onTap: _busy || note == null
+                  onTap: _busy || notes.isEmpty
                       ? null
                       : () => _addToNote(query),
                 ),
@@ -237,9 +279,7 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                 Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    tags.isNotEmpty
-                        ? 'No matching labels.'
-                        : 'No labels yet.',
+                    tags.isNotEmpty ? 'No matching labels.' : 'No labels yet.',
                   ),
                 ),
               for (final tag in visibleTags)
@@ -248,16 +288,18 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
                     key: Key('label-check-${tag.name}'),
                     secondary: const Icon(Icons.label_outline),
                     title: Text(tag.name),
-                    value: selected.contains(tag.id),
-                    onChanged: _busy || note == null
+                    // Dashed when only some of the notes have it. Tapping a
+                    // dash puts the label on the rest, as in Keep: the first
+                    // tap finishes what is half done.
+                    tristate: ticked(tag.id) == null,
+                    value: ticked(tag.id),
+                    onChanged: _busy || notes.isEmpty
                         ? null
-                        : (on) => _run(() async {
-                            if (on == true) {
-                              await widget.library.addTag(note.id, tag.name);
-                            } else {
-                              await widget.library.removeTag(note.id, tag.id);
-                            }
-                          }),
+                        : (_) => _run(
+                            () => ticked(tag.id) == true
+                                ? _remove(ids, tag.id)
+                                : _add(ids, tag.name),
+                          ),
                   )
                 else
                   ListTile(

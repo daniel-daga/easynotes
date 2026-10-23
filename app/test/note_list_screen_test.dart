@@ -541,17 +541,171 @@ void main() {
 
   // -- placements -----------------------------------------------------------
 
-  testWidgets('holding a card offers what can be done to it', (tester) async {
+  /// Whether a card is drawn as selected.
+  Finder selectedMark(String note) => find.descendant(
+    of: find.ancestor(
+      of: find.byKey(Key('note:$note')),
+      matching: find.byType(Stack),
+    ),
+    matching: find.byKey(const Key('card-selected')),
+  );
+
+  /// Long-press a card and let go without moving it: it is selected.
+  Future<void> select(WidgetTester tester, String note) async {
+    await tester.longPress(find.byKey(Key('note:$note')));
+    await tester.pumpAndSettle();
+  }
+
+  /// The selection bar's actions that live behind its "more" menu.
+  const overflow = {'bulk-pin', 'bulk-reminders'};
+
+  /// Take one of the selection bar's actions.
+  Future<void> act(WidgetTester tester, String key) async {
+    if (overflow.contains(key)) {
+      await tester.tap(find.byKey(const Key('selection-more')));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.byKey(Key(key)));
+    await tester.pumpAndSettle();
+  }
+
+  /// Select one card and take an action on it.
+  Future<void> holdAndTap(WidgetTester tester, String note, String key) async {
+    await select(tester, note);
+    await act(tester, key);
+  }
+
+  testWidgets('holding a card selects it and offers what can be done', (
+    tester,
+  ) async {
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
+    await select(tester, 'groceries');
+
+    expect(selectedMark('groceries'), findsOneWidget);
+    expect(selectedMark('hardware'), findsNothing);
+    expect(find.byKey(const Key('selection-count')), findsOneWidget);
+    expect(find.text('1'), findsOneWidget);
+    for (final action in [
+      'bulk-colour',
+      'bulk-labels',
+      'bulk-archive',
+      'bulk-trash',
+    ]) {
+      expect(find.byKey(Key(action)), findsOneWidget, reason: action);
+    }
+    // Nothing is made while choosing what to do with what is there.
+    expect(find.byKey(const Key('new-note-button')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('selection-more')));
+    await tester.pumpAndSettle();
+    expect(find.text('Pin'), findsOneWidget);
+    expect(find.text('Reminders'), findsOneWidget);
+  });
+
+  testWidgets('a tap adds to the selection and the last one out ends it', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await select(tester, 'groceries');
+
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    expect(selectedMark('hardware'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+    // A tap while selecting chooses a card, it does not open one.
+    expect(library.calls, isNot(contains(startsWith('openNote'))));
+    // A reminder is for one note at a time.
+    await tester.tap(find.byKey(const Key('selection-more')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('bulk-reminders')), findsNothing);
+    await tester.tapAt(Offset.zero);
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('note-actions')), findsOneWidget);
-    expect(find.text('Pin'), findsOneWidget);
-    expect(find.text('Archive'), findsOneWidget);
-    expect(find.text('Move to trash'), findsOneWidget);
+    // A long press while selecting toggles, too.
+    await select(tester, 'groceries');
+    expect(selectedMark('groceries'), findsNothing);
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('selection-count')), findsNothing);
+    expect(onShelf('EasyNotes'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('openNote(hardware)'));
+  });
+
+  testWidgets('the close button and Back both let go of a selection', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('selection-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('selection-count')), findsNothing);
+
+    await select(tester, 'groceries');
+    final popped = await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(popped, isTrue, reason: 'Back should be taken by the selection');
+    expect(find.byKey(const Key('selection-count')), findsNothing);
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
+  testWidgets('select all takes every card on the shelf', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await select(tester, 'groceries');
+
+    await act(tester, 'selection-more');
+    await tester.tap(find.byKey(const Key('bulk-select-all')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('2'), findsOneWidget);
+    expect(selectedMark('hardware'), findsOneWidget);
+  });
+
+  testWidgets('a selected note that leaves the shelf leaves the selection', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+
+    // Archived on another device.
+    await library.setArchived('groceries', true);
+    await tester.pumpAndSettle();
+
+    expect(find.text('1'), findsOneWidget);
+    expect(selectedMark('hardware'), findsOneWidget);
+  });
+
+  testWidgets('cards are not dragged while selecting', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await select(tester, 'groceries');
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('note:hardware'))),
+    );
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('drag-placeholder')), findsNothing);
+    await gesture.moveTo(
+      tester.getCenter(find.byKey(const Key('note:groceries'))),
+    );
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
+    // The hold was a press, which adds the card.
+    expect(find.text('2'), findsOneWidget);
   });
 
   /// Pick a card up and let go over another one, the way a finger does.
@@ -686,18 +840,28 @@ void main() {
     expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
   });
 
-  testWidgets('a card released without moving still opens its menu', (
+  testWidgets('a card released without moving is selected, not moved', (
     tester,
   ) async {
-    // The gesture does two jobs, and this is the one that was there first.
+    // The gesture does two jobs: a hold that moves is a drag, and one that
+    // goes nowhere picks the card.
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
+    await select(tester, 'groceries');
 
-    expect(find.byKey(const Key('note-actions')), findsOneWidget);
+    expect(selectedMark('groceries'), findsOneWidget);
     expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
+  });
+
+  testWidgets('a dragged card is moved, not selected', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await dragCard(tester, 'hardware', 'groceries');
+
+    expect(library.calls, contains('moveNoteTo(hardware, groceries)'));
+    expect(find.byKey(const Key('selection-count')), findsNothing);
   });
 
   testWidgets('a card dragged across the pin line does not move', (
@@ -707,17 +871,15 @@ void main() {
     // between the two groups is one nothing on screen could show.
     final library = twoLists();
     await pumpList(tester, library);
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-pin')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'groceries', 'bulk-pin');
     library.calls.clear();
 
     await dragCard(tester, 'hardware', 'groceries');
 
     expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
-    // And it did not quietly turn into a menu either: the drag went somewhere.
-    expect(find.byKey(const Key('note-actions')), findsNothing);
+    // And it did not quietly turn into a selection either: the drag went
+    // somewhere.
+    expect(find.byKey(const Key('selection-count')), findsNothing);
   });
 
   testWidgets('a card dragged in the single column moves the same way', (
@@ -752,8 +914,8 @@ void main() {
     await dragCard(tester, 'hardware', 'groceries');
 
     expect(library.calls, isNot(contains(startsWith('moveNoteTo'))));
-    // The hold still reaches the card's menu, which is a result's only gesture.
-    expect(find.byKey(const Key('note-actions')), findsOneWidget);
+    // The hold still selects, which is how a result is acted on.
+    expect(selectedMark('hardware'), findsOneWidget);
   });
 
   testWidgets('colouring a note tells the library and paints the card', (
@@ -762,12 +924,12 @@ void main() {
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'groceries', 'bulk-colour');
+    expect(find.byKey(const Key('colour-sheet')), findsOneWidget);
     await tester.tap(find.byKey(const Key('swatch-teal')));
     await tester.pumpAndSettle();
 
-    expect(library.calls, contains('setColour(groceries, teal)'));
+    expect(library.calls, contains('setColourMany(groceries; teal)'));
     final card = tester.widget<Card>(
       find.ancestor(
         of: find.byKey(const Key('note:groceries')),
@@ -775,6 +937,39 @@ void main() {
       ),
     );
     expect(card.color, isNotNull, reason: 'the card was not painted');
+    // Still selected, so another colour is one tap away.
+    expect(selectedMark('groceries'), findsOneWidget);
+  });
+
+  testWidgets('a selection is coloured in one change', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await library.setColour('groceries', NoteColour.red);
+    await tester.pumpAndSettle();
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+
+    await act(tester, 'bulk-colour');
+    // The notes do not share a colour, so none is marked as theirs.
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics &&
+            widget.properties.selected == true &&
+            (widget.properties.label ?? '').endsWith('olour'),
+      ),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const Key('swatch-none')));
+    await tester.pumpAndSettle();
+
+    expect(library.calls, contains('setColourMany(hardware, groceries; null)'));
+    expect(
+      library.calls.where((call) => call.startsWith('setColour(')),
+      hasLength(1),
+      reason: 'only the setup coloured a note on its own',
+    );
   });
 
   testWidgets('a pinned note goes to the top and says that it is pinned', (
@@ -788,12 +983,9 @@ void main() {
       greaterThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dx),
     );
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-pin')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'groceries', 'bulk-pin');
 
-    expect(library.calls, contains('setPinned(groceries, true)'));
+    expect(library.calls, contains('setPinnedMany(groceries; true)'));
     expect(find.byKey(const Key('pinned')), findsOneWidget);
     expect(
       tester.getTopLeft(find.byKey(const Key('note:groceries'))).dx,
@@ -808,13 +1000,12 @@ void main() {
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-archive')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'groceries', 'bulk-archive');
 
-    expect(library.calls, contains('setArchived(groceries, true)'));
+    expect(library.calls, contains('setArchivedMany(groceries; true)'));
     expect(find.byKey(const Key('note:groceries')), findsNothing);
+    expect(find.text('Note archived'), findsOneWidget);
+    expect(find.byKey(const Key('selection-count')), findsNothing);
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
@@ -832,10 +1023,7 @@ void main() {
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:hardware')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-trash')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
     expect(find.byKey(const Key('note:hardware')), findsNothing);
 
     await tester.tap(find.byTooltip('Open navigation menu'));
@@ -843,27 +1031,74 @@ void main() {
     await tester.tap(find.byKey(const Key('shelf-trash')));
     await tester.pumpAndSettle();
 
-    await tester.longPress(find.byKey(const Key('note:hardware')));
-    await tester.pumpAndSettle();
-    // In the trash a note is restored, not pinned or archived.
-    expect(find.byKey(const Key('action-pin')), findsNothing);
-    expect(find.text('Restore'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('action-trash')));
-    await tester.pumpAndSettle();
+    await select(tester, 'hardware');
+    // In the trash a note is restored, not pinned, coloured or archived.
+    expect(find.byKey(const Key('selection-more')), findsNothing);
+    expect(find.byKey(const Key('bulk-archive')), findsNothing);
+    expect(find.byKey(const Key('bulk-colour')), findsNothing);
+    await act(tester, 'bulk-restore');
 
-    expect(library.calls, contains('setTrashed(hardware, false)'));
+    expect(library.calls, contains('setTrashedMany(hardware; false)'));
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
   });
 
-  // -- deleting for good ----------------------------------------------------
+  testWidgets('archiving a selection can be undone, pins and all', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await library.setPinned('groceries', true);
+    await tester.pumpAndSettle();
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    library.calls.clear();
 
-  /// Long-press a card and take the sheet's `key` action.
-  Future<void> holdAndTap(WidgetTester tester, String note, String key) async {
-    await tester.longPress(find.byKey(Key('note:$note')));
+    await act(tester, 'bulk-archive');
+
+    expect(library.calls, ['setArchivedMany(groceries, hardware; true)']);
+    expect(find.text('2 notes archived'), findsOneWidget);
+    expect(find.byKey(const Key('no-notes')), findsOneWidget);
+
+    await tester.tap(find.text('Undo'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(Key(key)));
+
+    expect(library.calls.skip(1), [
+      'setArchivedMany(groceries, hardware; false)',
+      'setPinnedMany(groceries; true)',
+    ]);
+    expect(find.byKey(const Key('pinned')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
+  testWidgets('trashing a selection can be undone', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
     await tester.pumpAndSettle();
-  }
+
+    await act(tester, 'bulk-trash');
+
+    expect(
+      library.calls,
+      contains('setTrashedMany(hardware, groceries; true)'),
+    );
+    expect(find.text('2 notes moved to trash'), findsOneWidget);
+    expect(find.byKey(const Key('no-notes')), findsOneWidget);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(
+      library.calls,
+      contains('setTrashedMany(hardware, groceries; false)'),
+    );
+    expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+  });
+
+  // -- deleting for good ----------------------------------------------------
 
   Future<void> openShelf(WidgetTester tester, String shelf) async {
     await tester.tap(find.byTooltip('Open navigation menu'));
@@ -880,25 +1115,22 @@ void main() {
 
     // Not on a note in the grid: throwing it away comes first, and that is the
     // gesture that can be taken back.
-    await tester.longPress(find.byKey(const Key('note:hardware')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('action-delete-forever')), findsNothing);
-    await tester.tap(find.byKey(const Key('action-trash')));
-    await tester.pumpAndSettle();
+    await select(tester, 'hardware');
+    expect(find.byKey(const Key('bulk-delete-forever')), findsNothing);
+    await act(tester, 'bulk-trash');
 
     // Nor on an archived note, which is out of the way rather than thrown away.
-    await holdAndTap(tester, 'groceries', 'action-archive');
+    await holdAndTap(tester, 'groceries', 'bulk-archive');
     await openShelf(tester, 'archive');
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('action-delete-forever')), findsNothing);
-    await tester.tap(find.byKey(const Key('action-archive')));
-    await tester.pumpAndSettle();
+    await select(tester, 'groceries');
+    expect(find.byKey(const Key('bulk-delete-forever')), findsNothing);
+    expect(find.byTooltip('Unarchive'), findsOneWidget);
+    await act(tester, 'bulk-archive');
+    expect(library.calls, contains('setArchivedMany(groceries; false)'));
 
     await openShelf(tester, 'trash');
-    await tester.longPress(find.byKey(const Key('note:hardware')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('action-delete-forever')), findsOneWidget);
+    await select(tester, 'hardware');
+    expect(find.byKey(const Key('bulk-delete-forever')), findsOneWidget);
   });
 
   testWidgets(
@@ -907,10 +1139,10 @@ void main() {
     (tester) async {
       final library = twoLists();
       await pumpList(tester, library);
-      await holdAndTap(tester, 'hardware', 'action-trash');
+      await holdAndTap(tester, 'hardware', 'bulk-trash');
       await openShelf(tester, 'trash');
 
-      await holdAndTap(tester, 'hardware', 'action-delete-forever');
+      await holdAndTap(tester, 'hardware', 'bulk-delete-forever');
       expect(find.byKey(const Key('confirm-delete')), findsOneWidget);
       // The one thing the app cannot do is said on the dialog that does it.
       expect(
@@ -921,7 +1153,7 @@ void main() {
       await tester.tap(find.byKey(const Key('confirm-keep')));
       await tester.pumpAndSettle();
 
-      expect(library.calls, isNot(contains('forgetNote(hardware)')));
+      expect(library.calls, isNot(contains('forgetNotes(hardware)')));
       expect(find.byKey(const Key('note:hardware')), findsOneWidget);
     },
   );
@@ -929,20 +1161,50 @@ void main() {
   testWidgets('a note deleted for good leaves the device', (tester) async {
     final library = twoLists();
     await pumpList(tester, library);
-    await holdAndTap(tester, 'hardware', 'action-trash');
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
     await openShelf(tester, 'trash');
 
-    await holdAndTap(tester, 'hardware', 'action-delete-forever');
+    await holdAndTap(tester, 'hardware', 'bulk-delete-forever');
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
 
-    expect(library.calls, contains('forgetNote(hardware)'));
+    expect(library.calls, contains('forgetNotes(hardware)'));
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
     // Gone from the whole device, not moved to another shelf: the grid it was
     // thrown away from does not have it back.
     await openShelf(tester, 'notes');
     expect(find.byKey(const Key('note:hardware')), findsNothing);
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
+  });
+
+  testWidgets('a selection in the trash is deleted for good together', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await select(tester, 'hardware');
+    await tester.tap(find.byKey(const Key('note:old')));
+    await tester.pumpAndSettle();
+    await act(tester, 'bulk-trash');
+    await openShelf(tester, 'trash');
+
+    await select(tester, 'hardware');
+    await tester.tap(find.byKey(const Key('note:old')));
+    await tester.pumpAndSettle();
+    await act(tester, 'bulk-delete-forever');
+    expect(find.text('Delete 2 notes permanently?'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    expect(library.calls, contains('forgetNotes(old, hardware)'));
+    expect(find.byKey(const Key('no-notes')), findsOneWidget);
+    expect(find.byKey(const Key('selection-count')), findsNothing);
   });
 
   testWidgets('emptying the trash is offered only when there is a trash to '
@@ -959,7 +1221,7 @@ void main() {
     expect(find.byKey(const Key('empty-trash-button')), findsNothing);
 
     await openShelf(tester, 'notes');
-    await holdAndTap(tester, 'hardware', 'action-trash');
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
     await openShelf(tester, 'trash');
     expect(find.byKey(const Key('empty-trash-button')), findsOneWidget);
   });
@@ -975,8 +1237,8 @@ void main() {
       },
     );
     await pumpList(tester, library);
-    await holdAndTap(tester, 'hardware', 'action-trash');
-    await holdAndTap(tester, 'old', 'action-trash');
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
+    await holdAndTap(tester, 'old', 'bulk-trash');
     await openShelf(tester, 'trash');
 
     await tester.tap(find.byKey(const Key('empty-trash-button')));
@@ -1005,7 +1267,7 @@ void main() {
       },
     )..refuseDeletion = StateError('out of space');
     await pumpList(tester, library);
-    await holdAndTap(tester, 'hardware', 'action-trash');
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
     await openShelf(tester, 'trash');
 
     await tester.tap(find.byKey(const Key('empty-trash-button')));
@@ -1021,10 +1283,10 @@ void main() {
       tester.element(find.byKey(const Key('note:hardware'))),
     ).removeCurrentSnackBar();
     await tester.pumpAndSettle();
-    await holdAndTap(tester, 'hardware', 'action-delete-forever');
+    await holdAndTap(tester, 'hardware', 'bulk-delete-forever');
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
-    expect(library.calls, contains('forgetNote(hardware)'));
+    expect(library.calls, contains('forgetNotes(hardware)'));
     expect(find.byKey(const Key('deletion-failed')), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
   });
@@ -1084,17 +1346,84 @@ void main() {
     await tester.pumpAndSettle();
     await tester.pageBack();
     await tester.pumpAndSettle();
-    await tester.longPress(find.byKey(Key('note:$id')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-labels')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, id, 'bulk-labels');
     expect(find.byKey(const Key('label-field')), findsNothing);
     expect(find.byIcon(Icons.edit_outlined), findsNothing);
     await tester.tap(find.byKey(Key('label-check-$label')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('labels-done')));
     await tester.pumpAndSettle();
+    // The selection outlives the labels screen, so more can be done to it.
+    expect(selectedMark(id), findsOneWidget);
+    await tester.tap(find.byKey(const Key('selection-close')));
+    await tester.pumpAndSettle();
   }
+
+  testWidgets('a selection is labelled together, and a label on some of it '
+      'is shown as half-ticked', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    final errands = library.tags.single;
+    library.calls.clear();
+
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    await act(tester, 'bulk-labels');
+
+    final check = find.byKey(const Key('label-check-errands'));
+    expect(tester.widget<CheckboxListTile>(check).value, isNull);
+
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(library.calls, ['addTagMany(hardware, groceries; errands)']);
+    expect(tester.widget<CheckboxListTile>(check).value, isTrue);
+
+    await tester.tap(check);
+    await tester.pumpAndSettle();
+    expect(
+      library.calls,
+      contains('removeTagMany(hardware, groceries; ${errands.id})'),
+    );
+    expect(tester.widget<CheckboxListTile>(check).value, isFalse);
+
+    // A new name goes on every note at once.
+    await tester.enterText(find.byKey(const Key('label-search-field')), 'home');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-add-to-note')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('addTagMany(hardware, groceries; home)'));
+
+    await tester.tap(find.byKey(const Key('labels-done')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chip:groceries:home')), findsOneWidget);
+    expect(find.byKey(const Key('chip:hardware:home')), findsOneWidget);
+  });
+
+  testWidgets('a selection is let go of when its shelf goes away', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await labelNote(tester, 'groceries', 'errands');
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('label-shelf-errands')));
+    await tester.pumpAndSettle();
+    await select(tester, 'groceries');
+
+    // Renamed elsewhere: the same shelf, so the same selection.
+    await library.renameTag(library.tags.single.id, 'chores');
+    await tester.pumpAndSettle();
+    expect(selectedMark('groceries'), findsOneWidget);
+
+    // Thrown away: back to the grid, with nothing selected.
+    await library.forgetTag(library.tags.single.id);
+    await tester.pumpAndSettle();
+    expect(onShelf('EasyNotes'), findsOneWidget);
+    expect(find.byKey(const Key('selection-count')), findsNothing);
+  });
 
   testWidgets(
     'labelling a note tells the library and puts a chip on the card',
@@ -1124,10 +1453,7 @@ void main() {
 
     // The other note: the label exists now, so it is a checkbox and not a
     // second thing to spell.
-    await tester.longPress(find.byKey(const Key('note:hardware')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-labels')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'hardware', 'bulk-labels');
     final check = find.byKey(const Key('label-check-errands'));
     expect(check, findsOneWidget);
     expect(tester.widget<CheckboxListTile>(check).value, isFalse);
@@ -1239,10 +1565,7 @@ void main() {
     final library = twoLists();
     await pumpList(tester, library);
 
-    await tester.longPress(find.byKey(const Key('note:groceries')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('action-reminders')));
-    await tester.pumpAndSettle();
+    await holdAndTap(tester, 'groceries', 'bulk-reminders');
     expect(find.byKey(const Key('reminders-dialog')), findsOneWidget);
     expect(find.text('No reminders for this note.'), findsOneWidget);
 

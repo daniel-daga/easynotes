@@ -1677,6 +1677,12 @@ fn note_id(s: &str) -> Result<NoteId, String> {
     NoteId::decode(s).map_err(|e| e.to_string())
 }
 
+/// Every ID of a selection, or the first that is not one. Parsed before any is
+/// used, so a bad ID changes nothing rather than half a selection.
+fn note_ids(ids: &[String]) -> Result<Vec<NoteId>, String> {
+    ids.iter().map(|id| note_id(id)).collect()
+}
+
 fn label_id(s: &str) -> Result<LabelId, String> {
     LabelId::decode(s).map_err(|e| e.to_string())
 }
@@ -2267,6 +2273,82 @@ impl Library {
             .locked()?
             .set_pinned(id, pinned)
             .map_err(|e| e.to_string())
+    }
+
+    // -- a selection of notes ------------------------------------------------
+    //
+    // What the grid's selection bar calls. Each is one change to the account
+    // document however many notes are named, so a peer never sees half a
+    // selection archived and the grid is redrawn once.
+
+    pub fn set_colour_many(
+        &self,
+        ids: Vec<String>,
+        colour: Option<NoteColour>,
+    ) -> Result<(), String> {
+        let ids = note_ids(&ids)?;
+        self.shared
+            .locked()?
+            .set_colour_many(&ids, colour.map(Into::into))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_pinned_many(&self, ids: Vec<String>, pinned: bool) -> Result<(), String> {
+        let ids = note_ids(&ids)?;
+        self.shared
+            .locked()?
+            .set_pinned_many(&ids, pinned)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_archived_many(&self, ids: Vec<String>, archived: bool) -> Result<(), String> {
+        let ids = note_ids(&ids)?;
+        self.shared
+            .locked()?
+            .set_archived_many(&ids, archived)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_trashed_many(&self, ids: Vec<String>, trashed: bool) -> Result<(), String> {
+        let ids = note_ids(&ids)?;
+        self.shared
+            .locked()?
+            .set_trashed_many(&ids, trashed)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Put a label on every note named, and return the label it went on
+    /// under. `null` for a name that is not a name.
+    pub fn add_tag_many(&self, ids: Vec<String>, tag: String) -> Result<Option<String>, String> {
+        let ids = note_ids(&ids)?;
+        Ok(self
+            .shared
+            .locked()?
+            .add_tag_many(&ids, &tag)
+            .map_err(|e| e.to_string())?
+            .map(|label| label.encode()))
+    }
+
+    pub fn remove_tag_many(&self, ids: Vec<String>, label: String) -> Result<(), String> {
+        let ids = note_ids(&ids)?;
+        let label = label_id(&label)?;
+        self.shared
+            .locked()?
+            .remove_tag_many(&ids, label)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Permanently delete every note named. Returns how many. Each goes the
+    /// way [`Library::forget_note`] does — socket first, then rows — so this is
+    /// a loop here rather than one call into the core.
+    pub fn forget_notes(&self, ids: Vec<String>) -> Result<u32, String> {
+        let mut ids = note_ids(&ids)?;
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| seen.insert(*id));
+        for id in &ids {
+            self.forget(*id)?;
+        }
+        Ok(ids.len() as u32)
     }
 
     /// Move a note so that it takes `target`'s place in the grid's order.

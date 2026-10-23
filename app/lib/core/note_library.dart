@@ -454,6 +454,31 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Delete every note in the trash for good. Returns how many there were.
   Future<int> emptyTrash();
 
+  // A selection of notes. Each of these is one change however many notes it
+  // names — one envelope in the account document, one redraw of the grid — so
+  // a peer never sees half a selection archived. They follow the rules of the
+  // one-note calls above: archiving or trashing unpins, a label's name is
+  // normalised, and taking off a label a note does not have is not an error.
+
+  Future<void> setColourMany(List<String> noteIds, NoteColour? colour);
+
+  Future<void> setPinnedMany(List<String> noteIds, bool pinned);
+
+  Future<void> setArchivedMany(List<String> noteIds, bool archived);
+
+  Future<void> setTrashedMany(List<String> noteIds, bool trashed);
+
+  /// Put a label on every note named, and return the label it went on under;
+  /// null for a name that is not a name.
+  Future<String?> addTagMany(List<String> noteIds, String name);
+
+  Future<void> removeTagMany(List<String> noteIds, String labelId);
+
+  /// Delete every note named for good, as [forgetNote] does each. Returns how
+  /// many. Each keeps its own deletion record, so unlike the rest this is not
+  /// one change.
+  Future<int> forgetNotes(List<String> noteIds);
+
   /// How this person last left the note list.
   NoteLayout get layout;
 
