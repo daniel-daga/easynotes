@@ -411,27 +411,37 @@ class NoteExpandRoute<T> extends PageRoute<T> {
                 borderRadius: BorderRadius.circular(radius),
                 child: ColoredBox(
                   color: colour,
-                  child: IgnorePointer(
-                    // The note is invisible on the way out, and a screen that
-                    // cannot be seen should not be able to be tapped or read.
-                    ignoring: _closing,
-                    child: ExcludeSemantics(
-                      excluding: _closing,
-                      child: Opacity(
-                        key: const Key('note-expanding-content'),
-                        opacity: noteOpacity.clamp(0.0, 1.0),
-                        child: FittedBox(
-                          // The note screen is laid out at its final size from
-                          // the first frame; the growing rectangle only reveals
-                          // it, at the rectangle's width rather than cropped to
-                          // it. Since the rectangle keeps the display's aspect
-                          // ratio, this is a uniform scale.
-                          fit: BoxFit.fitWidth,
-                          alignment: Alignment.topLeft,
-                          child: SizedBox.fromSize(
-                            key: const Key('note-expanding-page'),
-                            size: full.size,
-                            child: page,
+                  child: TickerMode(
+                    // The note is invisible on the way out: nothing inside it —
+                    // a blinking cursor, a progress ring — should keep waking
+                    // the frames it is no longer seen in.
+                    enabled: !_closing,
+                    child: IgnorePointer(
+                      // The note is invisible on the way out, and a screen that
+                      // cannot be seen should not be able to be tapped or read.
+                      ignoring: _closing,
+                      child: ExcludeSemantics(
+                        excluding: _closing,
+                        child: Opacity(
+                          key: const Key('note-expanding-content'),
+                          opacity: noteOpacity.clamp(0.0, 1.0),
+                          child: FittedBox(
+                            // The note screen is laid out at its final size from
+                            // the first frame; the growing rectangle only
+                            // reveals it, at the rectangle's width rather than
+                            // cropped to it. Since the rectangle keeps the
+                            // display's aspect ratio, this is a uniform scale.
+                            fit: BoxFit.fitWidth,
+                            alignment: Alignment.topLeft,
+                            child: SizedBox.fromSize(
+                              key: const Key('note-expanding-page'),
+                              size: full.size,
+                              // Scaled, not laid out again: the screen keeps the
+                              // same constraints all the way, so this tells the
+                              // compositor to move a picture it already has
+                              // rather than to draw a screen every frame.
+                              child: RepaintBoundary(child: page),
+                            ),
                           ),
                         ),
                       ),
