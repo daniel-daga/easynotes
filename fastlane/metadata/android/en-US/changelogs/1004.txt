@@ -1,0 +1,6 @@
+Updates since v0.1.3:
+
+- Opening a note is smoother: the card turns into the note as it arrives, instead of the note appearing halfway through
+- Nothing doubles up while it opens, and no blank frame flashes at the tap
+- Closing a note shrinks back into its card, or fades away when the card has left the list
+- The note is ready as it arrives for notes that open quickly, and one tap still opens one note when they open slowly
