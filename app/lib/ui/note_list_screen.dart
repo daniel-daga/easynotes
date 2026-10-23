@@ -190,6 +190,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// land, even after an edit re-sorted the list behind the open screen.
   final _expandedNoteId = ValueNotifier<String?>(null);
 
+  /// The note whose core has been asked for and has not been pushed yet.
+  ///
+  /// Only set while [_openNote] is waiting for the core: the list is still
+  /// touchable then, so a second tap on the card has to be told to wait rather
+  /// than open the note twice.
+  String? _openingNoteId;
+
   /// The render object of each card, so the expand route can ask where a card
   /// is — at the tap, and again when the screen starts shrinking back.
   final Map<String, GlobalKey> _cardKeys = {};
@@ -303,12 +310,19 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   /// Open a note, and hold the handle open only while its screen is on top.
   ///
-  /// The screen is pushed before the core has answered, rather than after: the
-  /// card the person tapped is already growing into that space, and a tap that
-  /// does nothing until a round trip finishes reads as a tap that missed. The
-  /// core's handle is let go of when the screen closes — including a screen that
-  /// was closed again before the note opened, which would otherwise leak a Rust
-  /// task per visit, for ever.
+  /// The screen is pushed before the core has answered *for long*, rather than
+  /// after: the card the person tapped is already growing into that space, and
+  /// a tap that does nothing until a round trip finishes reads as a tap that
+  /// missed. But a note that answers within [_kOpenWait] is worth waiting two
+  /// frames for, because then the note screen is drawn from the first frame of
+  /// the trip instead of being built in the middle of it — which is both a
+  /// frame of work where the animation least wants one and, if it lands late
+  /// enough, a body that pops into place under a surface that has already
+  /// faded its contents in.
+  ///
+  /// The core's handle is let go of when the screen closes — including a screen
+  /// that was closed again before the note opened, which would otherwise leak a
+  /// Rust task per visit, for ever.
   ///
   /// [origin] is the card the tap landed on. Notes opened from anywhere else —
   /// a share, a link, the button that makes one — pass null and get the shared
@@ -318,6 +332,30 @@ class _NoteListScreenState extends State<NoteListScreen> {
     bool autofocusBody = false,
     Rect? origin,
   }) async {
+    // A tap that arrives while an earlier one is still waiting for the core is
+    // the same tap twice: the card is still on the list, under nothing, so
+    // nothing else stops it being pressed again.
+    if (_openingNoteId != null) return;
+    _openingNoteId = id;
+    final opening = widget.library.openNote(id);
+    NoteCore? ready;
+    try {
+      ready = await opening.timeout(_kOpenWait);
+    } on TimeoutException {
+      // Still opening: the placeholder carries the trip and the real screen
+      // arrives when it can.
+    } on Object {
+      // The screen says so itself, from the same future.
+    }
+    _openingNoteId = null;
+    if (!mounted) {
+      await _letGoOf(opening);
+      return;
+    }
+    // Measured after the wait, not before it: the list may have moved under
+    // the finger in the meantime, and the surface has to start where the card
+    // is now.
+    final card = origin == null ? null : _cardRect(id) ?? origin;
     final theme = Theme.of(context);
     final summary = widget.library.notes
         .where((note) => note.id == id)
@@ -337,7 +375,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     );
     // A card with a cover can only be copied where its cover can be read.
     WidgetBuilder? cardCopy;
-    if (origin != null &&
+    if (card != null &&
         summary != null &&
         (summary.cover == null || covers != null)) {
       final copied = summary;
@@ -349,10 +387,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
       );
     }
     final navigator = Navigator.of(context);
-    final opening = widget.library.openNote(id);
     final route = NoteExpandRoute<void>(
       settings: RouteSettings(name: 'note/$id'),
-      origin: origin,
+      origin: card,
       resolveOrigin: () => _cardRect(id),
       startColor: cardColour,
       endColor: screenColour,
@@ -367,6 +404,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
       },
       builder: (context) => _OpeningNote(
         opening: opening,
+        ready: ready,
         colour: screenColour,
         builder: (core) => NoteScreen(
           core: core,
@@ -400,12 +438,17 @@ class _NoteListScreenState extends State<NoteListScreen> {
       if (mounted && _expandedNoteId.value == id) {
         _expandedNoteId.value = null;
       }
-      try {
-        await (await opening).dispose();
-      } on Object {
-        // The screen has already said it could not open the note; there is no
-        // handle to let go of.
-      }
+      await _letGoOf(opening);
+    }
+  }
+
+  /// Let go of the core a screen was opened for, whether it arrived or not.
+  Future<void> _letGoOf(Future<NoteCore> opening) async {
+    try {
+      await (await opening).dispose();
+    } on Object {
+      // The screen has already said it could not open the note; there is no
+      // handle to let go of.
     }
   }
 
@@ -1112,33 +1155,48 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 }
 
+/// How long a tap waits for the core before the note screen goes up anyway.
+///
+/// Two frames at 60 Hz: long enough for a note the core already has, short
+/// enough that the tap still feels like it did something. The press ripple and
+/// the shrunken card are on screen for all of it.
+const _kOpenWait = Duration(milliseconds: 32);
+
 /// The note screen, from the first frame of the tap rather than from when the
 /// core answers.
 ///
-/// Opening a note is a round trip; waiting for it before the screen exists made
-/// the tap feel unanswered for as long as that took. The expand route's surface
-/// is already the note's colour, so this fills it with the same chrome — an app
-/// bar with a way back — and swaps in the real screen when the note is open.
+/// Opening a note is a round trip. When it answers inside [_kOpenWait] the list
+/// hands the core over and this is the real screen from the first frame; when
+/// it does not, the expand route's surface is already the note's colour, so this
+/// fills it with the same chrome — an app bar with a way back — and swaps in the
+/// real screen when the note is open.
 class _OpeningNote extends StatelessWidget {
   const _OpeningNote({
     required this.opening,
     required this.colour,
     required this.builder,
+    this.ready,
   });
 
   final Future<NoteCore> opening;
+
+  /// The core, when it answered before the trip started. Then there is nothing
+  /// to wait for and nothing to subscribe to.
+  final NoteCore? ready;
   final Color colour;
   final Widget Function(NoteCore core) builder;
 
   @override
   Widget build(BuildContext context) {
+    final answered = ready;
+    if (answered != null) return builder(answered);
     return FutureBuilder<NoteCore>(
       future: opening,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
             backgroundColor: colour,
-            appBar: AppBar(backgroundColor: colour),
+            appBar: _chrome(),
             body: const Center(child: Text('Could not open this note.')),
           );
         }
@@ -1147,13 +1205,22 @@ class _OpeningNote extends StatelessWidget {
           return Scaffold(
             key: const Key('note-opening'),
             backgroundColor: colour,
-            appBar: AppBar(backgroundColor: colour),
+            appBar: _chrome(),
           );
         }
         return builder(core);
       },
     );
   }
+
+  /// The bar the real screen puts up, down to its share action: the header
+  /// should not grow a button halfway through the trip.
+  AppBar _chrome() => AppBar(
+    backgroundColor: colour,
+    actions: const [
+      IconButton(icon: Icon(Icons.person_add_outlined), onPressed: null),
+    ],
+  );
 }
 
 /// Search browse view: choose one filter, then optionally search within it.

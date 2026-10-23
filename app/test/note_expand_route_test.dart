@@ -217,6 +217,49 @@ void main() {
     expect(library.core('groceries').disposals, 1);
   });
 
+  testWidgets('a note that answers in time is on screen from the first frame', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+
+    // The core answered inside the wait, so the trip carries the real screen
+    // rather than a placeholder that is replaced somewhere in the middle of it.
+    expect(find.byType(NoteScreen), findsOneWidget);
+    expect(find.byKey(const Key('note-opening')), findsNothing);
+  });
+
+  testWidgets('a second tap while a note is opening opens one note', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    final gate = Completer<void>();
+    library.openGate = gate;
+
+    await tester.tap(card);
+    await tester.pump();
+    await tester.tap(card);
+    await tester.pump();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(NoteScreen), findsOneWidget);
+    expect(
+      library.calls.where((call) => call == 'openNote(groceries)'),
+      hasLength(1),
+    );
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(library.core('groceries').disposals, 1);
+  });
+
   testWidgets('a note closed before it finishes opening still lets go of it', (
     tester,
   ) async {
@@ -227,8 +270,10 @@ void main() {
 
     await tester.tap(card);
     await tester.pump();
+    // The tap waits two frames for the core, then opens without it.
+    await tester.pump(const Duration(milliseconds: 40));
     await tester.pump();
-    // The screen is there before the core has answered, with the way back.
+    // The screen is there once the wait is over, with the way back.
     expect(find.byKey(const Key('note-opening')), findsOneWidget);
     expect(find.byType(NoteScreen), findsNothing);
 
