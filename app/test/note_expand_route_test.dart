@@ -275,6 +275,42 @@ void main() {
     expect(library.core('groceries').disposals, 1);
   });
 
+  testWidgets('a note whose card has gone fades away instead of landing', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+    await tester.tap(card);
+    await tester.pumpAndSettle();
+    expect(find.byType(NoteScreen), findsOneWidget);
+    final full = tester.getRect(surface);
+
+    // The card leaves the list while its note is open: archived from another
+    // device, say. There is nothing on the list to shrink into any more.
+    await library.setArchived('groceries', true);
+    await tester.pumpAndSettle();
+    expect(card, findsNothing);
+
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump();
+
+    // The surface stays where it was — it does not dive at the gap the card
+    // used to be in — and the fade is what takes it away.
+    expect(tester.getRect(surface), full);
+    await tester.pump(const Duration(milliseconds: 140));
+    expect(tester.getRect(surface), full);
+    final fading = tester.widget<Opacity>(
+      find.byKey(const Key('note-expanding-surface-opacity')),
+    );
+    expect(fading.opacity, lessThan(1));
+    expect(contentOpacity(tester), 0);
+
+    await tester.pumpAndSettle();
+    expect(find.byType(NoteScreen), findsNothing);
+    expect(library.core('groceries').disposals, 1);
+  });
+
   testWidgets('a note closed before it finishes opening still lets go of it', (
     tester,
   ) async {

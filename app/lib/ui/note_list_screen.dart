@@ -1904,7 +1904,9 @@ class _NoteCollectionState extends State<_NoteCollection>
           hasReminder: widget.reminderNoteIds.contains(note.id),
           matched: widget.matched[note.id],
           hidden: note.id == expandedId,
-          onTap: () => widget.onTap(note.id, _rectOf(note.id)),
+          // The card is still a hair inside its box when the finger leaves
+          // it, so that is the size the trip has to start from.
+          onTap: () => widget.onTap(note.id, _asPressed(_rectOf(note.id))),
           // Held by the wrapper where there is one, because a long press there
           // is the start of a drag and only turns into this when nothing moved.
           onHold: move == null ? () => widget.onHold(note) : null,
@@ -2866,6 +2868,24 @@ Widget _noteCardCopy(
   );
 }
 
+/// How far a card shrinks under a finger, so the press is felt before the tap
+/// is answered.
+const _kPressedScale = .975;
+
+/// The rectangle a card is drawn in at the moment its finger leaves it.
+///
+/// The press scale is a transform inside the card, so the box it is measured in
+/// is the unscaled one. Opening from that box would start the trip one step
+/// larger than the card on screen, which is a jump on the first frame of the
+/// very animation meant to explain where the card went.
+Rect? _asPressed(Rect? rect) => rect == null
+    ? null
+    : Rect.fromCenter(
+        center: rect.center,
+        width: rect.width * _kPressedScale,
+        height: rect.height * _kPressedScale,
+      );
+
 /// One note, as a card: what it is called, what is on it, how much is done, and
 /// what this person has made of it.
 class _NoteCard extends StatefulWidget {
@@ -2913,7 +2933,7 @@ class _NoteCardState extends State<_NoteCard> {
           // card, grown. It keeps its place so the way back has a landing spot.
           opacity: widget.hidden ? 0 : 1,
           child: AnimatedScale(
-            scale: _pressed ? .975 : 1,
+            scale: _pressed ? _kPressedScale : 1,
             duration: EasyMotion.duration(context, EasyMotion.fast),
             curve: EasyMotion.enter,
             child: Card(
