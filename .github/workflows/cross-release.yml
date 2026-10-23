@@ -1,0 +1,132 @@
+name: Cross-release compatibility
+
+# ADR 0029 §6, the second job: the last release's relay serving the current
+# client, and the last release's client against the current relay. The fixture
+# tests prove old *data* still opens; this proves an old and a new build still
+# talk to each other over the wire, in both directions.
+#
+# Weekly rather than per push, because it builds two source trees; a protocol
+# regression that matters is one that reaches `main`, and the schedule catches
+# that within a week. Dispatch it before cutting a release.
+#
+# It needs a tag. Until `v0.1.0` existed there was nothing to check out, which
+# is why this arrived after the first releases.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The same pins as `release.yml`, so an old tree is built by the toolchain it
+  # was released with rather than by whatever stable is that week.
+  FLUTTER_VERSION: 3.47.5
+  RUST_TOOLCHAIN: 1.94.1
+
+jobs:
+  current-client-last-relay:
+    name: Current client against the last release's relay
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install the Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          # libsecret is what flutter_secure_storage keeps the master key in on
+          # Linux; without the headers the desktop tests do not link.
+          sudo apt-get install -y libgtk-3-dev clang cmake ninja-build pkg-config \
+            liblzma-dev libsecret-1-dev
+
+      - name: Check out the last release
+        id: last
+        run: |
+          # The newest tag reachable from here. When this runs *on* that tag,
+          # "previous" is the one before it, so step back once.
+          tag=$(git describe --tags --abbrev=0 --match 'v*')
+          if [ "$tag" = "$(git describe --tags --exact-match 2>/dev/null)" ]; then
+            tag=$(git describe --tags --abbrev=0 --match 'v*' "$tag^")
+          fi
+          echo "last release: $tag"
+          git worktree add "$RUNNER_TEMP/last-release" "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build the last release's relay and the current client
+        run: |
+          cargo build --manifest-path "$RUNNER_TEMP/last-release/Cargo.toml" -p easynotes-relay
+          cargo build -p rust_lib_easynotes
+
+      - run: flutter pub get
+        working-directory: app
+
+      - name: Drive the current client through the last release's relay
+        working-directory: app
+        env:
+          EASYNOTES_NATIVE_LIB: ${{ github.workspace }}/target/debug/librust_lib_easynotes.so
+          EASYNOTES_RELAY_BIN: ${{ runner.temp }}/last-release/target/debug/easynotes-relay
+        run: flutter test test/relay_sync_test.dart
+
+  last-client-current-relay:
+    name: Last release's client against the current relay
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install the Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev clang cmake ninja-build pkg-config \
+            liblzma-dev libsecret-1-dev
+
+      - name: Check out the last release
+        id: last
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*')
+          if [ "$tag" = "$(git describe --tags --exact-match 2>/dev/null)" ]; then
+            tag=$(git describe --tags --abbrev=0 --match 'v*' "$tag^")
+          fi
+          echo "last release: $tag"
+          git worktree add "$RUNNER_TEMP/last-release" "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build the current relay and the last release's client
+        run: |
+          cargo build -p easynotes-relay
+          cargo build --manifest-path "$RUNNER_TEMP/last-release/Cargo.toml" -p rust_lib_easynotes
+
+      - run: flutter pub get
+        working-directory: ${{ runner.temp }}/last-release/app
+
+      - name: Drive the last release's client through the current relay
+        working-directory: ${{ runner.temp }}/last-release/app
+        env:
+          EASYNOTES_NATIVE_LIB: ${{ runner.temp }}/last-release/target/debug/librust_lib_easynotes.so
+          EASYNOTES_RELAY_BIN: ${{ github.workspace }}/target/debug/easynotes-relay
+        run: flutter test test/relay_sync_test.dart
