@@ -1,0 +1,80 @@
+{
+  "version": "0.1.4",
+  "phrase": "ritual swift anger impact confirm person giant panda current glad brick blue",
+  "notes": [
+    {
+      "id": "VnbZRCXd_NJWFnKVrpIz0Q",
+      "kind": "Checklist",
+      "title": "Groceries",
+      "body": "",
+      "items": [
+        [
+          "milk",
+          true
+        ],
+        [
+          "bread",
+          false
+        ],
+        [
+          "olive oil",
+          false
+        ],
+        [
+          "lemons",
+          true
+        ],
+        [
+          "rice",
+          false
+        ],
+        [
+          "coffee",
+          false
+        ],
+        [
+          "apples",
+          false
+        ],
+        [
+          "butter",
+          true
+        ],
+        [
+          "flour",
+          false
+        ],
+        [
+          "tea",
+          false
+        ],
+        [
+          "eggs",
+          false
+        ]
+      ],
+      "colour": "Green",
+      "pinned": true,
+      "shared": true,
+      "attachments": []
+    },
+    {
+      "id": "P74skMcl1n__SwZiDJJpZg",
+      "kind": "Text",
+      "title": "Letter",
+      "body": "Dear Ben,\n\nThe garden is doing well.\n",
+      "items": [],
+      "colour": null,
+      "pinned": false,
+      "shared": false,
+      "attachments": [
+        {
+          "name": "garden.png",
+          "len": 20000,
+          "sha256": "12351af05a3937cb8fa3f8b9d10658e64078e8770fb744d0acd72e2a27f57919"
+        }
+      ]
+    }
+  ],
+  "invite_link": "easynotes://join#AWk-4x1UK-PLpcW4Z07QytWQmIOGTG1e2eFj2wYNFMSr"
+}
