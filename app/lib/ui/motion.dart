@@ -7,25 +7,28 @@ abstract final class EasyMotion {
 
   /// A card growing into the screen. Longer than [medium] because it covers the
   /// whole display, and because the eye has to follow one surface all the way
-  /// rather than two that cross.
-  static const expand = Duration(milliseconds: 300);
+  /// rather than two that cross. Most of that travel is over in the first half
+  /// (see [transform]); the rest is the landing.
+  static const expand = Duration(milliseconds: 260);
 
   /// A surface shrinking back into the thing it grew out of. Slightly shorter
   /// than [expand]: coming back is a dismissal, and a dismissal that takes as
   /// long as the arrival reads as hesitation.
-  static const collapse = Duration(milliseconds: 260);
+  static const collapse = Duration(milliseconds: 240);
 
   static const enter = Curves.easeOutCubic;
   static const exit = Curves.easeInCubic;
 
   /// The curve for a surface that changes shape: off the card quickly, then a
-  /// long settle onto the screen, so it lands rather than stops.
+  /// settle onto the screen, so it lands rather than stops.
   ///
-  /// The same shape as [enter], and deliberately so. The surface and what comes
-  /// to rest on it have to slow down together: a curve that is all but finished
-  /// a third of the way through leaves the content fading in over a surface
-  /// that has stopped moving, which reads as two events rather than one trip.
-  static const transform = Curves.easeOutCubic;
+  /// A quart, one step sharper than [enter]: a surface covering the whole
+  /// display has to be most of the way there while the eye is still following
+  /// it. A slower curve leaves the last few per cent of the screen growing for
+  /// a tenth of a second after everything else has stopped, and that tail is
+  /// what a trip like this is judged on — Google Keep is at 98% of the width
+  /// within a fifth of its trip.
+  static const transform = Curves.easeOutQuart;
 
   static Duration duration(BuildContext context, Duration preferred) =>
       MediaQuery.maybeOf(context)?.disableAnimations ?? false

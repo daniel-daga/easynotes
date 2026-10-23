@@ -6,8 +6,9 @@
 /// it came from, rather than one screen replacing another.
 ///
 /// The trip follows Google Keep's container transform. The rectangle grows from
-/// the card to the display along a slight arc, the corner radius eases away,
-/// and two things cross-fade inside it: a copy of the card and the note screen.
+/// the card to the display, every edge against the same curve so the shape
+/// arrives whole, the corner radius eases away, and two things cross-fade inside
+/// it: a copy of the card and the note screen.
 /// Both are laid out once — the card at the size it was, the screen at the
 /// display's size — and scaled to the rectangle's width for every frame, so the
 /// two are one surface at two stages rather than a card inside a window
@@ -225,17 +226,20 @@ class NoteExpandRoute<T> extends PageRoute<T> {
     final from = _begin ?? full;
     final preview = _preview?.value ?? 0;
     if (preview > 0) return _previewRect(full, preview);
-    return _arc(from, full, EasyMotion.transform.transform(_clamped(value)));
+    return _grow(from, full, EasyMotion.transform.transform(_clamped(value)));
   }
 
-  /// Swaps a straight interpolation for one that arcs: the surface's top-left
-  /// reaches the screen's corner first and the bottom-right lands last, which
-  /// is the slight curve Keep's trip has and a plain [Rect.lerp] does not.
-  Rect _arc(Rect begin, Rect end, double t) {
-    if (t <= 0) return begin;
-    if (t >= 1) return end;
-    return MaterialRectArcTween(begin: begin, end: end).transform(t)!;
-  }
+  /// All four edges of the surface move together, against the same curve.
+  ///
+  /// This was [MaterialRectArcTween], which is how a [Hero] crosses between two
+  /// screens: its corners travel along elliptical arcs, so the bottom-right has
+  /// not travelled as far as the top-left at the same moment. On a flight
+  /// between two pages that is a flourish. On a card becoming the whole display
+  /// it is the height arriving a tenth of a second after the width, which is
+  /// the whole of what the end of the trip is: one edge still growing while
+  /// everything else has stopped.
+  Rect _grow(Rect begin, Rect end, double t) =>
+      Rect.lerp(begin, end, t.clamp(0.0, 1.0))!;
 
   /// The note shrunk towards the middle while a system back drag is held.
   Rect _previewRect(Rect full, double progress) {
@@ -389,7 +393,7 @@ class NoteExpandRoute<T> extends PageRoute<T> {
             scrim = 0;
             surfaceOpacity = 1 - eased;
           } else {
-            rect = _arc(_closeFrom ?? full, from, eased);
+            rect = _grow(_closeFrom ?? full, from, eased);
             radius = lerpDouble(_closeFromRadius, _corner, eased)!;
             colour = Color.lerp(endColor, startColor, eased)!;
             noteOpacity = 0;
@@ -413,7 +417,7 @@ class NoteExpandRoute<T> extends PageRoute<T> {
           }
         } else {
           final curved = progress.value.clamp(0.0, 1.0);
-          var grown = _arc(from, full, curved);
+          var grown = _grow(from, full, curved);
           var corners = lerpDouble(_corner, 0, curved)!;
           var fill = Color.lerp(startColor, endColor, curved)!;
           if (pull > 0) {

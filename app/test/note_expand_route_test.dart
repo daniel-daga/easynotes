@@ -181,6 +181,40 @@ void main() {
     }
   });
 
+  testWidgets('the surface grows into the whole screen at once', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+    final start = tester.getRect(surface);
+    final full = Offset.zero & screen(tester);
+
+    double share(double value, double from, double to) =>
+        (value - from) / (to - from);
+
+    // Every edge is on the same curve, so the shape arrives whole. The rect
+    // used to be a MaterialRectArcTween, whose corners travel along arcs: the
+    // height was thirty points of the trip behind the width at every frame, and
+    // finished after everything else had stopped.
+    for (var frame = 0; frame < 14; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      final rect = tester.getRect(surface);
+      final width = share(rect.width, start.width, full.width);
+      final height = share(rect.height, start.height, full.height);
+      expect(
+        (width - height).abs(),
+        lessThan(.02),
+        reason: 'frame $frame: width is at $width, height at $height',
+      );
+    }
+    await tester.pumpAndSettle();
+    expect(tester.getRect(surface), full);
+  });
+
   testWidgets('the surface rides the animation rather than being rebuilt', (
     tester,
   ) async {
