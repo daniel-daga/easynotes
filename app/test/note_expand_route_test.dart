@@ -144,6 +144,40 @@ void main() {
     expect(find.byType(NoteScreen), findsOneWidget);
   });
 
+  testWidgets('the surface rides the animation rather than being rebuilt', (
+    tester,
+  ) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+    final opened = tester.element(surface);
+    final note = tester.element(find.byType(NoteScreen));
+
+    // The scrim arrives on the second frame of the open and leaves on the first
+    // frame of the close. Without keys on the layers around the surface, both
+    // of those frames threw the surface away and built a new one, taking the
+    // note's ancestors with it.
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(identical(tester.element(surface), opened), isTrue);
+    await tester.pumpAndSettle();
+    expect(identical(tester.element(surface), opened), isTrue);
+    expect(identical(tester.element(find.byType(NoteScreen)), note), isTrue);
+
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump();
+    expect(identical(tester.element(surface), opened), isTrue);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(identical(tester.element(surface), opened), isTrue);
+    expect(identical(tester.element(find.byType(NoteScreen)), note), isTrue);
+
+    await tester.pumpAndSettle();
+    expect(find.byType(NoteScreen), findsNothing);
+  });
+
   testWidgets('the back button shrinks the screen into the card and lets go', (
     tester,
   ) async {

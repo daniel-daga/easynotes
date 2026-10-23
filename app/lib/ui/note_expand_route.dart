@@ -382,11 +382,20 @@ class NoteExpandRoute<T> extends PageRoute<T> {
           scrim = _kScrimOpacity * value * (1 - pull);
         }
 
+        // Every layer is keyed, and stays keyed across the whole trip. The
+        // scrim arrives on the second frame of the open and leaves on the first
+        // frame of the close; unkeyed, that changes which slot the surface sits
+        // in, and the surface is rebuilt in place as the thing that used to be
+        // beside it. The note screen itself survives — Flutter re-adopts it
+        // through a key of its own — but the surface and everything holding the
+        // note would be destroyed and rebuilt, once per trip, on a frame in the
+        // middle of the animation this is all for.
         return Stack(
           children: [
             // The list is still underneath, and dims as the note takes over.
             if (scrim > 0)
               Positioned.fill(
+                key: const ValueKey('note-expanding-scrim-layer'),
                 child: IgnorePointer(
                   child: ColoredBox(
                     key: const Key('note-expanding-scrim'),
@@ -395,6 +404,7 @@ class NoteExpandRoute<T> extends PageRoute<T> {
                 ),
               ),
             Positioned.fromRect(
+              key: const ValueKey('note-expanding-surface-layer'),
               rect: rect,
               child: ClipRRect(
                 key: const Key('note-expanding-surface'),
@@ -436,6 +446,7 @@ class NoteExpandRoute<T> extends PageRoute<T> {
             // own rectangle, and the surface starts and ends there.
             if (cardBuilder != null && cardOpacity > 0)
               Positioned.fromRect(
+                key: const ValueKey('note-expanding-card-layer'),
                 rect: from,
                 child: IgnorePointer(
                   child: ExcludeSemantics(
