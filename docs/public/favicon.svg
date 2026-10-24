@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EasyNotes">
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#FFB300"/>
+  <path d="M40 11H49V20Z" fill="#D99200"/>
+  <path d="M18 11h22l9 9v27a5 5 0 0 1-5 5H18a5 5 0 0 1-5-5V16a5 5 0 0 1 5-5Z" fill="#FFF8E7"/>
+  <rect x="23" y="25" width="18" height="4.5" rx="2.25" fill="#FFB300"/>
+  <rect x="23" y="33" width="14" height="4.5" rx="2.25" fill="#FFB300"/>
+  <rect x="23" y="41" width="18" height="4.5" rx="2.25" fill="#FFB300"/>
+</svg>
