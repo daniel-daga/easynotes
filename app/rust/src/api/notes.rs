@@ -1773,6 +1773,10 @@ pub struct InviteStatusView {
 pub struct PendingJoinView {
     pub invite: String,
     pub name: String,
+    /// The note, when the link's pre-grant opened it and this device can read
+    /// it already ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// The app opens it instead of showing the waiting dialog.
+    pub note: Option<String>,
 }
 
 impl From<&PendingJoin> for PendingJoinView {
@@ -1780,6 +1784,7 @@ impl From<&PendingJoin> for PendingJoinView {
         Self {
             invite: join.secret.id().encode(),
             name: join.name.clone(),
+            note: None,
         }
     }
 }
@@ -3144,6 +3149,9 @@ impl Library {
             .locked()?
             .remember_invite(&invite)
             .map_err(|e| e.to_string())?;
+        // The key this link hands over, sealed for whoever claims it, so the
+        // guest can read the note without waiting for this device.
+        self.refresh_pre_grant(&invite).await;
         Ok(InviteView::from(&invite))
     }
 
@@ -3261,6 +3269,9 @@ impl Library {
             .approval
             .as_ref()
             .map(|(_, join)| join.name.clone());
+        // The key the guest was handed should be the one the package adds
+        // them with: if a removal rotated it in between, seal it again now.
+        self.refresh_pre_grant(&outgoing).await;
         let done = self.finish_approval(&outgoing).await?;
         Ok(InviteStatusView {
             open: false,
@@ -3270,16 +3281,74 @@ impl Library {
         })
     }
 
+    /// Seal the note's current key for a link, and leave it on the relay
+    /// ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    ///
+    /// Best effort on purpose: an invite whose pre-grant cannot be sealed or
+    /// sent still works, with the guest waiting for this device as before. It
+    /// is called when the link is made, and again just before an approval, so
+    /// the grant the guest was handed is the key the package will add them
+    /// with.
+    async fn refresh_pre_grant(&self, outgoing: &OutgoingInvite) {
+        let sealed = match self.shared.locked().and_then(|core| {
+            core.pre_grant(outgoing.secret.id())
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(Some(sealed)) => sealed,
+            _ => return,
+        };
+        let Ok((http, access)) = self.shared.http_base() else {
+            return;
+        };
+        let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        let _ = on_network(async move {
+            invite::set_pre_grant(&http, access.as_ref(), &secret, &owner, &sealed)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await;
+    }
+
     /// Answer a request with nothing, and forget its invite.
+    ///
+    /// When the invite carried a pre-grant, the note's key is changed as well:
+    /// whoever held the link may have read the note already, and a rotation is
+    /// the only thing that stops them reading it any further (ADR 0030). It is
+    /// deliberately after the decline: the link is spent either way, and the
+    /// rotation must not be lost because the relay call failed.
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
+        // Both of the checks below are best effort: the link is spent either
+        // way, and a device that cannot read its own invite row must not turn a
+        // decline into a failure the guest is told about.
+        let pre_granted = self
+            .shared
+            .locked()
+            .ok()
+            .and_then(|core| core.pre_grant(outgoing.secret.id()).ok())
+            .flatten()
+            .is_some();
         on_network(async move {
             invite::decline(&http, access.as_ref(), &secret, &owner, &request)
                 .await
                 .map_err(|e| e.to_string())
         })
         .await?;
+        if pre_granted {
+            let note = outgoing.note;
+            let rotated = self
+                .shared
+                .locked()
+                .ok()
+                .and_then(|mut core| core.rotate_key(note).ok())
+                .flatten();
+            if let Some(rotated) = rotated {
+                for envelope in rotated.envelopes {
+                    self.shared.send_edit(note, envelope, false);
+                }
+            }
+        }
         self.shared.forget_invite(outgoing)
     }
 
@@ -3357,7 +3426,7 @@ impl Library {
             (sealed, member, core.profile_name().unwrap_or_default())
         };
         let (s, payload) = (secret.clone(), sealed_request);
-        let request = on_network(async move {
+        let (request, pre_grant) = on_network(async move {
             invite::request(&http, access.as_ref(), &s, &member, &payload)
                 .await
                 .map_err(|e| e.to_string())
@@ -3367,12 +3436,30 @@ impl Library {
             secret,
             request,
             name,
+            note: None,
         };
         self.shared
             .locked()?
             .remember_join(&join)
             .map_err(|e| e.to_string())?;
-        Ok(PendingJoinView::from(&join))
+        let id = join.secret.id();
+        let note = match pre_grant {
+            Some(sealed) => self.take_pre_grant(id, &join.secret, &sealed)?,
+            None => None,
+        };
+        if let Some(note) = note {
+            // The row stays: the request is still answered later, and a
+            // decline has to be able to take the note away again.
+            let mut opened = join.clone();
+            opened.note = Some(note);
+            self.shared
+                .locked()?
+                .remember_join(&opened)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut view = PendingJoinView::from(&join);
+        view.note = note.map(|id| id.encode());
+        Ok(view)
     }
 
     /// The join requests this device is waiting on.
@@ -3414,7 +3501,28 @@ impl Library {
         .await?;
         let id = join.secret.id();
         match answer {
-            Ok(Answer::Pending { .. }) => Ok(JoinCheckView::waiting()),
+            Ok(Answer::Pending { pre_grant, .. }) => {
+                // The link's key, if this device has not read the note yet:
+                // enough to open it before the owner's device has seen the
+                // request. The row stays, because a decline has to reach this
+                // device later.
+                if let Some(sealed) = pre_grant {
+                    if let Some(note) = self.take_pre_grant(id, &join.secret, &sealed)? {
+                        let mut opened = join.clone();
+                        opened.note = Some(note);
+                        self.shared
+                            .locked()?
+                            .remember_join(&opened)
+                            .map_err(|e| e.to_string())?;
+                        return Ok(JoinCheckView {
+                            state: JoinStateView::Joined,
+                            note: Some(note.encode()),
+                            message: None,
+                        });
+                    }
+                }
+                Ok(JoinCheckView::waiting())
+            }
             Ok(Answer::Approved { note, owner }) => {
                 let readable = {
                     let mut core = self.shared.locked()?;
@@ -3441,6 +3549,13 @@ impl Library {
                 })
             }
             Ok(Answer::Declined) => {
+                // A note read through this invite before it was answered goes
+                // too: the person was turned away, and a key to a note nobody
+                // will re-grant is not one to keep.
+                self.shared
+                    .locked()?
+                    .forget_pre_grant(id)
+                    .map_err(|e| e.to_string())?;
                 self.shared
                     .locked()?
                     .forget_join(id)
@@ -3463,6 +3578,37 @@ impl Library {
                 })
             }
         }
+    }
+
+    /// Open a link's pre-grant, if this device can use it
+    /// ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    ///
+    /// `Some(note)` when the note is readable now; `None` when this device
+    /// already holds a key for it (an older one is never replaced by a link)
+    /// or the grant is for a note that has been deleted. A grant that does not
+    /// open is not an error: the invite still works the way it did before.
+    fn take_pre_grant(
+        &self,
+        invite: InviteId,
+        secret: &InviteSecret,
+        sealed: &[u8],
+    ) -> Result<Option<NoteId>, String> {
+        let Ok((note, owner, key)) = easynotes_core::invite::open_pre_grant(secret, sealed) else {
+            return Ok(None);
+        };
+        let readable = {
+            let mut core = self.shared.locked()?;
+            if let Err(_error) = core.accept_pre_grant(invite, note, owner, key) {
+                // Not a note this device may take: deleted, or a record it
+                // must not overwrite. The old path still works.
+                return Ok(None);
+            }
+            core.can_open(note)
+        };
+        if readable {
+            self.shared.connect_new_documents()?;
+        }
+        Ok(readable.then_some(note))
     }
 
     /// Stop waiting on a join request. The relay keeps the request until the

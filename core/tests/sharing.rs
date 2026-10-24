@@ -427,6 +427,11 @@ macro_rules! both_backends {
 
 both_backends!(
     a_person_is_let_in_and_reads_the_note,
+    a_link_lets_a_guest_in_before_the_owner_approves,
+    a_package_on_its_way_does_not_remove_a_provisional_guest,
+    the_adding_package_makes_a_provisional_guest_a_member,
+    a_decline_takes_the_note_away_from_a_provisional_guest,
+    a_rotation_with_nobody_removed_changes_the_key_for_everyone,
     removing_anna_reaches_both_her_phones_and_ben_keeps_the_note,
     a_new_phone_recovers_shared_notes_with_the_original_gone,
     two_owner_devices_removing_at_once_converge,
@@ -445,6 +450,175 @@ both_backends!(
 );
 
 // ---------------------------------------------------------------------------
+
+/// The guest opens the pre-grant the link carries and reads the note with
+/// nobody's device having done anything since (ADR 0030).
+fn a_link_lets_a_guest_in_before_the_owner_approves<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+
+    let outgoing = owner.core().new_invite(note).unwrap();
+    owner.core().remember_invite(&outgoing).unwrap();
+    let sealed = owner
+        .peek()
+        .pre_grant(outgoing.secret.id())
+        .unwrap()
+        .expect("a link to a readable note carries its key");
+    let (granted, owner_key, key) = invite::open_pre_grant(&outgoing.secret, &sealed).unwrap();
+    assert_eq!(granted, note);
+
+    anna.core()
+        .accept_pre_grant(outgoing.secret.id(), granted, owner_key, key)
+        .unwrap();
+    anna.sync_account(&mut relay);
+    anna.sync(&mut relay, note);
+
+    assert_eq!(anna.title(note).as_deref(), Some("Groceries"));
+    assert!(anna.peek().can_open(note));
+    // Nobody has added her: the owner's list is still the owner.
+    assert_eq!(owner.names(note), ["Olga"]);
+    assert_eq!(anna.peek().current_package(note).unwrap(), None);
+}
+
+/// A package that is on its way — one that adds somebody else, or an owner
+/// device's sibling that has not added this person yet — is waiting, not a
+/// removal. The provisional guest keeps the note.
+fn a_package_on_its_way_does_not_remove_a_provisional_guest<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let mut ben = Phone::<D>::person("Ben");
+
+    let outgoing = owner.core().new_invite(note).unwrap();
+    owner.core().remember_invite(&outgoing).unwrap();
+    let sealed = owner
+        .peek()
+        .pre_grant(outgoing.secret.id())
+        .unwrap()
+        .unwrap();
+    let (granted, owner_key, key) = invite::open_pre_grant(&outgoing.secret, &sealed).unwrap();
+    anna.core()
+        .accept_pre_grant(outgoing.secret.id(), granted, owner_key, key)
+        .unwrap();
+    anna.sync_account(&mut relay);
+    anna.sync(&mut relay, note);
+
+    // The owner adds Ben. The package lists Olga and Ben, not Anna.
+    let (invite, secret, request) = ask(&mut owner, &mut ben, note);
+    assert_eq!(
+        owner.core().approve(invite, "req", &request).unwrap(),
+        Approved::Adding
+    );
+    owner.sync(&mut relay, note);
+    let _ = secret;
+
+    anna.sync(&mut relay, note);
+    assert_eq!(
+        anna.title(note).as_deref(),
+        Some("Groceries"),
+        "a package that has not added her yet is not a removal"
+    );
+    assert!(anna.peek().can_open(note));
+}
+
+/// When the package that adds her lands, the grant it carries is the key she
+/// already has, so she simply becomes a member.
+fn the_adding_package_makes_a_provisional_guest_a_member<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+
+    let outgoing = owner.core().new_invite(note).unwrap();
+    owner.core().remember_invite(&outgoing).unwrap();
+    let sealed = owner
+        .peek()
+        .pre_grant(outgoing.secret.id())
+        .unwrap()
+        .unwrap();
+    let (granted, owner_key, key) = invite::open_pre_grant(&outgoing.secret, &sealed).unwrap();
+    anna.core()
+        .accept_pre_grant(outgoing.secret.id(), granted, owner_key, key)
+        .unwrap();
+    anna.sync_account(&mut relay);
+    anna.sync(&mut relay, note);
+    let before = anna.key_id(note);
+
+    // The same link, approved by the owner's device.
+    let request = invite::open_request(
+        &outgoing.secret,
+        &anna.peek().seal_join_request(&outgoing.secret).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        owner
+            .core()
+            .approve(outgoing.secret.id(), "req", &request)
+            .unwrap(),
+        Approved::Adding
+    );
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    assert_eq!(anna.names(note), ["Olga", "Anna"]);
+    assert_eq!(
+        anna.key_id(note),
+        before,
+        "the package grants the key the link already gave her"
+    );
+}
+
+/// A decline takes back the note a provisional guest was reading, and leaves
+/// nothing of it behind.
+fn a_decline_takes_the_note_away_from_a_provisional_guest<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+
+    let outgoing = owner.core().new_invite(note).unwrap();
+    owner.core().remember_invite(&outgoing).unwrap();
+    let sealed = owner
+        .peek()
+        .pre_grant(outgoing.secret.id())
+        .unwrap()
+        .unwrap();
+    let (granted, owner_key, key) = invite::open_pre_grant(&outgoing.secret, &sealed).unwrap();
+    anna.core()
+        .accept_pre_grant(outgoing.secret.id(), granted, owner_key, key)
+        .unwrap();
+    anna.sync_account(&mut relay);
+    anna.sync(&mut relay, note);
+    assert!(anna.peek().can_open(note));
+
+    let gone = anna.core().forget_pre_grant(outgoing.secret.id()).unwrap();
+    assert_eq!(gone.len(), 1);
+    assert_eq!(gone[0].0, note);
+    assert!(!anna.peek().can_open(note));
+    assert_eq!(anna.title(note), None);
+    assert!(!anna.core().notes().unwrap().iter().any(|n| n.id == note));
+}
+
+/// What a decline needs when the link held a key: the note moves to a new key
+/// with the same people on it, so whoever read it through the link cannot read
+/// what comes next (ADR 0030).
+fn a_rotation_with_nobody_removed_changes_the_key_for_everyone<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    let before = anna.key_id(note);
+
+    let rotated = owner.core().rotate_key(note).unwrap();
+    assert!(rotated.is_some_and(|out| out.rekey));
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    assert_ne!(anna.key_id(note), before);
+    assert_eq!(anna.names(note), ["Olga", "Anna"]);
+    set_title(&mut anna, &mut relay, note, "Groceries and wine");
+    owner.sync(&mut relay, note);
+    assert_eq!(owner.title(note).as_deref(), Some("Groceries and wine"));
+}
 
 fn a_person_is_let_in_and_reads_the_note<D: NoteDoc>() {
     let mut relay = Relay::default();

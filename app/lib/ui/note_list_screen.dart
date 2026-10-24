@@ -637,6 +637,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
       ),
     );
     if (join == null || !mounted) return;
+    // The link's pre-grant opened the note already: nothing to wait for. The
+    // request is still answered in the background, and a decline takes the
+    // note away again.
+    if (join.readable) {
+      await _openNote(join.noteId!);
+      return;
+    }
     final id = await showDialog<String>(
       context: context,
       barrierDismissible: false,

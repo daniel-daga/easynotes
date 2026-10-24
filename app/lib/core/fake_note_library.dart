@@ -180,6 +180,10 @@ class FakeNoteLibrary implements NoteLibrary {
   /// with no relay.
   String? relayError;
 
+  /// The note a link hands over when it is opened, as the pre-grant does
+  /// (ADR 0030). Null is a link that has to wait for the owner's device.
+  String? grantOnJoin;
+
   final Map<String, People> _people = {};
 
   /// Whether a removal takes effect at once, as it does online, or waits and
@@ -351,7 +355,11 @@ class FakeNoteLibrary implements NoteLibrary {
     if (relayError != null) throw relayError!;
     if (!link.contains('#')) throw 'that is not an invite link: not base64url';
     final id = link.split('#').last;
-    final join = PendingJoin(inviteId: id, name: profileName!);
+    final join = PendingJoin(
+      inviteId: id,
+      name: profileName!,
+      noteId: grantOnJoin,
+    );
     _joins[id] = join;
     return join;
   }

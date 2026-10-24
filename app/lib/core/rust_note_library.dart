@@ -349,8 +349,11 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       Removal(noteId: r.note, title: r.title),
   ];
 
-  static PendingJoin _toJoin(rust.PendingJoinView join) =>
-      PendingJoin(inviteId: join.invite, name: join.name);
+  static PendingJoin _toJoin(rust.PendingJoinView join) => PendingJoin(
+    inviteId: join.invite,
+    name: join.name,
+    noteId: join.note,
+  );
 
   @override
   Future<PendingJoin> requestJoin(String link) async =>

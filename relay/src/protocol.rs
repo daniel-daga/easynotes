@@ -224,6 +224,10 @@ pub const MAX_INVITE_PAYLOAD_BYTES: usize = 1024;
 /// A sealed grant: an ephemeral key, a note ID and a note key, and overhead.
 pub const MAX_INVITE_GRANT_BYTES: usize = 1024;
 
+/// The pre-grant: a note ID, an owner key and a note key, sealed under the
+/// link's secret, and overhead ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+pub const MAX_INVITE_PRE_GRANT_BYTES: usize = 256;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateInvite {
     /// Sixteen bytes derived from the link's secret, base64url — the same shape
@@ -241,6 +245,11 @@ pub struct CreateInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The note key sealed for whoever claims the link, base64url. Optional:
+    /// an older client sends none, and the join then waits for the owner's
+    /// device as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_grant: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -270,6 +279,9 @@ pub struct JoinInvite {
 pub struct JoinedInvite {
     /// The request's name, for polling it and for answering it.
     pub request: String,
+    /// The sealed pre-grant, base64url, when the invite has one. The guest can
+    /// read the note with it before the owner's device has seen the request.
+    pub pre_grant: Option<String>,
 }
 
 /// A guest asking how its request went.
@@ -295,8 +307,24 @@ pub struct PolledRequest {
     pub state: RequestState,
     /// The sealed grant, base64url, once the owner has approved.
     pub grant: Option<String>,
+    /// The sealed pre-grant, base64url, while the request is pending. Sent
+    /// again on every poll so a second device of the same account, or a retry,
+    /// finds it too.
+    pub pre_grant: Option<String>,
     /// Seconds until the invite expires; 0 once it has.
     pub expires_in: u64,
+}
+
+/// The owner sealing, or re-sealing, the note key for whoever claims the link.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetPreGrant {
+    pub owner: String,
+    /// `easynotes_core::relay_access`'s invite proof, base64url. Required on
+    /// a gated relay, ignored on an open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// The sealed pre-grant, base64url.
+    pub pre_grant: String,
 }
 
 /// The owner proving it is the owner.

@@ -42,6 +42,7 @@ async fn open(store: &Arc<dyn RelayStore>, expires_at: i64) -> String {
                 token_hash: &[1u8; 32],
                 owner_hash: &[2u8; 32],
                 expires_at,
+                pre_grant: None,
             },
             NOW,
         )
@@ -75,6 +76,7 @@ async fn an_invite_id_cannot_be_opened_twice() {
                     id: &id,
                     token_hash: &[9u8; 32],
                     owner_hash: &[9u8; 32],
+                    pre_grant: None,
                     expires_at: NOW + 60,
                 },
                 NOW,
@@ -333,6 +335,7 @@ async fn withdrawing_removes_the_requests_too() {
                     id: &id,
                     token_hash: &[1u8; 32],
                     owner_hash: &[2u8; 32],
+                    pre_grant: None,
                     expires_at: NOW + 60,
                 },
                 NOW,

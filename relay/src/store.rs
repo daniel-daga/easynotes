@@ -151,6 +151,11 @@ pub trait RelayStore: Send + Sync + 'static {
         now: i64,
     ) -> Result<Answered>;
 
+    /// Set or replace the pre-grant on an open invite (ADR 0030). The owner
+    /// has already proved itself; this only decides whether the invite can
+    /// still use one.
+    async fn set_invite_pre_grant(&self, id: &str, pre_grant: &[u8], now: i64) -> Result<SetGrant>;
+
     /// Remove an invite and everything on it. Not an error if it is not there.
     async fn withdraw_invite(&self, id: &str) -> Result<()>;
 
@@ -239,6 +244,8 @@ pub struct NewInvite<'a> {
     pub token_hash: &'a [u8],
     pub owner_hash: &'a [u8],
     pub expires_at: i64,
+    /// The sealed pre-grant, if this client seals one (ADR 0030).
+    pub pre_grant: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +255,9 @@ pub struct Invite {
     pub expires_at: i64,
     /// False once a request has been approved.
     pub open: bool,
+    /// The note key sealed for whoever claims this link (ADR 0030). Replaced
+    /// when the owner's device re-seals it; gone with the invite.
+    pub pre_grant: Option<Vec<u8>>,
     /// Oldest first.
     pub requests: Vec<InviteRequest>,
 }
@@ -268,6 +278,16 @@ pub enum AddRequest {
     /// No such invite.
     Missing,
     /// Expired, answered, or somebody else has asked already.
+    Closed,
+}
+
+/// What setting an invite's pre-grant came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetGrant {
+    Done,
+    Missing,
+    /// Expired or already answered: the guest has the real answer, or nobody
+    /// can act on the pre-grant any more.
     Closed,
 }
 
@@ -694,6 +714,7 @@ impl RelayStore for MemoryStore {
                 owner_hash: invite.owner_hash.to_vec(),
                 expires_at: invite.expires_at,
                 open: true,
+                pre_grant: invite.pre_grant.map(|g| g.to_vec()),
                 requests: Vec::new(),
             },
         );
@@ -765,6 +786,18 @@ impl RelayStore for MemoryStore {
             }
         }
         Ok(Answered::Done)
+    }
+
+    async fn set_invite_pre_grant(&self, id: &str, pre_grant: &[u8], now: i64) -> Result<SetGrant> {
+        let mut invites = self.invites.lock().unwrap();
+        let Some(invite) = invites.get_mut(id) else {
+            return Ok(SetGrant::Missing);
+        };
+        if !invite.open || invite.expires_at <= now {
+            return Ok(SetGrant::Closed);
+        }
+        invite.pre_grant = Some(pre_grant.to_vec());
+        Ok(SetGrant::Done)
     }
 
     async fn withdraw_invite(&self, id: &str) -> Result<()> {
@@ -923,6 +956,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "media_doomed",
         sql: include_str!("../migrations/0002_media_doomed.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "invite_pre_grant",
+        sql: include_str!("../migrations/0003_invite_pre_grant.sql"),
     },
 ];
 
@@ -1258,13 +1296,14 @@ impl RelayStore for PostgresStore {
             .await
             .map_err(pg)?;
         let inserted = sqlx::query(
-            "INSERT INTO invites (invite_id, token_hash, owner_hash, expires_at) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT (invite_id) DO NOTHING",
+            "INSERT INTO invites (invite_id, token_hash, owner_hash, expires_at, pre_grant) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (invite_id) DO NOTHING",
         )
         .bind(invite.id)
         .bind(invite.token_hash)
         .bind(invite.owner_hash)
         .bind(invite.expires_at)
+        .bind(invite.pre_grant)
         .execute(&self.pool)
         .await
         .map_err(pg)?;
@@ -1272,14 +1311,15 @@ impl RelayStore for PostgresStore {
     }
 
     async fn invite(&self, id: &str) -> Result<Option<Invite>> {
-        let row: Option<(Vec<u8>, Vec<u8>, i64, bool)> = sqlx::query_as(
-            "SELECT token_hash, owner_hash, expires_at, open FROM invites WHERE invite_id = $1",
+        let row: Option<(Vec<u8>, Vec<u8>, i64, bool, Option<Vec<u8>>)> = sqlx::query_as(
+            "SELECT token_hash, owner_hash, expires_at, open, pre_grant \
+             FROM invites WHERE invite_id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(pg)?;
-        let Some((token_hash, owner_hash, expires_at, open)) = row else {
+        let Some((token_hash, owner_hash, expires_at, open, pre_grant)) = row else {
             return Ok(None);
         };
         let rows: Vec<(String, Vec<u8>, i16, Option<Vec<u8>>)> = sqlx::query_as(
@@ -1306,6 +1346,7 @@ impl RelayStore for PostgresStore {
             owner_hash,
             expires_at,
             open,
+            pre_grant,
             requests,
         }))
     }
@@ -1588,6 +1629,34 @@ impl RelayStore for PostgresStore {
         .fetch_all(&self.pool)
         .await
         .map_err(pg)
+    }
+
+    async fn set_invite_pre_grant(&self, id: &str, pre_grant: &[u8], now: i64) -> Result<SetGrant> {
+        // One statement, so an approval racing a re-seal cannot leave a grant
+        // on an invite that has already been answered.
+        let updated = sqlx::query(
+            "UPDATE invites SET pre_grant = $2 \
+             WHERE invite_id = $1 AND open AND expires_at > $3",
+        )
+        .bind(id)
+        .bind(pre_grant)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        if updated.rows_affected() == 1 {
+            return Ok(SetGrant::Done);
+        }
+        let exists: Option<(bool, i64)> =
+            sqlx::query_as("SELECT open, expires_at FROM invites WHERE invite_id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(pg)?;
+        Ok(match exists {
+            None => SetGrant::Missing,
+            Some(_) => SetGrant::Closed,
+        })
     }
 
     async fn withdraw_invite(&self, id: &str) -> Result<()> {

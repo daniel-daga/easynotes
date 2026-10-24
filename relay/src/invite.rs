@@ -33,7 +33,7 @@
 use crate::app::AppState;
 use crate::error::{RelayError, Result};
 use crate::protocol::*;
-use crate::store::{AddRequest, Answered, Invite, NewInvite};
+use crate::store::{AddRequest, Answered, Invite, NewInvite, SetGrant};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -137,6 +137,16 @@ pub async fn create(
             "the owner secret must not be the join token".into(),
         ));
     }
+    let pre_grant = match &req.pre_grant {
+        Some(sealed) => Some(b64(sealed, "pre-grant")?),
+        None => None,
+    };
+    if pre_grant
+        .as_ref()
+        .is_some_and(|sealed| sealed.len() > MAX_INVITE_PRE_GRANT_BYTES)
+    {
+        return Err(RelayError::TooLarge);
+    }
     let ttl = req.expires_in.clamp(1, INVITE_MAX_TTL_SECS);
     let now = now();
     let created = state
@@ -147,6 +157,7 @@ pub async fn create(
                 token_hash: &token_hash,
                 owner_hash: &owner_hash,
                 expires_at: now + ttl as i64,
+                pre_grant: pre_grant.as_deref(),
             },
             now,
         )
@@ -179,9 +190,17 @@ pub async fn join(
         .add_invite_request(&id, &req.request, &payload, now())
         .await?
     {
-        AddRequest::Added | AddRequest::Again => Ok(Json(JoinedInvite {
-            request: req.request,
-        })),
+        AddRequest::Added | AddRequest::Again => {
+            // The pre-grant goes with the claim: whoever holds the link gets
+            // it once, and the same account asking again finds it again.
+            let invite = state.store.invite(&id).await?;
+            Ok(Json(JoinedInvite {
+                request: req.request,
+                pre_grant: invite
+                    .and_then(|invite| invite.pre_grant)
+                    .map(|sealed| URL_SAFE_NO_PAD.encode(sealed)),
+            }))
+        }
         // Withdrawn between the check and the write.
         AddRequest::Missing => Err(RelayError::NotFound),
         AddRequest::Closed => Err(RelayError::Gone("this invite has expired or been used")),
@@ -205,6 +224,12 @@ pub async fn poll(
     Ok(Json(PolledRequest {
         state: found.state,
         grant: found.grant.as_ref().map(|g| URL_SAFE_NO_PAD.encode(g)),
+        // While the request waits, the key sealed for the link is what lets the
+        // guest read it. Once answered, the answer is the one that counts.
+        pre_grant: match found.state {
+            RequestState::Pending => invite.pre_grant.as_ref().map(|g| URL_SAFE_NO_PAD.encode(g)),
+            _ => None,
+        },
         expires_in: expires_in(&invite, now()),
     }))
 }
@@ -262,6 +287,32 @@ pub async fn answer(
         Answered::Missing => Err(RelayError::NotFound),
         Answered::NotPending => Err(RelayError::Conflict("that request was answered already")),
         Answered::Closed => Err(RelayError::Gone("this invite has expired or been used")),
+    }
+}
+
+/// `POST /v1/invites/{invite}/grant` — the owner sealing, or re-sealing, the
+/// note key for whoever claims the link (ADR 0030). Idempotent, and refused
+/// once the invite is answered or expired.
+pub async fn set_grant(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SetPreGrant>,
+) -> Result<StatusCode> {
+    invite_id(&id)?;
+    admitted(&state, &id, req.access.as_deref())?;
+    let sealed = b64(&req.pre_grant, "pre-grant")?;
+    if sealed.len() > MAX_INVITE_PRE_GRANT_BYTES {
+        return Err(RelayError::TooLarge);
+    }
+    as_owner(&state, &id, &req.owner).await?;
+    match state
+        .store
+        .set_invite_pre_grant(&id, &sealed, now())
+        .await?
+    {
+        SetGrant::Done => Ok(StatusCode::NO_CONTENT),
+        SetGrant::Missing => Err(RelayError::NotFound),
+        SetGrant::Closed => Err(RelayError::Gone("this invite has expired or been used")),
     }
 }
 

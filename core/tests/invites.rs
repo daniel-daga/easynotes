@@ -42,6 +42,7 @@ fn join(name: &str) -> PendingJoin {
         secret: InviteSecret::random(),
         request: "req".into(),
         name: name.into(),
+        note: None,
     }
 }
 

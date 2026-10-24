@@ -122,7 +122,7 @@ pub async fn request(
     secret: &InviteSecret,
     member: &AuthorKey,
     sealed_request: &[u8],
-) -> Result<String> {
+) -> Result<(String, Option<Vec<u8>>)> {
     let payload = URL_SAFE_NO_PAD.encode(sealed_request);
     let joined: wire::JoinedInvite = call_json(
         &invite_url(http_base, secret.id(), "/requests"),
@@ -134,13 +134,45 @@ pub async fn request(
         },
     )
     .await?;
-    Ok(joined.request)
+    let pre_grant = match joined.pre_grant {
+        Some(encoded) => Some(unb64(&encoded)?),
+        None => None,
+    };
+    Ok((joined.request, pre_grant))
+}
+
+/// Seal, or re-seal, the note key this invite hands to whoever claims it
+/// ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+///
+/// Best effort at the call sites: an invite without one still works, with the
+/// guest waiting for the owner's device as before.
+pub async fn set_pre_grant(
+    http_base: &str,
+    access: Option<&RelayAccess>,
+    secret: &InviteSecret,
+    owner: &OwnerSecret,
+    sealed: &[u8],
+) -> Result<()> {
+    let encoded = URL_SAFE_NO_PAD.encode(sealed);
+    call(
+        &invite_url(http_base, secret.id(), "/grant"),
+        &wire::SetPreGrant {
+            owner: &owner.encode(),
+            pre_grant: &encoded,
+            access: access.map(|key| key.invite_proof(&secret.id())),
+        },
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Where a guest's request stands.
 pub enum Answer {
     Pending {
         expires_in: u64,
+        /// The note key sealed for the link, when the relay has one: enough to
+        /// read the note before the owner's device has seen the request.
+        pre_grant: Option<Vec<u8>>,
     },
     Declined,
     /// Approved, and the answer opened: which note, and whose key signs its
@@ -170,6 +202,10 @@ pub async fn poll(
     Ok(match (polled.state, polled.grant) {
         (RequestState::Pending, _) => Answer::Pending {
             expires_in: polled.expires_in,
+            pre_grant: match polled.pre_grant {
+                Some(encoded) => Some(unb64(&encoded)?),
+                None => None,
+            },
         },
         (RequestState::Declined, _) => Answer::Declined,
         (RequestState::Approved, Some(answer)) => {

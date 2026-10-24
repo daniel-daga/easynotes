@@ -39,7 +39,7 @@
 
 use crate::account::MemberIdentity;
 use crate::crypto::{
-    local_aad, open_blob, random_bytes, seal_blob, AuthorKey, PUBKEY_LEN, SIG_LEN,
+    local_aad, open_blob, random_bytes, seal_blob, AuthorKey, NoteKey, PUBKEY_LEN, SIG_LEN,
 };
 use crate::error::{CoreError, Result};
 use crate::ids::{InviteId, NoteId};
@@ -72,8 +72,10 @@ const TOKEN_LABEL: &[u8] = b"easynotes/invite/token/v1";
 const REQUEST_KEY_LABEL: &[u8] = b"easynotes/invite/request-key/v1";
 const REQUEST_DOMAIN: &[u8] = b"easynotes/invite/request/v1";
 const ANSWER_DOMAIN: &[u8] = b"easynotes/invite/answer/v1";
+const PRE_GRANT_DOMAIN: &[u8] = b"easynotes/invite/pre-grant/v1";
 const REQUEST_VERSION: u8 = 4;
 const ANSWER_VERSION: u8 = 5;
+const PRE_GRANT_VERSION: u8 = 6;
 const REQUEST_MEMBER_DOMAIN: &[u8] = b"easynotes/invite/request-member/v1";
 const REQUEST_NAME_DOMAIN: &[u8] = b"easynotes/invite/request-name/v1";
 
@@ -408,6 +410,56 @@ pub fn open_answer(
     ))
 }
 
+/// Seal the note's current key for whoever claims the link
+/// ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+///
+/// `06 | note ID | owner key | note key`. Under the link's request key, so the
+/// relay never sees it, and bound to the invite ID in the AAD so it cannot be
+/// lifted from one invite to another. It carries the owner key as well,
+/// because a guest who reads it has to know what to check the access packages
+/// against before one has arrived.
+pub fn seal_pre_grant(
+    secret: &InviteSecret,
+    note: NoteId,
+    owner: AuthorKey,
+    key: &NoteKey,
+) -> Result<Vec<u8>> {
+    let mut plain = Vec::with_capacity(1 + 16 + PUBKEY_LEN + 32);
+    plain.push(PRE_GRANT_VERSION);
+    plain.extend_from_slice(note.as_bytes());
+    plain.extend_from_slice(&owner.0);
+    plain.extend_from_slice(&key.0);
+    let sealed = seal_blob(
+        &secret.request_cipher(),
+        &secret.aad(PRE_GRANT_DOMAIN),
+        &plain,
+    );
+    plain.zeroize();
+    sealed
+}
+
+/// Open a pre-grant with the link that sealed it.
+pub fn open_pre_grant(
+    secret: &InviteSecret,
+    sealed: &[u8],
+) -> Result<(NoteId, AuthorKey, NoteKey)> {
+    let mut plain = open_blob(
+        &secret.request_cipher(),
+        &secret.aad(PRE_GRANT_DOMAIN),
+        sealed,
+    )?;
+    let expected = 1 + 16 + PUBKEY_LEN + 32;
+    if plain.len() != expected || plain[0] != PRE_GRANT_VERSION {
+        plain.zeroize();
+        return Err(CoreError::MalformedInvite("pre-grant has an unknown shape"));
+    }
+    let note = NoteId::from_bytes(plain[1..17].try_into().unwrap());
+    let owner = AuthorKey(plain[17..17 + PUBKEY_LEN].try_into().unwrap());
+    let key = NoteKey(plain[17 + PUBKEY_LEN..].try_into().unwrap());
+    plain.zeroize();
+    Ok((note, owner, key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +582,38 @@ mod tests {
             name: "x".into(),
         };
         assert!(seal_answer(&secret, &request, NoteId::random(), member().id()).is_err());
+    }
+
+    #[test]
+    fn a_pre_grant_opens_only_with_the_link_that_sealed_it() {
+        let secret = InviteSecret::random();
+        let note = NoteId::random();
+        let owner = crate::crypto::DeviceIdentity::generate().public_key();
+        let key = NoteKey::random();
+        let sealed = seal_pre_grant(&secret, note, owner, &key).unwrap();
+
+        let (opened_note, opened_owner, opened_key) = open_pre_grant(&secret, &sealed).unwrap();
+        assert_eq!(opened_note, note);
+        assert_eq!(opened_owner, owner);
+        assert_eq!(opened_key.id(), key.id());
+        assert!(open_pre_grant(&InviteSecret::random(), &sealed).is_err());
+
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(open_pre_grant(&secret, &tampered).is_err());
+    }
+
+    /// A pre-grant is tied to one invite: the AAD carries the invite ID, so a
+    /// grant lifted from another link does not open even with the same secret.
+    #[test]
+    fn a_pre_grant_cannot_be_lifted_to_another_invite() {
+        let secret = InviteSecret::random();
+        let other = InviteSecret::random();
+        let sealed =
+            seal_pre_grant(&secret, NoteId::random(), member().id(), &NoteKey::random()).unwrap();
+        // Sealed under the first link's key at all: the second cannot open it.
+        assert!(open_pre_grant(&other, &sealed).is_err());
     }
 
     #[test]

@@ -211,6 +211,37 @@ void main() {
     },
   );
 
+  testWidgets('a link that hands the key opens the note without waiting', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary(
+      notes: {'hardware': FakeNoteCore(title: 'Hardware')},
+    )..setUpSharing('Anna');
+    library.grantOnJoin = 'hardware';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteListScreen(
+          library: library,
+          initialInviteLink: 'easynotes://join#abc',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('join-confirm')));
+    await tester.pumpAndSettle();
+
+    // Nothing to wait for: the link carried the key, and the note opens.
+    expect(find.byKey(const Key('join-waiting')), findsNothing);
+    expect(
+      library.calls.where((c) => c == 'openNote(hardware)'),
+      hasLength(1),
+    );
+    // The request is still answered in the background, so a decline can
+    // take the note away again.
+    expect(library.pendingJoins, hasLength(1));
+  });
+
   testWidgets(
     'Get a new phone: twelve words bring every note back, shared ones too',
     (tester) async {

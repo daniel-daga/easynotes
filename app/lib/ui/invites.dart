@@ -1212,7 +1212,11 @@ class _InviteBannersState extends State<InviteBanners> {
           final check = await widget.invites.checkJoin(join.inviteId);
           switch (check.state) {
             case JoinState.joined:
-              if (check.noteId != null) widget.onJoined(check.noteId!);
+              // A note the link's pre-grant already opened has nothing to
+              // announce: it is on screen, and it was never a wait.
+              if (check.noteId != null && !join.readable) {
+                widget.onJoined(check.noteId!);
+              }
             case JoinState.declined:
               _ended[join.inviteId] =
                   'A link you opened could not be used. Ask for a new one.';
@@ -1254,8 +1258,9 @@ class _InviteBannersState extends State<InviteBanners> {
           },
         ),
       for (final join in _waiting)
-        _Line(
-          key: Key('join-banner-${join.inviteId}'),
+        if (!join.readable)
+          _Line(
+            key: Key('join-banner-${join.inviteId}'),
           colour: scheme.secondaryContainer,
           text: 'Joining a shared note…',
           action: 'Stop waiting',

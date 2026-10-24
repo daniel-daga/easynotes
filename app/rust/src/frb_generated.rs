@@ -6101,9 +6101,11 @@ impl SseDecode for crate::api::notes::PendingJoinView {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_invite = <String>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
+        let mut var_note = <Option<String>>::sse_decode(deserializer);
         return crate::api::notes::PendingJoinView {
             invite: var_invite,
             name: var_name,
+            note: var_note,
         };
     }
 }
@@ -7003,6 +7005,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::notes::PendingJoinView {
         [
             self.invite.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
+            self.note.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -7930,6 +7933,7 @@ impl SseEncode for crate::api::notes::PendingJoinView {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.invite, serializer);
         <String>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.note, serializer);
     }
 }
 

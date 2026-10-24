@@ -154,7 +154,7 @@ async fn let_in(owner: &Phone, guest: &Phone, note: NoteId) {
             core.member().unwrap().id(),
         )
     };
-    let request = invite::request(&http, None, &secret, &member, &sealed)
+    let (request, _) = invite::request(&http, None, &secret, &member, &sealed)
         .await
         .unwrap();
 

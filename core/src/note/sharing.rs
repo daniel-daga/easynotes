@@ -726,6 +726,77 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         }))
     }
 
+    /// Change the note's key now, with the same people on it
+    /// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §6, used by
+    /// [ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    ///
+    /// What a decline does when the invite had a pre-grant: whoever held the
+    /// link may have read the note already, and rotating is the only thing that
+    /// stops them reading it any further. Everybody else re-keys on the
+    /// package, exactly as after a removal.
+    pub fn rotate_key(&mut self, id: NoteId) -> Result<Option<Outgoing>> {
+        let Some(owner_identity) = self.record(id).and_then(|record| record.owner_identity())
+        else {
+            return Ok(None);
+        };
+        self.ensure_open(id)?;
+        let mut ledger = self.ledger(id)?;
+        let Some(held) = self.keyring.note_key(id)? else {
+            return Ok(None);
+        };
+        let current = ledger.current();
+        let list: Vec<Member> = match current {
+            Some(_) => self
+                .current_list(&ledger)?
+                .unwrap_or_default()
+                .into_values()
+                .collect(),
+            // A note that was never shared has no package and no list; the
+            // first one this makes has the owner on it and nobody else.
+            None => {
+                let member = self.member()?;
+                vec![self.owner_entry(&member)]
+            }
+        };
+        let revision = match current {
+            Some(digest) => ledger.get(&digest).map_or(0, |e| e.revision) + 1,
+            None => 1,
+        };
+        let key = NoteKey::random();
+        let snapshot = self
+            .open
+            .get(&id)
+            .ok_or_else(|| CoreError::UnknownNote(id.encode()))?
+            .doc
+            .snapshot();
+        let body = Body {
+            list,
+            added: Vec::new(),
+            removed: Vec::new(),
+            snapshot: Some(snapshot),
+        };
+        let bytes = access::build(&owner_identity, id, revision, current, &key, &body)?;
+        let package = Package::parse(&bytes, id, owner_identity.public_key())?;
+        let entry = Entry::of(&package, true, Some(&body));
+
+        // Durable in the order a crash resumes from: log, ledger, counter,
+        // replacement log, key last (ADR 0023 §7).
+        self.store.append(id, &bytes)?;
+        ledger.insert(&package.digest, entry);
+        ledger.hold(&held.id());
+        self.put_ledger(id, &ledger)?;
+        self.store.replace_log(id, std::slice::from_ref(&bytes))?;
+        self.keyring.put_note_key(id, &key)?;
+        self.reopen(id)?;
+        self.reindex(id)?;
+        self.refresh_library();
+        Ok(Some(Outgoing {
+            rekey: true,
+            envelopes: vec![bytes],
+            removed: false,
+        }))
+    }
+
     /// Forget the intents the current package satisfies, once the relay has it.
     fn settle_intents(&mut self, id: NoteId) -> Result<()> {
         let intents = self.intents(id)?;
@@ -1094,6 +1165,86 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             return Ok(None);
         }
         crate::invite::seal_answer(&outgoing.secret, join, note, owner).map(Some)
+    }
+
+    /// The sealed pre-grant for an open invite: the note key its link hands to
+    /// whoever claims it ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    ///
+    /// `None` when this device is not the note's owner, or holds no key for it,
+    /// which is what an invite made before the note was readable looks like.
+    pub fn pre_grant(&self, invite: crate::ids::InviteId) -> Result<Option<Vec<u8>>> {
+        let Some(outgoing) = self
+            .invites()?
+            .into_iter()
+            .find(|i| i.secret.id() == invite)
+        else {
+            return Ok(None);
+        };
+        let note = outgoing.note;
+        if !self.can_manage_collaborators(note) {
+            return Ok(None);
+        }
+        let Some(owner) = self.record(note).and_then(|record| record.owner()) else {
+            return Ok(None);
+        };
+        let Some(key) = self.keyring.note_key(note)? else {
+            return Ok(None);
+        };
+        crate::invite::seal_pre_grant(&outgoing.secret, note, owner, &key).map(Some)
+    }
+
+    /// A pre-grant opened: a place for the note and the key to read it with,
+    /// before the owner's device has added this person.
+    ///
+    /// The key is *provisional*. It is written to the keyring like a granted
+    /// one, because that is what makes the note readable and syncable, and
+    /// ADR 0023 §7 already does the right thing with it: a package that has not
+    /// added this person yet is waiting rather than a removal, and the package
+    /// that does add them either grants this same key or rotates it and the
+    /// ordinary switch follows.
+    ///
+    /// An existing key is never replaced by one read from a link: it may be
+    /// newer, and a link is not authority over a note this device already holds.
+    pub fn accept_pre_grant(
+        &mut self,
+        invite: crate::ids::InviteId,
+        note: NoteId,
+        owner: AuthorKey,
+        key: crate::crypto::NoteKey,
+    ) -> Result<NoteId> {
+        self.accept_answer(invite, note, owner)?;
+        if self.record(note).is_some_and(|record| record.owned()) {
+            return Ok(note);
+        }
+        if self.keyring.note_key(note)?.is_none() {
+            self.keyring.put_note_key(note, &key)?;
+            self.refresh_library();
+        }
+        Ok(note)
+    }
+
+    /// Give up the notes this device was reading only through an invite that
+    /// was turned away. Returns what went, with its title, for a message.
+    ///
+    /// Only notes whose record is this invite are dropped: a person let in and
+    /// later removed is a different story, and carries its own marker.
+    pub fn forget_pre_grant(
+        &mut self,
+        invite: crate::ids::InviteId,
+    ) -> Result<Vec<(NoteId, String)>> {
+        let records = account::note_access_of(self.account.doc.entries());
+        let mut gone = Vec::new();
+        for (note, record) in records {
+            if let NoteRecord::Guest { invite: held, .. } = record {
+                if held != invite {
+                    continue;
+                }
+                let title = self.title_of(note);
+                self.forget_local(note)?;
+                gone.push((note, title));
+            }
+        }
+        Ok(gone)
     }
 
     /// An answer opened: record the note in this person's account and give it

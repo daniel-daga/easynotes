@@ -724,7 +724,7 @@ async fn let_in<S1, K1, S2, K2>(
             core.member().unwrap().id(),
         )
     };
-    let request = invite::request(http, None, &secret, &member, &sealed)
+    let (request, _) = invite::request(http, None, &secret, &member, &sealed)
         .await
         .unwrap();
     let listing = invite::list(http, None, &outgoing.secret, &outgoing.owner)

@@ -430,6 +430,7 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
             post(invite::answer),
         )
         .route("/v1/invites/{invite}/list", post(invite::list))
+        .route("/v1/invites/{invite}/grant", post(invite::set_grant))
         .route("/v1/invites/{invite}/withdraw", post(invite::withdraw))
         .route("/v1/pairings", post(crate::pairing::create))
         .route("/v1/pairings/{id}/request", post(crate::pairing::request))

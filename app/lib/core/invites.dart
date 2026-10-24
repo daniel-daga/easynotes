@@ -152,10 +152,23 @@ class InviteStatus {
 /// A request this device made and is waiting on.
 @immutable
 class PendingJoin {
-  const PendingJoin({required this.inviteId, required this.name});
+  const PendingJoin({
+    required this.inviteId,
+    required this.name,
+    this.noteId,
+  });
 
   final String inviteId;
   final String name;
+
+  /// The note the link's pre-grant opened, when it did
+  /// ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+  /// The request is still answered later: an approval adds this person to the
+  /// package, and a decline takes the note away again.
+  final String? noteId;
+
+  /// Whether the note can be read already, so no waiting dialog is needed.
+  bool get readable => noteId != null;
 }
 
 enum JoinState {

@@ -45,6 +45,13 @@ async fn owner_with_invite(http: &str, expires_in: u64) -> (Core, OutgoingInvite
         .unwrap();
     outgoing.expires_at = granted as i64;
     owner.remember_invite(&outgoing).unwrap();
+    // What the app does after opening one: seal the note's key for whoever
+    // claims the link (ADR 0030). Tests that are not about the pre-grant get
+    // it too, because it is what a link from this build carries.
+    let sealed = owner.pre_grant(outgoing.secret.id()).unwrap().unwrap();
+    invite::set_pre_grant(http, None, &outgoing.secret, &outgoing.owner, &sealed)
+        .await
+        .unwrap();
     (owner, outgoing)
 }
 
@@ -69,11 +76,12 @@ async fn ask_as(
 ) -> Result<PendingJoin, CoreError> {
     let secret = InviteSecret::from_link(link)?;
     let sealed = easynotes_core::invite::seal_request(&secret, member, name)?;
-    let request = invite::request(http, None, &secret, &member.id(), &sealed).await?;
+    let (request, _) = invite::request(http, None, &secret, &member.id(), &sealed).await?;
     Ok(PendingJoin {
         secret,
         request,
         name: name.to_string(),
+        note: None,
     })
 }
 
@@ -106,13 +114,17 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
     let secret = InviteSecret::from_link(&link).unwrap();
     let sealed = guest.seal_join_request(&secret).unwrap();
     let member = guest.member().unwrap();
-    let request_id = invite::request(&http, None, &secret, &member.id(), &sealed)
+    let (request_id, pre_grant) = invite::request(&http, None, &secret, &member.id(), &sealed)
         .await
         .unwrap();
+    // An invite from this build carries the key, sealed for the link: that is
+    // hand-off without the owner's device (ADR 0030).
+    assert!(pre_grant.is_some());
     let join = PendingJoin {
         secret: secret.clone(),
         request: request_id,
         name: "Anna".into(),
+        note: None,
     };
     guest.remember_join(&join).unwrap();
 
@@ -121,7 +133,7 @@ async fn whoever_opens_the_link_gets_the_note_and_can_sync_it() {
         .await
         .unwrap()
     {
-        Answer::Pending { expires_in } => assert!(expires_in > 3500),
+        Answer::Pending { expires_in, .. } => assert!(expires_in > 3500),
         _ => panic!("answered before the owner's device did anything"),
     }
 
@@ -461,7 +473,7 @@ async fn an_invite_names_no_device_no_note_and_no_person() {
     let (owner, outgoing) = owner_with_invite(&http, 3600).await;
     let guest = person("Annabelle Quist");
     let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
-    let request = invite::request(
+    let (request, _) = invite::request(
         &http,
         None,
         &outgoing.secret,
@@ -546,4 +558,143 @@ async fn an_invite_names_no_device_no_note_and_no_person() {
             assert!(!contains(direction, bytes), "{what} crossed the wire");
         }
     }
+}
+
+/// The key travels with the link, so the guest can read the note before the
+/// owner's device has done anything at all (ADR 0030).
+#[tokio::test]
+async fn the_link_hands_over_the_key_without_the_owners_device() {
+    let (relay, _) = relay().await;
+    let http = relay.http_base();
+    let (owner, outgoing) = owner_with_invite(&http, 3600).await;
+    // The owner's device is now out of the picture: nothing below asks it to
+    // do anything. What the guest gets is what the link carried.
+    let owner_core = owner;
+
+    let mut guest = person("Anna");
+    let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
+    let member = guest.member().unwrap();
+    let (_request, pre_grant) =
+        invite::request(&http, None, &outgoing.secret, &member.id(), &sealed)
+            .await
+            .unwrap();
+    let sealed_grant = pre_grant.expect("a link from this build carries a pre-grant");
+
+    let (note, owner_key, key) =
+        easynotes_core::invite::open_pre_grant(&outgoing.secret, &sealed_grant).unwrap();
+    assert_eq!(note, outgoing.note);
+
+    // The guest takes it, and can read the note with no package in sight.
+    guest
+        .accept_pre_grant(outgoing.secret.id(), note, owner_key, key)
+        .unwrap();
+    assert!(guest.can_open(note));
+    let listing = guest.notes().unwrap();
+    assert!(listing.iter().any(|n| n.id == note));
+
+    // The owner's package, when it comes, grants the same key: the guest is
+    // simply a member now.
+    let ledger = owner_core.current_package(note).unwrap();
+    assert!(ledger.is_none(), "the owner has not built a package yet");
+
+    // And a second account holding the same link is refused the request
+    // outright, so it never reaches the key.
+    let mut mallory = person("Mallory");
+    let other_sealed = mallory.seal_join_request(&outgoing.secret).unwrap();
+    let other_member = mallory.member().unwrap();
+    let other = invite::request(
+        &http,
+        None,
+        &outgoing.secret,
+        &other_member.id(),
+        &other_sealed,
+    )
+    .await;
+    assert!(
+        matches!(other, Err(CoreError::Invite(_))),
+        "a claimed link must not hand the key to anyone else"
+    );
+}
+
+/// A re-seal replaces the one before it: the guest polls until the owner's
+/// device has caught up, and must read the newest key.
+#[tokio::test]
+async fn a_re_sealed_pre_grant_replaces_the_one_before_it() {
+    let (relay, _) = relay().await;
+    let http = relay.http_base();
+    let (owner, outgoing) = owner_with_invite(&http, 3600).await;
+    let first = owner.pre_grant(outgoing.secret.id()).unwrap().unwrap();
+
+    // A second seal, as a rotation would make.
+    let second = owner.pre_grant(outgoing.secret.id()).unwrap().unwrap();
+    assert_ne!(first, second, "each seal is a fresh nonce");
+    invite::set_pre_grant(&http, None, &outgoing.secret, &outgoing.owner, &second)
+        .await
+        .unwrap();
+
+    let mut guest = person("Anna");
+    let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
+    let member = guest.member().unwrap();
+    let (request, pre_grant) =
+        invite::request(&http, None, &outgoing.secret, &member.id(), &sealed)
+            .await
+            .unwrap();
+    let _ = request;
+    assert_eq!(pre_grant.unwrap(), second);
+}
+
+/// An answered invite stops changing: a pre-grant sealed after it is refused,
+/// because the guest already has the answer that counts.
+#[tokio::test]
+async fn an_answered_invite_refuses_a_new_pre_grant() {
+    let (relay, _) = relay().await;
+    let http = relay.http_base();
+    let (owner, outgoing) = owner_with_invite(&http, 3600).await;
+    let (guest, _) = ask(&http, &outgoing.secret.link(), "Anna").await.unwrap();
+
+    let listing = invite::list(&http, None, &outgoing.secret, &outgoing.owner)
+        .await
+        .unwrap();
+    let answer = answer_for(&outgoing, listing.requests[0].join.as_ref().unwrap());
+    invite::approve(
+        &http,
+        None,
+        &outgoing.secret,
+        &outgoing.owner,
+        &guest.request,
+        &answer,
+    )
+    .await
+    .unwrap();
+
+    let sealed = owner.pre_grant(outgoing.secret.id()).unwrap().unwrap();
+    let refused =
+        invite::set_pre_grant(&http, None, &outgoing.secret, &outgoing.owner, &sealed).await;
+    assert!(
+        refused.is_err(),
+        "an answered invite must not take a new grant"
+    );
+}
+
+/// Withdrawing takes the pre-grant with the invite: the link is gone.
+#[tokio::test]
+async fn a_withdrawn_invite_takes_the_pre_grant_with_it() {
+    let (relay, _) = relay().await;
+    let http = relay.http_base();
+    let (_, outgoing) = owner_with_invite(&http, 3600).await;
+    invite::withdraw(&http, None, &outgoing.secret, &outgoing.owner)
+        .await
+        .unwrap();
+
+    let guest = person("Anna");
+    let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
+    let attempted = invite::request(
+        &http,
+        None,
+        &outgoing.secret,
+        &guest.member().unwrap().id(),
+        &sealed,
+    )
+    .await;
+    assert!(attempted.is_err());
 }

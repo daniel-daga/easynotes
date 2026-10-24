@@ -1189,6 +1189,14 @@ impl RelayStore for Unreachable {
     ) -> easynotes_relay::error::Result<easynotes_relay::store::Answered> {
         gone()
     }
+    async fn set_invite_pre_grant(
+        &self,
+        _: &str,
+        _: &[u8],
+        _: i64,
+    ) -> easynotes_relay::error::Result<easynotes_relay::store::SetGrant> {
+        gone()
+    }
     async fn withdraw_invite(&self, _: &str) -> easynotes_relay::error::Result<()> {
         gone()
     }

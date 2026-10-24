@@ -190,6 +190,11 @@ pub struct PendingJoin {
     pub request: String,
     /// What this person called themselves, to show on the waiting screen.
     pub name: String,
+    /// The note this link's pre-grant opened, when it did
+    /// ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// The request is still answered later — an approval adds this person to
+    /// the package, a decline takes the note away — so the row stays.
+    pub note: Option<NoteId>,
 }
 
 fn decode_32(raw: &str) -> Result<[u8; 32]> {
@@ -241,6 +246,9 @@ struct StoredJoin {
     secret: String,
     request: String,
     name: String,
+    /// Absent in rows written before a link could open the note itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 /// One note, as a list of notes needs it: enough to draw a card, and no more.
@@ -3059,6 +3067,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                     secret: crate::invite::InviteSecret::from_link(&s.secret)?,
                     request: s.request,
                     name: s.name,
+                    note: match s.note {
+                        Some(encoded) => Some(NoteId::decode(&encoded)?),
+                        None => None,
+                    },
                 })
             })
             .collect()
@@ -3071,6 +3083,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 secret: j.secret.code(),
                 request: j.request.clone(),
                 name: j.name.clone(),
+                note: j.note.map(|note| note.encode()),
             })
             .collect();
         let raw = serde_json::to_vec(&stored)

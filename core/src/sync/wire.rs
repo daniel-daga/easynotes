@@ -577,6 +577,10 @@ pub(crate) struct JoinInvite<'a> {
 #[derive(Deserialize)]
 pub(crate) struct JoinedInvite {
     pub request: String,
+    /// The note key sealed for the link (ADR 0030). Absent on a relay that
+    /// predates it, which leaves the join waiting for the owner's device.
+    #[serde(default)]
+    pub pre_grant: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -601,6 +605,10 @@ pub enum RequestState {
 pub(crate) struct PolledRequest {
     pub state: RequestState,
     pub grant: Option<String>,
+    /// The note key sealed for the link, while the request is pending. Absent
+    /// on a relay that predates it.
+    #[serde(default)]
+    pub pre_grant: Option<String>,
     pub expires_in: u64,
 }
 
@@ -631,6 +639,16 @@ pub(crate) struct ListedRequest {
 pub(crate) struct AnswerInvite<'a> {
     pub owner: &'a str,
     pub grant: Option<&'a str>,
+    /// The relay access proof for this invite (ADR 0028), when this device
+    /// holds a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SetPreGrant<'a> {
+    pub owner: &'a str,
+    pub pre_grant: &'a str,
     /// The relay access proof for this invite (ADR 0028), when this device
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
