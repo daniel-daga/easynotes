@@ -621,6 +621,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
   _ItemRow _row(
     ItemView item, {
+    required int rev,
     int? reorderIndex,
     Future<void> Function()? onSubmitted,
   }) => _ItemRow(
@@ -629,6 +630,7 @@ class _NoteScreenState extends State<NoteScreen> {
       () => GlobalKey<_ItemRowState>(debugLabel: 'item:${item.id}'),
     ),
     item: item,
+    rev: rev,
     fieldId: _standInFor[item.id] ?? item.id,
     focusNode: _focusForItem(item.id),
     reorderIndex: reorderIndex,
@@ -768,6 +770,7 @@ class _NoteScreenState extends State<NoteScreen> {
     // it. See [_BodyFieldState.didUpdateWidget].
     key: const Key('body-field'),
     body: note.body,
+    rev: note.rev,
     // A checklist only has a body when a merge left one there, so it is
     // prompted for as what it is rather than as the place to start typing.
     hint: note.kind == NoteKind.text ? 'Note' : 'Text',
@@ -793,7 +796,7 @@ class _NoteScreenState extends State<NoteScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         children: [
           SizedBox(height: bodyHeight, child: _bodyField(note, expands: true)),
-          for (final item in note.items) _row(item),
+          for (final item in note.items) _row(item, rev: note.rev),
           _audioRows(note),
         ],
       );
@@ -857,6 +860,7 @@ class _NoteScreenState extends State<NoteScreen> {
           final item = active[index];
           return _row(
             item,
+            rev: note.rev,
             reorderIndex: index,
             onSubmitted: () => _insertItemAfter(item.id),
           );
@@ -895,7 +899,11 @@ class _NoteScreenState extends State<NoteScreen> {
           );
         }
         final item = crossedOff[index - checkedStartIndex];
-        return _row(item, onSubmitted: () => _insertItemAfter(item.id));
+        return _row(
+          item,
+          rev: note.rev,
+          onSubmitted: () => _insertItemAfter(item.id),
+        );
       },
     );
   }
@@ -1442,9 +1450,10 @@ class _TitleFieldState extends State<_TitleField> {
 ///   waits, and whatever it says when the first returns is what goes next.
 /// * **This device's own text coming back is not news.** Views arrive late, and
 ///   one carrying text this field sent a moment ago would, if adopted, wind the
-///   field back to it. So what was sent is remembered until it comes back, and
-///   a view carrying any of it is passed over; while a send is pending, every
-///   view is.
+///   field back to it. Every view carries the revision the core published it at,
+///   and every send returns the revision it landed at, so a view at or below
+///   that revision is this field's own echo and is passed over; while a send is
+///   pending, every view is. See [isOwnEcho].
 /// * **A remote change keeps the caret.** Replacing the controller's text would
 ///   put the cursor at the end, mid-sentence, every time the other person typed.
 ///   The change is found as the one splice between the old text and the new,
@@ -1453,6 +1462,7 @@ class _BodyField extends StatefulWidget {
   const _BodyField({
     super.key,
     required this.body,
+    required this.rev,
     required this.hint,
     this.expands = false,
     this.autofocus = false,
@@ -1460,10 +1470,14 @@ class _BodyField extends StatefulWidget {
   });
 
   final String body;
+
+  /// The revision [body] was published at, for telling this field's own echo
+  /// from somebody else's edit.
+  final int rev;
   final String hint;
   final bool expands;
   final bool autofocus;
-  final Future<void> Function(String from, String to) onEdit;
+  final Future<int> Function(String from, String to) onEdit;
 
   @override
   State<_BodyField> createState() => _BodyFieldState();
@@ -1476,13 +1490,10 @@ class _BodyFieldState extends State<_BodyField> {
   /// it holds: what the next send changes *from*.
   late String _base = widget.body;
 
-  /// Texts sent whose view has not come back yet, oldest first.
-  final List<String> _sent = [];
-
-  /// Bodies those sends started from. The core call can finish before its
-  /// updated view reaches this widget, so a completion-time read may still be
-  /// one of these older bodies. Never adopt one over newer text in the field.
-  final List<String> _sentFrom = [];
+  /// The newest revision this field has accounted for: the revision its own
+  /// last send landed at, or the revision of the newest view it has taken.
+  /// Every view at or below it is already reflected here.
+  late int _mine = widget.rev;
   bool _sending = false;
   String? _queued;
 
@@ -1496,11 +1507,10 @@ class _BodyFieldState extends State<_BodyField> {
       String? next = text;
       while (next != null) {
         _queued = null;
-        _sent.add(next);
         final from = _base;
-        _sentFrom.add(from);
         _base = next;
-        await widget.onEdit(from, next);
+        final rev = await widget.onEdit(from, next);
+        if (rev > _mine) _mine = rev;
         next = _queued;
       }
     } finally {
@@ -1508,36 +1518,25 @@ class _BodyFieldState extends State<_BodyField> {
     }
     // A view that came in while the queue was busy was passed over; look at
     // the latest now, in case it was someone else's.
-    if (mounted) _consider(widget.body);
+    if (mounted) _consider(widget.body, widget.rev);
   }
 
   @override
   void didUpdateWidget(_BodyField old) {
     super.didUpdateWidget(old);
-    _consider(widget.body);
+    _consider(widget.body, widget.rev);
   }
 
-  /// A body arrived. Take it unless it is this field's own text coming back.
-  void _consider(String body) {
+  /// A body arrived at [rev]. Take it unless it is this field's own text
+  /// coming back, or older than what the field already has.
+  void _consider(String body, int rev) {
     if (_sending) return;
-    final own = _sent.lastIndexOf(body);
-    if (own >= 0) {
-      // Everything sent up to it has come back too, by now or never.
-      _sent.removeRange(0, own + 1);
-      _sentFrom.removeRange(0, own + 1);
-      return;
-    }
-    if (_sentFrom.contains(body)) {
-      // This is a view from before one of our in-flight edits, not a remote
-      // change. Adopting it would move the caret back as the person types.
-      return;
-    }
-    if (body == _controller.text) return;
+    if (isOwnEcho(rev: rev, mine: _mine, text: body, shown: _base)) return;
+    _mine = rev;
     // Someone else's change, or theirs merged with this field's: either way
     // it is what the core now holds, and what the next send changes from.
-    _sent.clear();
-    _sentFrom.clear();
     _base = body;
+    if (body == _controller.text) return;
     _adopt(body);
   }
 
@@ -1575,6 +1574,7 @@ class _ItemRow extends StatefulWidget {
   const _ItemRow({
     super.key,
     required this.item,
+    required this.rev,
     required this.fieldId,
     required this.focusNode,
     this.reorderIndex,
@@ -1593,9 +1593,13 @@ class _ItemRow extends StatefulWidget {
   /// was first drawn under (see [_NoteScreenState._standInFor]).
   final String fieldId;
   final FocusNode focusNode;
+
+  /// The revision [item] was published at, for telling this row's own echo from
+  /// somebody else's edit.
+  final int rev;
   final int? reorderIndex;
   final ValueChanged<bool?> onChecked;
-  final Future<void> Function(String) onTextChanged;
+  final Future<int> Function(String) onTextChanged;
   final ValueChanged<bool> onWriteStateChanged;
   final VoidCallback onDelete;
   final Future<void> Function() onBackspaceEmpty;
@@ -1613,14 +1617,13 @@ class _ItemRowState extends State<_ItemRow> {
   late final _controller = TextEditingController(text: widget.item.text);
 
   /// The text the core was last told this row holds, or last told this row it
-  /// holds: what leaving it would send, and what the next remote view is
-  /// compared against.
+  /// holds: what leaving it would send.
   late String _lastWritten = widget.item.text;
 
-  /// Texts this row has sent whose view has not come back yet, oldest first.
-  /// A view carrying one of them is this device's own typing arriving late,
-  /// not the other person's, and adopting it would wind the field back.
-  final List<String> _sent = [];
+  /// The newest revision this row has accounted for: the revision its own last
+  /// write landed at, or the revision of the newest view it has taken. Every
+  /// view at or below it is already reflected here.
+  late int _mine = widget.rev;
   FocusNode get _focus => widget.focusNode;
   bool _submitting = false;
   bool _writing = false;
@@ -1657,8 +1660,8 @@ class _ItemRowState extends State<_ItemRow> {
       String? next = text;
       while (next != null) {
         _queuedText = null;
-        if (!_sent.contains(next)) _sent.add(next);
-        await widget.onTextChanged(next);
+        final rev = await widget.onTextChanged(next);
+        if (rev > _mine) _mine = rev;
         _lastWritten = next;
         next = _queuedText;
       }
@@ -1670,7 +1673,7 @@ class _ItemRowState extends State<_ItemRow> {
     }
     // A view that came in while the queue was busy was passed over; look at
     // the latest now, in case it was someone else's.
-    if (mounted) _consider(widget.item.text);
+    if (mounted) _consider(widget.item.text, widget.rev);
   }
 
   Future<void> _commit() async {
@@ -1700,34 +1703,27 @@ class _ItemRowState extends State<_ItemRow> {
   @override
   void didUpdateWidget(_ItemRow old) {
     super.didUpdateWidget(old);
-    _consider(widget.item.text);
+    _consider(widget.item.text, widget.rev);
   }
 
-  /// The view's text arrived. Take it unless it is this row's own typing
-  /// coming back, and keep the caret where the person left it when it is not.
+  /// The view's text arrived at [rev]. Take it unless it is this row's own
+  /// typing coming back, and keep the caret where the person left it when it is
+  /// not.
   ///
   /// While a send is in flight every view is passed over: one of them may be
   /// older than what is in the field, and adopting it would wind the text back
   /// mid-word. [_write] looks again at the latest one when it finishes.
-  void _consider(String text) {
+  void _consider(String text, int rev) {
     if (_writing) return;
-    final own = _sent.lastIndexOf(text);
-    if (own >= 0) {
-      // Everything sent up to it has come back too, by now or never.
-      _sent.removeRange(0, own + 1);
-      _lastWritten = text;
+    if (isOwnEcho(rev: rev, mine: _mine, text: text, shown: _lastWritten)) {
       return;
     }
-    if (text == _lastWritten) return;
-    if (text == _controller.text) {
-      _lastWritten = text;
-      return;
-    }
-    // Someone else's change: it is what the core holds now, and what leaving
-    // this row would send from.
-    _sent.clear();
-    adoptText(_controller, text);
+    _mine = rev;
+    // Someone else's change, or theirs merged with this row's: either way it is
+    // what the core holds now, and what leaving this row would send from.
     _lastWritten = text;
+    if (text == _controller.text) return;
+    adoptText(_controller, text);
   }
 
   @override

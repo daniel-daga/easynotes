@@ -31,7 +31,10 @@ abstract class NoteCore {
   /// showing — to [to]. The core replays that change onto the body as it now
   /// stands, so a peer's edit that arrived after the screen last drew is kept
   /// rather than typed over. Only the change travels.
-  Future<void> editBody(String from, String to);
+  ///
+  /// Returns the [NoteView.rev] the edit landed at, so the field that made it
+  /// can tell its own echo from somebody else's change.
+  Future<int> editBody(String from, String to);
 
   /// Switch between text and checklist, carrying the content across: each line
   /// with something on it becomes an item, or each item becomes a line. Ticks
@@ -41,7 +44,9 @@ abstract class NoteCore {
   /// Append an item. Returns its ID.
   Future<String> addItem(String text);
 
-  Future<void> setItemText(String itemId, String text);
+  /// Set an item's text. Returns the [NoteView.rev] the edit landed at, so the
+  /// field that made it can tell its own echo from somebody else's change.
+  Future<int> setItemText(String itemId, String text);
 
   Future<void> setChecked(String itemId, bool checked);
 

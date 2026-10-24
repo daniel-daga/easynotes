@@ -840,6 +840,133 @@ void main() {
     expect(core.edits, contains('setItemText($id, milk and eggs, please)'));
   });
 
+  testWidgets('a view from before the last write does not wind the row back', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller!;
+
+    await tester.enterText(field, 'milk and');
+    await tester.pumpAndSettle();
+    final staleRev = core.rev;
+    await tester.enterText(field, 'milk and eggs');
+    await tester.pumpAndSettle();
+
+    // A view published before the last write reaches the screen late, which is
+    // what a relay delivers when two edits cross. It says something this row
+    // really did say a moment ago — and is still older than what it says now.
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(id: id, text: 'milk and', checked: false, order: '0000'),
+        ],
+      ),
+      rev: staleRev,
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.text, 'milk and eggs');
+    // And the caret is where the person left it, at the end.
+    expect(controller.selection, const TextSelection.collapsed(offset: 13));
+  });
+
+  testWidgets('our own typing arriving after a remote edit does not undo it', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller!;
+
+    await tester.enterText(field, 'milk and');
+    await tester.pumpAndSettle();
+    final ownRev = core.rev;
+
+    // The other person's line lands and is shown.
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(
+            id: id,
+            text: 'milk and eggs, and bread',
+            checked: false,
+            order: '0000',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk and eggs, and bread');
+
+    // This row's own view, published before that edit, reaches the screen late.
+    // It is not news, and adopting it would type their line away.
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(id: id, text: 'milk and', checked: false, order: '0000'),
+        ],
+      ),
+      rev: ownRev,
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.text, 'milk and eggs, and bread');
+    expect(visibleItems(tester), ['milk and eggs, and bread']);
+  });
+
+  testWidgets('a write the core rebased onto a peer edit is shown and kept', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller!;
+
+    await tester.enterText(field, 'milk and');
+    await tester.pumpAndSettle();
+    final wroteAt = core.rev;
+
+    // The core put this row's change onto a line that had moved meanwhile, so
+    // the view for that write has the same revision as the write and says
+    // something else. That merge is what to show, and what leaving sends from.
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(
+            id: id,
+            text: 'milk, eggs and',
+            checked: false,
+            order: '0000',
+          ),
+        ],
+      ),
+      rev: wroteAt,
+    );
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk, eggs and');
+
+    final editsBefore = core.edits.length;
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    // Leaving sends nothing: the field already holds what the core does.
+    expect(core.edits.length, editsBefore);
+  });
+
   testWidgets(
     'a remote delete of the row being typed in leaves nothing behind',
     (tester) async {
@@ -1086,6 +1213,35 @@ void main() {
       expect(controller.selection, const TextSelection.collapsed(offset: 8));
       expect(core.edits, isEmpty);
     });
+
+    testWidgets('a body view from before the last send does not wind back', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await pumpScreen(tester, core);
+      final controller = bodyField(tester).controller!;
+      final field = find.byKey(const Key('body-text'));
+      await tester.enterText(field, 'milk and');
+      await tester.pumpAndSettle();
+      final staleRev = core.rev;
+      await tester.enterText(field, 'milk and eggs');
+      await tester.pumpAndSettle();
+
+      // Published before this person's last keystroke, delivered after it.
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'milk and',
+          items: [],
+        ),
+        rev: staleRev,
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.text, 'milk and eggs');
+      expect(controller.selection, const TextSelection.collapsed(offset: 13));
+    });
   });
 }
 
@@ -1112,7 +1268,7 @@ class _SlowAddCore extends FakeNoteCore {
   /// A new text comes back later, as it does across the bridge — by when the
   /// field it was typed for may already have the keyboard.
   @override
-  Future<void> setItemText(String itemId, String text) async {
+  Future<int> setItemText(String itemId, String text) async {
     await Future<void>.delayed(const Duration(milliseconds: 30));
     return super.setItemText(itemId, text);
   }

@@ -4,9 +4,10 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
@@ -552,7 +553,11 @@ abstract class Note implements RustOpaqueInterface {
   /// Say that this person changed the body from `from` to `to`. The core
   /// replays that change onto the body as it now stands, so a peer's edit
   /// that arrived after the screen last drew is kept rather than typed over.
-  Future<void> editBody({required String from, required String to});
+  ///
+  /// Returns the revision the edit landed at, or the current one when it
+  /// changed nothing — the field that sent it records that and adopts only
+  /// views newer than it.
+  Future<int> editBody({required String from, required String to});
 
   String id();
 
@@ -610,7 +615,10 @@ abstract class Note implements RustOpaqueInterface {
 
   Future<void> setChecked({required String item, required bool checked});
 
-  Future<void> setItemText({required String item, required String text});
+  /// Returns the revision the edit landed at: the field that sent it records
+  /// that and adopts only views newer than it, so its own echo cannot wind
+  /// the line back.
+  Future<int> setItemText({required String item, required String text});
 
   /// Switch the note between text and checklist, carrying its content across:
   /// lines become items, or items become lines.
@@ -1053,6 +1061,16 @@ class NoteSummaryView {
 /// leave content on the side a conversion emptied and a screen draws it rather
 /// than hiding it — see `easynotes_core::crdt::NoteView`.
 class NoteView {
+  /// The revision this view was published at. Strictly increasing for the
+  /// life of an open note, never persisted and never sent to the relay, so a
+  /// shared text field can tell its own echo from somebody else's edit
+  /// without guessing from the text.
+  ///
+  /// A `u32`, not a `u64`: flutter_rust_bridge hands an `i64` to Dart as a
+  /// `PlatformInt64`, which is a `BigInt` on the web — the trap
+  /// [`SyncStatus::last_seq`] documents. Four billion views of one note in
+  /// one process is beyond reach, and the counter is in memory only.
+  final int rev;
   final NoteKindView kind;
   final String title;
   final String body;
@@ -1069,6 +1087,7 @@ class NoteView {
   final List<AttachmentView> attachments;
 
   const NoteView({
+    required this.rev,
     required this.kind,
     required this.title,
     required this.body,
@@ -1080,6 +1099,7 @@ class NoteView {
 
   @override
   int get hashCode =>
+      rev.hashCode ^
       kind.hashCode ^
       title.hashCode ^
       body.hashCode ^
@@ -1093,6 +1113,7 @@ class NoteView {
       identical(this, other) ||
       other is NoteView &&
           runtimeType == other.runtimeType &&
+          rev == other.rev &&
           kind == other.kind &&
           title == other.title &&
           body == other.body &&

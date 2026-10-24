@@ -37,6 +37,13 @@ class FakeNoteCore implements NoteCore {
   String _body = '';
   int _counter = 0;
 
+  /// The revision of the newest view. Bumped by every publish, as the real
+  /// core's counter is, so a field comparing revisions behaves the same here.
+  int _rev = 0;
+
+  /// The revision of the newest view, for a test that has to hand one in.
+  int get rev => _rev;
+
   /// Every edit the screen has asked for, in order. Tests assert on this to show
   /// that a gesture reached the core rather than only changing pixels.
   final List<String> edits = [];
@@ -66,11 +73,11 @@ class FakeNoteCore implements NoteCore {
   /// Takes [to] as it is: rebasing onto a body that moved is the real core's
   /// job, and is tested there.
   @override
-  Future<void> editBody(String from, String to) async {
-    if (to == _body) return;
+  Future<int> editBody(String from, String to) async {
+    if (to == _body) return _rev;
     edits.add('editBody($from -> $to)');
     _body = to;
-    _emit();
+    return _emit().rev;
   }
 
   /// The same carrying-across the real core does, so a screen test sees what a
@@ -112,10 +119,10 @@ class FakeNoteCore implements NoteCore {
   }
 
   @override
-  Future<void> setItemText(String itemId, String text) async {
+  Future<int> setItemText(String itemId, String text) async {
     edits.add('setItemText($itemId, $text)');
     _find(itemId).text = text;
-    _emit();
+    return _emit().rev;
   }
 
   @override
@@ -291,13 +298,21 @@ class FakeNoteCore implements NoteCore {
 
   /// Push a view the screen did not ask for, as a remote edit from the relay
   /// would. Tests use it to prove the screen really does render from the stream.
-  void pushRemote(NoteView view) {
-    _view = view;
-    _controller.add(view);
+  ///
+  /// The revision is bumped unless the test names one, because a view at an old
+  /// revision is an echo the screen ignores — and a test that wants to prove
+  /// that passes [rev] explicitly.
+  void pushRemote(NoteView view, {int? rev}) {
+    _rev = rev ?? _rev + 1;
+    _view = _at(view, _rev);
+    _controller.add(_view);
   }
 
-  void _emit() {
+  /// The view published, with the revision it is at.
+  NoteView _emit() {
+    _rev++;
     _view = NoteView(
+      rev: _rev,
       kind: _kind,
       title: _title,
       body: _body,
@@ -308,7 +323,19 @@ class FakeNoteCore implements NoteCore {
       attachments: List.unmodifiable(_attachments),
     );
     _controller.add(_view);
+    return _view;
   }
+
+  static NoteView _at(NoteView v, int rev) => NoteView(
+    rev: rev,
+    kind: v.kind,
+    title: v.title,
+    body: v.body,
+    colour: v.colour,
+    colourSet: v.colourSet,
+    items: v.items,
+    attachments: v.attachments,
+  );
 
   _Item _find(String id) => _items.firstWhere(
     (i) => i.id == id,

@@ -8,12 +8,31 @@
 ///
 /// The change is found as the one splice between the old text and the new, and
 /// the selection is carried across it. That is all this file does; who decides
-/// *whether* to adopt — a field's own echoes coming back, a send in flight — is
-/// the field's business, because the body sends a `from` and a `to` and an item
-/// sends only its text.
+/// *whether* to adopt is the field's business, because the body sends a `from`
+/// and a `to` and an item sends only its text — but both decide it the same way,
+/// with [isOwnEcho].
 library;
 
 import 'package:flutter/widgets.dart';
+
+/// Whether a view is this field's own echo, and so has nothing to adopt.
+///
+/// [mine] is the newest revision the field has accounted for: the revision its
+/// own last write landed at, or the revision of the newest view it has taken.
+/// [text] is what that revision said, and [shown] is what the field is holding
+/// for it.
+///
+/// Anything below [mine] was published before the field's last write, so it is
+/// older than what the field already shows. A view at exactly [mine] is the
+/// field's own write coming back — unless it says something else, which means
+/// the core rebased that write onto somebody else's edit and the merge is what
+/// to show and what the next send starts from.
+bool isOwnEcho({
+  required int rev,
+  required int mine,
+  required String text,
+  required String shown,
+}) => rev < mine || (rev == mine && text == shown);
 
 /// Show [text] in [controller], keeping the selection where it was relative to
 /// the text around the change.

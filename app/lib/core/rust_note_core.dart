@@ -87,7 +87,7 @@ class RustNoteCore implements NoteCore {
   Future<void> setTitle(String title) => _note.setTitle(title: title);
 
   @override
-  Future<void> editBody(String from, String to) =>
+  Future<int> editBody(String from, String to) =>
       _note.editBody(from: from, to: to);
 
   @override
@@ -97,7 +97,7 @@ class RustNoteCore implements NoteCore {
   Future<String> addItem(String text) => _note.addItem(text: text);
 
   @override
-  Future<void> setItemText(String itemId, String text) =>
+  Future<int> setItemText(String itemId, String text) =>
       _note.setItemText(item: itemId, text: text);
 
   @override
@@ -223,6 +223,7 @@ class RustNoteCore implements NoteCore {
   };
 
   static NoteView _toView(rust.NoteView v) => NoteView(
+    rev: v.rev,
     kind: fromRustKind(v.kind),
     title: v.title,
     body: v.body,

@@ -4,11 +4,14 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/notes.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -436,7 +439,7 @@ abstract class RustLibApi extends BaseApi {
     required String description,
   });
 
-  Future<void> crateApiNotesNoteEditBody({
+  Future<int> crateApiNotesNoteEditBody({
     required Note that,
     required String from,
     required String to,
@@ -500,7 +503,7 @@ abstract class RustLibApi extends BaseApi {
     required bool checked,
   });
 
-  Future<void> crateApiNotesNoteSetItemText({
+  Future<int> crateApiNotesNoteSetItemText({
     required Note that,
     required String item,
     required String text,
@@ -3444,7 +3447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateApiNotesNoteEditBody({
+  Future<int> crateApiNotesNoteEditBody({
     required Note that,
     required String from,
     required String to,
@@ -3467,7 +3470,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_u_32,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNotesNoteEditBodyConstMeta,
@@ -3897,7 +3900,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateApiNotesNoteSetItemText({
+  Future<int> crateApiNotesNoteSetItemText({
     required Note that,
     required String item,
     required String text,
@@ -3920,7 +3923,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_u_32,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNotesNoteSetItemTextConstMeta,
@@ -4666,16 +4669,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NoteView dco_decode_note_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return NoteView(
-      kind: dco_decode_note_kind_view(arr[0]),
-      title: dco_decode_String(arr[1]),
-      body: dco_decode_String(arr[2]),
-      colour: dco_decode_opt_box_autoadd_note_colour(arr[3]),
-      colourSet: dco_decode_bool(arr[4]),
-      items: dco_decode_list_item_view(arr[5]),
-      attachments: dco_decode_list_attachment_view(arr[6]),
+      rev: dco_decode_u_32(arr[0]),
+      kind: dco_decode_note_kind_view(arr[1]),
+      title: dco_decode_String(arr[2]),
+      body: dco_decode_String(arr[3]),
+      colour: dco_decode_opt_box_autoadd_note_colour(arr[4]),
+      colourSet: dco_decode_bool(arr[5]),
+      items: dco_decode_list_item_view(arr[6]),
+      attachments: dco_decode_list_attachment_view(arr[7]),
     );
   }
 
@@ -5542,6 +5546,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   NoteView sse_decode_note_view(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_rev = sse_decode_u_32(deserializer);
     var var_kind = sse_decode_note_kind_view(deserializer);
     var var_title = sse_decode_String(deserializer);
     var var_body = sse_decode_String(deserializer);
@@ -5550,6 +5555,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_items = sse_decode_list_item_view(deserializer);
     var var_attachments = sse_decode_list_attachment_view(deserializer);
     return NoteView(
+      rev: var_rev,
       kind: var_kind,
       title: var_title,
       body: var_body,
@@ -6429,6 +6435,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_note_view(NoteView self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.rev, serializer);
     sse_encode_note_kind_view(self.kind, serializer);
     sse_encode_String(self.title, serializer);
     sse_encode_String(self.body, serializer);
@@ -7356,7 +7363,11 @@ class NoteImpl extends RustOpaque implements Note {
   /// Say that this person changed the body from `from` to `to`. The core
   /// replays that change onto the body as it now stands, so a peer's edit
   /// that arrived after the screen last drew is kept rather than typed over.
-  Future<void> editBody({required String from, required String to}) => RustLib
+  ///
+  /// Returns the revision the edit landed at, or the current one when it
+  /// changed nothing — the field that sent it records that and adopts only
+  /// views newer than it.
+  Future<int> editBody({required String from, required String to}) => RustLib
       .instance
       .api
       .crateApiNotesNoteEditBody(that: this, from: from, to: to);
@@ -7451,7 +7462,10 @@ class NoteImpl extends RustOpaque implements Note {
         checked: checked,
       );
 
-  Future<void> setItemText({required String item, required String text}) =>
+  /// Returns the revision the edit landed at: the field that sent it records
+  /// that and adopts only views newer than it, so its own echo cannot wind
+  /// the line back.
+  Future<int> setItemText({required String item, required String text}) =>
       RustLib.instance.api.crateApiNotesNoteSetItemText(
         that: this,
         item: item,

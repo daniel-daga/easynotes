@@ -371,7 +371,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.replay(id)?;
         if let (Some(tx), Some(note)) = (watch, self.open.get_mut(&id)) {
             note.watch = tx;
-            let _ = note.watch.send_replace(note.doc.view());
+            let view = note.doc.view();
+            // Bumped, not merely re-sent: the replayed document may differ from
+            // what watchers were last given, so this is a new view to them.
+            note.publish(view);
         }
         Ok(())
     }

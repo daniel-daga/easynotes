@@ -377,7 +377,45 @@ struct OpenNote<D: NoteDoc> {
     /// Envelopes applied in memory whose log/index update did not finish. Sync
     /// replay repairs these before moving the cursor; normal echoes stay cheap.
     pending_remote: HashSet<(AuthorKey, u64)>,
-    watch: watch::Sender<NoteView>,
+    /// The revision of the view this note last published, and what a field
+    /// compares an incoming view against to know whether it is newer than the
+    /// edit that field made (see [`NoteViewAt`]).
+    rev: u32,
+    watch: watch::Sender<NoteViewAt>,
+}
+
+/// A note's view and the revision it was published at.
+///
+/// The watcher channel is coalescing: views that arrive while nobody is
+/// reading are dropped, so a screen can never wait for one *particular* view.
+/// The revision is what makes the remaining question answerable — "is this at
+/// least as new as the edit I just made?" — instead of guessing from the text,
+/// which cannot tell one device's echo from another's identical typing.
+///
+/// The counter is in memory and per process. It is not written to the log or
+/// the index and never leaves the device, so it is not part of the format
+/// [ADR 0029](../../docs/adr/0029-compatibility-across-releases.md) guards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteViewAt {
+    /// Strictly increasing for the life of one open note.
+    pub rev: u32,
+    pub view: NoteView,
+}
+
+impl<D: NoteDoc> OpenNote<D> {
+    /// Publish [view] at the next revision and wake every watcher.
+    ///
+    /// Wrapping, not saturating: four billion edits to one note in one process
+    /// is beyond reach, and a counter stuck at the ceiling would make every
+    /// later view look older than the last write.
+    fn publish(&mut self, view: NoteView) {
+        self.rev = self.rev.wrapping_add(1);
+        let at = NoteViewAt {
+            rev: self.rev,
+            view,
+        };
+        let _ = self.watch.send_replace(at);
+    }
 }
 
 /// The account document, open for as long as the core is.
@@ -940,7 +978,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.keyring.put_note_key(id, &key)?;
         let recorded = owner_record(key.clone()).encode();
         let doc = D::create(&self.actor);
-        let (tx, _) = watch::channel(doc.view());
+        let view = doc.view();
+        let (tx, _) = watch::channel(NoteViewAt { rev: 1, view });
         let added = self.next_ordinal()?;
         self.open.insert(
             id,
@@ -950,6 +989,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 next_counter: 0,
                 seen: HashSet::new(),
                 pending_remote: HashSet::new(),
+                rev: 1,
                 watch: tx,
             },
         );
@@ -1123,7 +1163,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         }
 
         let view = doc.view();
-        let (tx, _) = watch::channel(view.clone());
+        let (tx, _) = watch::channel(NoteViewAt {
+            rev: 1,
+            view: view.clone(),
+        });
         self.open.insert(
             id,
             OpenNote {
@@ -1132,6 +1175,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 next_counter,
                 seen,
                 pending_remote: HashSet::new(),
+                rev: 1,
                 watch: tx,
             },
         );
@@ -1156,9 +1200,30 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok(self.note(id)?.doc.view())
     }
 
+    /// The view and the revision it is at.
+    ///
+    /// What a caller that has to compare views wants; [`view`](Self::view) is
+    /// still what a caller that only reads content wants.
+    pub fn view_at(&self, id: NoteId) -> Result<NoteViewAt> {
+        let note = self.note(id)?;
+        Ok(NoteViewAt {
+            rev: note.rev,
+            view: note.doc.view(),
+        })
+    }
+
+    /// The revision of a note's current view.
+    ///
+    /// An edit calls this under the lock it already holds, straight after
+    /// applying, to learn the revision its own edit landed at — which is what
+    /// tells the field it came from that every earlier view is an echo.
+    pub fn rev(&self, id: NoteId) -> Result<u32> {
+        Ok(self.note(id)?.rev)
+    }
+
     /// A receiver that yields the current view and then every subsequent one.
     /// The UI renders from this and from nothing else.
-    pub fn watch(&self, id: NoteId) -> Result<watch::Receiver<NoteView>> {
+    pub fn watch(&self, id: NoteId) -> Result<watch::Receiver<NoteViewAt>> {
         Ok(self.note(id)?.watch.subscribe())
     }
 
@@ -2462,7 +2527,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.store
             .put_meta(id, NEXT_COUNTER, &note.next_counter.to_be_bytes())?;
         let note = self.open.get_mut(&id).expect("just borrowed");
-        let _ = note.watch.send_replace(note.doc.view());
+        let view = note.doc.view();
+        note.publish(view);
         self.reindex(id)?;
         self.refresh_library();
         Ok(encoded)
@@ -2571,7 +2637,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             }
             let view = duplicate_view.expect("seen envelopes have a current view");
             let note = self.open.get_mut(&id).expect("just borrowed");
-            let _ = note.watch.send_replace(view.clone());
+            note.publish(view.clone());
             self.reindex(id)?;
             self.refresh_library();
             self.open
@@ -2586,7 +2652,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
         let note = self.open.get_mut(&id).expect("just borrowed");
         let view = note.doc.view();
-        let _ = note.watch.send_replace(view.clone());
+        note.publish(view.clone());
         self.reindex(id)?;
         self.refresh_library();
         self.open
@@ -3403,7 +3469,13 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// come — and anything waiting for it to finish parks too.
     pub fn touch(&self, id: NoteId) -> Result<()> {
         let note = self.note(id)?;
-        let _ = note.watch.send_replace(note.doc.view());
+        // The same revision, because nothing changed: a field comparing the
+        // revision ignores this, which is right — there is no edit to adopt.
+        let at = NoteViewAt {
+            rev: note.rev,
+            view: note.doc.view(),
+        };
+        let _ = note.watch.send_replace(at);
         Ok(())
     }
 

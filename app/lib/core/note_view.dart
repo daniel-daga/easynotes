@@ -76,6 +76,7 @@ class NoteView {
   const NoteView({
     required this.title,
     required this.items,
+    this.rev = 0,
     this.kind = NoteKind.checklist,
     this.body = '',
     this.colour,
@@ -86,11 +87,25 @@ class NoteView {
   const NoteView.empty()
     : title = '',
       items = const [],
+      rev = 0,
       kind = NoteKind.checklist,
       body = '',
       colour = null,
       colourSet = false,
       attachments = const [];
+
+  /// The revision this view was published at, strictly increasing for the life
+  /// of an open note.
+  ///
+  /// It is what a shared field compares against its own last write: anything at
+  /// or below that revision is a view the core had already published when the
+  /// edit was applied — this device's own echo — and anything above it is a
+  /// change somebody else made. Deliberately not part of [operator ==]: a view
+  /// is the same view at a new revision, and treating a bump as new content
+  /// would re-fire every listener for nothing. `0` is "this build has no
+  /// revision for it", which for every view a fake makes is simply never newer
+  /// than anything.
+  final int rev;
 
   final NoteKind kind;
   final String title;

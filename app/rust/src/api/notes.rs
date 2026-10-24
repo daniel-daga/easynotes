@@ -74,6 +74,16 @@ pub struct ItemView {
 /// leave content on the side a conversion emptied and a screen draws it rather
 /// than hiding it — see `easynotes_core::crdt::NoteView`.
 pub struct NoteView {
+    /// The revision this view was published at. Strictly increasing for the
+    /// life of an open note, never persisted and never sent to the relay, so a
+    /// shared text field can tell its own echo from somebody else's edit
+    /// without guessing from the text.
+    ///
+    /// A `u32`, not a `u64`: flutter_rust_bridge hands an `i64` to Dart as a
+    /// `PlatformInt64`, which is a `BigInt` on the web — the trap
+    /// [`SyncStatus::last_seq`] documents. Four billion views of one note in
+    /// one process is beyond reach, and the counter is in memory only.
+    pub rev: u32,
     pub kind: NoteKindView,
     pub title: String,
     pub body: String,
@@ -236,9 +246,11 @@ impl From<NoteKindView> for NoteKind {
     }
 }
 
-impl From<easynotes_core::crdt::NoteView> for NoteView {
-    fn from(v: easynotes_core::crdt::NoteView) -> Self {
+impl From<easynotes_core::note::NoteViewAt> for NoteView {
+    fn from(at: easynotes_core::note::NoteViewAt) -> Self {
+        let v = at.view;
         Self {
+            rev: at.rev,
             kind: v.kind.into(),
             title: v.title,
             body: v.body,
@@ -4023,7 +4035,7 @@ impl Note {
     #[frb(sync)]
     pub fn view(&self) -> Result<NoteView, String> {
         let core = self.shared.locked()?;
-        core.view(self.id)
+        core.view_at(self.id)
             .map(Into::into)
             .map_err(|e| e.to_string())
     }
@@ -4140,16 +4152,22 @@ impl Note {
     /// Say that this person changed the body from `from` to `to`. The core
     /// replays that change onto the body as it now stands, so a peer's edit
     /// that arrived after the screen last drew is kept rather than typed over.
-    pub fn edit_body(&self, from: String, to: String) -> Result<(), String> {
-        let envelope = {
+    ///
+    /// Returns the revision the edit landed at, or the current one when it
+    /// changed nothing — the field that sent it records that and adopts only
+    /// views newer than it.
+    pub fn edit_body(&self, from: String, to: String) -> Result<u32, String> {
+        let (envelope, rev) = {
             let mut core = self.shared.locked()?;
-            core.edit_body(self.id, &from, &to)
-                .map_err(|e| e.to_string())?
+            let envelope = core
+                .edit_body(self.id, &from, &to)
+                .map_err(|e| e.to_string())?;
+            (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
         if let Some(envelope) = envelope {
             self.send(envelope, true);
         }
-        Ok(())
+        Ok(rev)
     }
 
     /// Switch the note between text and checklist, carrying its content across:
@@ -4175,14 +4193,19 @@ impl Note {
         Ok(id.encode())
     }
 
-    pub fn set_item_text(&self, item: String, text: String) -> Result<(), String> {
-        let envelope = {
+    /// Returns the revision the edit landed at: the field that sent it records
+    /// that and adopts only views newer than it, so its own echo cannot wind
+    /// the line back.
+    pub fn set_item_text(&self, item: String, text: String) -> Result<u32, String> {
+        let (envelope, rev) = {
             let mut core = self.shared.locked()?;
-            core.set_item_text(self.id, item_id(&item)?, text)
-                .map_err(|e| e.to_string())?
+            let envelope = core
+                .set_item_text(self.id, item_id(&item)?, text)
+                .map_err(|e| e.to_string())?;
+            (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
         self.send(envelope, true);
-        Ok(())
+        Ok(rev)
     }
 
     pub fn set_checked(&self, item: String, checked: bool) -> Result<(), String> {

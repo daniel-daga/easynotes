@@ -6008,6 +6008,7 @@ impl SseDecode for crate::api::notes::NoteSummaryView {
 impl SseDecode for crate::api::notes::NoteView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_rev = <u32>::sse_decode(deserializer);
         let mut var_kind = <crate::api::notes::NoteKindView>::sse_decode(deserializer);
         let mut var_title = <String>::sse_decode(deserializer);
         let mut var_body = <String>::sse_decode(deserializer);
@@ -6017,6 +6018,7 @@ impl SseDecode for crate::api::notes::NoteView {
         let mut var_attachments =
             <Vec<crate::api::notes::AttachmentView>>::sse_decode(deserializer);
         return crate::api::notes::NoteView {
+            rev: var_rev,
             kind: var_kind,
             title: var_title,
             body: var_body,
@@ -6980,6 +6982,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::notes::NoteSummaryView>
 impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteView {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.rev.into_into_dart().into_dart(),
             self.kind.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
@@ -7858,6 +7861,7 @@ impl SseEncode for crate::api::notes::NoteSummaryView {
 impl SseEncode for crate::api::notes::NoteView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.rev, serializer);
         <crate::api::notes::NoteKindView>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.title, serializer);
         <String>::sse_encode(self.body, serializer);
