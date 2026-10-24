@@ -894,17 +894,34 @@ void main() {
         expect(invite.link, startsWith('easynotes://join#'));
         expect(owner.invitesFor(noteId).single.id, invite.id);
 
-        // Only the link crosses. It carries no key: the guest's library has
-        // nothing to open until the owner's device lets them in.
+        // The link carries the note's key, sealed under its own secret, so the
+        // guest opens the note at once. The request stays pending until the
+        // owner's device answers it, because a decline has to reach this
+        // device and take the note back again.
         final guest = await person('Anna');
         final waiting = await guest.requestJoin(invite.link);
         expect(waiting.name, 'Anna');
+        expect(waiting.noteId, noteId);
         expect(guest.pendingJoins.single.inviteId, waiting.inviteId);
         expect(
           (await guest.checkJoin(waiting.inviteId)).state,
-          JoinState.waiting,
+          JoinState.joined,
         );
-        expect(guest.notes, isEmpty);
+        await _untilNotes(
+          guest.watchNotes(),
+          (notes) => notes.any((n) => n.id == noteId),
+          'the link did not put the note on the guest device',
+        );
+
+        final b = await guest.openNote(noteId);
+        addTearDown(b.dispose);
+        await _until(
+          b.watch(),
+          (view) =>
+              view.title == 'Groceries' &&
+              view.items.map((i) => i.text).join(',') == 'oat milk',
+          'the guest could not open the note from the link alone',
+        );
 
         expect(await letIn(owner, invite), 'Anna');
         expect(owner.invitesFor(noteId), isEmpty);
@@ -919,15 +936,6 @@ void main() {
         expect(check.noteId, noteId);
         expect(guest.pendingJoins, isEmpty);
 
-        final b = await guest.openNote(check.noteId!);
-        addTearDown(b.dispose);
-        await _until(
-          b.watch(),
-          (view) =>
-              view.title == 'Groceries' &&
-              view.items.map((i) => i.text).join(',') == 'oat milk',
-          'the guest was let in and never received the list',
-        );
         final people = guest.people(noteId);
         expect(people.canManage, isFalse);
         expect(people.people.where((p) => p.me).single.name, 'Anna');
@@ -1016,10 +1024,12 @@ void main() {
       },
     );
 
-    test("joining adds a note, and not the owner's colour or labels", () async {
-      // A colour and a label are one person's filing, kept in their account
-      // document; the note everyone shares is not where they go. And a guest
-      // who already has notes keeps them: a join adds, it does not replace.
+    test("joining adds a note with its colour, and not the owner's labels", () async {
+      // A label is one person's filing, kept in their account document; the
+      // note everyone shares is not where it goes. A colour is in that note's
+      // own document, though, so everyone on it sees the same shade. And a
+      // guest who already has notes keeps them: a join adds, it does not
+      // replace.
       final (owner, a, noteId) = await owned();
       await a.setTitle('Groceries');
       await owner.setColour(noteId, NoteColour.pink);
@@ -1049,8 +1059,8 @@ void main() {
       final shared = guest.notes.singleWhere((n) => n.id == noteId);
       expect(
         shared.colour,
-        isNull,
-        reason: "one person's colour reached another person's device",
+        NoteColour.pink,
+        reason: 'the note records the colour, so everyone sees the same one',
       );
       expect(
         shared.tags,
