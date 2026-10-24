@@ -1,0 +1,5 @@
+Updates since v0.1.5:
+
+- Sharing is one tap: an invite link joins when it is tapped or pasted, even before the app is set up, and the guest opens the note straight away
+- Everyone on a shared note sees the same colour, and a line typed on one phone appears on the other while you are still in it
+- Select several notes at once and change them together: colour, labels, pin, archive or trash, with one Undo

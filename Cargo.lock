@@ -658,7 +658,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "easynotes-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "automerge",
  "base64 0.23.1",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "easynotes-relay"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -720,14 +720,14 @@ dependencies = [
 
 [[package]]
 name = "easynotes-wasm-size"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "easynotes-core",
 ]
 
 [[package]]
 name = "easynotes-web-bench"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "easynotes-core",
  "js-sys",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "easynotes-web-media"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "easynotes-core",
  "js-sys",
