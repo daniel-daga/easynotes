@@ -144,10 +144,12 @@ async function makeNote(d, item) {
   await d.page.waitForTimeout(600);
 }
 
+/// The library is back once its create button is; an untitled note's card
+/// shows its first item, not a title, so no card text is stable to wait for.
 async function trashOpenNote(d) {
   await tap(d, /^More note actions$/);
   await tap(d, /^Move to trash$/);
-  await find(d, n => n.text.trim() === 'Untitled checklist');
+  await find(d, n => n.text.trim().split('\n')[0].trim() === 'Create note');
 }
 
 async function openTrash(d) {
