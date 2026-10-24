@@ -55,6 +55,9 @@ that stores and forwards ciphertext and nothing else.
   ([ADR 0019](docs/adr/0019-reminders.md)).
 - **Two devices from twelve words** — a BIP-39 recovery phrase that derives the
   account document ([ADR 0013](docs/adr/0013-recovery-phrase.md)).
+- **Sync is one decision** — a sync server and the account that belongs to it
+  are set up together; a local profile has neither. Without sync, notes stay on
+  the device and are not backed up ([ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md)).
 - **Permanent deletion** of notes from the log, snapshot, index and key
   ([ADR 0010](docs/adr/0010-forgetting-a-note.md)).
 - **Self-hostable relay** with storage quotas, per-address rate limits,
@@ -79,6 +82,15 @@ under that note's key, and is sent to the relay under an opaque note ID. The
 relay appends it to the note's log and forwards it to connected subscribers;
 offline devices fetch what they missed on reconnect. Clients periodically
 upload encrypted snapshots so the log can be compacted.
+
+**What is backed up.** Sync is a server and the account that belongs to it,
+made together. The relay keeps one encrypted replica; the twelve words are what
+make it readable on another device. The relay cannot read it, and neither can
+its operator. Without sync, a profile stays on this device and is not backed
+up. An operator's database dump is disaster recovery for the relay, not a user
+backup — without the account phrase it is ciphertext nobody can open. See
+[ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md) and
+[ADR 0013](docs/adr/0013-recovery-phrase.md).
 
 ### Repository layout
 
@@ -256,6 +268,7 @@ file refuses to start without both.
 | [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
 | [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet |
 | [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
+| [ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md) | Sync is a server and the account that belongs to it: one setup, no upload before the account, and what "backup" means |
 
 ## Reporting a vulnerability
 

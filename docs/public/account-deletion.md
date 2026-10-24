@@ -17,21 +17,23 @@ the app, by a device that holds your account, rather than by a request to us.
 
 ## Delete from the app
 
-1. Open EasyNotes, open the menu, and choose **Your devices**.
-2. Choose **Delete account** (on a device without an account, **Delete
+1. Open EasyNotes, open the menu, and choose **Sync & devices**.
+2. Choose **Delete account** (on a device that is not synced, **Delete
    everything on this device**).
 3. Read what will happen, type `delete`, and confirm.
 
 The device must be online and connected to the relay your notes sync through.
 If it cannot reach the relay, nothing is deleted and the app tells you to try
-again.
+again. Deleting the account also disconnects this device from that relay and
+forgets its address; the emptied collection stays on this device as the local
+one.
 
 ## If you no longer have the app or the device
 
 Install EasyNotes on any device, choose the same relay in
-**Relay settings**, then in **Your devices** choose **I already have twelve
-words** and enter your recovery phrase. Once your notes have arrived, delete the
-account from that device as above.
+**Sync & devices → Sync server**, then use **Use recovery phrase** and enter
+your recovery phrase. Once your notes have arrived, delete the account from
+that device as above.
 
 Without the recovery phrase nobody can prove the account is theirs, including
 us. Notes on a relay that nobody can prove are yours cannot be deleted on

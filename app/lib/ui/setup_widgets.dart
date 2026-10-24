@@ -1,10 +1,9 @@
-/// The pieces first-run setup and Settings share: a checklist step that fills
-/// and ticks itself, the line that joins two steps, and one line of "what this
-/// is" with an icon.
+/// The pieces first-run setup and Settings share: a setup card that fills and
+/// ticks itself, and one line of "what this is" with an icon.
 ///
-/// Setup is a two-step story in both places — a sync server, then an account —
-/// and telling it the same way twice is the point: a person who saw the cards
-/// on the first run recognises them in Settings.
+/// Sync is one decision in both places — a server and the account that belongs
+/// to it — and telling it the same way twice is the point: a person who saw
+/// the card on the first run recognises it in Settings.
 library;
 
 import 'package:flutter/material.dart';
@@ -205,30 +204,4 @@ class SetupStep extends StatelessWidget {
       ),
     );
   }
-}
-
-/// The line that joins two steps, filled once the first is done.
-///
-/// Its left edge sits under the number badges above and below: the page's
-/// padding, the card's padding, half a badge, and half a line.
-class SetupConnector extends StatelessWidget {
-  const SetupConnector({super.key, required this.color});
-
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(left: 24 + 16 + 17, top: 2, bottom: 2),
-    child: Row(
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOutCubic,
-          width: 2,
-          height: 18,
-          color: color,
-        ),
-      ],
-    ),
-  );
 }

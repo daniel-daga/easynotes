@@ -1,8 +1,9 @@
-/// The first run: the intro, the two-step checklist, and the send-off.
+/// The first run: the intro, the one setup card, and the send-off.
 ///
-/// What these hold is the shape of the choices: the intro explains both levels
-/// of sync, the account step cannot be taken before a server is connected, a
-/// finished step looks finished, and every path ends on the send-off page.
+/// What these hold is the shape of the choice: the intro explains that sync is
+/// one decision (a server and the account that belongs to it), a finished step
+/// looks finished, and every path ends on the send-off page. Without sync the
+/// send-off says the notes are not backed up.
 library;
 
 import 'package:easynotes/ui/onboarding_screen.dart';
@@ -12,12 +13,10 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   late int continued;
   late int setUps;
-  late int created;
 
   setUp(() {
     continued = 0;
     setUps = 0;
-    created = 0;
   });
 
   Widget app({bool relayConnected = false, bool accountCreated = false}) =>
@@ -27,8 +26,7 @@ void main() {
           accountCreated: accountCreated,
           serverUrl: relayConnected ? 'https://sync.example.com/team' : null,
           onContinue: () => continued++,
-          onSetUpRelay: () => setUps++,
-          onCreateAccount: () => created++,
+          onSetUpSync: () => setUps++,
         ),
       );
 
@@ -45,42 +43,66 @@ void main() {
     await tap(tester, find.byKey(const Key('onboarding-next')));
   }
 
-  testWidgets('the intro explains the app and both levels of sync', (
+  testWidgets('the intro explains the app and the one sync decision', (
     tester,
   ) async {
     await tester.pumpWidget(app());
 
     expect(find.byKey(const Key('onboarding-welcome')), findsOneWidget);
     expect(find.text('On this device'), findsOneWidget);
-    expect(find.text('Sync server'), findsOneWidget);
-    expect(find.text('Account'), findsOneWidget);
+    expect(find.text('Sync server & account'), findsOneWidget);
     expect(find.byKey(const Key('onboarding-optional')), findsOneWidget);
     // Nothing is set up from the intro.
-    expect(find.byKey(const Key('onboarding-server-step')), findsNothing);
+    expect(find.byKey(const Key('onboarding-sync-step')), findsNothing);
   });
 
-  testWidgets('the account step waits for a sync server', (tester) async {
+  testWidgets('setup is one card, and leaving it stays offline', (
+    tester,
+  ) async {
     await tester.pumpWidget(app());
     await openSetup(tester);
 
-    expect(find.text('Connect a sync server first.'), findsOneWidget);
+    expect(find.byKey(const Key('onboarding-sync-step')), findsOneWidget);
+    expect(find.text('Sync server & account'), findsOneWidget);
+    expect(find.byKey(const Key('onboarding-continue')), findsOneWidget);
 
-    // Not tappable yet, and the server step is.
-    await tap(tester, find.byKey(const Key('onboarding-account-step')));
-    expect(created, 0);
-    await tap(tester, find.byKey(const Key('onboarding-server-step')));
+    await tap(tester, find.byKey(const Key('onboarding-sync-step')));
     expect(setUps, 1);
     expect(continued, 0);
 
-    // Leaving the checklist goes to the send-off, not out of onboarding.
+    // Leaving the setup goes to the send-off, not out of onboarding. The
+    // send-off must not imply a backup that does not exist.
     await tap(tester, find.byKey(const Key('onboarding-continue')));
     expect(find.byKey(const Key('onboarding-done')), findsOneWidget);
+    expect(find.textContaining('not backed up'), findsOneWidget);
     expect(continued, 0);
   });
 
-  testWidgets('a connected server is a finished step and opens the account', (
-    tester,
-  ) async {
+  testWidgets('a finished setup is a finished card and the send-off says how '
+      'to get the notes back', (tester) async {
+    await tester.pumpWidget(app(relayConnected: true, accountCreated: true));
+    await openSetup(tester);
+
+    expect(find.textContaining('Set up with sync.example.com'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('onboarding-sync-step')),
+        matching: find.byIcon(Icons.check),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('onboarding-continue')), findsOneWidget);
+
+    // A finished step is not set up again.
+    await tap(tester, find.byKey(const Key('onboarding-sync-step')));
+    expect(setUps, 0);
+
+    await tap(tester, find.byKey(const Key('onboarding-continue')));
+    expect(find.byKey(const Key('onboarding-done')), findsOneWidget);
+    expect(find.textContaining('twelve words'), findsOneWidget);
+  });
+
+  testWidgets('a half-finished setup says which half is open', (tester) async {
     await tester.pumpWidget(app(relayConnected: true));
     await openSetup(tester);
 
@@ -88,39 +110,20 @@ void main() {
       find.textContaining('Connected to sync.example.com'),
       findsOneWidget,
     );
-    expect(find.text('Connect a sync server first.'), findsNothing);
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('onboarding-server-step')),
-        matching: find.byIcon(Icons.check),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('onboarding-account-step')),
-        matching: find.byIcon(Icons.check),
-      ),
-      findsNothing,
-    );
-
-    // A finished step is not set up again.
-    await tap(tester, find.byKey(const Key('onboarding-server-step')));
-    expect(setUps, 0);
-
-    await tap(tester, find.byKey(const Key('onboarding-account-step')));
-    expect(created, 1);
+    expect(find.textContaining('account step is still open'), findsOneWidget);
+    await tap(tester, find.byKey(const Key('onboarding-sync-step')));
+    expect(setUps, 1);
   });
 
-  testWidgets('making the account moves on to the send-off by itself', (
+  testWidgets('completing setup moves on to the send-off by itself', (
     tester,
   ) async {
-    await tester.pumpWidget(app(relayConnected: true));
+    await tester.pumpWidget(app());
     await openSetup(tester);
-    await tap(tester, find.byKey(const Key('onboarding-account-step')));
+    await tap(tester, find.byKey(const Key('onboarding-sync-step')));
 
-    // The parent reports the new account, as the real screen does once it
-    // closes.
+    // The parent reports the finished setup, as the real screen does once the
+    // account step closes.
     await tester.pumpWidget(app(relayConnected: true, accountCreated: true));
     await tester.pumpAndSettle();
 
@@ -132,36 +135,7 @@ void main() {
     expect(continued, 1);
   });
 
-  testWidgets('a server without an account still gets a send-off', (
-    tester,
-  ) async {
-    await tester.pumpWidget(app(relayConnected: true));
-    await openSetup(tester);
-    await tap(tester, find.byKey(const Key('onboarding-continue')));
-
-    expect(find.byKey(const Key('onboarding-done')), findsOneWidget);
-    expect(
-      find.textContaining('backed up to sync.example.com'),
-      findsOneWidget,
-    );
-
-    await tap(tester, find.byKey(const Key('onboarding-start-writing')));
-    expect(continued, 1);
-  });
-
-  testWidgets('staying offline still gets a send-off', (tester) async {
-    await tester.pumpWidget(app());
-    await openSetup(tester);
-    await tap(tester, find.byKey(const Key('onboarding-continue')));
-
-    expect(find.byKey(const Key('onboarding-done')), findsOneWidget);
-    expect(find.textContaining('stored on this device'), findsOneWidget);
-
-    await tap(tester, find.byKey(const Key('onboarding-start-writing')));
-    expect(continued, 1);
-  });
-
-  testWidgets('the checklist has no way back to the intro', (tester) async {
+  testWidgets('the setup page has no way back to the intro', (tester) async {
     await tester.pumpWidget(app());
     await openSetup(tester);
 

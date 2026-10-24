@@ -167,6 +167,38 @@ class RelayProfiles {
 
   Future<void> activate(RelayProfile profile) => _write(_profiles, profile.id);
 
+  /// Forget [profile]'s server, keeping its notes and its place in the list as
+  /// the local collection. Deleting an account ends the server relationship
+  /// too (ADR 0031): a profile with a URL and no account is not a state the
+  /// app may leave behind.
+  Future<RelayProfile> clearRelay(RelayProfile profile) async {
+    await _storage.delete(key: _accessKey(profile.id));
+    final cleared = RelayProfile(id: profile.id, url: null);
+    _profiles = [
+      for (final p in _profiles)
+        if (p.id == profile.id) cleared else p,
+    ];
+    await _save();
+    return cleared;
+  }
+
+  /// Remove a profile that was created for a setup the person then cancelled.
+  /// Never removes the last one: a device always has somewhere to keep notes.
+  Future<void> remove(RelayProfile profile) async {
+    if (_profiles.length <= 1) return;
+    _profiles = [
+      for (final p in _profiles)
+        if (p.id != profile.id) p,
+    ];
+    await _storage.delete(key: _accessKey(profile.id));
+    if (_selectedId == profile.id) {
+      _selectedId =
+          (_profiles.where((p) => p.url == null).firstOrNull ?? _profiles.first)
+              .id;
+    }
+    await _save();
+  }
+
   /// Give the selected local collection its first relay, preserving its store
   /// ID and keys. The single settings write is the move: before it succeeds
   /// the collection is local; afterwards it belongs to this relay. A fresh

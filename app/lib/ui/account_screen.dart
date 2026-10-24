@@ -189,13 +189,16 @@ class _AccountScreenState extends State<AccountScreen> {
       }
       rethrow;
     }
-    final accountExplanation = widget.profile?.url == null
-        ? 'Connect a sync server to store encrypted backups. Create an '
-              'account to prepare this collection for other devices; use it '
-              'with a sync server to sync notes and share them. '
-        : 'Your sync server stores encrypted notes without an account. Create '
-              'an account to use this collection on other devices and share '
-              'notes. ';
+    final accountExplanation = widget.creating
+        ? 'Your account is the twelve words. They are the only way to get '
+              'your notes back on another device. '
+        : widget.profile?.url == null
+        ? 'Sync is off. Your notes stay on this device and are not backed '
+              'up anywhere. Set up sync in Sync & devices to use them on '
+              'another device or share them. '
+        : 'This device is connected to a sync server, but the account step '
+              'did not finish. Finish it in Sync & devices; nothing is syncing '
+              'until then. ';
     final children = <Widget>[
       ...has
           ? [
@@ -237,31 +240,36 @@ class _AccountScreenState extends State<AccountScreen> {
               const Icon(Icons.phone_android, size: 48),
               const SizedBox(height: 16),
               Text(
-                'Access on other devices is not set up.',
+                widget.creating
+                    ? 'Set up your account'
+                    : 'Sync is off. Your notes are not backed up.',
                 key: Key('account-no'),
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 12),
               Text(
                 '$accountExplanation'
-                'Your account is a recovery phrase, not a password or email. '
-                'Write the twelve words down and keep them safe: anyone with '
-                'the phrase can access your notes.',
+                '${widget.creating ? 'Your account is a recovery phrase, not '
+                          'a password or email. Write the twelve words down and '
+                          'keep them safe: anyone with the phrase can access your '
+                          'notes.' : ''}',
               ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                key: const Key('create-account-button'),
-                icon: const Icon(Icons.key),
-                label: const Text('Create account'),
-                onPressed: _busy ? null : _create,
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                key: const Key('adopt-account-button'),
-                icon: const Icon(Icons.edit_note),
-                label: const Text('Use recovery phrase'),
-                onPressed: _busy ? null : _adopt,
-              ),
+              if (widget.creating) ...[
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  key: const Key('create-account-button'),
+                  icon: const Icon(Icons.key),
+                  label: const Text('Create account'),
+                  onPressed: _busy ? null : _create,
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  key: const Key('adopt-account-button'),
+                  icon: const Icon(Icons.edit_note),
+                  label: const Text('Use recovery phrase'),
+                  onPressed: _busy ? null : _adopt,
+                ),
+              ],
             ],
       if (!widget.creating && widget.profile != null) ...[
         const SizedBox(height: 24),
@@ -272,9 +280,8 @@ class _AccountScreenState extends State<AccountScreen> {
           title: Text(widget.profile!.label),
           subtitle: Text(
             widget.profile!.url == null
-                ? 'Not using a sync server. An account here stays on this '
-                      'device until you move this collection to a sync server '
-                      'in Sync & devices.'
+                ? 'Not using a sync server. Your notes stay on this device '
+                      'and are not backed up.'
                 : 'This account is kept on this sync server. To use it on '
                       'another device, choose the same server there first.',
           ),
@@ -285,7 +292,11 @@ class _AccountScreenState extends State<AccountScreen> {
     ];
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.creating ? 'Create account' : 'Your devices'),
+        title: Text(
+          widget.creating
+              ? 'Set up your account'
+              : (has ? 'Your devices' : 'Your account'),
+        ),
       ),
       body: ListView(padding: const EdgeInsets.all(24), children: children),
     );
@@ -805,6 +816,11 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
                   'account there too.',
                 ),
               ],
+              const SizedBox(height: 8),
+              const Text(
+                'This device is then emptied and disconnected from the sync '
+                'server. Its address is forgotten here.',
+              ),
               const SizedBox(height: 8),
               const Text(
                 'The sync server\'s backups may keep encrypted copies for up '

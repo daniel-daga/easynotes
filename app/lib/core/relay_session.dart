@@ -28,6 +28,17 @@ typedef LibraryOpener =
       bool allowEphemeral,
     });
 
+/// Thrown when a person backs out of the account step before an account
+/// exists. Nothing has been committed at that point: no profile was selected
+/// and no note was uploaded. The setup screen catches it to return to the
+/// address step without treating the choice as an error.
+class SyncSetupCancelled implements Exception {
+  const SyncSetupCancelled();
+
+  @override
+  String toString() => 'Sync setup was cancelled.';
+}
+
 class RelaySession extends ChangeNotifier {
   RelaySession({
     required this.profiles,
@@ -74,7 +85,15 @@ class RelaySession extends ChangeNotifier {
   /// [access] is the relay's access key, from a relay link or typed in; it is
   /// kept with the target's profile. Given for the relay already open, it is
   /// [setAccess] rather than a switch.
-  Future<void> switchTo(String? address, {String? access}) {
+  ///
+  /// [connect] is false only while sync is being set up: the profile is
+  /// selected, but nothing is uploaded until the account step that goes with
+  /// it has finished (ADR 0031). A switch after setup connects normally.
+  Future<void> switchTo(
+    String? address, {
+    String? access,
+    bool connect = true,
+  }) {
     final running = _switching;
     if (running != null) return running;
     final url = address == null ? null : canonicalRelayUrl(address);
@@ -84,7 +103,7 @@ class RelaySession extends ChangeNotifier {
       }
       return Future.value();
     }
-    final done = _switch(url, access).whenComplete(() {
+    final done = _switch(url, access, connect: connect).whenComplete(() {
       _switching = null;
       notifyListeners();
     });
@@ -93,7 +112,32 @@ class RelaySession extends ChangeNotifier {
     return done;
   }
 
-  Future<void> _switch(String? url, String? access) async {
+  Future<void> _switch(
+    String? url,
+    String? access, {
+    required bool connect,
+  }) async {
+    final target = await profiles.prepare(url, access: access);
+    await _select(target, connect: connect);
+  }
+
+  /// Select an already-known profile, or put a previous one back after a
+  /// setup was abandoned. The order is the same as [switchTo]'s: open the
+  /// target before anything is closed, and reopen the old profile if a step
+  /// after the close fails.
+  Future<void> select(RelayProfile target, {bool connect = true}) {
+    final running = _switching;
+    if (running != null) return running;
+    final done = _select(target, connect: connect).whenComplete(() {
+      _switching = null;
+      notifyListeners();
+    });
+    _switching = done;
+    notifyListeners();
+    return done;
+  }
+
+  Future<void> _select(RelayProfile target, {required bool connect}) async {
     final old = _library;
     final previous = _profile;
     if (!old.canJoin) {
@@ -108,7 +152,6 @@ class RelaySession extends ChangeNotifier {
         'Some changes here could not be saved. Switching would lose them.',
       );
     }
-    final target = await profiles.prepare(url, access: access);
     // Opened before anything is closed: a store that cannot be opened is
     // found out while the old one is still there to go back to.
     final next = await _open(target, connect: false, allowEphemeral: false);
@@ -128,7 +171,7 @@ class RelaySession extends ChangeNotifier {
         );
       }
       await profiles.activate(target);
-      if (target.url != null) {
+      if (target.url != null && connect) {
         await next.connect(target.url!, access: target.access);
       }
     } on Object catch (error, stack) {
@@ -146,25 +189,123 @@ class RelaySession extends ChangeNotifier {
     onInstall?.call(next);
   }
 
+  /// Connect the profile in use after its account step has finished. This is
+  /// the only place a newly set-up profile starts uploading; the account
+  /// already exists by then.
+  Future<void> connectCurrent() async {
+    final url = _profile.url;
+    if (url == null) return;
+    await _library.connect(url, access: _profile.access);
+  }
+
+  /// Set up sync for [address] as one decision: server, then account, then
+  /// connection (ADR 0031).
+  ///
+  /// [moveNotes] is the first server's "take my notes along" answer. When it
+  /// is false and the collection already has notes of its own, the new server
+  /// gets a fresh empty profile rather than a copy; the old one stays where
+  /// it is. [setUpAccount] shows the account screens for [library] and returns
+  /// whether an account now exists. Returning false before one does leaves
+  /// everything as it was and throws [SyncSetupCancelled].
+  Future<void> connectNewServer(
+    String address, {
+    String? access,
+    required bool moveNotes,
+    required Future<bool> Function(NoteLibrary library, RelayProfile profile)
+    setUpAccount,
+  }) async {
+    final url = canonicalRelayUrl(address);
+    final saved = profiles.profiles.where((p) => p.url == url).firstOrNull;
+    if (saved != null) {
+      await switchTo(url, access: access, connect: false);
+      if (!_library.hasAccount) {
+        final ready = await setUpAccount(_library, _profile);
+        if (!ready && !_library.hasAccount) throw const SyncSetupCancelled();
+      }
+      await connectCurrent();
+      return;
+    }
+
+    // Reuse the local collection when its notes are coming along, and also
+    // when it is empty: a fresh profile for it would only leave an unused
+    // "On this device" entry behind.
+    final useCurrent =
+        moveNotes ||
+        (_profile.url == null &&
+            _library.notes.isEmpty &&
+            !_library.hasAccount);
+    if (useCurrent) {
+      if (_profile.url != null) {
+        throw StateError('Only a local collection can move to a sync server.');
+      }
+      if (!_library.hasAccount) {
+        // The collection has not moved yet, but this is the server it is
+        // about to: the account screens should name it, not "no server".
+        final about = RelayProfile(id: _profile.id, url: url, access: access);
+        final ready = await setUpAccount(_library, about);
+        if (!ready && !_library.hasAccount) throw const SyncSetupCancelled();
+      }
+      await moveLocalToRelay(url, access: access);
+      return;
+    }
+
+    final previous = _profile;
+    await switchTo(url, access: access, connect: false);
+    final target = _profile;
+    try {
+      if (!_library.hasAccount) {
+        final ready = await setUpAccount(_library, _profile);
+        if (!ready && !_library.hasAccount) throw const SyncSetupCancelled();
+      }
+    } on Object {
+      // Nothing was uploaded: the target is empty and was never connected.
+      // Put the previous collection back and forget the cancelled profile.
+      await select(previous, connect: previous.url != null);
+      await profiles.remove(target);
+      rethrow;
+    }
+    await connectCurrent();
+  }
+
+  /// End this profile's server relationship after its account was deleted:
+  /// the same collection stays, as the local one, and the address is
+  /// forgotten (ADR 0031). A profile with a URL and no account must not be
+  /// left behind.
+  Future<void> reopenAsLocal() async {
+    if (_profile.url != null) {
+      _profile = await profiles.clearRelay(_profile);
+    }
+    await reopen();
+  }
+
   /// Move this device's local collection to an unused relay. No data or key
   /// is copied or deleted: the profile keeps its ID, so native and browser
   /// storage, attachments and any account all stay together. Persist the
   /// selection before connecting, so a restart cannot treat uploaded notes
   /// as a local-only collection. A failed connection leaves this relay
   /// selected and the collection available offline, ready to retry.
-  Future<void> moveLocalToRelay(String address, {String? access}) {
+  Future<void> moveLocalToRelay(
+    String address, {
+    String? access,
+    bool connect = true,
+  }) {
     final running = _switching;
     if (running != null) return running;
-    final done = _moveLocalToRelay(address, access).whenComplete(() {
-      _switching = null;
-      notifyListeners();
-    });
+    final done = _moveLocalToRelay(address, access, connect: connect)
+        .whenComplete(() {
+          _switching = null;
+          notifyListeners();
+        });
     _switching = done;
     notifyListeners();
     return done;
   }
 
-  Future<void> _moveLocalToRelay(String address, String? access) async {
+  Future<void> _moveLocalToRelay(
+    String address,
+    String? access, {
+    required bool connect,
+  }) async {
     if (_profile.url != null ||
         profiles.profiles.any((p) => p.url == canonicalRelayUrl(address))) {
       throw StateError(
@@ -185,6 +326,7 @@ class RelaySession extends ChangeNotifier {
     _profile = await profiles.moveLocalToRelay(address, access: access);
     // Tell the app about the durable move even if starting sync throws.
     notifyListeners();
+    if (!connect) return;
     try {
       await _library.connect(_profile.url!, access: _profile.access);
     } on Object catch (error) {

@@ -23,7 +23,7 @@ String word(int position) => FakeNoteLibrary.phrase[position - 1];
 Future<void> pumpAccount(WidgetTester tester, FakeNoteLibrary library) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: AccountScreen(library: library, ask: ask),
+      home: AccountScreen(library: library, ask: ask, creating: true),
     ),
   );
   await tester.pumpAndSettle();
@@ -102,7 +102,10 @@ void main() {
 
     await tester.tap(find.byKey(const Key('sync-status')));
     await tester.pumpAndSettle();
-    expect(find.text('Works once a sync server is connected.'), findsOneWidget);
+    expect(
+      find.textContaining('Sync between your devices and share notes'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('shows all twelve words, numbered, once', (tester) async {
@@ -138,7 +141,9 @@ void main() {
     });
 
     expect(find.byType(RecoveryPhraseScreen), findsNothing);
-    expect(find.byKey(const Key('account-yes')), findsOneWidget);
+    // This is the setup flow: the account screen closes once there is an
+    // account to go back to, and the caller carries on to the server.
+    expect(find.byType(AccountScreen), findsNothing);
     expect(library.hasAccount, isTrue);
     // Minted once. A second createAccount would be a second phrase, and the
     // one on paper would be for an account nobody uses.
@@ -200,7 +205,9 @@ void main() {
     await tester.tap(find.byKey(const Key('phrase-leave')));
     await tester.pumpAndSettle();
     expect(find.byType(RecoveryPhraseScreen), findsNothing);
-    expect(find.byKey(const Key('account-yes')), findsOneWidget);
+    // The account was minted before the words were shown, so the setup flow
+    // continues; the account screen itself is done.
+    expect(find.byType(AccountScreen), findsNothing);
   });
 
   testWidgets('the check picks three different words when left to itself', (
@@ -244,9 +251,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(library.hasAccount, isTrue);
-    expect(find.byKey(const Key('account-yes')), findsOneWidget);
-    // An empty grid is what comes next, so the screen says why.
-    expect(find.byKey(const Key('account-message')), findsOneWidget);
+    // The setup flow closes the account screen once the words are accepted;
+    // the server and the first sync come next.
+    expect(find.byType(AccountScreen), findsNothing);
   });
 
   testWidgets('a phrase the core refuses is refused in its words', (
@@ -317,7 +324,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byType(AppBar),
-          matching: find.text('Create account'),
+          matching: find.text('Set up your account'),
         ),
         findsOneWidget,
       );
@@ -369,7 +376,11 @@ void main() {
     testWidgets('restoring says where the notes come from', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
-          home: AccountScreen(library: FakeNoteLibrary(), profile: relay),
+          home: AccountScreen(
+            library: FakeNoteLibrary(),
+            profile: relay,
+            creating: true,
+          ),
         ),
       );
       await tester.pumpAndSettle();

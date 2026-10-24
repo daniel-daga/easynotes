@@ -10,6 +10,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
+import '../core/relay_session.dart' show SyncSetupCancelled;
 import 'relay_address.dart';
 
 /// What the wizard was opened to do.
@@ -45,6 +46,7 @@ class RelaySetupWizard extends StatefulWidget {
     this.mode = RelaySetupMode.connect,
     this.profile,
     this.profiles = const [],
+    this.hasLocalNotes = false,
     bool? servedOverHttps,
     bool? mobileRelease,
   }) : assert(
@@ -78,6 +80,11 @@ class RelaySetupWizard extends StatefulWidget {
   /// The saved profiles, so that "this server starts empty" is only said
   /// about a server that does.
   final List<RelayProfile> profiles;
+
+  /// Whether the current collection has notes that "move my notes" could
+  /// take along. A first run with an empty grid is not asked a question about
+  /// notes that do not exist.
+  final bool hasLocalNotes;
 
   /// A browser page served over HTTPS can only reach a relay with TLS; a
   /// released phone app likewise.
@@ -152,6 +159,7 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     final url = _canonical;
     return widget.mode == RelaySetupMode.connect &&
         widget.profile?.url == null &&
+        widget.hasLocalNotes &&
         move != null &&
         url != null &&
         !widget.profiles.any((profile) => profile.url == url);
@@ -277,6 +285,17 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
       } else {
         await widget.onSwitchRelay(url, access: _accessKey);
       }
+    } on SyncSetupCancelled {
+      // The person backed out of the account step before an account existed.
+      // Nothing was committed, so this is a choice rather than a failure:
+      // return to the address they can change or leave.
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _step = _Step.url;
+        _error = null;
+      });
+      return;
     } on Object catch (error) {
       // A move may already be durable when starting sync fails. Retrying the
       // same move cannot work — this collection is no longer local — so this

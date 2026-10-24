@@ -209,9 +209,10 @@ Future<NoteLibrary> openInBrowser(
     debugPrint('keeping this tab\'s notes in memory only: $error');
     library = await RustNoteLibrary.openEphemeral();
   }
-  // As on a device: with no relay there the app is a local notes app, and the
-  // status button says so.
-  if (connect && profile.url != null) {
+  // As on a device: a profile is a server and the account that belongs to it
+  // (ADR 0031). Without the account there is nothing to sync, so a profile
+  // left half set up by an interrupted run stays local until it is finished.
+  if (connect && profile.url != null && library.hasAccount) {
     await library.connect(profile.url!, access: profile.access);
   }
   return library;
@@ -302,40 +303,84 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   }
 
   Future<void> _finishOnboarding() async {
+    // "Continue offline" may be the way out of a setup that saved a server
+    // but never finished its account. A server without an account is not a
+    // state to leave behind (ADR 0031), so end that relationship first.
+    if (_session.profile.url != null && !_session.library.hasAccount) {
+      await _session.reopenAsLocal();
+    }
     await _session.profiles.completeOnboarding();
     if (mounted) setState(() => _showOnboarding = false);
   }
 
-  Future<void> _createOnboardingAccount() async {
-    await _navigatorKey.currentState!.push<void>(
+  /// The account half of sync setup, over the library that is about to be
+  /// bound to [profile]'s server. Returns whether an account now exists.
+  Future<bool> _setUpAccount(NoteLibrary library, RelayProfile profile) async {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return false;
+    await navigator.push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => AccountScreen(
-          library: _session.library,
-          profile: _session.profile,
-          creating: true,
-        ),
+        builder: (_) =>
+            AccountScreen(library: library, profile: profile, creating: true),
       ),
     );
-    if (!mounted) return;
-    // The screen closes either way; only an account that now exists turns the
-    // checklist's second step into a tick and moves onboarding on to its last
-    // page.
-    if (_session.library.hasAccount) {
-      setState(() => _accountCreatedDuringOnboarding = true);
-    }
+    return library.hasAccount;
   }
 
-  Future<void> _setUpRelay() async {
-    final connected = await _navigatorKey.currentState!.push<bool>(
+  Future<void> _connectNewServer(
+    String address, {
+    String? access,
+    required bool moveNotes,
+  }) => _session.connectNewServer(
+    address,
+    access: access,
+    moveNotes: moveNotes,
+    setUpAccount: _setUpAccount,
+  );
+
+  Future<void> _setUpSync() async {
+    final profile = _session.profile;
+    // A setup interrupted after its server was saved: finish the account on
+    // the profile already selected, then start syncing. Asking for the server
+    // again would be a second setup for the same one.
+    if (profile.url != null && !_session.library.hasAccount) {
+      final ready = await _setUpAccount(_session.library, profile);
+      if (!mounted || !ready) return;
+      try {
+        await _session.connectCurrent();
+      } on Object {
+        // The status card says why sync is not running; the setup itself is
+        // complete and stays that way.
+      }
+      if (!mounted) return;
+      setState(() {
+        _relayConnectedDuringOnboarding = true;
+        _accountCreatedDuringOnboarding = true;
+      });
+      return;
+    }
+
+    final setUp = await _navigatorKey.currentState!.push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => RelaySetupWizard(
-          onSwitchRelay: _session.switchTo,
+          onSwitchRelay: (url, {access}) async {
+            if (url == null) return _session.switchTo(null);
+            await _connectNewServer(url, access: access, moveNotes: false);
+          },
+          onMoveLocalToRelay: (url, {access}) =>
+              _connectNewServer(url, access: access, moveNotes: true),
           onVerifyRelay: _session.library.verifyRelay,
+          profile: _session.profile,
+          profiles: _session.profiles.profiles,
+          hasLocalNotes: _session.library.notes.isNotEmpty,
         ),
       ),
     );
-    if (!mounted || connected != true) return;
-    setState(() => _relayConnectedDuringOnboarding = true);
+    if (!mounted || setUp != true) return;
+    setState(() {
+      _relayConnectedDuringOnboarding = true;
+      _accountCreatedDuringOnboarding = true;
+    });
   }
 
   void _installSession(NoteLibrary library) {
@@ -446,8 +491,13 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     // A device with no server yet has nothing to lose, and asks nothing.
     if (current != null && !await _confirmRelaySwitch(target)) return false;
     try {
-      await _session.switchTo(target, access: relay.access);
+      // Joining needs the server *and* the account that belongs to it
+      // (ADR 0031). A new server is set up in one step here, before the
+      // join request goes anywhere.
+      await _connectNewServer(target, access: relay.access, moveNotes: false);
       return true;
+    } on SyncSetupCancelled {
+      return false;
     } on Object catch (error) {
       _say('Could not switch to $target: $error');
       return false;
@@ -522,8 +572,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
               accountCreated: _accountCreatedDuringOnboarding,
               serverUrl: _session.profile.url,
               onContinue: _finishOnboarding,
-              onSetUpRelay: _setUpRelay,
-              onCreateAccount: _createOnboardingAccount,
+              onSetUpSync: _setUpSync,
             )
           : _noteList(library),
     );
@@ -539,10 +588,14 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       library: library,
       profile: _session.profile,
       profiles: _session.profiles,
-      onSwitchRelay: _session.switchTo,
-      onMoveLocalToRelay: _session.moveLocalToRelay,
+      onSwitchRelay: (url, {access}) async {
+        if (url == null) return _session.switchTo(null);
+        await _connectNewServer(url, access: access, moveNotes: false);
+      },
+      onMoveLocalToRelay: (url, {access}) =>
+          _connectNewServer(url, access: access, moveNotes: true),
       onSetAccess: _session.setAccess,
-      onAccountDeleted: _session.reopen,
+      onAccountDeleted: _session.reopenAsLocal,
       initialInviteLink: _pendingInvite,
       onInviteLink: _takeInvite,
       onInviteHandled: _inviteHandled,

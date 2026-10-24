@@ -1,9 +1,8 @@
-/// Settings for sync: whether it is working, the two setup steps if they are
+/// Settings for sync: whether it is working, the one setup step if it is
 /// still open, the server and its access key, and the account that follows.
 ///
-/// The same two-step story as the first run, told with the same cards, and
-/// then only the controls that are still useful: a person who is fully set up
-/// sees one line saying so, not a checklist of things they already did.
+/// Server and account are one decision (ADR 0031): a person is fully set up
+/// or has one step left, never a server waiting for an account.
 library;
 
 import 'package:flutter/material.dart';
@@ -94,7 +93,6 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('Sync & devices')),
       body: Center(
@@ -115,35 +113,19 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
               else ...[
                 _SectionTitle('Set up', top: 20),
                 SetupStep(
-                  key: const Key('sync-setup-server-step'),
+                  key: const Key('sync-setup-step'),
                   number: 1,
                   icon: Icons.cloud_outlined,
-                  title: 'Sync server',
+                  title: _connected
+                      ? 'Finish sync setup'
+                      : 'Sync server & account',
                   subtitle: _connected
-                      ? 'Connected to $_host.'
-                      : 'Back up your notes online.',
-                  done: _connected,
-                  enabled: !_connected,
-                  onTap: _connectServer,
-                ),
-                SetupConnector(
-                  color: _connected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outlineVariant,
-                ),
-                SetupStep(
-                  key: const Key('sync-setup-account-step'),
-                  number: 2,
-                  icon: Icons.key,
-                  title: 'Account',
-                  subtitle: _hasAccount
-                      ? 'Account created.'
-                      : _connected
-                      ? 'Sync between your devices and share notes.'
-                      : 'Works once a sync server is connected.',
-                  done: _hasAccount,
-                  enabled: !_hasAccount,
-                  onTap: _createAccount,
+                      ? 'Connected to $_host. The account step is still open.'
+                      : 'Sync between your devices and share notes. Needs a '
+                            'server and an account, set up together.',
+                  done: false,
+                  enabled: true,
+                  onTap: _connected ? _createAccount : _connectServer,
                 ),
               ],
               _SectionTitle('Sync server'),
@@ -275,6 +257,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
           onMoveLocalToRelay: widget.onMoveLocalToRelay,
           profile: _profile,
           profiles: widget.profiles,
+          hasLocalNotes: widget.library.notes.isNotEmpty,
         ),
       ),
     );
@@ -290,6 +273,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
           onSwitchRelay: widget.onSwitchRelay,
           onVerifyRelay: widget.library.verifyRelay,
           onMoveLocalToRelay: widget.onMoveLocalToRelay,
+          hasLocalNotes: widget.library.notes.isNotEmpty,
         ),
       ),
     );
@@ -333,6 +317,19 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
         ),
       ),
     );
+    if (!mounted) return;
+    // A profile that reached the account step is connected only once the
+    // account exists (ADR 0031). This is the repair path for one left half
+    // set up by an interrupted run.
+    final url = _profile.url;
+    if (url != null && widget.library.hasAccount) {
+      try {
+        await widget.library.connect(url, access: _profile.access);
+      } on Object {
+        // The status card already says why sync is not running; a second
+        // error on top of it would be noise.
+      }
+    }
     if (mounted) setState(() {});
   }
 
@@ -404,24 +401,17 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
               icon: Icons.phone_android,
               title: 'On this device',
               detail:
-                  'Your notes are saved here, and nobody needs an account '
-                  'to write them.',
+                  'Your notes are saved here. Without sync they are not backed '
+                  'up: if this device is lost, they are gone.',
             ),
             const SizedBox(height: 20),
             const FeatureRow(
               icon: Icons.cloud_outlined,
-              title: 'Sync server',
+              title: 'Sync server & account',
               detail:
-                  'Backs up your notes online. Use one from your organization '
-                  'or a sync server provider.',
-            ),
-            const SizedBox(height: 20),
-            const FeatureRow(
-              icon: Icons.key,
-              title: 'Account',
-              detail:
-                  'Syncs your notes between your devices and lets you share '
-                  'them. It needs a sync server.',
+                  'Set up together. The server keeps encrypted copies, and '
+                  'your twelve words are what bring them back on another '
+                  'device. The server cannot read them.',
             ),
           ],
         ),
@@ -585,7 +575,10 @@ class _FullySetUpLine extends StatelessWidget {
         minVerticalPadding: 0,
         leading: Icon(Icons.verified, color: scheme.primary, size: 22),
         title: const Text('Fully set up'),
-        subtitle: Text('Backed up to $host, with an account for your devices.'),
+        subtitle: Text(
+          'Syncing with $host. Your twelve words bring these notes back on a '
+          'new device.',
+        ),
       ),
     );
   }

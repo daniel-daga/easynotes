@@ -115,24 +115,26 @@ void main() {
     inviteBannerPollInterval = const Duration(milliseconds: 200);
   });
 
-  testWidgets('Share a note: set up once, send the link, and they are in', (
-    tester,
-  ) async {
-    final library = FakeNoteLibrary();
+  testWidgets(
+    'share with sync off says where to set it up and creates nothing',
+    (tester) async {
+      final library = FakeNoteLibrary();
+      await pumpNote(tester, library);
+      await tapKey(tester, 'share-button');
+
+      expect(find.text('Set up sync first'), findsOneWidget);
+      expect(find.textContaining('Sync & devices'), findsOneWidget);
+      await tapKey(tester, 'setup-not-now');
+      expect(library.hasAccount, isFalse);
+      expect(find.byKey(const Key('new-invite')), findsNothing);
+    },
+  );
+
+  testWidgets('Share a note: send the link, and they are in', (tester) async {
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
     await pumpNote(tester, library);
 
     await tapKey(tester, 'share-button');
-    // Once: the sheet, the words, and a name — then straight on.
-    expect(find.text('Set up sharing'), findsOneWidget);
-    expect(
-      find.textContaining('Shared notes belong to your account'),
-      findsOneWidget,
-    );
-    await tapKey(tester, 'setup-sharing');
-    await passBackupCheck(tester);
-    await giveName(tester, 'Olga');
-    expect(library.hasAccount, isTrue);
-    expect(library.profileName, 'Olga');
     expect(find.text('Olga (you)'), findsOneWidget);
 
     await tapKey(tester, 'new-invite');
@@ -152,17 +154,8 @@ void main() {
 
     // The second time, nothing is asked again.
     await tapKey(tester, 'share-button');
-    expect(find.text('Set up sharing'), findsNothing);
+    expect(find.text('Set up sync first'), findsNothing);
     await tapKey(tester, 'share-done');
-  });
-
-  testWidgets('Not now leaves everything as it was', (tester) async {
-    final library = FakeNoteLibrary();
-    await pumpNote(tester, library);
-    await tapKey(tester, 'share-button');
-    await tapKey(tester, 'setup-not-now');
-    expect(library.hasAccount, isFalse);
-    expect(find.byKey(const Key('new-invite')), findsNothing);
   });
 
   testWidgets(
@@ -170,7 +163,7 @@ void main() {
     (tester) async {
       final library = FakeNoteLibrary(
         notes: {'hardware': FakeNoteCore(title: 'Hardware')},
-      );
+      )..setUpSharing('Anna');
       // The link is tapped in a messenger; the app opens on it.
       await tester.pumpWidget(
         MaterialApp(
@@ -181,15 +174,6 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-
-      await tapKey(tester, 'setup-restore');
-      await tester.enterText(
-        find.byKey(const Key('adopt-phrase-field')),
-        FakeNoteLibrary.phrase.join(' '),
-      );
-      await tester.pump();
-      await tapKey(tester, 'adopt-confirm');
-      await giveName(tester, 'Anna');
 
       // The join dialog has no name field, and nothing to paste: it says
       // whose name it uses and asks for a yes.
@@ -233,10 +217,7 @@ void main() {
 
     // Nothing to wait for: the link carried the key, and the note opens.
     expect(find.byKey(const Key('join-waiting')), findsNothing);
-    expect(
-      library.calls.where((c) => c == 'openNote(hardware)'),
-      hasLength(1),
-    );
+    expect(library.calls.where((c) => c == 'openNote(hardware)'), hasLength(1));
     // The request is still answered in the background, so a decline can
     // take the note away again.
     expect(library.pendingJoins, hasLength(1));
@@ -252,24 +233,12 @@ void main() {
       library.restoredWithAccount['from-anna'] = FakeNoteCore(
         title: 'Anna\'s shared list',
       );
+
+      // A new device with no notes: the twelve words are the way in.
+      await library.adoptAccount(FakeNoteLibrary.phrase.join(' '));
+      expect(library.hasAccount, isTrue);
+
       await pumpList(tester, library);
-      expect(find.text('Groceries'), findsNothing);
-
-      final scaffold = tester.firstState<ScaffoldState>(find.byType(Scaffold));
-      scaffold.openDrawer();
-      await tester.pumpAndSettle();
-      await tapKey(tester, 'sync-status');
-      await tapKey(tester, 'sync-setup-account-step');
-      await tapKey(tester, 'adopt-account-button');
-      await tester.enterText(
-        find.byKey(const Key('adopt-phrase-field')),
-        FakeNoteLibrary.phrase.join(' '),
-      );
-      await tester.pump();
-      await tapKey(tester, 'adopt-confirm');
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-
       expect(find.text('Groceries'), findsOneWidget);
       expect(find.text('Anna\'s shared list'), findsOneWidget);
       expect(library.calls.where((c) => c.startsWith('requestJoin')), isEmpty);

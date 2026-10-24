@@ -1,11 +1,11 @@
-/// The first run: what the app is, how its two optional levels of sync work,
-/// those two steps as a checklist, and a send-off.
+/// The first run: what the app is, how its one optional setup works, and a
+/// send-off.
 ///
-/// The middle page is the only place anything is set up. Each step is a card
-/// that becomes a filled, ticked one when it is done, so that a person sees
-/// both steps and their own progress rather than one screen that changes its
-/// mind underneath them. The account step stays disabled until a sync server
-/// is connected, because an account has nowhere to live without one.
+/// The middle page is the only place anything is set up. Sync is one choice,
+/// not two: a sync server and the account that belongs to it are made
+/// together (ADR 0031), and the card either appears once, finished, or not at
+/// all. Without it the app is a local notes app, and says that those notes are
+/// not backed up.
 library;
 
 import 'package:flutter/material.dart';
@@ -19,24 +19,25 @@ class OnboardingScreen extends StatefulWidget {
     this.accountCreated = false,
     this.serverUrl,
     required this.onContinue,
-    required this.onSetUpRelay,
-    required this.onCreateAccount,
+    required this.onSetUpSync,
   });
 
-  /// Whether a sync server is connected: the first step is done, and the
-  /// second one is open.
+  /// Whether the sync server is connected: the first half of the one setup
+  /// step. A connected server always has an account (ADR 0031); the two
+  /// fields are kept apart so an interrupted run can say which half is open.
   final bool relayConnected;
 
-  /// Whether this person made an account, which is the last thing onboarding
-  /// asks for and what the send-off page describes.
+  /// Whether this person made an account, which is the second half of setup
+  /// and what the send-off page describes.
   final bool accountCreated;
 
-  /// The connected server's address, shown once the first step is done.
+  /// The connected server's address, shown once the first half is done.
   final String? serverUrl;
 
   final VoidCallback onContinue;
-  final VoidCallback onSetUpRelay;
-  final VoidCallback onCreateAccount;
+
+  /// Set up the server and the account that belongs to it, in one flow.
+  final VoidCallback onSetUpSync;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -55,10 +56,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   void didUpdateWidget(OnboardingScreen old) {
     super.didUpdateWidget(old);
-    // Making the account is the end of the checklist, so finishing it moves
-    // on by itself; a server alone leaves the deliberate second choice
-    // ("continue without account") in the person's hands.
-    if (widget.accountCreated && !old.accountCreated) _show(_done);
+    // Finishing the one setup step is the end of the checklist, so it moves on
+    // by itself. A server on its own is not a half-finished checklist the
+    // person may walk away from; it is a setup that has not finished yet.
+    final wasSetUp = old.relayConnected && old.accountCreated;
+    final isSetUp = widget.relayConnected && widget.accountCreated;
+    if (isSetUp && !wasSetUp) _show(_done);
   }
 
   @override
@@ -133,28 +136,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         icon: Icons.phone_android,
         title: 'On this device',
         detail:
-            'Your notes are saved here, and nobody needs an account '
-            'to write them.',
+            'Your notes are saved here. Without sync they are not backed up: '
+            'if this device is lost, they are gone.',
       ),
       const SizedBox(height: 20),
       const FeatureRow(
         icon: Icons.cloud_outlined,
-        title: 'Sync server',
+        title: 'Sync server & account',
         detail:
-            'Backs up your notes online. Use one from your organization '
-            'or a sync server provider.',
-      ),
-      const SizedBox(height: 20),
-      const FeatureRow(
-        icon: Icons.key,
-        title: 'Account',
-        detail:
-            'Syncs your notes between your devices and lets you share '
-            'them. It needs a sync server.',
+            'One setup. Sync your notes between your devices and share them. '
+            'The server keeps encrypted copies; your twelve words are what '
+            'bring them back on a new device.',
       ),
       const SizedBox(height: 24),
       Text(
-        'Both steps are optional. You can set them up later in Settings.',
+        'Sync is optional. You can set it up later in Settings, but an '
+        'account needs a sync server and a server needs an account.',
         key: const Key('onboarding-optional'),
         textAlign: TextAlign.center,
         style: Theme.of(context).textTheme.bodySmall,
@@ -173,59 +170,44 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Widget _setupPage() {
     final theme = Theme.of(context);
-    final serverDone = widget.relayConnected;
-    final accountDone = widget.accountCreated;
-    final accountOpen = serverDone && !accountDone;
+    final setUp = widget.relayConnected && widget.accountCreated;
+    final subtitle = setUp
+        ? 'Set up with ${_host ?? 'your sync server'}.'
+        : widget.relayConnected
+        ? 'Connected to ${_host ?? 'your sync server'}. The account step is '
+              'still open.'
+        : 'Use your notes on other devices and share them. One setup: a '
+              'server and the account that belongs to it.';
     return _PageBody(
       children: [
         Text('Set up sync', style: theme.textTheme.headlineSmall),
         const SizedBox(height: 8),
         const Text(
-          'Both steps are optional. You can change them later in Settings.',
+          'Sync is optional. Without it your notes stay on this device and '
+          'are not backed up.',
         ),
         const SizedBox(height: 24),
         SetupStep(
-          key: const Key('onboarding-server-step'),
+          key: const Key('onboarding-sync-step'),
           number: 1,
           icon: Icons.cloud_outlined,
-          title: 'Sync server',
-          subtitle: serverDone
-              ? 'Connected to ${_host ?? 'your sync server'}.'
-              : 'Back up your notes online.',
-          done: serverDone,
-          enabled: !serverDone,
-          onTap: widget.onSetUpRelay,
-        ),
-        SetupConnector(
-          color: serverDone
-              ? theme.colorScheme.primary
-              : theme.colorScheme.outlineVariant,
-        ),
-        SetupStep(
-          key: const Key('onboarding-account-step'),
-          number: 2,
-          icon: Icons.key,
-          title: 'Account',
-          subtitle: accountDone
-              ? 'Account created.'
-              : serverDone
-              ? 'Sync between your devices and share notes.'
-              : 'Connect a sync server first.',
-          done: accountDone,
-          enabled: accountOpen,
-          onTap: widget.onCreateAccount,
+          title: 'Sync server & account',
+          subtitle: subtitle,
+          done: setUp,
+          enabled: !setUp,
+          onTap: widget.onSetUpSync,
         ),
         const SizedBox(height: 32),
-        if (accountOpen)
+        if (setUp)
           SizedBox(
             width: double.infinity,
-            child: OutlinedButton(
+            child: FilledButton(
               key: const Key('onboarding-continue'),
               onPressed: () => _show(_done),
-              child: const Text('Continue without account'),
+              child: const Text('Continue'),
             ),
           )
-        else if (!serverDone)
+        else
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
@@ -239,16 +221,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Widget _donePage() {
-    final host = _host;
-    final body = widget.accountCreated
+    final setUp = widget.relayConnected && widget.accountCreated;
+    final body = setUp
         ? 'Your notes sync across your devices, and you can share them with '
-              'other people. Tap + to write your first note.'
-        : widget.relayConnected
-        ? 'Your notes are backed up to ${host ?? 'your sync server'}. Create '
-              'an account anytime in Settings to sync between your devices '
-              'and share notes.'
-        : 'Your notes are stored on this device. You can turn on sync '
-              'anytime in Settings.';
+              'other people. Your twelve words are what bring them back on a '
+              'new one. Tap + to write your first note.'
+        : 'Your notes are stored on this device and are not backed up. You '
+              'can turn on sync anytime in Settings.';
     return _PageBody(
       children: [
         Icon(

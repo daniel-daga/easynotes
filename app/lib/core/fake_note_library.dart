@@ -809,6 +809,9 @@ class FakeNoteLibrary implements NoteLibrary {
 
   @override
   Future<void> connect(String url, {String? access}) async {
+    if (!hasAccount) {
+      throw StateError('Sync needs an account. Set up sync first.');
+    }
     calls.add(access == null ? 'connect($url)' : 'connect($url, $access)');
     pushStatus(const SyncStatus(state: SyncState.connecting));
   }

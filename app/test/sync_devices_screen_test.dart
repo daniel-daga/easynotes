@@ -38,31 +38,29 @@ void main() {
     );
   }
 
-  testWidgets('a relay and no account is two steps, the second one open', (
+  testWidgets('a server without an account is one unfinished setup', (
     tester,
   ) async {
     final library = FakeNoteLibrary()
       ..pushStatus(const SyncStatus(state: SyncState.synced));
     await pump(tester, library);
 
-    expect(find.text('Up to date'), findsOneWidget);
-    // The host names the server in the status card and again in its row.
-    expect(find.text('relay.example'), findsNWidgets(2));
-    expect(find.text('Connected to relay.example.'), findsOneWidget);
+    expect(find.byKey(const Key('sync-setup-step')), findsOneWidget);
+    expect(find.text('Finish sync setup'), findsOneWidget);
     expect(
-      find.text('Sync between your devices and share notes.'),
+      find.textContaining('The account step is still open'),
       findsOneWidget,
     );
     expect(find.text('Fully set up'), findsNothing);
     expect(find.byKey(const Key('account-settings')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('sync-setup-account-step')));
+    await tester.tap(find.byKey(const Key('sync-setup-step')));
     await tester.pumpAndSettle();
     expect(find.byType(AccountScreen), findsOneWidget);
     expect(find.byKey(const Key('create-account-button')), findsOneWidget);
   });
 
-  testWidgets('without a server the checklist starts at the first step', (
+  testWidgets('without a server the one setup card starts the server flow', (
     tester,
   ) async {
     final library = FakeNoteLibrary();
@@ -70,31 +68,20 @@ void main() {
 
     expect(find.text('Sync not set up'), findsOneWidget);
     expect(find.text('Your notes are saved on this device.'), findsOneWidget);
-    expect(find.text('Works once a sync server is connected.'), findsOneWidget);
+    expect(find.byKey(const Key('sync-setup-step')), findsOneWidget);
+    expect(find.text('Sync server & account'), findsOneWidget);
+    expect(
+      find.textContaining('Sync between your devices and share notes'),
+      findsOneWidget,
+    );
     expect(
       tester.widget<TextButton>(find.byKey(const Key('sync-now'))).onPressed,
       isNull,
     );
 
-    await tester.tap(find.byKey(const Key('sync-setup-server-step')));
+    await tester.tap(find.byKey(const Key('sync-setup-step')));
     await tester.pumpAndSettle();
     expect(find.byType(RelaySetupWizard), findsOneWidget);
-  });
-
-  testWidgets('an account without a relay does not claim to be syncing', (
-    tester,
-  ) async {
-    final library = FakeNoteLibrary();
-    await library.createAccount();
-    library.pushStatus(const SyncStatus(state: SyncState.synced));
-    await pump(tester, library, profile: local);
-
-    expect(find.text('Sync not set up'), findsOneWidget);
-    expect(find.text('Up to date'), findsNothing);
-    expect(find.text('Account created.'), findsOneWidget);
-    // Both setup steps are done except the one that needs a server first.
-    expect(find.byType(SetupStep), findsNWidgets(2));
-    expect(find.text('Fully set up'), findsNothing);
   });
 
   testWidgets('a finished setup is one line, not a checklist', (tester) async {
@@ -104,29 +91,17 @@ void main() {
 
     expect(find.byKey(const Key('sync-fully-set-up')), findsOneWidget);
     expect(find.byType(SetupStep), findsNothing);
-    expect(find.byKey(const Key('sync-setup-server-step')), findsNothing);
+    expect(find.byKey(const Key('sync-setup-step')), findsNothing);
     expect(find.byKey(const Key('account-settings')), findsOneWidget);
     expect(find.byKey(const Key('switch-server')), findsOneWidget);
-  });
-
-  testWidgets('a recovery phrase can be reached from the account step', (
-    tester,
-  ) async {
-    final library = FakeNoteLibrary();
-    await pump(tester, library);
-
-    await tester.tap(find.byKey(const Key('sync-setup-account-step')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('adopt-account-button')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('adopt-phrase-field')), findsOneWidget);
   });
 
   testWidgets('the status card holds the last sync and the sync button', (
     tester,
   ) async {
-    final library = FakeNoteLibrary()
-      ..pushStatus(const SyncStatus(state: SyncState.synced));
+    final library = FakeNoteLibrary();
+    await library.createAccount();
+    library.pushStatus(const SyncStatus(state: SyncState.synced));
     await pump(tester, library);
 
     final card = find.byType(Card);
@@ -146,6 +121,7 @@ void main() {
     tester,
   ) async {
     final library = FakeNoteLibrary();
+    await library.createAccount();
     await pump(tester, library);
     await tester.tap(find.byKey(const Key('sync-now')));
     await tester.pumpAndSettle();
@@ -160,6 +136,7 @@ void main() {
 
   testWidgets('a relay error is shown where sync stands', (tester) async {
     final library = FakeNoteLibrary();
+    await library.createAccount();
     await pump(tester, library);
     library.pushStatus(
       const SyncStatus(
@@ -177,6 +154,7 @@ void main() {
 
   testWidgets('a key the server refuses is never kept', (tester) async {
     final library = FakeNoteLibrary();
+    await library.createAccount();
     final saved = <String?>[];
     await pump(
       tester,
@@ -218,10 +196,10 @@ void main() {
   });
 
   testWidgets(
-    'how sync works explains the same three things as the first run',
+    'how sync works explains the one decision and the local warning',
     (tester) async {
       final library = FakeNoteLibrary();
-      await pump(tester, library);
+      await pump(tester, library, profile: local);
 
       final more = find.byKey(const Key('how-sync-works'));
       await tester.scrollUntilVisible(
@@ -233,18 +211,17 @@ void main() {
       await tester.tap(more);
       await tester.pumpAndSettle();
 
-      expect(find.text('On this device'), findsOneWidget);
-      expect(find.textContaining('Backs up your notes online'), findsOneWidget);
-      expect(
-        find.textContaining('Syncs your notes between your devices'),
-        findsOneWidget,
-      );
+      expect(find.text('On this device'), findsWidgets);
+      expect(find.textContaining('not backed up'), findsWidgets);
+      expect(find.text('Sync server & account'), findsWidgets);
+      expect(find.textContaining('twelve words'), findsOneWidget);
     },
   );
 
   testWidgets('the note list drawer opens the new screen', (tester) async {
-    final library = FakeNoteLibrary()
-      ..pushStatus(const SyncStatus(state: SyncState.synced));
+    final library = FakeNoteLibrary();
+    await library.createAccount();
+    library.pushStatus(const SyncStatus(state: SyncState.synced));
     await tester.pumpWidget(
       MaterialApp(
         home: NoteListScreen(library: library, profile: relay),

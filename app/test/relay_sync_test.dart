@@ -75,7 +75,16 @@ void main() {
   /// A device: its own directory, its own library, connected to the relay the
   /// way the app connects one — or to [relay] instead, when a test wants
   /// another.
-  Future<RustNoteLibrary> device({String? relay, String? access}) async {
+  ///
+  /// [account] is true for a device that is being set up for sync: the account
+  /// is made before the connection, because the app never uploads without one
+  /// (ADR 0031). A device that is about to be restored from a phrase passes
+  /// false, adopts, and connects itself.
+  Future<RustNoteLibrary> device({
+    String? relay,
+    String? access,
+    bool account = true,
+  }) async {
     final dir = await Directory.systemTemp.createTemp('easynotes-relay-test');
     final library = await RustNoteLibrary.open(
       dir.path,
@@ -85,8 +94,24 @@ void main() {
       await library.dispose();
       await dir.delete(recursive: true);
     });
-    await library.connect(relay ?? relayUrl, access: access);
+    if (account) {
+      await library.createAccount();
+      await library.connect(relay ?? relayUrl, access: access);
+    }
     return library;
+  }
+
+  /// A device set up for sync, and the phrase that is its way back. The
+  /// phrase exists only at creation, so a test that checks recovery takes it
+  /// here rather than asking for it later.
+  Future<(RustNoteLibrary, List<String>)> deviceWithPhrase({
+    String? relay,
+    String? access,
+  }) async {
+    final library = await device(relay: relay, access: access, account: false);
+    final phrase = await library.createAccount();
+    await library.connect(relay ?? relayUrl, access: access);
+    return (library, phrase);
   }
 
   /// A device with one new note on it, which is what most of these want.
@@ -137,7 +162,6 @@ void main() {
     if (owner.profileName == null) await owner.setProfileName('Olga');
     final invite = await owner.createInvite(noteId);
     final guest = await device();
-    await guest.createAccount();
     await guest.setProfileName('Anna');
     final waiting = await guest.requestJoin(invite.link);
     await letIn(owner, invite);
@@ -441,8 +465,7 @@ void main() {
       // `relay/tests/account.rs` holds it over cores and engines; this is the
       // same claim with the bridge, the library and a real Keystore-shaped
       // master key in the way.
-      final a = await device();
-      final phrase = await a.createAccount();
+      final (a, phrase) = await deviceWithPhrase();
       expect(phrase, hasLength(12));
       expect(a.hasAccount, isTrue);
 
@@ -455,10 +478,11 @@ void main() {
       await a.setPinned(noteId, true);
 
       // B has never seen a share blob. Twelve words is all it is given.
-      final b = await device();
+      final b = await device(account: false);
       expect(b.hasAccount, isFalse);
       await b.adoptAccount(phrase.join(' '));
       expect(b.hasAccount, isTrue);
+      await b.connect(relayUrl);
 
       await _untilNotes(
         b.watchNotes(),
@@ -489,8 +513,7 @@ void main() {
       // over cores and engines; this adds the bridge's half — the account
       // settling in `Peer::settled`, and the deleted note's connection being
       // retired rather than left retrying for ever.
-      final a = await device();
-      final phrase = await a.createAccount();
+      final (a, phrase) = await deviceWithPhrase();
       final goneId = await a.createNote();
       final gone = await a.openNote(goneId);
       addTearDown(gone.dispose);
@@ -500,8 +523,9 @@ void main() {
       addTearDown(kept.dispose);
       await kept.addItem('drill bits');
 
-      final b = await device();
+      final b = await device(account: false);
       await b.adoptAccount(phrase.join(' '));
+      await b.connect(relayUrl);
       await _untilNotes(
         b.watchNotes(),
         (notes) =>
@@ -550,7 +574,7 @@ void main() {
     test(
       'a phrase that is not a phrase is refused with something to say',
       () async {
-        final library = await device();
+        final library = await device(account: false);
         await expectLater(
           library.adoptAccount('milk bread eggs'),
           throwsA(anything),
@@ -584,16 +608,21 @@ void main() {
       bool allowEphemeral = true,
     }) => openProfileLibrary(base, profile, connect: connect);
 
-    Future<RelaySession> start(String relay) async {
+    Future<(RelaySession, List<String>)> start(String relay) async {
       await profiles.select(relay);
+      final library = await openIn(profiles.selected, connect: false);
+      // A server profile is set up with its account before it connects
+      // (ADR 0031). The phrase is returned because it exists only here.
+      final phrase = await library.createAccount();
+      await library.connect(relay);
       final session = RelaySession(
         profiles: profiles,
-        library: await openIn(profiles.selected),
+        library: library,
         profile: profiles.selected,
         open: openIn,
       );
       addTearDown(() => session.library.dispose());
-      return session;
+      return (session, phrase);
     }
 
     Future<void> synced(NoteLibrary library, String complaint) => _untilStatus(
@@ -603,101 +632,118 @@ void main() {
       complaint,
     );
 
-    test('local notes and their recovery identity survive moving to a relay', () async {
-      final originalProfile = profiles.selected;
-      final local = await openIn(originalProfile);
-      final session = RelaySession(
-        profiles: profiles, library: local, profile: originalProfile, open: openIn,
-      );
-      addTearDown(() => session.library.dispose());
-      final phrase = await local.createAccount();
-      final id = await local.createNote();
-      final note = await local.openNote(id);
-      await note.setTitle('Local groceries');
-      await note.addItem('milk');
-      await local.setPinned(id, true);
-      await local.addTag(id, 'Home');
-      final reminder = await local.createReminder(
-        noteId: id,
-        fireAt: DateTime.utc(2030, 1, 1),
-        repeat: ReminderRepeat.never,
-        timezone: 'UTC',
-      );
-      final photo = _png(8, 8, 3000);
-      final attachment = await note.importAttachment('local.png', photo);
-      await _until(note.watch(),
-        (view) => view.attachments.any((a) => a.id == attachment.id),
-        'the local attachment never became part of the note');
-      await note.dispose();
+    test(
+      'local notes and their recovery identity survive moving to a relay',
+      () async {
+        final originalProfile = profiles.selected;
+        final local = await openIn(originalProfile);
+        final session = RelaySession(
+          profiles: profiles,
+          library: local,
+          profile: originalProfile,
+          open: openIn,
+        );
+        addTearDown(() => session.library.dispose());
+        final phrase = await local.createAccount();
+        final id = await local.createNote();
+        final note = await local.openNote(id);
+        await note.setTitle('Local groceries');
+        await note.addItem('milk');
+        await local.setPinned(id, true);
+        await local.addTag(id, 'Home');
+        final reminder = await local.createReminder(
+          noteId: id,
+          fireAt: DateTime.utc(2030, 1, 1),
+          repeat: ReminderRepeat.never,
+          timezone: 'UTC',
+        );
+        final photo = _png(8, 8, 3000);
+        final attachment = await note.importAttachment('local.png', photo);
+        await _until(
+          note.watch(),
+          (view) => view.attachments.any((a) => a.id == attachment.id),
+          'the local attachment never became part of the note',
+        );
+        await note.dispose();
 
-      await session.moveLocalToRelay(relayUrl);
-      expect(session.library, same(local));
-      expect(session.profile.id, originalProfile.id);
-      await synced(local, 'the moved collection never reached the relay');
+        await session.moveLocalToRelay(relayUrl);
+        expect(session.library, same(local));
+        expect(session.profile.id, originalProfile.id);
+        await synced(local, 'the moved collection never reached the relay');
 
-      // Recovery on another device proves the existing identity, metadata,
-      // note keys and media made it to the relay together.
-      final restored = await device();
-      await restored.adoptAccount(phrase.join(' '));
-      await _untilNotes(restored.watchNotes(),
-        (notes) => notes.any((n) => n.id == id && n.pinned && n.tags.any((t) => t.name == 'Home')),
-        'the moved collection could not be recovered');
-      expect(restored.reminders.any((r) => r.id == reminder && r.noteId == id), isTrue);
-      final copy = await restored.openNote(id);
-      addTearDown(copy.dispose);
-      await _until(copy.watch(),
-        (view) => view.items.any((i) => i.text == 'milk') &&
-            view.attachments.any((a) => a.id == attachment.id),
-        'the note or attachment descriptor never arrived');
-      final deadline = DateTime.now().add(patience);
-      while (await copy.readAttachment(attachment.id) == null) {
-        if (DateTime.now().isAfter(deadline)) fail('the moved attachment never arrived');
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-      expect(await copy.readAttachment(attachment.id), photo);
+        // Recovery on another device proves the existing identity, metadata,
+        // note keys and media made it to the relay together.
+        final restored = await device(account: false);
+        await restored.adoptAccount(phrase.join(' '));
+        await restored.connect(relayUrl);
+        await _untilNotes(
+          restored.watchNotes(),
+          (notes) => notes.any(
+            (n) =>
+                n.id == id && n.pinned && n.tags.any((t) => t.name == 'Home'),
+          ),
+          'the moved collection could not be recovered',
+        );
+        expect(
+          restored.reminders.any((r) => r.id == reminder && r.noteId == id),
+          isTrue,
+        );
+        final copy = await restored.openNote(id);
+        addTearDown(copy.dispose);
+        await _until(
+          copy.watch(),
+          (view) =>
+              view.items.any((i) => i.text == 'milk') &&
+              view.attachments.any((a) => a.id == attachment.id),
+          'the note or attachment descriptor never arrived',
+        );
+        final deadline = DateTime.now().add(patience);
+        while (await copy.readAttachment(attachment.id) == null) {
+          if (DateTime.now().isAfter(deadline)) {
+            fail('the moved attachment never arrived');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        expect(await copy.readAttachment(attachment.id), photo);
 
-      await session.switchTo(null);
-      expect(session.profile.id, isNot(originalProfile.id));
-      expect(session.library.notes, isEmpty);
-      expect(session.library.hasAccount, isFalse);
-      await session.switchTo(relayUrl);
-      expect(session.library.notes.single.id, id);
-      expect(session.library.hasAccount, isTrue);
-      await session.library.dispose();
-      final reloaded = RelayProfiles();
-      await reloaded.load();
-      final reopened = await openIn(reloaded.selected);
-      addTearDown(reopened.dispose);
-      expect(reopened.notes.single.id, id);
-      expect(reopened.hasAccount, isTrue);
-    });
+        await session.switchTo(null);
+        expect(session.profile.id, isNot(originalProfile.id));
+        expect(session.library.notes, isEmpty);
+        expect(session.library.hasAccount, isFalse);
+        await session.switchTo(relayUrl);
+        expect(session.library.notes.single.id, id);
+        expect(session.library.hasAccount, isTrue);
+        await session.library.dispose();
+        final reloaded = RelayProfiles();
+        await reloaded.load();
+        final reopened = await openIn(reloaded.selected);
+        addTearDown(reopened.dispose);
+        expect(reopened.notes.single.id, id);
+        expect(reopened.hasAccount, isTrue);
+      },
+    );
 
-    test('local notes upload before an account exists and can gain recovery later', () async {
-      final local = await openIn(profiles.selected);
-      final session = RelaySession(
-        profiles: profiles, library: local, profile: profiles.selected, open: openIn,
-      );
-      addTearDown(() => session.library.dispose());
-      final id = await local.createNote();
-      final note = await local.openNote(id);
-      await note.setTitle('Notes before account setup');
-      await note.dispose();
-      await session.moveLocalToRelay(relayUrl);
-      await synced(local, 'notes without an account never reached the relay');
+    test('a library with no account does not connect to a relay', () async {
+      final local = await openIn(profiles.selected, connect: false);
+      addTearDown(local.dispose);
       expect(local.hasAccount, isFalse);
-      final phrase = await local.createAccount();
-      final restored = await device();
-      await restored.adoptAccount(phrase.join(' '));
-      await _untilNotes(restored.watchNotes(),
-        (notes) => notes.any((n) => n.id == id),
-        'creating an account after moving did not make the notes recoverable');
+      await expectLater(
+        local.connect(relayUrl),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('Sync needs an account'),
+          ),
+        ),
+      );
+      expect(local.syncStatus.state, isNot(SyncState.synced));
     });
 
     test('switching relay and back keeps each relay\'s notes and account to '
         'itself', () async {
-      final session = await start(relayUrl);
+      final (session, phrase) = await start(relayUrl);
       final first = session.library;
-      final phrase = await first.createAccount();
       final groceriesId = await first.createNote();
       final groceries = await first.openNote(groceriesId);
       await groceries.setTitle('Groceries');
@@ -708,12 +754,19 @@ void main() {
       await groceries.addItem('bread');
       await groceries.dispose();
 
-      await session.switchTo(otherRelayUrl);
+      await session.connectNewServer(
+        otherRelayUrl,
+        moveNotes: false,
+        setUpAccount: (library, _) async {
+          await library.createAccount();
+          return library.hasAccount;
+        },
+      );
       final second = session.library;
       expect(second, isNot(same(first)));
       expect(session.profile.url, otherRelayUrl);
       expect(second.notes, isEmpty);
-      expect(second.hasAccount, isFalse);
+      expect(second.hasAccount, isTrue);
       final hardwareId = await second.createNote();
       final hardware = await second.openNote(hardwareId);
       await hardware.setTitle('Hardware');
@@ -722,8 +775,9 @@ void main() {
 
       // The second relay was given nothing of the first profile's: the phrase
       // restores nothing there, not even the account.
-      final stranger = await device(relay: otherRelayUrl);
+      final stranger = await device(relay: otherRelayUrl, account: false);
       await stranger.adoptAccount(phrase.join(' '));
+      await stranger.connect(otherRelayUrl);
       await synced(stranger, 'the stranger never caught up');
       expect(stranger.notes, isEmpty);
 
@@ -736,8 +790,9 @@ void main() {
 
       // And the first relay has all of it, the line made before the switch
       // included, and nothing of the second profile's.
-      final restored = await device();
+      final restored = await device(account: false);
       await restored.adoptAccount(phrase.join(' '));
+      await restored.connect(relayUrl);
       await _untilNotes(
         restored.watchNotes(),
         (notes) => notes.any((n) => n.id == groceriesId),
@@ -757,9 +812,16 @@ void main() {
     });
 
     test('a restart opens the relay that was selected last', () async {
-      final session = await start(relayUrl);
+      final (session, _) = await start(relayUrl);
       final id = await session.library.createNote();
-      await session.switchTo(otherRelayUrl);
+      await session.connectNewServer(
+        otherRelayUrl,
+        moveNotes: false,
+        setUpAccount: (library, _) async {
+          await library.createAccount();
+          return library.hasAccount;
+        },
+      );
       await session.switchTo(relayUrl);
       await session.library.dispose();
 
@@ -797,10 +859,7 @@ void main() {
 
     test('the access key is checked in the handshake, not later', () async {
       final library = await device();
-      await expectLater(
-        library.verifyRelay(gatedRelayUrl),
-        throwsA(anything),
-      );
+      await expectLater(library.verifyRelay(gatedRelayUrl), throwsA(anything));
       await library.verifyRelay(gatedRelayUrl, access: _relayKey);
     });
 
@@ -842,7 +901,6 @@ void main() {
     test('lets two people who hold the key share a list by invite', () async {
       Future<RustNoteLibrary> person(String name) async {
         final library = await device(relay: gatedRelayUrl, access: _relayKey);
-        await library.createAccount();
         await library.setProfileName(name);
         return library;
       }
@@ -857,7 +915,6 @@ void main() {
 
       // Without the key the relay does not take an invite at all.
       final outsider = await device(relay: gatedRelayUrl);
-      await outsider.createAccount();
       await outsider.setProfileName('Eve');
       await expectLater(
         outsider.createInvite(await outsider.createNote()),
@@ -870,7 +927,6 @@ void main() {
     /// A device that can share: an account, and a name.
     Future<RustNoteLibrary> person(String name) async {
       final library = await device();
-      await library.createAccount();
       await library.setProfileName(name);
       return library;
     }
@@ -878,7 +934,6 @@ void main() {
     /// An owner with a titled list, set up to share.
     Future<(RustNoteLibrary, NoteCore, String)> owned() async {
       final (owner, a) = await open();
-      await owner.createAccount();
       await owner.setProfileName('Olga');
       return (owner, a, owner.notes.single.id);
     }
@@ -987,8 +1042,8 @@ void main() {
           await owner.dispose();
           await dir.delete(recursive: true);
         });
-        await owner.connect(relayUrl);
         await owner.createAccount();
+        await owner.connect(relayUrl);
         await owner.setProfileName('Olga');
         final noteId = await owner.createNote();
         final a = await owner.openNote(noteId);
@@ -1024,51 +1079,54 @@ void main() {
       },
     );
 
-    test("joining adds a note with its colour, and not the owner's labels", () async {
-      // A label is one person's filing, kept in their account document; the
-      // note everyone shares is not where it goes. A colour is in that note's
-      // own document, though, so everyone on it sees the same shade. And a
-      // guest who already has notes keeps them: a join adds, it does not
-      // replace.
-      final (owner, a, noteId) = await owned();
-      await a.setTitle('Groceries');
-      await owner.setColour(noteId, NoteColour.pink);
-      await owner.addTag(noteId, 'errands');
+    test(
+      "joining adds a note with its colour, and not the owner's labels",
+      () async {
+        // A label is one person's filing, kept in their account document; the
+        // note everyone shares is not where it goes. A colour is in that note's
+        // own document, though, so everyone on it sees the same shade. And a
+        // guest who already has notes keeps them: a join adds, it does not
+        // replace.
+        final (owner, a, noteId) = await owned();
+        await a.setTitle('Groceries');
+        await owner.setColour(noteId, NoteColour.pink);
+        await owner.addTag(noteId, 'errands');
 
-      final guest = await person('Anna');
-      final mine = await guest.openNote(await guest.createNote());
-      addTearDown(mine.dispose);
-      await mine.setTitle('Mine');
+        final guest = await person('Anna');
+        final mine = await guest.openNote(await guest.createNote());
+        addTearDown(mine.dispose);
+        await mine.setTitle('Mine');
 
-      final invite = await owner.createInvite(noteId);
-      final waiting = await guest.requestJoin(invite.link);
-      await letIn(owner, invite);
-      expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
+        final invite = await owner.createInvite(noteId);
+        final waiting = await guest.requestJoin(invite.link);
+        await letIn(owner, invite);
+        expect((await joined(guest, waiting.inviteId)).state, JoinState.joined);
 
-      final b = await guest.openNote(noteId);
-      addTearDown(b.dispose);
-      await _until(
-        b.watch(),
-        (view) => view.title == 'Groceries',
-        'the guest never received the note',
-      );
-      expect(
-        guest.notes.map((n) => n.title),
-        containsAll(['Mine', 'Groceries']),
-      );
-      final shared = guest.notes.singleWhere((n) => n.id == noteId);
-      expect(
-        shared.colour,
-        NoteColour.pink,
-        reason: 'the note records the colour, so everyone sees the same one',
-      );
-      expect(
-        shared.tags,
-        isEmpty,
-        reason: "one person's label reached another person's device",
-      );
-      expect(guest.tags, isEmpty);
-    });
+        final b = await guest.openNote(noteId);
+        addTearDown(b.dispose);
+        await _until(
+          b.watch(),
+          (view) => view.title == 'Groceries',
+          'the guest never received the note',
+        );
+        expect(
+          guest.notes.map((n) => n.title),
+          containsAll(['Mine', 'Groceries']),
+        );
+        final shared = guest.notes.singleWhere((n) => n.id == noteId);
+        expect(
+          shared.colour,
+          NoteColour.pink,
+          reason: 'the note records the colour, so everyone sees the same one',
+        );
+        expect(
+          shared.tags,
+          isEmpty,
+          reason: "one person's label reached another person's device",
+        );
+        expect(guest.tags, isEmpty);
+      },
+    );
 
     test('a link works once, for the first account that opens it', () async {
       final (owner, _, noteId) = await owned();
@@ -1144,17 +1202,16 @@ void main() {
       expect(guest.pendingJoins, isEmpty);
     });
 
-    test('sharing asks for an account and a name first', () async {
+    test('sharing asks for a name once sync is set up', () async {
+      // The account comes with the server (ADR 0031), so the only missing
+      // piece a connected device can have is the name people see.
       final (owner, _) = await open();
-      await expectLater(
-        owner.createInvite(owner.notes.single.id),
-        throwsA(contains('no account')),
-      );
-      await owner.createAccount();
       await expectLater(
         owner.createInvite(owner.notes.single.id),
         throwsA(contains('name')),
       );
+      await owner.setProfileName('Olga');
+      await owner.createInvite(owner.notes.single.id);
     });
   }, skip: skip);
 }
@@ -1261,4 +1318,3 @@ Uint8List _png(int w, int h, int len) {
   }
   return bytes;
 }
-

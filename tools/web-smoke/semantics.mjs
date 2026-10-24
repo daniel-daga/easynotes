@@ -15,17 +15,14 @@ export async function load(d, to) {
 }
 
 /// The first launch opens onboarding before the note list. Walk it to the end
-/// without setting anything up, which is the same choice as skipping both
-/// optional steps. A profile that has already chosen how to start is left
-/// alone.
+/// without setting sync up: local-only is a supported way to start. A profile
+/// that has already chosen how to start is left alone.
 export async function dismissOnboarding(d) {
   if (!(await texts(d)).includes('Next')) return;
   await tap(d, /^Next$/);
   const setup = await texts(d);
   if (setup.includes('Continue offline')) {
     await tap(d, /^Continue offline$/);
-  } else if (setup.includes('Continue without account')) {
-    await tap(d, /^Continue without account$/);
   }
   await tap(d, /^Start writing$/);
 }
@@ -45,7 +42,12 @@ export async function configureRelay(d, url) {
   await fill(d, 'Server address', url);
   await tap(d, /^Continue$/);
   await tap(d, /^Connect$/);
-  await tap(d, /^Start with an empty collection$/);
+  // Sync is a server and the account that belongs to it, made together. This
+  // smoke leaves the phrase unwritten on purpose: it needs a working synced
+  // profile, and the phrase is for a recovery this test never performs.
+  await tap(d, /^Create account$/);
+  await tap(d, /^Back$/);
+  await tap(d, /^Leave anyway$/);
   // Settings closes itself once the new profile is open. If it stays, the
   // switch has not finished, which is a failure and not something to tap past.
   // The create button merges its label into its own text, and the morphing

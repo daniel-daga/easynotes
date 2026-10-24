@@ -62,6 +62,7 @@ void main() {
                       mode: mode,
                       profile: profile,
                       profiles: profiles,
+                      hasLocalNotes: offerMove,
                       servedOverHttps: servedOverHttps,
                       mobileRelease: mobileRelease,
                       onVerifyRelay: (url, {access}) async {

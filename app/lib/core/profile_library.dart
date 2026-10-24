@@ -34,10 +34,11 @@ Future<RustNoteLibrary> openProfileLibrary(
     profileId: profile.id,
   );
   final library = await RustNoteLibrary.open(directory, masterKey);
-  // Connecting cannot fail loudly enough to matter: with no relay the app is a
-  // local notes app, which is what it is designed to be when the network is
-  // gone.
-  if (connect && profile.url != null) {
+  // A profile is a server *and* the account that belongs to it (ADR 0031).
+  // A URL profile with no account therefore has nothing to sync: it is the
+  // repair state left by an interrupted setup, and the UI asks the person to
+  // finish it rather than uploading ciphertext nobody can open.
+  if (connect && profile.url != null && library.hasAccount) {
     await library.connect(profile.url!, access: profile.access);
   }
   return library;

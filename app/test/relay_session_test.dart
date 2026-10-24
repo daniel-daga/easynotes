@@ -43,7 +43,10 @@ class _Profiles extends RelayProfiles {
   bool failMove = false;
 
   @override
-  Future<RelayProfile> moveLocalToRelay(String address, {String? access}) async {
+  Future<RelayProfile> moveLocalToRelay(
+    String address, {
+    String? access,
+  }) async {
     if (failMove) throw StateError('keychain refused');
     return super.moveLocalToRelay(address, access: access);
   }
@@ -63,6 +66,7 @@ void main() {
   late List<String> events;
   late List<_Library> opened;
   Object? failOpen;
+  bool autoAccount = true;
 
   setUp(() async {
     FlutterSecureStorage.setMockInitialValues({});
@@ -71,6 +75,7 @@ void main() {
     events = [];
     opened = [];
     failOpen = null;
+    autoAccount = true;
   });
 
   Future<NoteLibrary> open(
@@ -81,6 +86,11 @@ void main() {
     events.add('open(${profile.url}, connect: $connect)');
     if (failOpen != null) throw failOpen!;
     final library = _Library(profile.url ?? 'local');
+    if (profile.url != null && autoAccount) {
+      // A server profile always has the account that belongs to it (ADR 0031).
+      await library.createAccount();
+      library.calls.clear();
+    }
     if (connect && profile.url != null) await library.connect(profile.url!);
     opened.add(library);
     return library;
@@ -131,41 +141,50 @@ void main() {
     expect(profiles.profiles, hasLength(2));
   });
 
-  test('moving a local collection preserves the open library and account', () async {
-    final local = _Library('local');
-    await local.createAccount();
-    final id = await local.createNote();
-    local.calls.clear();
-    final s = session(local);
-    final originalId = s.profile.id;
-    await s.moveLocalToRelay('wss://Relay.Example/');
-    expect(s.profile.id, originalId);
-    expect(s.profile.url, 'https://relay.example');
-    expect(s.library, same(local));
-    expect(local.notes.single.id, id);
-    expect(local.hasAccount, isTrue);
-    expect(local.disposed, isFalse);
-    expect(local.calls, ['flush()', 'connect(https://relay.example)']);
-    expect(events, isEmpty);
-    final again = RelayProfiles();
-    await again.load();
-    expect(again.selected.id, originalId);
-    expect(again.selected.url, s.profile.url);
-  });
+  test(
+    'moving a local collection preserves the open library and account',
+    () async {
+      final local = _Library('local');
+      await local.createAccount();
+      final id = await local.createNote();
+      local.calls.clear();
+      final s = session(local);
+      final originalId = s.profile.id;
+      await s.moveLocalToRelay('wss://Relay.Example/');
+      expect(s.profile.id, originalId);
+      expect(s.profile.url, 'https://relay.example');
+      expect(s.library, same(local));
+      expect(local.notes.single.id, id);
+      expect(local.hasAccount, isTrue);
+      expect(local.disposed, isFalse);
+      expect(local.calls, ['flush()', 'connect(https://relay.example)']);
+      expect(events, isEmpty);
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.id, originalId);
+      expect(again.selected.url, s.profile.url);
+    },
+  );
 
-  test('a move refused by storage leaves notes local and never connects', () async {
-    final local = _Library('local');
-    final s = session(local);
-    profiles.failMove = true;
-    await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
-    expect(s.profile.url, isNull);
-    expect(s.library, same(local));
-    expect(local.disposed, isFalse);
-    expect(local.calls, ['flush()']);
-    final again = RelayProfiles();
-    await again.load();
-    expect(again.selected.url, isNull);
-  });
+  test(
+    'a move refused by storage leaves notes local and never connects',
+    () async {
+      final local = _Library('local');
+      final s = session(local);
+      profiles.failMove = true;
+      await expectLater(
+        s.moveLocalToRelay('https://relay.example'),
+        throwsStateError,
+      );
+      expect(s.profile.url, isNull);
+      expect(s.library, same(local));
+      expect(local.disposed, isFalse);
+      expect(local.calls, ['flush()']);
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.url, isNull);
+    },
+  );
 
   test('a move refuses unsaved notes and ephemeral tabs', () async {
     for (final local in [
@@ -173,26 +192,35 @@ void main() {
       _Library('local')..pushStorageError('QuotaExceededError'),
     ]) {
       final s = session(local);
-      await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
+      await expectLater(
+        s.moveLocalToRelay('https://relay.example'),
+        throwsStateError,
+      );
       expect(s.profile.url, isNull);
       expect(local.disposed, isFalse);
       expect(local.calls.where((c) => c.startsWith('connect')), isEmpty);
     }
   });
 
-  test('a connection failure after a move keeps the collection durable and offline', () async {
-    final local = _Library('local')..refuseConnection = true;
-    final s = session(local);
-    final id = await local.createNote();
-    await expectLater(s.moveLocalToRelay('https://relay.example'), throwsStateError);
-    expect(s.profile.url, 'https://relay.example');
-    expect(local.notes.single.id, id);
-    expect(local.disposed, isFalse);
-    final again = RelayProfiles();
-    await again.load();
-    expect(again.selected.id, s.profile.id);
-    expect(again.selected.url, s.profile.url);
-  });
+  test(
+    'a connection failure after a move keeps the collection durable and offline',
+    () async {
+      final local = _Library('local')..refuseConnection = true;
+      final s = session(local);
+      final id = await local.createNote();
+      await expectLater(
+        s.moveLocalToRelay('https://relay.example'),
+        throwsStateError,
+      );
+      expect(s.profile.url, 'https://relay.example');
+      expect(local.notes.single.id, id);
+      expect(local.disposed, isFalse);
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.id, s.profile.id);
+      expect(again.selected.url, s.profile.url);
+    },
+  );
 
   test(
     'the relay already selected is not a switch, however it is spelt',
@@ -315,5 +343,138 @@ void main() {
       'install(local)',
     ]);
   });
-}
 
+  test(
+    'a new server and its account are set up together before connecting',
+    () async {
+      final local = _Library('local');
+      final id = await local.createNote();
+      local.calls.clear();
+      final s = session(local);
+
+      await s.connectNewServer(
+        'wss://Relay.Example/',
+        moveNotes: true,
+        setUpAccount: (library, profile) async {
+          expect(profile.url, 'https://relay.example');
+          await library.createAccount();
+          return library.hasAccount;
+        },
+      );
+
+      expect(s.profile.url, 'https://relay.example');
+      expect(s.library, same(local));
+      expect(local.hasAccount, isTrue);
+      expect(local.notes.single.id, id);
+      expect(
+        local.calls,
+        containsAllInOrder([
+          'createAccount()',
+          'flush()',
+          'connect(https://relay.example)',
+        ]),
+      );
+    },
+  );
+
+  test('cancelling an account before it exists writes nothing', () async {
+    final local = _Library('local');
+    final id = await local.createNote();
+    final s = session(local);
+
+    await expectLater(
+      s.connectNewServer(
+        'https://relay.example',
+        moveNotes: true,
+        setUpAccount: (_, _) async => false,
+      ),
+      throwsA(isA<SyncSetupCancelled>()),
+    );
+
+    expect(s.profile.url, isNull);
+    expect(s.library, same(local));
+    expect(local.hasAccount, isFalse);
+    expect(local.notes.single.id, id);
+    expect(local.calls.where((c) => c.startsWith('connect')), isEmpty);
+  });
+
+  test('starting empty keeps the local notes and gives the server a fresh '
+      'profile', () async {
+    autoAccount = false;
+    final local = _Library('local');
+    await local.createNote();
+    final s = session(local);
+
+    await s.connectNewServer(
+      'https://relay.example',
+      moveNotes: false,
+      setUpAccount: (library, profile) async {
+        expect(profile.url, 'https://relay.example');
+        await library.createAccount();
+        return library.hasAccount;
+      },
+    );
+
+    expect(s.profile.url, 'https://relay.example');
+    expect(s.library, isNot(same(local)));
+    expect(s.library.hasAccount, isTrue);
+    expect(profiles.profiles.where((p) => p.url == null), isNotEmpty);
+    expect(events, [
+      'open(https://relay.example, connect: false)',
+      'release(local)',
+      'install(https://relay.example)',
+    ]);
+  });
+
+  test('a new server from a server profile opens a fresh collection', () async {
+    final s = session(_Library('local'));
+    await s.switchTo('https://a.example');
+    autoAccount = false;
+    events.clear();
+
+    await s.connectNewServer(
+      'https://b.example',
+      moveNotes: false,
+      setUpAccount: (library, _) async {
+        await library.createAccount();
+        return library.hasAccount;
+      },
+    );
+
+    expect(s.profile.url, 'https://b.example');
+    expect(
+      profiles.profiles.where((p) => p.url == 'https://a.example'),
+      hasLength(1),
+    );
+    expect(
+      profiles.profiles.where((p) => p.url == 'https://b.example'),
+      hasLength(1),
+    );
+  });
+
+  test('ending a server relationship keeps the collection and forgets the '
+      'address', () async {
+    final s = session(_Library('local'));
+    await s.switchTo('https://relay.example');
+    final serverId = s.profile.id;
+
+    await s.reopenAsLocal();
+
+    expect(s.profile.id, serverId);
+    expect(s.profile.url, isNull);
+    final again = RelayProfiles();
+    await again.load();
+    expect(again.selected.id, serverId);
+    expect(again.selected.url, isNull);
+    expect(
+      again.profiles.where((p) => p.url == 'https://relay.example'),
+      isEmpty,
+    );
+  });
+
+  test('a library with no account refuses to connect', () async {
+    final local = FakeNoteLibrary();
+    await expectLater(local.connect('https://relay.example'), throwsStateError);
+    expect(local.hasAccount, isFalse);
+  });
+}

@@ -20,6 +20,7 @@ class ServerSwitcherScreen extends StatefulWidget {
     required this.onSwitchRelay,
     required this.onVerifyRelay,
     this.onMoveLocalToRelay,
+    this.hasLocalNotes = false,
     bool? servedOverHttps,
     bool? mobileRelease,
   }) : servedOverHttps = servedOverHttps ?? platformServedOverHttps,
@@ -38,6 +39,10 @@ class ServerSwitcherScreen extends StatefulWidget {
   /// Assign this local collection to a new relay, keeping its notes. Only
   /// offered when [profile] stays on this device.
   final Future<void> Function(String, {String? access})? onMoveLocalToRelay;
+
+  /// Whether the local collection has notes to take along, so the wizard
+  /// only asks the question when there is something to answer.
+  final bool hasLocalNotes;
 
   /// A browser page served over HTTPS can only reach a relay with TLS; a
   /// released phone app likewise.
@@ -120,6 +125,7 @@ class _ServerSwitcherScreenState extends State<ServerSwitcherScreen> {
           onMoveLocalToRelay: widget.onMoveLocalToRelay,
           profile: widget.profile,
           profiles: widget.profiles,
+          hasLocalNotes: widget.hasLocalNotes,
           servedOverHttps: widget.servedOverHttps,
           mobileRelease: widget.mobileRelease,
         ),

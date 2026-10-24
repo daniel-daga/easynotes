@@ -57,6 +57,7 @@ void main() {
                   onMoveLocalToRelay: offerMove
                       ? (url, {access}) async => moved.add(url)
                       : null,
+                  hasLocalNotes: offerMove,
                   servedOverHttps: servedOverHttps,
                   mobileRelease: mobileRelease,
                 ),

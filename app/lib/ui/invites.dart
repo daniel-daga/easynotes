@@ -12,9 +12,10 @@
 /// dialog does not mean missing the answer — and it is what lets a person in
 /// while the owner's collaborators screen is closed.
 ///
-/// Sharing needs an account — shared notes belong to it, which is how they
-/// come back on a new phone — so the first time either side starts,
-/// [ensureSharingSetUp] asks for one, and a name, and carries straight on.
+/// Sharing needs a sync server and the account that belongs to it — shared
+/// notes belong to that account, which is how they come back on a new phone.
+/// A device without them is sent to Sync & devices rather than offered a
+/// second, local account.
 ///
 /// All of it polls. There is no push channel yet, and a person waiting on
 /// someone else is looking at the screen anyway. The polls stop when the
@@ -31,7 +32,7 @@ import '../core/app_visibility.dart';
 import '../core/invite_links.dart';
 import '../core/relay_profiles.dart';
 import '../core/invites.dart';
-import 'account_screen.dart';
+import 'account_screen.dart' show NameDialog;
 
 /// How often a screen that is waiting asks the relay. Short, because somebody
 /// is looking at it; a variable, so a widget test can make it shorter still.
@@ -62,53 +63,21 @@ String _days(Duration left) {
   return 'a moment';
 }
 
-enum _Setup { create, restore }
-
-/// Make sure this device can share: an account, then a name. Asked once, and
-/// only when somebody taps Share or opens a link; `false` if they said not
-/// now.
-///
-/// [ask] picks the backup check's words, for a test.
+/// Make sure this device can share: it needs a sync server and the account
+/// that belongs to it (ADR 0031), so there is no account-only path here.
+/// `false` if the device is not set up; the sheet says where to do it.
 Future<bool> ensureSharingSetUp(
   BuildContext context,
   Accounts accounts, {
   List<int>? ask,
 }) async {
   if (!accounts.hasAccount) {
-    final choice = await showModalBottomSheet<_Setup>(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (context) => const SharingSetupSheet(),
     );
-    if (choice == null || !context.mounted) return false;
-    switch (choice) {
-      case _Setup.create:
-        final List<String> words;
-        try {
-          words = await accounts.createAccount();
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.maybeOf(
-              context,
-            )?.showSnackBar(SnackBar(content: Text('$e')));
-          }
-          return false;
-        }
-        if (!context.mounted) return false;
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (context) => RecoveryPhraseScreen(words: words, ask: ask),
-          ),
-        );
-      case _Setup.restore:
-        final adopted = await Navigator.of(context).push<bool>(
-          MaterialPageRoute<bool>(
-            builder: (context) => AdoptAccountScreen(library: accounts),
-          ),
-        );
-        if (adopted != true) return false;
-    }
-    if (!context.mounted) return false;
+    return false;
   }
   if (accounts.profileName == null) {
     final name = await showDialog<String>(
@@ -121,7 +90,7 @@ Future<bool> ensureSharingSetUp(
   return true;
 }
 
-/// The one sheet a device without an account sees before it shares or joins.
+/// The one sheet a device without sync sees before it shares or joins.
 class SharingSetupSheet extends StatelessWidget {
   const SharingSetupSheet({super.key});
 
@@ -135,33 +104,21 @@ class SharingSetupSheet extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Set up sharing',
+              'Set up sync first',
               key: const Key('setup-sharing-title'),
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 12),
             const Text(
-              'Shared notes belong to your account, so they come back if you '
-              'get a new phone. Your account is twelve words you write down '
-              'once.',
+              'Sharing needs a sync server and the account that belongs to '
+              'it. Set both up together in Sync & devices, write down your '
+              'twelve words, then come back here.',
             ),
             const SizedBox(height: 24),
             FilledButton(
-              key: const Key('setup-sharing'),
-              onPressed: () => Navigator.of(context).pop(_Setup.create),
-              child: const Text('Set up'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              key: const Key('setup-restore'),
-              onPressed: () => Navigator.of(context).pop(_Setup.restore),
-              child: const Text('I already have twelve words'),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
               key: const Key('setup-not-now'),
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Not now'),
+              child: const Text('OK'),
             ),
           ],
         ),
@@ -1261,14 +1218,16 @@ class _InviteBannersState extends State<InviteBanners> {
         if (!join.readable)
           _Line(
             key: Key('join-banner-${join.inviteId}'),
-          colour: scheme.secondaryContainer,
-          text: 'Joining a shared note…',
-          action: 'Stop waiting',
-          onAction: () async {
-            await widget.invites.cancelJoin(join.inviteId);
-            if (mounted) setState(() => _waiting = widget.invites.pendingJoins);
-          },
-        ),
+            colour: scheme.secondaryContainer,
+            text: 'Joining a shared note…',
+            action: 'Stop waiting',
+            onAction: () async {
+              await widget.invites.cancelJoin(join.inviteId);
+              if (mounted) {
+                setState(() => _waiting = widget.invites.pendingJoins);
+              }
+            },
+          ),
       for (final entry in _ended.entries)
         _Line(
           key: Key('join-ended-${entry.key}'),

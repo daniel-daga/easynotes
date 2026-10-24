@@ -349,11 +349,8 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       Removal(noteId: r.note, title: r.title),
   ];
 
-  static PendingJoin _toJoin(rust.PendingJoinView join) => PendingJoin(
-    inviteId: join.invite,
-    name: join.name,
-    noteId: join.note,
-  );
+  static PendingJoin _toJoin(rust.PendingJoinView join) =>
+      PendingJoin(inviteId: join.invite, name: join.name, noteId: join.note);
 
   @override
   Future<PendingJoin> requestJoin(String link) async =>
@@ -602,6 +599,14 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   @override
   Future<void> connect(String url, {String? access}) {
+    // Sync is a server and an account, one decision (ADR 0031). Nothing is
+    // uploaded before the account exists, because a relay copy whose note keys
+    // never left this device is not a copy anyone can use.
+    if (!hasAccount) {
+      return Future.error(
+        StateError('Sync needs an account. Set up sync first.'),
+      );
+    }
     _relay = url;
     _access = access;
     return _library.connect(relay: url, access: access);
