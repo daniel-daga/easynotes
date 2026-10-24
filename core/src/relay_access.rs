@@ -20,6 +20,7 @@ use crate::error::{CoreError, Result};
 use crate::ids::InviteId;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -77,7 +78,7 @@ impl RelayAccess {
 
     fn mac(&self, domain: &[u8], parts: &[&[u8]]) -> Hmac<Sha256> {
         let mut mac =
-            <Hmac<Sha256> as Mac>::new_from_slice(&self.0).expect("HMAC takes any key length");
+            <Hmac<Sha256> as KeyInit>::new_from_slice(&self.0).expect("HMAC takes any key length");
         mac.update(domain);
         for part in parts {
             mac.update(part);

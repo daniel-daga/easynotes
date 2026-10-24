@@ -23,9 +23,9 @@ getrandom = "0.3.4"
 hex = "0.4.3"
 # Key derivation for the account root. Both were already in the tree under
 # `ed25519-dalek`, so naming them here adds no crate to any of the six targets.
-hkdf = "0.12.4"
+hkdf = "0.13.0"
 # The relay access proof (ADR 0028). Already in the tree under `hkdf`.
-hmac = "0.12.1"
+hmac = "0.13.0"
 rand = "0.10.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 # `bundled` compiles the SQLite amalgamation, so there is no system library to
@@ -33,7 +33,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 thiserror.workspace = true
 tokio = { version = "1", default-features = false, features = ["sync"] }
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"], optional = true }
