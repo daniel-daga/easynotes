@@ -25,7 +25,7 @@
 //
 //     node tools/web-smoke/storage-failure.mjs <app url>
 import { chromium } from 'playwright-core';
-import { find, load, tap, texts } from './semantics.mjs';
+import { dismissOnboarding, find, load, tap, texts } from './semantics.mjs';
 import { mkdirSync, createWriteStream } from 'node:fs';
 import { createGzip } from 'node:zlib';
 import { finished } from 'node:stream/promises';
@@ -131,6 +131,7 @@ async function device(name) {
   });
   d.page = await context.newPage();
   await load(d, url);
+  await dismissOnboarding(d);
   return d;
 }
 
@@ -206,6 +207,7 @@ try {
     await d.page.close();
     d.page = await d.context.newPage();
     await load(d, url);
+    await dismissOnboarding(d);
     d.doing = 'emptying it again';
     const left = (await noteIds(d)).filter(id => thrown.includes(id));
     check((await noteIds(d)).includes(kept), 'the kept note is still there');
