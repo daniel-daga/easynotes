@@ -45,13 +45,26 @@ render HTML, unlike Google Play's.
 
 ### 2. Answer the export-compliance question
 
-The app is end-to-end encrypted. `Info.plist` has no
-`ITSAppUsesNonExemptEncryption` key, so App Store Connect will show its "Export
-Compliance" question when the first build is submitted for review. This is a
-legal/export determination, not a code change: decide whether the app qualifies
-for Apple's exemption and, if so, add
-`<key>ITSAppUsesNonExemptEncryption</key><false/>` to `Info.plist`; otherwise
-file the declaration. Do not leave the question unanswered at submission.
+The app is end-to-end encrypted, and the encryption it uses falls under Apple's
+exemption: standard TLS on the wire plus its own end-to-end note encryption,
+with nothing that Apple considers non-exempt. `Info.plist` therefore declares
+
+```xml
+<key>ITSAppUsesNonExemptEncryption</key>
+<false/>
+```
+
+so App Store Connect no longer asks the "Export Compliance" question for each
+upload. Without the key every build sat in **Missing Compliance** and was never
+distributed to testers, even though the upload itself succeeded.
+
+This is a legal/export determination rather than a code change. If the
+cryptography ever stops qualifying for the exemption — a new non-exempt
+algorithm, or shipping third-party crypto outside TLS — flip the answer and file
+the declaration instead of leaving the question unanswered at submission.
+
+Builds uploaded before the key existed still need their compliance answered by
+hand: App Store Connect → TestFlight → the build → **Manage Compliance**.
 
 ### 3. Complete App Privacy (App Store Connect)
 

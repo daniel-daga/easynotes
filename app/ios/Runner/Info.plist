@@ -60,5 +60,10 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- The app only uses exempt encryption: standard TLS for transport and its
+	     own end-to-end note encryption. Answering here keeps every TestFlight
+	     upload out of "Missing Compliance". See docs/ios-release.md, step 2. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

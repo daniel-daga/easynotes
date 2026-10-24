@@ -63,3 +63,35 @@ build, then dispatch it. The workflow uses the app's version from
 Once Apple's processing completes, the build appears in the app's TestFlight
 tab. Add internal testers there; external testing additionally requires the
 TestFlight test information and Apple's beta review.
+
+## Where the build lands, and why testers may not see it
+
+App Store Connect files an upload under two values from `app/pubspec.yaml`:
+`CFBundleShortVersionString` is the version before the `+`, and
+`CFBundleVersion` is the build number the workflow assigns. A run that builds
+`0.1.5` therefore appears under a **0.1.5** version group, not under an older
+one — check the version group, not just the top of the TestFlight tab.
+
+An uploaded build is not distributed on its own. It stays invisible to testers
+until one of these is true:
+
+- the build is added to an internal tester group (**TestFlight → Internal
+  Testing → the group → Builds → +**), or
+- that group has automatic distribution enabled.
+
+The workflow deliberately does neither, and it does not touch the TestFlight
+test information or submit for beta review.
+
+Two other states look like "the build never arrived":
+
+- **Missing Compliance.** A build whose export-compliance question is
+  unanswered is not distributable. `Info.plist` now declares
+  `ITSAppUsesNonExemptEncryption = false`, so new uploads skip this; builds
+  uploaded before that key existed need it answered by hand under the build's
+  **Manage Compliance**.
+- **Expiry.** Apple removes a build from TestFlight 90 days after upload.
+
+If the workflow itself has not run since the version bump, nothing was uploaded
+for that version. Note that the `App builds` workflow's `ios` job is a
+simulator-only compile check with no certificate and no upload; it can never
+produce a TestFlight build.
