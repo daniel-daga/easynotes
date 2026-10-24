@@ -185,8 +185,16 @@ restore recovery"); history they have already compacted away is not resent. So
 treat a real restore as an incident, and check that two devices converge before
 calling it over.
 
-To update, copy/pull the new repository version, then use **Project → Action →
-Build** and **Start** in Container Manager. The database directory is separate
+To update, copy/pull the new repository version, then run over SSH:
+
+```sh
+/volume1/docker/easynotes/deploy/synology/update.sh
+```
+
+It takes a backup first, rebuilds the relay image, recreates the containers,
+and waits until the relay reports healthy, printing its recent log if it does
+not. In Container Manager the same is **Project → Action → Build** then
+**Start**. The database directory is separate
 from the containers and survives normal rebuilds. A stop is graceful: the relay
 stops taking connections, closes every device's sync socket cleanly so the app
 reconnects on its own, and gives uploads in flight up to eight seconds
