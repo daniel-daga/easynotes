@@ -15,7 +15,7 @@
 //
 //     node tools/web-smoke/sync.mjs <app url>
 import { chromium } from 'playwright-core';
-import { configureRelay } from './semantics.mjs';
+import { configureRelay, tap } from './semantics.mjs';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
 const executablePath = process.env.CHROME_EXECUTABLE;
@@ -60,27 +60,19 @@ await page.evaluate(() =>
     ?.dispatchEvent(new PointerEvent('click', { bubbles: true })));
 await page.waitForTimeout(2500);
 
+const d = { name: 'sync', page };
 // A fresh install is local-only. Choose the test relay through Settings so the
 // smoke covers the current profile behavior as well as the WebSocket transport.
-await configureRelay({ name: 'sync', page }, 'http://127.0.0.1:8080');
+await configureRelay(d, 'http://127.0.0.1:8080');
 
-// The floating button, then the title field and the item field. Positions come
-// from the semantics tree so a change in layout moves them with it.
-const box = async (nth) => page.evaluate((n) => {
-  const buttons = Array.from(document.querySelectorAll('flt-semantics[role="button"]'));
-  const r = buttons.at(n).getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-}, nth);
-
-const fab = await box(-1);
-await page.mouse.click(fab.x, fab.y);
-await page.waitForTimeout(3000);
-await page.mouse.click(600, 28);
-await page.waitForTimeout(800);
-await page.keyboard.type('Groceries');
-await page.waitForTimeout(800);
-await page.mouse.click(600, 688);
-await page.waitForTimeout(800);
+// The create button opens the note types. Make a list and type one item; a
+// first edit is enough for the engine to open its socket and publish.
+await tap(d, /^Create note/);
+await tap(d, /^List(?:\n|$)/);
+await tap(d, /^Checklist item$/);
+// The new row takes the focus; type only once it has it.
+await page.waitForFunction(() =>
+  /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? ''));
 await page.keyboard.type('asparagus');
 await page.keyboard.press('Enter');
 // The handshake is two HTTP calls and then a socket, and the relay may be cold.

@@ -214,8 +214,8 @@ await configureRelay(a, 'http://127.0.0.1:8080');
 await configureRelay(b, 'http://127.0.0.1:8080');
 
 // --- A makes a list and shares it --------------------------------------------
-await tap(a, /^Show shortcuts$/);
-await tap(a, /^New checklist$/);
+await tap(a, /^Create note/);
+await tap(a, /^List(?:\n|$)/);
 await addItem(a, 'milk');
 await tap(a, /^Share$/);
 await setUpSharing(a, 'Ann');

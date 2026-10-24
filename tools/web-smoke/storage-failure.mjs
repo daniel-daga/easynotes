@@ -136,8 +136,9 @@ async function device(name) {
 
 /// A checklist with one item, made through the screens, and left.
 async function makeNote(d, item) {
-  await tap(d, /^New checklist$/);
-  await tap(d, /^\+ Checklist item$/);
+  await tap(d, /^Create note/);
+  await tap(d, /^List(?:\n|$)/);
+  await tap(d, /^Checklist item$/);
   await d.page.keyboard.type(item);
   await d.page.waitForTimeout(600);
 }
@@ -145,7 +146,7 @@ async function makeNote(d, item) {
 async function trashOpenNote(d) {
   await tap(d, /^More note actions$/);
   await tap(d, /^Move to trash$/);
-  await find(d, n => n.text.trim() === 'New checklist');
+  await find(d, n => n.text.trim() === 'Untitled checklist');
 }
 
 async function openTrash(d) {
