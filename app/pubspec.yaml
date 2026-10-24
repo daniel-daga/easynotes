@@ -40,19 +40,19 @@ dependencies:
   rust_lib_easynotes:
     path: rust_builder
   flutter_rust_bridge: 2.13.0
-  path_provider: ^2.1.5
+  path_provider: ^2.1.6
   # Where the master key lives: Keystore on Android, the Keychain on iOS and
   # macOS, libsecret on Linux, DPAPI on Windows. See lib/core/master_key.dart.
   flutter_secure_storage: ^11.2.0
-  flutter_local_notifications: ^22.3.1
+  flutter_local_notifications: ^22.3.2
   flutter_timezone: ^5.1.1
-  timezone: ^0.11.1
+  timezone: ^0.11.2
   audioplayers: ^6.8.1
   cross_file: ^0.3.5+5
   record: ^7.1.2
   web: ^1.1.1
   file_picker: ^13.1.0
-  image: ^4.10.1
+  image: ^4.12.0
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.1.3
 
