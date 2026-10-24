@@ -30,7 +30,7 @@ class _LabelManagerScreenState extends State<LabelManagerScreen> {
 
   /// The notes whose labels are being chosen; empty when managing labels.
   Set<String> get _ids =>
-      widget.noteIds ?? {if (widget.noteId case final id?) id};
+      widget.noteIds ?? {?widget.noteId};
 
   bool get _selecting => _ids.isNotEmpty;
 

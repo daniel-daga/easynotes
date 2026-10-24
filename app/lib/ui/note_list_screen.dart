@@ -1767,7 +1767,7 @@ class _FilterSection extends StatelessWidget {
             Expanded(
               child: Text(title, style: Theme.of(context).textTheme.titleSmall),
             ),
-            if (trailing != null) trailing!,
+            ?trailing,
           ],
         ),
         const SizedBox(height: 6),
@@ -2086,8 +2086,7 @@ class _NoteCollectionState extends State<_NoteCollection>
     final generation = ++_animationGeneration;
     _positionAnimation.stop();
     final oldPositions = {
-      for (final note in widget.notes)
-        if (_positionOf(note.id) case final position?) note.id: position,
+      for (final note in widget.notes) note.id: ?_positionOf(note.id),
     };
     final oldOffsets = {
       for (final note in widget.notes) note.id: _visibleOffset(note.id),
