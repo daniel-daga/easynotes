@@ -599,7 +599,7 @@ async fn the_link_hands_over_the_key_without_the_owners_device() {
 
     // And a second account holding the same link is refused the request
     // outright, so it never reaches the key.
-    let mut mallory = person("Mallory");
+    let mallory = person("Mallory");
     let other_sealed = mallory.seal_join_request(&outgoing.secret).unwrap();
     let other_member = mallory.member().unwrap();
     let other = invite::request(
@@ -632,7 +632,7 @@ async fn a_re_sealed_pre_grant_replaces_the_one_before_it() {
         .await
         .unwrap();
 
-    let mut guest = person("Anna");
+    let guest = person("Anna");
     let sealed = guest.seal_join_request(&outgoing.secret).unwrap();
     let member = guest.member().unwrap();
     let (request, pre_grant) =
