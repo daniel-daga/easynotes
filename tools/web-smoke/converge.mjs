@@ -112,10 +112,16 @@ async function device(name) {
   });
   const d = { name, context, crashes: [], errors: [], heap: [] };
   devices.push(d);
+  // A tab the test has deliberately taken offline will still try to reach the
+  // relay, and the browser logs the failed request as a console error. That is
+  // the condition under test, not an app error, so it is not counted.
+  const offlineNoise = /net::ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED)/;
   // Every tab the device opens, including the one a link is opened in later.
   context.on('page', page => {
     page.on('pageerror', e => d.crashes.push(e.message));
-    page.on('console', m => m.type() === 'error' && d.errors.push(`[${currentStep}] ${m.text()}`));
+    page.on('console', m => m.type() === 'error' &&
+      !offlineNoise.test(m.text()) &&
+      d.errors.push(`[${currentStep}] ${m.text()}`));
     page.on('crash', async () => {
       console.error(`\n${d.name}'s tab crashed at ${elapsed()}s`);
       await diagnose();
