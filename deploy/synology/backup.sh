@@ -21,12 +21,22 @@ sql="$backup_dir/.easynotes-$stamp.sql"
 archive="$backup_dir/easynotes-$stamp.sql.gz"
 media="$backup_dir/easynotes-media-$stamp.tar.gz"
 
+# Container Manager prefixes a container's name with a hash of its own
+# (`c86b..._easynotes-db`), so the compose name is the end of the real name.
+# DB_CONTAINER overrides this when more than one running container matches.
+db=${DB_CONTAINER:-$(docker ps -q --filter 'name=easynotes-db$' || true)}
+case "$(printf '%s\n' "$db" | grep -c . || true)" in
+    1) ;;
+    0) printf 'error: no running easynotes-db container; set DB_CONTAINER\n' >&2; exit 1 ;;
+    *) printf 'error: more than one running easynotes-db container; set DB_CONTAINER:\n%s\n' "$db" >&2; exit 1 ;;
+esac
+
 cleanup() {
     rm -f "$sql" "$archive.tmp" "$media.tmp"
 }
 trap cleanup EXIT HUP INT TERM
 
-docker exec easynotes-db pg_dump -U easynotes easynotes > "$sql"
+docker exec "$db" pg_dump -U easynotes easynotes > "$sql"
 # pg_dump writes this as its last line only when it finished. A dump cut short
 # by a full disk or a killed container is otherwise a valid-looking file.
 if ! tail -n 5 "$sql" | grep -q '^-- PostgreSQL database dump complete'; then

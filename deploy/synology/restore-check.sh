@@ -37,10 +37,21 @@ if [ ! -f "$media" ]; then
     exit 1
 fi
 
+# Container Manager prefixes a container's name with a hash of its own
+# (`c86b..._easynotes-db`), so the compose name is the end of the real name.
+# DB_CONTAINER overrides this when more than one running container matches.
+db=${DB_CONTAINER:-$(docker ps -q --filter 'name=easynotes-db$' || true)}
+case "$(printf '%s\n' "$db" | grep -c . || true)" in
+    1) ;;
+    0) printf 'error: no running easynotes-db container; set DB_CONTAINER\n' >&2; exit 1 ;;
+    *) printf 'error: more than one running easynotes-db container; set DB_CONTAINER:\n%s\n' "$db" >&2; exit 1 ;;
+esac
+
 scratch="easynotes_restore_check_$$"
 work=$(mktemp -d)
+
 psql() {
-    docker exec -i easynotes-db psql -v ON_ERROR_STOP=1 -q -U easynotes "$@"
+    docker exec -i "$db" psql -v ON_ERROR_STOP=1 -q -U easynotes "$@"
 }
 drop() {
     psql -d postgres -c "DROP DATABASE IF EXISTS $scratch" >/dev/null

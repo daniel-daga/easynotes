@@ -152,6 +152,9 @@ object it records as committed was on disk before the dump began, so the
 archive taken after it holds its bytes. It exits non-zero when any of that fails:
 tick **Send run details by email → only when the script terminates abnormally**
 in the task's settings, so a failed backup is an email rather than a surprise.
+The database container is found by the `easynotes-db` end of its name, so
+Container Manager's hash prefix does not matter; if more than one running
+container matches, set `DB_CONTAINER` to the one to dump.
 Configure Hyper Backup to copy that folder to a different device or cloud
 storage, with encryption and a retention of its own: a backup stored only on
 the NAS will not protect against NAS failure.
@@ -172,9 +175,16 @@ then, and always after changing anything about backups, run it with
 needs room for all of it) and checks every object's SHA-256 against the digest
 it was committed under, the only check that proves the bytes themselves.
 
-To restore for real, into an empty database, gunzip a dump and pipe it to
-`docker exec -i easynotes-db psql -U easynotes easynotes`, and unpack the
-media archive with the same timestamp into the empty media directory
+To restore for real, into an empty database, gunzip a dump and pipe it to the
+database container (found by the `easynotes-db` end of its name, as above):
+
+```sh
+db=$(docker ps -q --filter 'name=easynotes-db$')
+gunzip -c /volume1/docker/easynotes-backups/easynotes-<stamp>.sql.gz |
+    docker exec -i "$db" psql -U easynotes easynotes
+```
+
+Unpack the media archive with the same timestamp into the empty media directory
 (`tar -xzf easynotes-media-<stamp>.tar.gz -C /volume1/docker/easynotes-data`)
 before starting the relay. Restore the two together: a database with no media
 archive lists attachments whose bytes are gone, and devices that still hold
@@ -193,8 +203,13 @@ To update, copy/pull the new repository version, then run over SSH:
 
 It takes a backup first, rebuilds the relay image, recreates the containers,
 and waits until the relay reports healthy, printing its recent log if it does
-not. In Container Manager the same is **Project → Action → Build** then
-**Start**. The database directory is separate
+not. Container Manager may prefix container names with a hash of its own
+(`c86b..._easynotes-db`); the scripts match the compose name at the end, and
+`update.sh` reads the compose project from the relay's labels, so it updates
+that stack instead of creating a second one. If it cannot find the project,
+set `COMPOSE_PROJECT_NAME` in `.env` to the project's name in Container
+Manager, or update from the Project page instead. In Container Manager the
+same is **Project → Action → Build** then **Start**. The database directory is separate
 from the containers and survives normal rebuilds. A stop is graceful: the relay
 stops taking connections, closes every device's sync socket cleanly so the app
 reconnects on its own, and gives uploads in flight up to eight seconds
