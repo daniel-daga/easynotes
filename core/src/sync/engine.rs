@@ -836,7 +836,7 @@ impl<P: SyncPeer> SyncEngine<P> {
 
 /// Jitter the common exponential ceiling so devices do not retry in lockstep.
 fn randomized_retry(ceiling: Duration) -> Duration {
-    use rand::Rng;
+    use rand::RngExt;
     let max_ms = ceiling.as_millis().min(u64::MAX as u128) as u64;
     let min_ms = (max_ms / 2).max(1);
     Duration::from_millis(rand::rng().random_range(min_ms..=max_ms.max(min_ms)))

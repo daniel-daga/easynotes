@@ -75,7 +75,7 @@ pub(crate) fn parse_retry_after(value: Option<&str>) -> Option<std::time::Durati
 }
 
 fn randomized_retry(failures: u32) -> std::time::Duration {
-    use rand::Rng;
+    use rand::RngExt;
     let ceiling = FIRST_RETRY
         .saturating_mul(1u32 << failures.min(6))
         .min(MAX_RETRY);

@@ -56,7 +56,7 @@ use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
 use crate::relay_access::RelayAccess;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
