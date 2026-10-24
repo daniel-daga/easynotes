@@ -1,11 +1,24 @@
+# The relay image builds from Cargo.toml + Cargo.lock, core/, relay/, the
+# manifests of the other workspace members, and third_party/. Everything here
+# is either the repository's own history or an artifact of another toolchain
+# that the build context does not need.
 .git
 .github
 target
+.idea
+.codex-remote-attachments
 app/.dart_tool
 app/build
 app/.flutter-plugins*
 app/web/pkg
 app/android/.gradle
 app/android/build
+# Flutter's generated engine/plugin trees; hundreds of megabytes on a machine
+# that has actually run a desktop or iOS build.
+app/windows/flutter
+app/ios/Pods
+app/macos/Pods
+app/linux/flutter/ephemeral
 tools/web-smoke/node_modules
 tools/web-bench/node_modules
+tools/web-media/node_modules
