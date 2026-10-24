@@ -5,7 +5,7 @@
 //! accident — whichever we pick, the behaviour asserted here is the behaviour we
 //! are picking.
 
-use easynotes_core::crdt::{Edit, NoteDoc, NoteView};
+use easynotes_core::crdt::{Colour, Edit, NoteDoc, NoteView};
 use easynotes_core::ids::{ItemId, NoteId};
 use easynotes_core::note::{NoteCore, NoteKind};
 use easynotes_core::store::{MemoryKeyring, MemoryStore};
@@ -429,6 +429,76 @@ fn one_envelope_is_left_as_it_is<D: NoteDoc>() {
     assert_eq!(a.squash(id, std::slice::from_ref(&only)).unwrap(), [only]);
 }
 
+// -- colour, which is shared -------------------------------------------------
+
+fn a_colour_reaches_everyone<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let wire: Vec<Vec<u8>> = a
+        .set_colour(id, Some(Colour::Teal))
+        .unwrap()
+        .into_iter()
+        .map(|(_, envelope)| envelope)
+        .collect();
+    assert_eq!(wire.len(), 1);
+    deliver(&mut b, id, &wire);
+
+    let view = b.view(id).unwrap();
+    assert_eq!(view.colour, Some(Colour::Teal));
+    assert!(view.colour_set);
+    // And the card a guest draws reads it, not their own placement.
+    assert_eq!(b.notes().unwrap()[0].placement.colour, Some(Colour::Teal));
+}
+
+fn concurrent_colours_settle_on_one<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let from_a: Vec<Vec<u8>> = a
+        .set_colour(id, Some(Colour::Red))
+        .unwrap()
+        .into_iter()
+        .map(|(_, envelope)| envelope)
+        .collect();
+    let from_b: Vec<Vec<u8>> = b
+        .set_colour(id, Some(Colour::Blue))
+        .unwrap()
+        .into_iter()
+        .map(|(_, envelope)| envelope)
+        .collect();
+    deliver(&mut a, id, &from_b);
+    deliver(&mut b, id, &from_a);
+
+    // One of the two wins, not half of each, and both agree which.
+    let a_colour = a.view(id).unwrap().colour;
+    assert!(a_colour == Some(Colour::Red) || a_colour == Some(Colour::Blue));
+    assert_eq!(b.view(id).unwrap().colour, a_colour);
+}
+
+fn a_colour_taken_away_is_taken_away_for_everyone<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let coloured: Vec<Vec<u8>> = a
+        .set_colour(id, Some(Colour::Green))
+        .unwrap()
+        .into_iter()
+        .map(|(_, envelope)| envelope)
+        .collect();
+    deliver(&mut b, id, &coloured);
+
+    // The guest clears it. The owner's own placement still says green, so
+    // "no colour" has to be something the note says rather than an absence of
+    // one — otherwise the owner's card would fall back to green.
+    let cleared: Vec<Vec<u8>> = b
+        .set_colour(id, None)
+        .unwrap()
+        .into_iter()
+        .map(|(_, envelope)| envelope)
+        .collect();
+    deliver(&mut a, id, &cleared);
+
+    assert_eq!(a.view(id).unwrap().colour, None);
+    assert!(a.view(id).unwrap().colour_set);
+    assert_eq!(a.notes().unwrap()[0].placement.colour, None);
+    assert_eq!(b.notes().unwrap()[0].placement.colour, None);
+}
+
 // ---------------------------------------------------------------------------
 // Instantiation
 // ---------------------------------------------------------------------------
@@ -462,6 +532,18 @@ macro_rules! backend_suite {
             #[test]
             fn one_envelope_is_left_as_it_is() {
                 super::one_envelope_is_left_as_it_is::<$backend>()
+            }
+            #[test]
+            fn a_colour_reaches_everyone() {
+                super::a_colour_reaches_everyone::<$backend>()
+            }
+            #[test]
+            fn concurrent_colours_settle_on_one() {
+                super::concurrent_colours_settle_on_one::<$backend>()
+            }
+            #[test]
+            fn a_colour_taken_away_is_taken_away_for_everyone() {
+                super::a_colour_taken_away_is_taken_away_for_everyone::<$backend>()
             }
             #[test]
             fn a_check_flows_back() {

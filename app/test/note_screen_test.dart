@@ -193,30 +193,31 @@ void main() {
     expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
   });
 
-  testWidgets('deleting the last item leaves a blank list until Add is tapped', (
-    tester,
-  ) async {
-    final core = FakeNoteCore();
-    await pumpScreen(tester, core);
-    final id = core.current.items.single.id;
+  testWidgets(
+    'deleting the last item leaves a blank list until Add is tapped',
+    (tester) async {
+      final core = FakeNoteCore();
+      await pumpScreen(tester, core);
+      final id = core.current.items.single.id;
 
-    await tester.tap(find.byKey(Key('delete:$id')));
-    await tester.pumpAndSettle();
-    await core.setTitle('Still empty');
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('delete:$id')));
+      await tester.pumpAndSettle();
+      await core.setTitle('Still empty');
+      await tester.pumpAndSettle();
 
-    expect(core.current.items, isEmpty);
-    expect(visibleItems(tester), isEmpty);
-    expect(find.byType(Checkbox), findsNothing);
-    expect(find.byKey(const Key('empty-state')), findsNothing);
-    expect(find.text('Nothing on this checklist yet.'), findsNothing);
-    expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
+      expect(core.current.items, isEmpty);
+      expect(visibleItems(tester), isEmpty);
+      expect(find.byType(Checkbox), findsNothing);
+      expect(find.byKey(const Key('empty-state')), findsNothing);
+      expect(find.text('Nothing on this checklist yet.'), findsNothing);
+      expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
 
-    await tester.tap(find.byKey(const Key('add-list-entry')));
-    await tester.pumpAndSettle();
-    expect(visibleItems(tester), ['']);
-    expect(focusedFieldText(tester), '');
-  });
+      await tester.tap(find.byKey(const Key('add-list-entry')));
+      await tester.pumpAndSettle();
+      expect(visibleItems(tester), ['']);
+      expect(focusedFieldText(tester), '');
+    },
+  );
 
   testWidgets('the add icon lines up with checkboxes and its label with text', (
     tester,
@@ -740,6 +741,157 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(visibleItems(tester), ['eggs (12)']);
+  });
+
+  testWidgets('a remote edit to the item being typed in appears in place', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller!;
+    // The caret after "milk", as if this person were about to carry on.
+    controller.selection = const TextSelection.collapsed(offset: 4);
+
+    // The other device adds to the same line.
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(
+            id: id,
+            text: 'milk and eggs',
+            checked: false,
+            order: '0000',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.text, 'milk and eggs');
+    // Nothing was typed here, so nothing was sent back over the other person.
+    expect(core.edits, isEmpty);
+    // And the caret stayed where it was, rather than jumping to the end.
+    expect(controller.selection, const TextSelection.collapsed(offset: 4));
+  });
+
+  testWidgets('leaving an item after a remote edit does not put the old text '
+      'back', (tester) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(
+            id: id,
+            text: 'milk and eggs',
+            checked: false,
+            order: '0000',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Tapping away commits; there is nothing newer to commit.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(core.edits, isEmpty);
+    expect(visibleItems(tester), ['milk and eggs']);
+  });
+
+  testWidgets('typing on after a remote edit sends the merged line', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(
+            id: id,
+            text: 'milk and eggs',
+            checked: false,
+            order: '0000',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(field, 'milk and eggs, please');
+    await tester.pumpAndSettle();
+    expect(core.edits, contains('setItemText($id, milk and eggs, please)'));
+  });
+
+  testWidgets(
+    'a remote delete of the row being typed in leaves nothing behind',
+    (tester) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread']);
+      await pumpScreen(tester, core);
+      final milk = core.current.items[0].id;
+      final bread = core.current.items[1].id;
+      await tester.tap(find.byKey(ValueKey('text:$milk')));
+      await tester.pumpAndSettle();
+
+      core.pushRemote(
+        NoteView(
+          title: core.current.title,
+          items: [
+            ItemView(id: bread, text: 'bread', checked: false, order: '0000'),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['bread']);
+      expect(find.byKey(ValueKey('text:$milk')), findsNothing);
+      // Nothing was written back for the row that is no longer there.
+      expect(core.edits, isEmpty);
+    },
+  );
+
+  testWidgets('leaving an item sends what was held for a pause', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary();
+    final id = await library.createNote();
+    final core = library.core(id);
+    await core.addItem('milk');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteScreen(
+          core: core,
+          storage: FakeStorageHealth(),
+          noteId: id,
+          invites: library,
+          library: library,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final field = find.byKey(ValueKey('text:${core.current.items[0].id}'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('sendHeldEdits()'));
   });
 
   testWidgets('dragging an item reports the index the core expects', (

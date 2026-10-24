@@ -52,6 +52,25 @@ class ItemView {
 /// note switches it for everyone on it.
 enum NoteKind { checklist, text }
 
+/// A note's colour, as this person chose it.
+///
+/// A name rather than a `Color`, because both documents hold a name: what
+/// "teal" has to look like is a question for the theme of whichever device is
+/// drawing it, and the answer differs between daylight and dark mode. The map
+/// from one to the other is in the note list screen, where the theme is.
+enum NoteColour {
+  red,
+  orange,
+  yellow,
+  green,
+  teal,
+  blue,
+  purple,
+  pink,
+  brown,
+  grey,
+}
+
 @immutable
 class NoteView {
   const NoteView({
@@ -59,6 +78,8 @@ class NoteView {
     required this.items,
     this.kind = NoteKind.checklist,
     this.body = '',
+    this.colour,
+    this.colourSet = false,
     this.attachments = const [],
   });
 
@@ -67,6 +88,8 @@ class NoteView {
       items = const [],
       kind = NoteKind.checklist,
       body = '',
+      colour = null,
+      colourSet = false,
       attachments = const [];
 
   final NoteKind kind;
@@ -76,6 +99,13 @@ class NoteView {
   /// leave content on the side a conversion emptied, and the rule is that a
   /// screen draws it rather than hiding it.
   final String body;
+
+  /// The colour everyone on the note sees, or null. [colourSet] says whether
+  /// the note has recorded one: until it has, a card shows this person's own
+  /// colour from the account document, which is how colours chosen before
+  /// colour was shared still show.
+  final NoteColour? colour;
+  final bool colourSet;
 
   /// Already in display order: the core sorts by `(order, id)` so that two
   /// devices showing the same data show it in the same sequence.
@@ -93,6 +123,8 @@ class NoteView {
       other.kind == kind &&
       other.title == title &&
       other.body == body &&
+      other.colour == colour &&
+      other.colourSet == colourSet &&
       listEquals(other.items, items) &&
       listEquals(other.attachments, attachments);
 
@@ -101,6 +133,8 @@ class NoteView {
     kind,
     title,
     body,
+    colour,
+    colourSet,
     Object.hashAll(items),
     Object.hashAll(attachments),
   );

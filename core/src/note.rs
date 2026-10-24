@@ -1275,6 +1275,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 .into_iter()
                 .map(|a| (a.media.kind(), a.media.name))
                 .collect(),
+            colour: view.colour,
+            colour_set: view.colour_set,
             log_len: self.store.log_len(id)?,
         };
         let sealed = entry.seal(id, &note.key)?;
@@ -1377,19 +1379,29 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let mut summaries: Vec<NoteSummary> = self
             .index
             .iter()
-            .map(|(id, entry)| NoteSummary {
-                collaborators: entry.collaborators.clone(),
-                id: *id,
-                kind: entry.kind,
-                title: entry.title.clone(),
-                items: entry.items.len(),
-                checked: entry.checked,
-                preview: entry.preview().take(PREVIEW_ITEMS).cloned().collect(),
-                placement: self.placements.placement(*id),
-                labels: self.labels_of(*id),
-                images: entry.count(crate::attachment::AttachmentKind::Image),
-                audio: entry.count(crate::attachment::AttachmentKind::Audio),
-                cover: entry.cover.clone(),
+            .map(|(id, entry)| {
+                let mut placement = self.placements.placement(*id);
+                // The note's own colour wins once it has one: it is the
+                // shade everyone on the note sees. A note that has never
+                // recorded one keeps the personal placement a build before
+                // this shared, so old colours do not disappear (ADR 0008).
+                if entry.colour_set {
+                    placement.colour = entry.colour;
+                }
+                NoteSummary {
+                    collaborators: entry.collaborators.clone(),
+                    id: *id,
+                    kind: entry.kind,
+                    title: entry.title.clone(),
+                    items: entry.items.len(),
+                    checked: entry.checked,
+                    preview: entry.preview().take(PREVIEW_ITEMS).cloned().collect(),
+                    placement,
+                    labels: self.labels_of(*id),
+                    images: entry.count(crate::attachment::AttachmentKind::Image),
+                    audio: entry.count(crate::attachment::AttachmentKind::Audio),
+                    cover: entry.cover.clone(),
+                }
             })
             .collect();
         // Pinned notes first, then the grid order, then the ID to break a tie —
@@ -1447,16 +1459,42 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.placements.placement(id)
     }
 
-    pub fn set_colour(&mut self, id: NoteId, colour: Option<Colour>) -> Result<()> {
+    pub fn set_colour(
+        &mut self,
+        id: NoteId,
+        colour: Option<Colour>,
+    ) -> Result<Vec<(NoteId, Vec<u8>)>> {
         self.set_colour_many(&[id], colour)
     }
 
-    /// Colour every note in `ids` at once: one envelope for the selection.
-    pub fn set_colour_many(&mut self, ids: &[NoteId], colour: Option<Colour>) -> Result<()> {
-        let edits = distinct(ids)
+    /// Colour every note in `ids` at once: a shared colour in each note's own
+    /// document, and this person's placement beside it.
+    ///
+    /// The note document is what everyone on the note reads, so a colour set
+    /// here reaches a collaborator the way the note's own content does. The
+    /// placement is still written because a build from before this shared a
+    /// colour reads only that, and because an entry in it costs one register
+    /// in a batch this device was sending anyway.
+    ///
+    /// Returns the note envelopes to publish. One per note: they are separate
+    /// documents, and there is no way to send one edit to two of them.
+    pub fn set_colour_many(
+        &mut self,
+        ids: &[NoteId],
+        colour: Option<Colour>,
+    ) -> Result<Vec<(NoteId, Vec<u8>)>> {
+        let ids: Vec<NoteId> = distinct(ids).collect();
+        let mut envelopes = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let envelope = self.apply_local(*id, Edit::SetColour(colour))?;
+            envelopes.push((*id, envelope));
+        }
+        let edits = ids
+            .into_iter()
             .map(|note| AccountEdit::SetColour { note, colour })
             .collect();
-        self.apply_account_batch(edits)
+        self.apply_account_batch(edits)?;
+        Ok(envelopes)
     }
 
     pub fn set_pinned(&mut self, id: NoteId, pinned: bool) -> Result<()> {

@@ -6011,6 +6011,8 @@ impl SseDecode for crate::api::notes::NoteView {
         let mut var_kind = <crate::api::notes::NoteKindView>::sse_decode(deserializer);
         let mut var_title = <String>::sse_decode(deserializer);
         let mut var_body = <String>::sse_decode(deserializer);
+        let mut var_colour = <Option<crate::api::notes::NoteColour>>::sse_decode(deserializer);
+        let mut var_colourSet = <bool>::sse_decode(deserializer);
         let mut var_items = <Vec<crate::api::notes::ItemView>>::sse_decode(deserializer);
         let mut var_attachments =
             <Vec<crate::api::notes::AttachmentView>>::sse_decode(deserializer);
@@ -6018,6 +6020,8 @@ impl SseDecode for crate::api::notes::NoteView {
             kind: var_kind,
             title: var_title,
             body: var_body,
+            colour: var_colour,
+            colour_set: var_colourSet,
             items: var_items,
             attachments: var_attachments,
         };
@@ -6977,6 +6981,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::notes::NoteView {
             self.kind.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
+            self.colour.into_into_dart().into_dart(),
+            self.colour_set.into_into_dart().into_dart(),
             self.items.into_into_dart().into_dart(),
             self.attachments.into_into_dart().into_dart(),
         ]
@@ -7852,6 +7858,8 @@ impl SseEncode for crate::api::notes::NoteView {
         <crate::api::notes::NoteKindView>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.title, serializer);
         <String>::sse_encode(self.body, serializer);
+        <Option<crate::api::notes::NoteColour>>::sse_encode(self.colour, serializer);
+        <bool>::sse_encode(self.colour_set, serializer);
         <Vec<crate::api::notes::ItemView>>::sse_encode(self.items, serializer);
         <Vec<crate::api::notes::AttachmentView>>::sse_encode(self.attachments, serializer);
     }

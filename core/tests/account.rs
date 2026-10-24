@@ -70,26 +70,33 @@ fn counted<D: NoteDoc, S: OpStore, K: Keyring>(
 // What a placement is, and is not
 // ---------------------------------------------------------------------------
 
-/// The property the whole document exists for. A colour is *this person's*, so
-/// it must not reach the note — where it would be encrypted with the note's key,
-/// sent to the relay, and repaint the shared shopping list on everyone else's
-/// phone.
-fn colouring_a_note_puts_nothing_in_the_note<D: NoteDoc>() {
+/// A colour is shared now, and everything else a person does to a note is not.
+///
+/// The colour has to reach a collaborator, so it is written into the note's own
+/// document — encrypted with the note's key and sent to the relay like the rest
+/// of the note. Pinning, archiving and the trash stay in the account document,
+/// where they cannot repaint anyone else's card.
+fn colouring_a_note_is_shared_but_pinning_is_not<D: NoteDoc>() {
     let mut core = in_memory::<D>();
     let id = core.create_note(NoteKind::Checklist).unwrap();
     core.set_title(id, "groceries").unwrap();
     let before = core.store().load(id).unwrap().len();
 
     core.set_colour(id, Some(Colour::Teal)).unwrap();
-    core.set_pinned(id, true).unwrap();
-    core.set_archived(id, true).unwrap();
-
     assert_eq!(
         core.store().load(id).unwrap().len(),
-        before,
+        before + 1,
+        "a shared colour belongs in the note's own log"
+    );
+    core.set_pinned(id, true).unwrap();
+    core.set_archived(id, true).unwrap();
+    assert_eq!(
+        core.store().load(id).unwrap().len(),
+        before + 1,
         "a personal placement was written to the note's own log"
     );
-    // It went somewhere, though: the account document's log, under its own ID.
+    // And it went to the account document too, which a build from before
+    // colour was shared reads.
     assert!(!core.store().load(ACCOUNT_DOC).unwrap().is_empty());
 }
 
@@ -1421,8 +1428,8 @@ macro_rules! backend_suite {
     ($name:ident, $backend:ty) => {
         mod $name {
             #[test]
-            fn colouring_a_note_puts_nothing_in_the_note() {
-                super::colouring_a_note_puts_nothing_in_the_note::<$backend>()
+            fn colouring_a_note_is_shared_but_pinning_is_not() {
+                super::colouring_a_note_is_shared_but_pinning_is_not::<$backend>()
             }
             #[test]
             fn the_account_log_is_addressed_to_the_account_document() {

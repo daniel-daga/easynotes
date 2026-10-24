@@ -1056,6 +1056,11 @@ class NoteView {
   final NoteKindView kind;
   final String title;
   final String body;
+
+  /// The colour everyone on the note sees, and whether the note has recorded
+  /// one at all. See `easynotes_core::crdt::NoteView`.
+  final NoteColour? colour;
+  final bool colourSet;
   final List<ItemView> items;
 
   /// Live attachments, in display order. An import of this device's that is
@@ -1067,6 +1072,8 @@ class NoteView {
     required this.kind,
     required this.title,
     required this.body,
+    this.colour,
+    required this.colourSet,
     required this.items,
     required this.attachments,
   });
@@ -1076,6 +1083,8 @@ class NoteView {
       kind.hashCode ^
       title.hashCode ^
       body.hashCode ^
+      colour.hashCode ^
+      colourSet.hashCode ^
       items.hashCode ^
       attachments.hashCode;
 
@@ -1087,6 +1096,8 @@ class NoteView {
           kind == other.kind &&
           title == other.title &&
           body == other.body &&
+          colour == other.colour &&
+          colourSet == other.colourSet &&
           items == other.items &&
           attachments == other.attachments;
 }

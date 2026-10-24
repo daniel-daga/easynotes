@@ -132,7 +132,8 @@ class NoteListScreen extends StatefulWidget {
     this.onMoveLocalToRelay,
     this.onAccountDeleted,
     this.initialInviteLink,
-    this.inviteLinks,
+    this.onInviteLink,
+    this.onInviteHandled,
     this.initialSharedText,
     this.sharedTexts,
   }) : profiles = profiles ?? RelayProfiles();
@@ -151,7 +152,16 @@ class NoteListScreen extends StatefulWidget {
   /// do not go there.
   final Future<void> Function()? onAccountDeleted;
   final String? initialInviteLink;
-  final Stream<String>? inviteLinks;
+
+  /// A link that was pasted rather than tapped. The app takes it, puts this
+  /// device on the link's relay if it names another one, and hands it back as
+  /// [initialInviteLink] on the rebuilt list.
+  final void Function(String link)? onInviteLink;
+
+  /// The [initialInviteLink] has been joined or turned down, so it never needs
+  /// showing again. The app holds it until then, so a rebuild on the way — a
+  /// relay switch, an account being made — does not lose it.
+  final void Function(String link)? onInviteHandled;
 
   /// Text another app shared in, which becomes a new note and opens: at
   /// launch, and then whenever the app is sent more while it runs.
@@ -176,8 +186,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// device was adopted, and then stayed wrong until a restart.
   NoteLayout get _layout => widget.library.layout;
   _Where _where = const _Where.shelf(_Shelf.notes);
-  StreamSubscription<String>? _inviteSubscription;
   StreamSubscription<SharedText>? _shareSubscription;
+
+  /// Whether the link this screen was given is already being joined. Guards the
+  /// same link being started twice while its dialog is open.
+  bool _joining = false;
 
   /// Watches the list for notes this device was just removed from, to say so
   /// once: “You no longer have access to ‘Groceries’.”
@@ -242,7 +255,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
   @override
   void initState() {
     super.initState();
-    _inviteSubscription = widget.inviteLinks?.listen(_showJoinForLink);
     _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
     _removalSubscription = widget.library.watchNotes().listen(
       (_) => _sayRemovals(),
@@ -272,7 +284,6 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   @override
   void dispose() {
-    _inviteSubscription?.cancel();
     _shareSubscription?.cancel();
     _removalSubscription?.cancel();
     _search.dispose();
@@ -434,7 +445,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
           noteId: id,
           invites: widget.library,
           autofocusBody: autofocusBody,
-          relayLink: widget.profile.relayLink,
+          relayUrl: widget.profile.url,
+          relayAccess: widget.profile.access,
           onLabels: () async {
             final note = widget.library.notes
                 .where((note) => note.id == id)
@@ -603,6 +615,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// link arrives as [initialLink] and is only confirmed; without one, the
   /// drawer's "Join with a link" asks for it to be pasted.
   ///
+  /// A link names the relay it belongs to. When that is not this device's, the
+  /// dialog hands it to the app ([onInviteLink]) instead of posting a request
+  /// that server cannot see; the app moves this device over and hands the link
+  /// back as [initialInviteLink], so nothing is pasted twice.
+  ///
   /// The wait is a dialog because somebody who has just opened a link is
   /// usually on the phone to the person who sent it; closing it keeps the
   /// request, and [InviteBanners] keeps waiting where the dialog left off.
@@ -616,6 +633,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
         invites: widget.library,
         initialLink: initialLink,
         profile: widget.profile,
+        onHandOff: widget.onInviteLink,
       ),
     );
     if (join == null || !mounted) return;
@@ -629,8 +647,31 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   void _showJoinForLink(String link) {
-    if (!mounted) return;
-    unawaited(_join(initialLink: link));
+    if (!mounted || _joining) return;
+    _joining = true;
+    unawaited(
+      _join(initialLink: link).whenComplete(() {
+        _joining = false;
+        // Answered, joined, or turned down: either way this link is spent.
+        widget.onInviteHandled?.call(link);
+        // And if another one arrived while this dialog was up, it is next.
+        final next = widget.initialInviteLink;
+        if (mounted && next != null && next != link) _showJoinForLink(next);
+      }),
+    );
+  }
+
+  @override
+  void didUpdateWidget(NoteListScreen old) {
+    super.didUpdateWidget(old);
+    // A new link while the list is already up — a warm launch, or a pasted
+    // link the app has just settled on another relay.
+    final link = widget.initialInviteLink;
+    if (link != null && link != old.initialInviteLink) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showJoinForLink(link);
+      });
+    }
   }
 
   /// Answer whoever asked to join one of this device's lists.
@@ -638,7 +679,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
     context,
     invites: widget.library,
     noteId: noteId,
-    relayLink: widget.profile.relayLink,
+    relayUrl: widget.profile.url,
+    relayAccess: widget.profile.access,
   );
 
   /// A request that was waiting in the background was let in.

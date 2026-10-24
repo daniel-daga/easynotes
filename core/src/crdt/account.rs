@@ -1,11 +1,15 @@
 //! The account document: what one person thinks about their own notes.
 //!
 //! A note's *content* is shared with everyone who has its key. Where that note
-//! sits in the grid, what colour it is, whether it is pinned, archived or in the
-//! trash, and how this person likes their list drawn are not shared with anyone:
-//! the design doc keeps them in a private per-user document so that one person
-//! colouring a shared shopping list does not recolour it for the household. This
-//! is that document.
+//! sits in the grid, whether it is pinned, archived or in the trash, and how
+//! this person likes their list drawn are not shared with anyone: the design doc
+//! keeps them in a private per-user document. This is that document.
+//!
+//! A colour is the exception, since 2026-10-24: it is written into the note's own
+//! document as well, so everyone on the note sees the same shade
+//! ([ADR 0008](../../../docs/adr/0008-account-document.md)). It is still written
+//! here too — a build from before that reads only this, and a note that has
+//! never recorded a shared colour, both fall back to it.
 //!
 //! ## Why it is a flat map and not a map of maps
 //!
@@ -20,7 +24,8 @@
 //! with a scalar in it:
 //!
 //! ```text
-//! "p:<note id>:colour"      -> string   a placement, one key per field
+//! "p:<note id>:colour"      -> string   a placement, one key per field; the
+//!                                       note's own colour wins where it has one
 //! "p:<note id>:pinned"      -> bool
 //! "p:<note id>:archived"    -> bool
 //! "p:<note id>:trashed"     -> bool
@@ -37,9 +42,10 @@
 //! ```
 //!
 //! Every write is then a last-writer-wins register on a root key, which is the
-//! weakest thing that can lose anything: two devices that pin and colour the same
-//! note concurrently keep both, and two that colour it differently keep one
-//! colour rather than half of each.
+//! weakest thing that can lose anything: two devices that pin the same note
+//! concurrently keep both, and two that colour it differently keep one colour
+//! rather than half of each — the same rule the note document applies to a
+//! shared colour.
 //!
 //! ## Why a label has an identity, and why membership is a key per pair
 //!
@@ -156,7 +162,10 @@ pub enum Value {
 /// A colour is written as its name, and a name this build does not know reads
 /// back as no colour: a device on an older version shows a plain card rather
 /// than refusing to open the note.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Colour {
     Red,
     Orange,

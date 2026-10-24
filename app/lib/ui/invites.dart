@@ -175,14 +175,16 @@ Future<void> showCollaborators(
   BuildContext context, {
   required Invites invites,
   required String noteId,
-  String? relayLink,
+  String? relayUrl,
+  String? relayAccess,
 }) => Navigator.of(context).push(
   MaterialPageRoute<void>(
     fullscreenDialog: true,
     builder: (context) => CollaboratorsScreen(
       invites: invites,
       noteId: noteId,
-      relayLink: relayLink,
+      relayUrl: relayUrl,
+      relayAccess: relayAccess,
     ),
   ),
 );
@@ -199,19 +201,22 @@ class CollaboratorsScreen extends StatefulWidget {
     super.key,
     required this.invites,
     required this.noteId,
-    this.relayLink,
+    this.relayUrl,
+    this.relayAccess,
   });
 
   final Invites invites;
   final String noteId;
 
-  /// This relay's link, address and access key together, when it has a key
-  /// ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). An
-  /// invite names no relay, so a guest on a private relay needs this too. It
-  /// goes with an invite only when the owner says so: an invite lets one
-  /// person into one note, and a relay link lets whoever holds it use the
-  /// relay for good.
-  final String? relayLink;
+  /// The relay this note lives on. Every invite made here carries it, so a
+  /// guest who taps one needs nothing typed in first.
+  final String? relayUrl;
+
+  /// That relay's access key, when its operator gave this device one
+  /// ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). It
+  /// travels in the invite, which is single-use and expires — narrower than
+  /// the relay link, which lets whoever holds it use the relay for good.
+  final String? relayAccess;
 
   @override
   State<CollaboratorsScreen> createState() => _CollaboratorsScreenState();
@@ -233,9 +238,6 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _refreshing = false;
   bool _askedToNotify = false;
   Timer? _poll;
-
-  /// Whether a sent invite carries [CollaboratorsScreen.relayLink] too.
-  bool _withRelayLink = false;
 
   @override
   void initState() {
@@ -319,8 +321,14 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     }
   }
 
-  String _link(Invite invite) =>
-      inviteLinkForSharing(invite.link, webOrigin: Uri.base.toString());
+  String _link(Invite invite) {
+    final url = widget.relayUrl;
+    return inviteLinkForSharing(
+      invite.link,
+      webOrigin: Uri.base.toString(),
+      relay: url == null ? null : (url: url, access: widget.relayAccess),
+    );
+  }
 
   /// Open one more link and send it through the platform's share sheet. Where
   /// there is no share sheet it is copied instead. Every tap is a new link,
@@ -343,15 +351,12 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   });
 
   Future<void> _send(Invite invite) async {
-    // The link goes last: a guest who pastes the whole message rather than
-    // tapping it still gets in, because the core reads after the last `#`.
-    final relay = widget.relayLink;
+    // One link, and everything needed to join: the note, the sync server it
+    // lives on, and the key that server asks for. Somebody who taps it is in;
+    // somebody who pastes the whole message rather than tapping it still is,
+    // because the core reads after the last `#`.
     final shared = await shareContent(
-      relay != null && _withRelayLink
-          ? 'Join my shared note in EasyNotes. First add my sync server in '
-                'Sync & devices → Sync server, with this link: $relay\n\n'
-                'Then open the invite: ${_link(invite)}'
-          : 'Join my shared note in EasyNotes: ${_link(invite)}',
+      'Join my shared note in EasyNotes: ${_link(invite)}',
     );
     if (!shared && mounted) _copy(invite);
     await _refresh();
@@ -369,24 +374,19 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     );
   }
 
-  /// What a guest on a relay with an access key needs besides the invite.
+  /// What a guest should know about the server this link carries, and about
+  /// the server link that shares the same key without an invite.
   Widget _relayLinkSection(ThemeData theme, String link) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       const SizedBox(height: 8),
       Text(
-        'This server has an access key. Someone who is not using it yet needs '
-        'its server link as well as an invite. The link lets them use the '
-        'server for good, so send it only to people you trust with that.',
+        'This server has an access key, and every invite carries it so one '
+        'tap is enough. It is a single-use link that expires, but it does let '
+        'its first opener use this server, so send it only to people you '
+        'trust with that.',
         key: const Key('relay-link-explainer'),
         style: theme.textTheme.bodySmall,
-      ),
-      SwitchListTile(
-        key: const Key('invite-with-relay-link'),
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Send the server link with invites'),
-        value: _withRelayLink,
-        onChanged: _busy ? null : (on) => setState(() => _withRelayLink = on),
       ),
       Align(
         alignment: Alignment.centerLeft,
@@ -804,8 +804,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                   'contain the note, only a way in.',
                   style: theme.textTheme.bodySmall,
                 ),
-                if (widget.relayLink case final link?)
-                  _relayLinkSection(theme, link),
+                if (widget.relayUrl case final url?)
+                  if (widget.relayAccess case final access?)
+                    _relayLinkSection(theme, relayLinkFor(url, access)),
                 const SizedBox(height: 8),
                 if (_open.isEmpty)
                   const Padding(
@@ -855,14 +856,19 @@ class JoinDialog extends StatefulWidget {
     required this.invites,
     this.initialLink,
     this.profile,
+    this.onHandOff,
   });
 
   final Invites invites;
   final String? initialLink;
 
-  /// The relay the join goes through. A link carries no relay, so it only
-  /// works when both people have chosen the same one, and this says which.
+  /// The relay the join goes through, which a link may name another of.
   final RelayProfile? profile;
+
+  /// Called instead of joining when the link belongs to a relay this device is
+  /// not on. The app moves the device there and brings the link back; the
+  /// dialog closes itself first, because the library under it is replaced.
+  final void Function(String link)? onHandOff;
 
   @override
   State<JoinDialog> createState() => _JoinDialogState();
@@ -882,6 +888,18 @@ class _JoinDialogState extends State<JoinDialog> {
   Future<void> _ask() async {
     final link = _link.text.trim();
     if (link.isEmpty) return;
+    // A link can name the relay it belongs to. One that names a relay this
+    // device is not on cannot be joined from here: the request would be posted
+    // to the wrong server. The app moves the device over and brings the link
+    // back, so this is one step, not a trip to settings.
+    final named = relayFromInvite(link);
+    if (named != null &&
+        widget.onHandOff != null &&
+        !_isCurrentRelay(named.url)) {
+      Navigator.of(context).pop();
+      widget.onHandOff!(link);
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -895,6 +913,16 @@ class _JoinDialogState extends State<JoinDialog> {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  bool _isCurrentRelay(String url) {
+    final current = widget.profile?.url;
+    if (current == null) return false;
+    try {
+      return canonicalRelayUrl(url) == current;
+    } on FormatException {
+      return false;
     }
   }
 
@@ -932,11 +960,10 @@ class _JoinDialogState extends State<JoinDialog> {
               padding: const EdgeInsets.only(top: 12),
               child: Text(
                 profile.url == null
-                    ? 'This device is not using a sync server, so it cannot '
-                          'join. Choose the server the link came from in Sync '
-                          'server settings.'
-                    : 'Joining through ${profile.url}. The person who sent '
-                          'the link has to use the same server.',
+                    ? 'This device is not using a sync server yet. If the link '
+                          'names one, joining sets it up for you.'
+                    : 'Joining through ${profile.url}, unless the link names '
+                          'another server, which asks before switching.',
                 key: const Key('join-relay'),
                 style: Theme.of(context).textTheme.bodySmall,
               ),

@@ -77,6 +77,10 @@ pub struct NoteView {
     pub kind: NoteKindView,
     pub title: String,
     pub body: String,
+    /// The colour everyone on the note sees, and whether the note has recorded
+    /// one at all. See `easynotes_core::crdt::NoteView`.
+    pub colour: Option<NoteColour>,
+    pub colour_set: bool,
     pub items: Vec<ItemView>,
     /// Live attachments, in display order. An import of this device's that is
     /// still waiting to be published is not here: see
@@ -238,6 +242,8 @@ impl From<easynotes_core::crdt::NoteView> for NoteView {
             kind: v.kind.into(),
             title: v.title,
             body: v.body,
+            colour: v.colour.map(Into::into),
+            colour_set: v.colour_set,
             items: v
                 .items
                 .into_iter()
@@ -2257,14 +2263,22 @@ impl Library {
     // on any screen can still be pinned from the grid.
     //
     // None of this reaches the note, so none of it reaches whoever else is on
-    // it — see `docs/adr/0008-account-document.md`.
+    // it — see `docs/adr/0008-account-document.md`. A colour is the one
+    // exception: it is written into the note as well, because two people
+    // looking at one list should see it the same shade.
 
     pub fn set_colour(&self, id: String, colour: Option<NoteColour>) -> Result<(), String> {
         let id = note_id(&id)?;
-        self.shared
+        let envelopes = self
+            .shared
             .locked()?
             .set_colour(id, colour.map(Into::into))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // A colour is one gesture, not typing: it goes at once, like a tick.
+        for (note, envelope) in envelopes {
+            self.shared.send_edit(note, envelope, false);
+        }
+        Ok(())
     }
 
     pub fn set_pinned(&self, id: String, pinned: bool) -> Result<(), String> {
@@ -2279,7 +2293,8 @@ impl Library {
     //
     // What the grid's selection bar calls. Each is one change to the account
     // document however many notes are named, so a peer never sees half a
-    // selection archived and the grid is redrawn once.
+    // selection archived and the grid is redrawn once. A colour is the
+    // exception: it is written into each note's own document as well.
 
     pub fn set_colour_many(
         &self,
@@ -2287,10 +2302,15 @@ impl Library {
         colour: Option<NoteColour>,
     ) -> Result<(), String> {
         let ids = note_ids(&ids)?;
-        self.shared
+        let envelopes = self
+            .shared
             .locked()?
             .set_colour_many(&ids, colour.map(Into::into))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        for (note, envelope) in envelopes {
+            self.shared.send_edit(note, envelope, false);
+        }
+        Ok(())
     }
 
     pub fn set_pinned_many(&self, ids: Vec<String>, pinned: bool) -> Result<(), String> {

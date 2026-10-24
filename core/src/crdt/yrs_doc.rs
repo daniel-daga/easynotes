@@ -15,7 +15,7 @@
 use super::attachment_fields as field;
 use super::{
     attachment_key, attachment_view, live_objects, parse_attachment_key, sort_attachments,
-    sort_items, splice, Edit, ItemView, NoteDoc, NoteKind, NoteView,
+    sort_items, splice, Colour, Edit, ItemView, NoteDoc, NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -31,6 +31,7 @@ const ROOT: &str = "note";
 const BODY: &str = "body";
 const TITLE: &str = "title";
 const KIND: &str = "kind";
+const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
@@ -189,6 +190,17 @@ impl NoteDoc for YrsNote {
                 Edit::SetBody(text) => {
                     self.set_body(&mut txn, text);
                 }
+                Edit::SetColour(colour) => {
+                    // A name rather than a value, so a device that does not
+                    // know it can show a plain card. An empty name means the
+                    // colour was cleared for everyone, which is why the key is
+                    // written rather than removed.
+                    self.root.insert(
+                        &mut txn,
+                        COLOUR,
+                        colour.as_ref().map(Colour::name).unwrap_or(""),
+                    );
+                }
                 Edit::ToChecklist { items: new } => {
                     self.root
                         .insert(&mut txn, KIND, NoteKind::Checklist.as_str());
@@ -273,7 +285,7 @@ impl NoteDoc for YrsNote {
         {
             let items_map = &self.root;
             for (key, value) in items_map.iter(&txn) {
-                if key == TITLE || key == KIND {
+                if key == TITLE || key == KIND || key == COLOUR {
                     continue;
                 }
                 if let Some(id) = parse_attachment_key(key) {
@@ -308,10 +320,14 @@ impl NoteDoc for YrsNote {
         sort_items(&mut items);
         sort_attachments(&mut attachments);
         retired_attachments.sort();
+        let colour_name = any_str(self.root.get(&txn, COLOUR));
+        let colour_set = self.root.get(&txn, COLOUR).is_some();
         NoteView {
             kind,
             title,
             body,
+            colour: Colour::from_name(&colour_name),
+            colour_set,
             items,
             attachments,
             retired_attachments,

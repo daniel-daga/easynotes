@@ -247,7 +247,13 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   /// to reach with its sockets still up.
   AppLifecycleListener? _lifecycle;
   ReminderScheduler? _reminders;
-  bool _launchPayloadsDelivered = false;
+
+  /// A link that arrived and has not been joined or turned down yet. It lives
+  /// here rather than on the list because joining can replace the list's whole
+  /// profile; this holder does not go away when it does.
+  String? _pendingInvite;
+  StreamSubscription<String>? _inviteSubscription;
+  bool _initialShareDelivered = false;
   late bool _showOnboarding = widget.showOnboarding;
   late bool _relayConnectedDuringOnboarding;
   late bool _accountCreatedDuringOnboarding;
@@ -261,6 +267,16 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   @override
   void initState() {
     super.initState();
+    // A link tapped while the app runs is handled here rather than on the
+    // list, so that one which arrives during onboarding waits instead of
+    // being lost.
+    if (_hasNativeDeepLinks) {
+      _inviteSubscription = DeepLinks.invites.listen(_takeInvite);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final link = widget.initialInviteLink;
+      if (link != null) unawaited(_takeInvite(link));
+    });
     // Onboarding can be pending across a restart — the first run was closed
     // before its last page. Whatever was set up before is still set up, so
     // the checklist starts from the device rather than from empty.
@@ -361,10 +377,24 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     if (mounted) setState(() => _released = true);
     _lifecycle?.dispose();
     _lifecycle = null;
-    await _reminders?.dispose(cancelScheduled: true);
+    // Cleanup, not a step of the switch. A plugin that is not ready yet — a
+    // link tapped a second after launch, while the reminders are still
+    // starting — must not stop this device moving to the note's relay; what
+    // it costs is that reminders already posted stay posted.
+    try {
+      await _reminders?.dispose(cancelScheduled: true);
+    } on Object catch (error) {
+      debugPrint('could not stop reminders: $error');
+    }
     _reminders = null;
     final alerts = joinAlerts;
-    if (alerts is SystemJoinAlerts) await alerts.dispose(cancelScheduled: true);
+    if (alerts is SystemJoinAlerts) {
+      try {
+        await alerts.dispose(cancelScheduled: true);
+      } on Object catch (error) {
+        debugPrint('could not stop join alerts: $error');
+      }
+    }
   }
 
   @override
@@ -373,9 +403,97 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       ..removeListener(_changed)
       ..onRelease = null
       ..onInstall = null;
+    unawaited(_inviteSubscription?.cancel());
     _lifecycle?.dispose();
     unawaited(_reminders?.dispose());
     super.dispose();
+  }
+
+  /// A link this app was given: tapped, opened from a browser, or pasted into
+  /// the drawer.
+  ///
+  /// If it names a sync server this device is not on, that is settled first —
+  /// with one question when this device already has notes somewhere else —
+  /// because the join request has to be posted to the server that holds the
+  /// note. Only then does the list see the link, so nothing typed is lost on
+  /// the way and nothing is asked twice.
+  Future<void> _takeInvite(String link) async {
+    if (!mounted) return;
+    final relay = relayFromInvite(link);
+    if (relay != null && !await _settleRelay(relay)) return;
+    if (!mounted) return;
+    // Cleared first, so that the same link delivered twice still shows: the
+    // list watches this change, not the value.
+    setState(() => _pendingInvite = null);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    setState(() => _pendingInvite = link);
+  }
+
+  /// Put this device on [relay]. `false` when the person said no, or when the
+  /// switch failed and there is nothing to join from.
+  Future<bool> _settleRelay(InviteRelay relay) async {
+    final String target;
+    try {
+      target = canonicalRelayUrl(relay.url);
+    } on FormatException {
+      // Not a server this build can use. The join dialog is where that is
+      // explained, with the link still in hand.
+      return true;
+    }
+    final current = _session.profile.url;
+    if (target == current) return true;
+    // A device with no server yet has nothing to lose, and asks nothing.
+    if (current != null && !await _confirmRelaySwitch(target)) return false;
+    try {
+      await _session.switchTo(target, access: relay.access);
+      return true;
+    } on Object catch (error) {
+      _say('Could not switch to $target: $error');
+      return false;
+    }
+  }
+
+  Future<bool> _confirmRelaySwitch(String target) async {
+    final context = _navigatorKey.currentContext;
+    if (context == null) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Switch to the server this note is on?'),
+        content: Text(
+          'This note is shared through $target. Joining means switching '
+          'EasyNotes to that server. The notes on this device stay where they '
+          'are, and come back when you switch back.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('join-switch-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('join-switch'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Switch and join'),
+          ),
+        ],
+      ),
+    );
+    return go ?? false;
+  }
+
+  void _say(String message) {
+    final context = _navigatorKey.currentContext;
+    if (context == null || !context.mounted) return;
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// The list has joined or turned down [link]; it never needs showing again.
+  void _inviteHandled(String link) {
+    if (_pendingInvite == link) _pendingInvite = null;
   }
 
   @override
@@ -412,13 +530,10 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   }
 
   Widget _noteList(NoteLibrary library) {
-    final initialInvite = _launchPayloadsDelivered
-        ? null
-        : widget.initialInviteLink;
-    final initialShare = _launchPayloadsDelivered
+    final initialShare = _initialShareDelivered
         ? null
         : widget.initialSharedText;
-    _launchPayloadsDelivered = true;
+    _initialShareDelivered = true;
     return NoteListScreen(
       key: ValueKey('${_session.profile.id}/${_session.generation}'),
       library: library,
@@ -428,8 +543,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       onMoveLocalToRelay: _session.moveLocalToRelay,
       onSetAccess: _session.setAccess,
       onAccountDeleted: _session.reopen,
-      initialInviteLink: initialInvite,
-      inviteLinks: _hasNativeDeepLinks ? DeepLinks.invites : null,
+      initialInviteLink: _pendingInvite,
+      onInviteLink: _takeInvite,
+      onInviteHandled: _inviteHandled,
       initialSharedText: initialShare,
       sharedTexts: _hasNativeShares ? SharedTexts.incoming : null,
     );

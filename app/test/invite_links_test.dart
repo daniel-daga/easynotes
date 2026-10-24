@@ -4,6 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   const secret = 'ASRciIVJtU8m60KIfMaTLg1HrJI9dhPOzsPW5gQdPigp';
   const native = 'easynotes://join#$secret';
+  const relay = 'https://sync.example.com';
+  const access = 'Zm9vYmFyLXJlbGF5LWtleQ';
+  const withRelay = 'easynotes://join#relay=$relay;access=$access#$secret';
 
   test('a web link keeps its second # and drops the page query', () {
     final link = inviteLinkForSharing(
@@ -30,5 +33,70 @@ void main() {
 
   test('a native build shares the link as the core made it', () {
     expect(inviteLinkForSharing(native, webOrigin: 'https://x/'), native);
+  });
+
+  test('a link names the relay it belongs to', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: 'https://x/',
+      relay: (url: relay, access: access),
+    );
+    expect(link, withRelay);
+    expect(relayFromInvite(link), (url: relay, access: access));
+    // The core still reads the secret: it is after the last #.
+    expect(link.substring(link.lastIndexOf('#') + 1), secret);
+  });
+
+  test('a web link carries the relay before its secret', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: 'https://notes.example/app/',
+      relay: (url: relay, access: access),
+      web: true,
+    );
+    expect(
+      link,
+      'https://notes.example/app/#join#relay=$relay;access=$access#$secret',
+    );
+    expect(inviteLinkFrom(link), withRelay);
+    expect(relayFromInvite(link), (url: relay, access: access));
+  });
+
+  test('a relay with no key is named on its own', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: 'https://x/',
+      relay: (url: relay, access: null),
+    );
+    expect(link, 'easynotes://join#relay=$relay#$secret');
+    expect(relayFromInvite(link), (url: relay, access: null));
+  });
+
+  test('a link made before invites carried a relay names none', () {
+    expect(inviteLinkFrom(native), native);
+    expect(relayFromInvite(native), isNull);
+    expect(relayFromInvite('https://notes.example/#join%23$secret'), isNull);
+  });
+
+  test('a relaying link survives the way a browser encodes it', () {
+    // `#` inside a fragment reaches a parser as `%23`, which is what the web
+    // address bar does to a link it was handed whole.
+    final encoded =
+        'https://notes.example/#join%23relay%3Dhttps%3A%2F%2Fsync.example.com'
+        '%3Baccess%3D$access%23$secret';
+    // The relay's `:` and `/` were encoded by whoever wrote the link; a
+    // percent-decoding parser brings them back before the fields are read.
+    expect(inviteLinkFrom(encoded), withRelay);
+    expect(relayFromInvite(encoded), (url: relay, access: access));
+  });
+
+  test('anything that is not an invite is not one', () {
+    expect(inviteLinkFrom(''), isNull);
+    expect(inviteLinkFrom('https://notes.example/'), isNull);
+    expect(inviteLinkFrom('hello'), isNull);
+    expect(relayFromInvite('hello'), isNull);
+    // A page that routes with a fragment is not an invite on every load.
+    expect(inviteLinkFrom('https://notes.example/#/notes'), isNull);
+    expect(inviteLinkFrom('https://notes.example/#notes'), isNull);
   });
 }

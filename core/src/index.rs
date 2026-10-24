@@ -35,7 +35,7 @@
 //! the property that makes it safe to put a copy of the note's text somewhere
 //! the CRDT does not control.
 
-use crate::crdt::NoteKind;
+use crate::crdt::{Colour, NoteKind};
 use crate::crypto::NoteKey;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
@@ -77,6 +77,17 @@ pub struct IndexEntry {
     /// and it is rewritten whenever the note changes, so a removal takes it
     /// out.
     pub cover: Option<(crate::ids::AttachmentId, crate::attachment::Media)>,
+    /// The colour everyone on the note sees, as the note document records it.
+    /// `colour_set` is false for a note that has never recorded one — every
+    /// note written before colour was shared — and a card then falls back to
+    /// this person's own placement.
+    ///
+    /// `default` so an entry written before the field existed still reads;
+    /// the next edit to the note rewrites it with the field.
+    #[serde(default)]
+    pub colour: Option<Colour>,
+    #[serde(default)]
+    pub colour_set: bool,
     /// How many envelopes the note's log held when this was written. The whole
     /// of the staleness check; see the module docs.
     pub log_len: usize,
@@ -168,4 +179,55 @@ pub fn body_lines(body: &str) -> Vec<String> {
         .filter(|line| !line.trim().is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An entry written before colour was shared has no colour fields. It has
+    /// to read back — the index is a cache and a missing field is not a reason
+    /// to rebuild every note on a phone — and say "the note has not recorded a
+    /// colour", so a card keeps the personal placement the old build wrote.
+    #[test]
+    fn an_entry_from_before_colour_was_shared_still_reads() {
+        let old = r#"{
+            "collaborators": [],
+            "version": 6,
+            "kind": "checklist",
+            "title": "groceries",
+            "body": [],
+            "items": ["milk"],
+            "checked": 0,
+            "attachments": [],
+            "cover": null,
+            "log_len": 3
+        }"#;
+        let entry: IndexEntry = serde_json::from_str(old).unwrap();
+        assert_eq!(entry.colour, None);
+        assert!(!entry.colour_set);
+        assert_eq!(entry.title, "groceries");
+    }
+
+    #[test]
+    fn a_colour_survives_the_entry_it_is_written_into() {
+        let entry = IndexEntry {
+            collaborators: Vec::new(),
+            version: ENTRY_VERSION,
+            kind: NoteKind::Checklist,
+            title: String::new(),
+            body: Vec::new(),
+            items: Vec::new(),
+            checked: 0,
+            attachments: Vec::new(),
+            cover: None,
+            colour: Some(Colour::Teal),
+            colour_set: true,
+            log_len: 0,
+        };
+        let back: IndexEntry =
+            serde_json::from_slice(&serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert_eq!(back.colour, Some(Colour::Teal));
+        assert!(back.colour_set);
+    }
 }

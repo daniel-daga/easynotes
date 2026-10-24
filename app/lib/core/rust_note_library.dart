@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import '../src/rust/api/notes.dart' as rust;
 import 'attachments.dart';
 import 'browser_store.dart';
+import 'note_colour_map.dart';
 import 'note_core.dart';
 import 'note_library.dart';
 import 'page_visibility_stub.dart'
@@ -394,7 +395,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   @override
   Future<void> setColour(String noteId, NoteColour? colour) =>
-      _library.setColour(id: noteId, colour: _toRustColour(colour));
+      _library.setColour(id: noteId, colour: colourToRust(colour));
 
   @override
   Future<void> setPinned(String noteId, bool pinned) =>
@@ -455,7 +456,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
 
   @override
   Future<void> setColourMany(List<String> noteIds, NoteColour? colour) =>
-      _library.setColourMany(ids: noteIds, colour: _toRustColour(colour));
+      _library.setColourMany(ids: noteIds, colour: colourToRust(colour));
 
   @override
   Future<void> setPinnedMany(List<String> noteIds, bool pinned) =>
@@ -871,7 +872,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     cover: s.cover,
     coverWidth: s.coverWidth,
     coverHeight: s.coverHeight,
-    colour: _fromRustColour(s.colour),
+    colour: colourFromRust(s.colour),
     pinned: s.pinned,
     archived: s.archived,
     trashed: s.trashed,
@@ -903,37 +904,4 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
         ReminderRepeat.monthly => rust.ReminderRepeat.monthly,
         ReminderRepeat.yearly => rust.ReminderRepeat.yearly,
       };
-
-  /// The two palettes are the same list in two places, which is what keeps the
-  /// UI from importing anything generated. A colour the Rust side adds and this
-  /// one has not heard of would not compile, which is the point of writing it
-  /// out rather than going through an index.
-  static NoteColour? _fromRustColour(rust.NoteColour? colour) =>
-      switch (colour) {
-        null => null,
-        rust.NoteColour.red => NoteColour.red,
-        rust.NoteColour.orange => NoteColour.orange,
-        rust.NoteColour.yellow => NoteColour.yellow,
-        rust.NoteColour.green => NoteColour.green,
-        rust.NoteColour.teal => NoteColour.teal,
-        rust.NoteColour.blue => NoteColour.blue,
-        rust.NoteColour.purple => NoteColour.purple,
-        rust.NoteColour.pink => NoteColour.pink,
-        rust.NoteColour.brown => NoteColour.brown,
-        rust.NoteColour.grey => NoteColour.grey,
-      };
-
-  static rust.NoteColour? _toRustColour(NoteColour? colour) => switch (colour) {
-    null => null,
-    NoteColour.red => rust.NoteColour.red,
-    NoteColour.orange => rust.NoteColour.orange,
-    NoteColour.yellow => rust.NoteColour.yellow,
-    NoteColour.green => rust.NoteColour.green,
-    NoteColour.teal => rust.NoteColour.teal,
-    NoteColour.blue => rust.NoteColour.blue,
-    NoteColour.purple => rust.NoteColour.purple,
-    NoteColour.pink => rust.NoteColour.pink,
-    NoteColour.brown => rust.NoteColour.brown,
-    NoteColour.grey => rust.NoteColour.grey,
-  };
 }

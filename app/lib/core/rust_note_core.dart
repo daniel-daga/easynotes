@@ -13,6 +13,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import '../src/rust/api/notes.dart' as rust;
 import '../src/rust/frb_generated.dart';
 import 'note_core.dart';
+import 'note_colour_map.dart';
 import 'note_view.dart';
 import 'sync_status.dart';
 
@@ -225,6 +226,8 @@ class RustNoteCore implements NoteCore {
     kind: fromRustKind(v.kind),
     title: v.title,
     body: v.body,
+    colour: colourFromRust(v.colour),
+    colourSet: v.colourSet,
     items: [
       for (final i in v.items)
         ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),

@@ -30,7 +30,7 @@
 use super::attachment_fields as field;
 use super::{
     attachment_key, attachment_view, live_objects, parse_attachment_key, sort_attachments,
-    sort_items, Edit, ItemView, NoteDoc, NoteKind, NoteView,
+    sort_items, Colour, Edit, ItemView, NoteDoc, NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -42,6 +42,7 @@ use automerge::{Automerge, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue,
 const TITLE: &str = "title";
 const KIND: &str = "kind";
 const BODY: &str = "body";
+const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
@@ -160,6 +161,18 @@ impl NoteDoc for AutomergeNote {
                     Edit::SetBody(text) => {
                         Self::set_body(tx, text)?;
                     }
+                    Edit::SetColour(colour) => {
+                        // A name, not a number: the palette is fixed so a
+                        // device that does not know one shows a plain card
+                        // rather than the wrong shade. An empty name is a
+                        // colour cleared for everyone, which is why the key is
+                        // written rather than deleted.
+                        tx.put(
+                            ROOT,
+                            COLOUR,
+                            colour.as_ref().map(Colour::name).unwrap_or(""),
+                        )?;
+                    }
                     Edit::ToChecklist { items } => {
                         tx.put(ROOT, KIND, NoteKind::Checklist.as_str())?;
                         Self::set_body(tx, "")?;
@@ -248,7 +261,7 @@ impl NoteDoc for AutomergeNote {
         let mut attachments = Vec::new();
         let mut retired_attachments = Vec::new();
         for key in self.doc.keys(ROOT) {
-            if key == TITLE || key == KIND || key == BODY {
+            if key == TITLE || key == KIND || key == BODY || key == COLOUR {
                 continue;
             }
             if let Some(id) = parse_attachment_key(&key) {
@@ -284,10 +297,16 @@ impl NoteDoc for AutomergeNote {
         sort_items(&mut items);
         sort_attachments(&mut attachments);
         retired_attachments.sort();
+        let colour_name = Self::str_at(&self.doc, &ROOT, COLOUR);
+        // The key being there at all is the note having a colour of its own;
+        // an empty name is a colour cleared for everyone.
+        let colour_set = self.doc.get(ROOT, COLOUR).ok().flatten().is_some();
         NoteView {
             kind,
             title,
             body,
+            colour: Colour::from_name(&colour_name),
+            colour_set,
             items,
             attachments,
             retired_attachments,

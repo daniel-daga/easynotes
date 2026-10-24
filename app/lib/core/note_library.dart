@@ -19,26 +19,7 @@ import 'note_view.dart';
 import 'sync_status.dart';
 
 export 'invites.dart';
-export 'note_view.dart' show NoteKind;
-
-/// A note's colour, as this person chose it.
-///
-/// A name rather than a `Color`, because the account document holds a name: what
-/// "teal" has to look like is a question for the theme of whichever device is
-/// drawing it, and the answer differs between daylight and dark mode. The map
-/// from one to the other is in the note list screen, where the theme is.
-enum NoteColour {
-  red,
-  orange,
-  yellow,
-  green,
-  teal,
-  blue,
-  purple,
-  pink,
-  brown,
-  grey,
-}
+export 'note_view.dart' show NoteColour, NoteKind;
 
 /// Whether the note list is a masonry grid or one column. A view setting, and so
 /// a personal one: it lives in the account document beside the colours.
@@ -373,8 +354,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// the page's main thread (ADR 0002).
   Future<NoteCore> openNote(String noteId);
 
-  /// Colour a note, or take its colour away. Personal, like everything below it
-  /// until [connect].
+  /// Colour a note, or take its colour away.
+  ///
+  /// Shared, unlike everything beside it: the colour goes into the note's own
+  /// document, so everyone on the note sees the same shade. Pins, the archive,
+  /// the trash and labels stay personal.
   Future<void> setColour(String noteId, NoteColour? colour);
 
   /// Hold a note at the top of the grid, or stop.

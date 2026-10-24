@@ -27,6 +27,7 @@ import '../core/note_library.dart';
 import '../core/note_view.dart';
 import 'attachments.dart';
 import 'invites.dart';
+import 'live_text.dart';
 import 'note_appearance.dart';
 import 'storage_banner.dart';
 
@@ -42,14 +43,18 @@ class NoteScreen extends StatefulWidget {
     this.onLabels,
     this.onReminders,
     this.files = const DeviceAttachmentFiles(),
-    this.relayLink,
+    this.relayUrl,
+    this.relayAccess,
   });
 
   final NoteCore core;
 
-  /// The relay's link with its access key, for a guest who needs it as well
-  /// as an invite. Null for a relay with no key.
-  final String? relayLink;
+  /// The relay this note lives on, when this device has one. Invites made here
+  /// carry it, so a guest needs no second link.
+  final String? relayUrl;
+
+  /// That relay's access key, when it has one.
+  final String? relayAccess;
 
   /// Where attachments are picked from and saved to.
   final AttachmentFiles files;
@@ -374,10 +379,8 @@ class _NoteScreenState extends State<NoteScreen> {
                       .length -
                   1,
           transfers: _transfers,
-          playing:
-              _playingAttachment == audio.id && _playbackIsPlaying,
-          canSeek:
-              _playingAttachment == audio.id && _loadingAttachment == null,
+          playing: _playingAttachment == audio.id && _playbackIsPlaying,
+          canSeek: _playingAttachment == audio.id && _loadingAttachment == null,
           loading: _loadingAttachment == audio.id,
           position: _playingAttachment == audio.id
               ? _playbackPosition
@@ -603,7 +606,8 @@ class _NoteScreenState extends State<NoteScreen> {
       context,
       invites: widget.invites,
       noteId: widget.noteId,
-      relayLink: widget.relayLink,
+      relayUrl: widget.relayUrl,
+      relayAccess: widget.relayAccess,
     );
   }
 
@@ -634,6 +638,7 @@ class _NoteScreenState extends State<NoteScreen> {
         widget.core.setItemText(await _resolve(item.id), t),
     onWriteStateChanged: _itemWriteStateChanged,
     onDelete: () async => _removeItem(await _resolve(item.id)),
+    onSettled: widget.library?.sendHeldEdits,
     onBackspaceEmpty: () async {
       final id = await _resolve(item.id);
       final items = widget.core.current.items;
@@ -871,11 +876,7 @@ class _NoteScreenState extends State<NoteScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SizedBox(width: 40),
-                  SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: Icon(Icons.add),
-                  ),
+                  SizedBox(width: 48, height: 48, child: Icon(Icons.add)),
                 ],
               ),
               title: const Text('Checklist item'),
@@ -1542,48 +1543,7 @@ class _BodyFieldState extends State<_BodyField> {
 
   /// Show [body], keeping the selection where it was relative to the text
   /// around it.
-  void _adopt(String body) {
-    final old = _controller.text;
-    if (body == old) return;
-    final at = _prefix(old, body);
-    final tail = _suffix(old, body, at);
-    final oldEnd = old.length - tail;
-    final newEnd = body.length - tail;
-    int carry(int offset) {
-      if (offset <= at) return offset;
-      if (offset >= oldEnd) return offset - oldEnd + newEnd;
-      return newEnd;
-    }
-
-    final selection = _controller.selection;
-    _controller.value = TextEditingValue(
-      text: body,
-      selection: selection.isValid
-          ? TextSelection(
-              baseOffset: carry(selection.baseOffset),
-              extentOffset: carry(selection.extentOffset),
-            )
-          : TextSelection.collapsed(offset: body.length),
-    );
-  }
-
-  static int _prefix(String a, String b) {
-    var i = 0;
-    while (i < a.length && i < b.length && a.codeUnitAt(i) == b.codeUnitAt(i)) {
-      i++;
-    }
-    return i;
-  }
-
-  static int _suffix(String a, String b, int prefix) {
-    var i = 0;
-    while (i < a.length - prefix &&
-        i < b.length - prefix &&
-        a.codeUnitAt(a.length - 1 - i) == b.codeUnitAt(b.length - 1 - i)) {
-      i++;
-    }
-    return i;
-  }
+  void _adopt(String body) => adoptText(_controller, body);
 
   @override
   void dispose() {
@@ -1623,6 +1583,7 @@ class _ItemRow extends StatefulWidget {
     required this.onWriteStateChanged,
     required this.onDelete,
     required this.onBackspaceEmpty,
+    this.onSettled,
     this.onSubmitted,
   });
 
@@ -1638,6 +1599,10 @@ class _ItemRow extends StatefulWidget {
   final ValueChanged<bool> onWriteStateChanged;
   final VoidCallback onDelete;
   final Future<void> Function() onBackspaceEmpty;
+
+  /// Typing has stopped on this row — its focus moved away — so anything held
+  /// for a pause should go to the relay now.
+  final VoidCallback? onSettled;
   final Future<void> Function()? onSubmitted;
 
   @override
@@ -1646,7 +1611,16 @@ class _ItemRow extends StatefulWidget {
 
 class _ItemRowState extends State<_ItemRow> {
   late final _controller = TextEditingController(text: widget.item.text);
+
+  /// The text the core was last told this row holds, or last told this row it
+  /// holds: what leaving it would send, and what the next remote view is
+  /// compared against.
   late String _lastWritten = widget.item.text;
+
+  /// Texts this row has sent whose view has not come back yet, oldest first.
+  /// A view carrying one of them is this device's own typing arriving late,
+  /// not the other person's, and adopting it would wind the field back.
+  final List<String> _sent = [];
   FocusNode get _focus => widget.focusNode;
   bool _submitting = false;
   bool _writing = false;
@@ -1661,7 +1635,13 @@ class _ItemRowState extends State<_ItemRow> {
 
   void _onFocusChange() {
     if (mounted) setState(() {});
-    if (!_focus.hasFocus && !_submitting) unawaited(_commit());
+    if (!_focus.hasFocus && !_submitting) {
+      unawaited(_commit());
+      // Leaving a row is the end of typing on it, so what was held for a pause
+      // goes now: the next thing this person does is usually the next row, and
+      // the other phone should not be a keystroke behind the whole list.
+      widget.onSettled?.call();
+    }
   }
 
   Future<void> _write(String text) async {
@@ -1677,10 +1657,9 @@ class _ItemRowState extends State<_ItemRow> {
       String? next = text;
       while (next != null) {
         _queuedText = null;
-        if (next != _lastWritten) {
-          await widget.onTextChanged(next);
-          _lastWritten = next;
-        }
+        if (!_sent.contains(next)) _sent.add(next);
+        await widget.onTextChanged(next);
+        _lastWritten = next;
         next = _queuedText;
       }
     } finally {
@@ -1689,6 +1668,9 @@ class _ItemRowState extends State<_ItemRow> {
       done.complete();
       widget.onWriteStateChanged(false);
     }
+    // A view that came in while the queue was busy was passed over; look at
+    // the latest now, in case it was someone else's.
+    if (mounted) _consider(widget.item.text);
   }
 
   Future<void> _commit() async {
@@ -1718,12 +1700,34 @@ class _ItemRowState extends State<_ItemRow> {
   @override
   void didUpdateWidget(_ItemRow old) {
     super.didUpdateWidget(old);
-    // The text changed underneath us — someone else edited this item. Take the
-    // new value, unless this device is the one typing into it.
-    if (widget.item.text != old.item.text && !_focus.hasFocus) {
-      _controller.text = widget.item.text;
-      _lastWritten = widget.item.text;
+    _consider(widget.item.text);
+  }
+
+  /// The view's text arrived. Take it unless it is this row's own typing
+  /// coming back, and keep the caret where the person left it when it is not.
+  ///
+  /// While a send is in flight every view is passed over: one of them may be
+  /// older than what is in the field, and adopting it would wind the text back
+  /// mid-word. [_write] looks again at the latest one when it finishes.
+  void _consider(String text) {
+    if (_writing) return;
+    final own = _sent.lastIndexOf(text);
+    if (own >= 0) {
+      // Everything sent up to it has come back too, by now or never.
+      _sent.removeRange(0, own + 1);
+      _lastWritten = text;
+      return;
     }
+    if (text == _lastWritten) return;
+    if (text == _controller.text) {
+      _lastWritten = text;
+      return;
+    }
+    // Someone else's change: it is what the core holds now, and what leaving
+    // this row would send from.
+    _sent.clear();
+    adoptText(_controller, text);
+    _lastWritten = text;
   }
 
   @override

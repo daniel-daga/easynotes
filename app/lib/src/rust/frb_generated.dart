@@ -4666,14 +4666,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NoteView dco_decode_note_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return NoteView(
       kind: dco_decode_note_kind_view(arr[0]),
       title: dco_decode_String(arr[1]),
       body: dco_decode_String(arr[2]),
-      items: dco_decode_list_item_view(arr[3]),
-      attachments: dco_decode_list_attachment_view(arr[4]),
+      colour: dco_decode_opt_box_autoadd_note_colour(arr[3]),
+      colourSet: dco_decode_bool(arr[4]),
+      items: dco_decode_list_item_view(arr[5]),
+      attachments: dco_decode_list_attachment_view(arr[6]),
     );
   }
 
@@ -5542,12 +5544,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_kind = sse_decode_note_kind_view(deserializer);
     var var_title = sse_decode_String(deserializer);
     var var_body = sse_decode_String(deserializer);
+    var var_colour = sse_decode_opt_box_autoadd_note_colour(deserializer);
+    var var_colourSet = sse_decode_bool(deserializer);
     var var_items = sse_decode_list_item_view(deserializer);
     var var_attachments = sse_decode_list_attachment_view(deserializer);
     return NoteView(
       kind: var_kind,
       title: var_title,
       body: var_body,
+      colour: var_colour,
+      colourSet: var_colourSet,
       items: var_items,
       attachments: var_attachments,
     );
@@ -6424,6 +6430,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_note_kind_view(self.kind, serializer);
     sse_encode_String(self.title, serializer);
     sse_encode_String(self.body, serializer);
+    sse_encode_opt_box_autoadd_note_colour(self.colour, serializer);
+    sse_encode_bool(self.colourSet, serializer);
     sse_encode_list_item_view(self.items, serializer);
     sse_encode_list_attachment_view(self.attachments, serializer);
   }

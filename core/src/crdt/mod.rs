@@ -60,7 +60,8 @@ pub struct ItemView {
 ///
 /// It is shared rather than personal: it lives in the note's own document, so
 /// turning a note into a checklist turns it into one for everyone on it. A
-/// colour is a matter of taste; whether the shopping is a list is not.
+/// colour is shared for the same reason — two people looking at one list should
+/// see it the same shade — while a pin or the archive is not.
 ///
 /// A document that has never recorded a kind is a checklist, because every note
 /// written before this field existed was one. That default is what saves those
@@ -108,6 +109,15 @@ pub struct NoteView {
     pub title: String,
     pub body: String,
     pub items: Vec<ItemView>,
+    /// The colour everyone on this note sees, or none. `colour_set` says
+    /// whether the note has recorded one at all: a note that never has falls
+    /// back to each person's own placement, so colours chosen before this was
+    /// shared keep showing ([ADR 0008](../../../docs/adr/0008-account-document.md)).
+    pub colour: Option<Colour>,
+    /// Whether [`colour`](Self::colour) came from the note document rather
+    /// than from the default. A colour cleared on one device is cleared for
+    /// everyone, which "no colour" alone cannot say.
+    pub colour_set: bool,
     /// Live attachments, sorted by `(order, id)` like items. Removed ones are
     /// in the document as tombstones and not here. Neither kind of note owns
     /// them, so converting one never touches this.
@@ -175,6 +185,11 @@ pub enum Edit {
     },
     /// Record the kind and nothing else. What a new text note is created with.
     SetKind(NoteKind),
+    /// A colour everyone on the note sees, or none. It is the note document's
+    /// rather than a placement's because two people looking at one list should
+    /// see it the same shade; whether a note is pinned, archived or labelled is
+    /// still each person's own ([ADR 0008](../../../docs/adr/0008-account-document.md)).
+    SetColour(Option<Colour>),
     /// Replace the body's text. The backend works out the smallest splice that
     /// turns the old text into this one and applies only that, so a peer typing
     /// elsewhere in the same body keeps their characters — which is the whole

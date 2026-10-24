@@ -41,9 +41,10 @@ that stores and forwards ciphertext and nothing else.
 - **Sharing with people, not phones** — a collaborator is an account, so one
   person's several devices are one entry, and revocation rotates the note key
   ([ADR 0023](docs/adr/0023-access-packages.md)).
-- **Personal placement**: colours, labels, pins, archive and trash are private
-  to each device's account document, so colouring a shared list doesn't change
-  it for anyone else ([ADR 0008](docs/adr/0008-account-document.md)).
+- **Personal placement**: labels, pins, archive and trash are private to each
+  device's account document; a colour is shared with everyone on the note, since
+  two people looking at one list should see it the same shade (see the 2026-10-24
+  amendment to [ADR 0008](docs/adr/0008-account-document.md)).
 - **Labels** that are things, not words — renamable, mergeable, and able to
   outlive the notes that carry them.
 - **Local full-text search** over a sealed index, which also draws the note
