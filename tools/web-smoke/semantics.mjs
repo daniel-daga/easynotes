@@ -48,7 +48,7 @@ export async function configureRelay(d, url) {
   await tap(d, /^Start with an empty collection$/);
   // Settings closes itself once the new profile is open. If it stays, the
   // switch has not finished, which is a failure and not something to tap past.
-  await find(d, n => n.text.trim() === 'New note', { timeout: 30_000 });
+  await find(d, n => n.text.trim() === 'Create note', { timeout: 30_000 });
 }
 
 /// Turn the semantics tree on. The placeholder is deliberately off-screen, so
