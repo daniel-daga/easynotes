@@ -10,7 +10,7 @@ description = "Crypto, CRDT, op log and sync client for EasyNotes. No UI, no pla
 name = "easynotes_core"
 
 [dependencies]
-automerge = { version = "0.7", optional = true }
+automerge = { version = "0.12", optional = true }
 base64 = "0.23.1"
 # The recovery phrase. English wordlist only — the phrase is this account's root
 # secret and a person who wrote it down in one language reads it back in the
