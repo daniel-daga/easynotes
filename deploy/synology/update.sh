@@ -1,18 +1,21 @@
 #!/bin/sh
-# Update the relay on the NAS in one go: back up, rebuild the relay image,
-# recreate the containers, and wait until the new relay reports healthy.
+# Update the stack on the NAS in one go: back up, rebuild the images, recreate
+# the containers, and wait until the new relay reports healthy.
 #
 # Run from anywhere as a user allowed to run Docker (typically root):
 #
 #   /volume1/docker/easynotes/deploy/synology/update.sh
 #
-# The backup runs first, so a build or start that goes wrong leaves a dump and
-# a media archive taken just before it. If the backup fails, nothing is rebuilt
-# and nothing is restarted.
+# When a database exists the backup runs first, so a build or start that goes
+# wrong leaves a dump and a media archive taken just before it. If the backup
+# fails, nothing is rebuilt and nothing is restarted.
 #
-# Only `relay` is rebuilt: `db` is the stock Postgres image and `web` serves
-# static files mounted read-only. `web` is recreated too when
-# COMPOSE_PROFILES=web is set in .env, and so is `db` if its image was updated.
+# The relay image is rebuilt, and so is the web app image when
+# COMPOSE_PROFILES=web is set in .env. `db` is the stock Postgres image and is
+# recreated only if its image was updated. On a first start, with no service
+# container, this creates the stack. The backup is skipped only when neither a
+# database container nor a database directory exists. An unreadable NAS_DATA_DIR
+# aborts when there is no database container to dump.
 #
 # On start the relay applies any pending numbered migration itself and logs
 # "applied a schema migration" for each. There is no migration step here.
@@ -30,16 +33,44 @@ done
 
 # backup.sh archives $NAS_DATA_DIR/media by default but does not read .env, so
 # a project that keeps its data elsewhere would fail its media check at the end
-# of the backup (it refuses to call that a backup). Derive the path from .env
-# unless MEDIA_DIR is already set. Values like ${OTHER_VAR} are compose
-# interpolation and are left to backup.sh's own default.
-if [ -z "${MEDIA_DIR:-}" ]; then
+# of the backup (it refuses to call that a backup). Compose resolves dotenv
+# quoting, interpolation and an exported value; this parser must not guess, so
+# anything it cannot read as a literal path leaves data_dir empty and the
+# backup step below refuses to skip.
+#
+# An exported NAS_DATA_DIR wins over .env, as it does for Compose, including an
+# exported empty value, which means the compose default rather than "read .env".
+if [ -n "${NAS_DATA_DIR+x}" ]; then
+    data_dir=$NAS_DATA_DIR
+else
     data_dir=$(sed -n 's/^[[:space:]]*NAS_DATA_DIR[[:space:]]*=[[:space:]]*//p' .env |
         tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
-    case "$data_dir" in
-        '' | \$*) ;; # unset, or not a literal path
-        *) export MEDIA_DIR="$data_dir/media" ;;
-    esac
+    if [ -z "$data_dir" ]; then
+        data_dir=$(sed -n 's/^[[:space:]]*export[[:space:]][[:space:]]*NAS_DATA_DIR[[:space:]]*=[[:space:]]*//p' .env |
+            tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+    fi
+fi
+case "$data_dir" in
+    \"*\") data_dir=${data_dir#\"}; data_dir=${data_dir%\"} ;;
+    \'*\') data_dir=${data_dir#\'}; data_dir=${data_dir%\'} ;;
+esac
+# Empty after quoting is the compose file's default, exactly as Compose reads it.
+case "$data_dir" in
+    '') data_dir=/volume1/docker/easynotes-data ;;
+esac
+# Only a literal absolute path is safe to test: Compose expands `~`, shell
+# escapes and interpolation, and this parser cannot. Anything else leaves the
+# path empty so the backup step aborts rather than skipping a database it
+# cannot see.
+case "$data_dir" in
+    /*) ;;
+    *) data_dir= ;;
+esac
+case "$data_dir" in
+    *'$'*|*'"'*|*"'"*|*'#'*|*' '*|*'~'*|*'\'*) data_dir= ;;
+esac
+if [ -z "${MEDIA_DIR:-}" ] && [ -n "$data_dir" ]; then
+    export MEDIA_DIR="$data_dir/media"
 fi
 
 # Container Manager on DSM 7.1 and earlier ships `docker-compose`; 7.2 ships
@@ -55,36 +86,96 @@ fi
 
 # Container Manager prefixes a container's name with a hash of its own
 # (`c86b..._easynotes-relay`), and it is the one that created the stack. Find
-# its project in the relay's labels and pass it to every compose call below: a
-# fresh project name would create a second stack, and the old relay already
-# holds the loopback ports. COMPOSE_PROJECT_NAME in .env is the fallback when
-# the label is missing.
-relay_ids=$(docker ps -aq --filter 'name=easynotes-relay$' || true)
-case "$(printf '%s\n' "$relay_ids" | grep -c . || true)" in
-    1) ;;
-    0) printf 'error: no easynotes-relay container; create the stack in Container Manager first\n' >&2; exit 1 ;;
-    *) printf 'error: more than one easynotes-relay container; remove the extra one first:\n%s\n' "$relay_ids" >&2; exit 1 ;;
-esac
-project=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$relay_ids" 2>/dev/null || true)
-case "$project" in
-    '<no value>') project= ;;
-esac
+# its project in the labels of whichever service container still exists and
+# pass it to every compose call below: a fresh project name would create a
+# second stack, and the old containers already hold the loopback ports and the
+# fixed names. Looking at `db` and `web` too matters when the relay is gone but
+# the stack is not. Compose derives the name from the repository folder only
+# when no service container exists at all. COMPOSE_PROJECT_NAME in .env is the
+# fallback when a label is missing.
+project=
+existing=
+for service in relay db web; do
+    ids=$(docker ps -aq --filter "name=easynotes-$service\$") || {
+        printf 'error: cannot query Docker for easynotes-%s containers\n' "$service" >&2
+        exit 1
+    }
+    case "$(printf '%s\n' "$ids" | grep -c . || true)" in
+        0) continue ;;
+        1) ;;
+        *) printf 'error: more than one easynotes-%s container; remove the extra one first:\n%s\n' "$service" "$ids" >&2; exit 1 ;;
+    esac
+    existing=1
+    label=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$ids" 2>/dev/null || true)
+    case "$label" in
+        '<no value>') label= ;;
+    esac
+    [ -n "$label" ] || continue
+    if [ -z "$project" ]; then
+        project=$label
+    elif [ "$project" != "$label" ]; then
+        printf 'error: easynotes-%s belongs to compose project %s, not %s; remove the stray container\n' \
+            "$service" "$label" "$project" >&2
+        exit 1
+    fi
+done
 if [ -z "$project" ]; then
     project=$(sed -n 's/^[[:space:]]*COMPOSE_PROJECT_NAME[[:space:]]*=[[:space:]]*//p' .env | tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
 fi
-if [ -z "$project" ]; then
-    printf 'error: cannot read the compose project of %s; set COMPOSE_PROJECT_NAME in .env\n' "$relay_ids" >&2
+if [ -z "$project" ] && [ -n "$existing" ]; then
+    printf 'error: cannot read the compose project of the existing easynotes containers; set COMPOSE_PROJECT_NAME in .env\n' >&2
     exit 1
 fi
-compose() { dc_compose -p "$project" -f compose.synology.yaml "$@"; }
+if [ -n "$project" ]; then
+    compose() { dc_compose -p "$project" -f compose.synology.yaml "$@"; }
+else
+    compose() { dc_compose -f compose.synology.yaml "$@"; }
+fi
 
-printf 'Backing up the database and attachments...\n'
-./deploy/synology/backup.sh
+backed_up=0
+db_ids=$(docker ps -aq --filter 'name=easynotes-db$') || {
+    printf 'error: cannot query Docker for easynotes-db containers\n' >&2
+    exit 1
+}
+if [ -n "${DB_CONTAINER:-}" ] || [ -n "$db_ids" ]; then
+    printf 'Backing up the database and attachments...\n'
+    ./deploy/synology/backup.sh
+    backed_up=1
+elif [ -z "$data_dir" ]; then
+    printf 'error: cannot resolve NAS_DATA_DIR; set it to a literal path or set DB_CONTAINER\n' >&2
+    exit 1
+elif [ -d "$data_dir/postgres" ]; then
+    printf 'error: %s/postgres exists but no easynotes-db container; start the stack and rerun\n' "$data_dir" >&2
+    exit 1
+else
+    printf 'No database container or data directory yet; skipping the pre-update backup.\n'
+fi
+
+# The profile comes from .env (or the environment) and Compose resolves it for
+# us, so a profile-disabled web service is never built.
+if ! services=$(compose config --services); then
+    printf 'error: cannot read the compose service list\n' >&2
+    exit 1
+fi
+services=$(printf '%s\n' "$services" | tr -d '\r')
+web=0
+case "
+$services
+" in
+    *"
+web
+"*) web=1 ;;
+esac
 
 printf 'Building the relay image...\n'
 compose build relay
 
-printf 'Starting the new relay...\n'
+if [ "$web" = 1 ]; then
+    printf 'Building the web app image; the first build downloads Flutter and takes a while...\n'
+    compose build web
+fi
+
+printf 'Starting the containers...\n'
 compose up -d --remove-orphans
 
 # The compose file's healthcheck is the relay's own `check` subcommand: the
@@ -123,4 +214,8 @@ if [ "$state" != healthy ]; then
 fi
 
 compose ps
-printf 'Update complete. Backups are in %s\n' "${BACKUP_DIR:-/volume1/docker/easynotes-backups}"
+if [ "$backed_up" = 1 ]; then
+    printf 'Update complete. Backups are in %s\n' "${BACKUP_DIR:-/volume1/docker/easynotes-backups}"
+else
+    printf 'Update complete. No backup was taken; there was no database to back up.\n'
+fi
