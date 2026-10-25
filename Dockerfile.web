@@ -1,0 +1,100 @@
+# Build the browser app the way `just build-web` does, so the NAS needs only
+# Docker. Flutter's Linux SDK is x86_64-only, so this image builds on an
+# x86_64 host and runs anywhere nginx runs.
+#
+# The final image is nginx plus the static files. Flutter, the Rust nightly
+# toolchain and wasm-pack live only in the builder layers and in Docker's
+# cache between builds.
+FROM rust:1-bookworm AS build
+
+ARG FLUTTER_VERSION=3.47.5
+ARG WASM_BINDGEN_VERSION=0.2.128
+ARG RUST_NIGHTLY=nightly-2026-10-24
+ARG WASM_PACK_VERSION=0.15.0
+ARG FLUTTER_SHA256=2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb
+
+WORKDIR /src
+
+# Flutter's tool shells out to git and curl, and the SDK archive is xz.
+# pkg-config and libssl-dev let `cargo install wasm-pack` link its TLS stack.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl git libssl-dev pkg-config unzip xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/flutter.tar.xz \
+        "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+ && echo "${FLUTTER_SHA256}  /tmp/flutter.tar.xz" | sha256sum -c - \
+ && tar -xf /tmp/flutter.tar.xz -C /opt \
+ && rm /tmp/flutter.tar.xz \
+ && git config --global --add safe.directory /opt/flutter
+ENV PATH="/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:${PATH}"
+
+# Fetch the web engine and fonts now, so an app rebuild does not stop to
+# download them.
+RUN flutter config --no-analytics && flutter precache --web
+
+# The bridge builds threaded WebAssembly with `-Z build-std`, which needs a
+# nightly toolchain with rust-src (ADR 0002). The stable target is for the
+# wasm-pack and wasm-bindgen installs below.
+RUN rustup toolchain install "${RUST_NIGHTLY}" --profile minimal --component rust-src \
+ && rustup target add wasm32-unknown-unknown --toolchain "${RUST_NIGHTLY}" \
+ && rustup target add wasm32-unknown-unknown
+
+# wasm-bindgen-cli is preinstalled so wasm-pack uses it rather than building it
+# under the WebAssembly RUSTFLAGS, which cannot link for the host. The versions
+# match `just setup-web`.
+RUN cargo install wasm-pack --version "${WASM_PACK_VERSION}" --locked \
+ && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
+
+# Manifests first, so these expensive layers change only with the workspace or
+# the lockfile. Cargo loads every workspace member, so these paths track the
+# `members` list in Cargo.toml (the relay Dockerfile does the same).
+COPY Cargo.toml Cargo.lock ./
+COPY core/Cargo.toml core/
+COPY relay/Cargo.toml relay/
+COPY tools/wasm-size/Cargo.toml tools/wasm-size/
+COPY tools/web-bench/Cargo.toml tools/web-bench/
+COPY tools/web-media/Cargo.toml tools/web-media/
+COPY app/rust/Cargo.toml app/rust/
+COPY third_party/flutter_rust_bridge third_party/flutter_rust_bridge
+
+# Cargo loads every workspace member before it resolves the app's crate, and a
+# member whose target file is missing fails the whole workspace. The relay and
+# the tools are not built here, so empty targets stand in for their sources —
+# the same bootstrap the relay Dockerfile uses for its dependency layer.
+RUN set -eux; \
+    for crate in relay tools/wasm-size tools/web-bench tools/web-media; do \
+        mkdir -p "$crate/src"; \
+        : > "$crate/src/lib.rs"; \
+    done
+
+# Resolve Dart dependencies before the sources arrive. `rust_builder` is a path
+# dependency of the app, so its manifest has to be present.
+COPY app/pubspec.yaml app/pubspec.lock app/
+COPY app/rust_builder/pubspec.yaml app/rust_builder/
+RUN cd app && flutter pub get --enforce-lockfile
+
+COPY core core
+COPY app/rust app/rust
+
+# `flutter_rust_bridge_codegen build-web` is a wrapper around the package's own
+# `dart run flutter_rust_bridge build-web`. CI installs the wrapper, but the
+# generated bindings are committed and the Dart package arrives with
+# `flutter pub get`, so the CLI in the package is enough here. The shared
+# memory check is the build-time half of ADR 0002's failure mode.
+RUN cd app \
+ && dart run flutter_rust_bridge build-web --dart-root /src/app \
+        --wasm-pack-rustup-toolchain "${RUST_NIGHTLY}" \
+        --cargo-build-args=--locked \
+        --release \
+ && grep -q 'shared:true' web/pkg/rust_lib_easynotes.js
+
+# Dart and assets only. `app/web/pkg` is in .dockerignore, so this layer leaves
+# the wasm built above untouched, and `flutter build web` packages it.
+COPY app app
+RUN cd app && flutter build web --release
+
+FROM nginx:1.29-alpine AS runtime
+COPY deploy/synology/nginx-web.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /src/app/build/web /usr/share/nginx/html
