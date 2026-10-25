@@ -163,6 +163,110 @@ void main() {
     expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
     expect(find.text('Share as checklist'), findsOneWidget);
   });
+
+  testWidgets('a shared note draws the people on it instead of the add icon', (
+    tester,
+  ) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          Person(
+            member: 'me',
+            invite: '',
+            name: 'Anna Berg',
+            owner: true,
+            me: true,
+          ),
+          Person(member: 'olga', invite: 'i1', name: 'Olga Petrov'),
+          Person(member: 'ben', invite: 'i2', name: 'Ben Ash'),
+          Person(member: 'cara', invite: 'i3', name: 'Cara Vale'),
+        ],
+      ),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+
+    expect(find.byIcon(Icons.person_add_outlined), findsNothing);
+    expect(find.text('OP'), findsOneWidget);
+    expect(find.text('BA'), findsOneWidget);
+    expect(find.text('CV'), findsOneWidget);
+    expect(find.text('AB'), findsNothing, reason: 'this person is not drawn');
+  });
+
+  testWidgets('the stack follows somebody let in while Share is open', (
+    tester,
+  ) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    const me = Person(
+      member: 'me',
+      invite: '',
+      name: 'Anna Berg',
+      owner: true,
+      me: true,
+    );
+    const olga = Person(member: 'olga', invite: 'i1', name: 'Olga Petrov');
+    invites.setPeople(
+      'this-note',
+      const People(shared: true, canManage: true, people: [me, olga]),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+    expect(find.text('OP'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('share-button')));
+    await tester.pumpAndSettle();
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          me,
+          olga,
+          Person(member: 'ben', invite: 'i2', name: 'Ben Ash'),
+        ],
+      ),
+    );
+    await tester.tap(find.byKey(const Key('share-done')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('BA'), findsOneWidget);
+  });
+
+  testWidgets('the stack asks again while the note stays open', (tester) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    const me = Person(
+      member: 'me',
+      invite: '',
+      name: 'Anna Berg',
+      owner: true,
+      me: true,
+    );
+    invites.setPeople(
+      'this-note',
+      const People(shared: true, canManage: true, people: [me]),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+    expect(find.byIcon(Icons.person_add_outlined), findsOneWidget);
+
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          me,
+          Person(member: 'olga', invite: 'i1', name: 'Olga Petrov'),
+        ],
+      ),
+    );
+    await tester.pump(const Duration(seconds: 20));
+    await tester.pump();
+
+    expect(find.text('OP'), findsOneWidget);
+  });
   testWidgets('renders the title and items it is given', (tester) async {
     final core = FakeNoteCore(
       title: 'Groceries',

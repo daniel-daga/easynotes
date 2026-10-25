@@ -16,7 +16,10 @@ library;
 
 import 'package:flutter/foundation.dart';
 
-String _initials(String name) => name.trim().isEmpty
+/// The initials shown for a chosen name: the first letter of its first two
+/// words, or “?” when there is no name. A name is a label, so two people with
+/// one name still get the same letters, and are told apart elsewhere.
+String initialsFor(String name) => name.trim().isEmpty
     ? '?'
     : name
           .trim()
@@ -35,7 +38,7 @@ class Collaborator {
   final String id;
   final String name;
   String get displayName => name.isEmpty ? 'Unnamed person' : name;
-  String get initials => _initials(name);
+  String get initials => initialsFor(name);
   @override
   bool operator ==(Object other) =>
       other is Collaborator && id == other.id && name == other.name;
@@ -73,7 +76,21 @@ class Person {
   final bool removing;
 
   String get displayName => name.isEmpty ? 'Unnamed person' : name;
-  String get initials => _initials(name);
+  String get initials => initialsFor(name);
+
+  @override
+  bool operator ==(Object other) =>
+      other is Person &&
+      other.member == member &&
+      other.invite == invite &&
+      other.name == name &&
+      other.owner == owner &&
+      other.me == me &&
+      other.removing == removing;
+
+  @override
+  int get hashCode =>
+      Object.hash(member, invite, name, owner, me, removing);
 }
 
 /// Everybody with access to a note, and who is on their way in.
@@ -95,6 +112,22 @@ class People {
 
   /// Names of people let in whose access is still on its way.
   final List<String> adding;
+
+  @override
+  bool operator ==(Object other) =>
+      other is People &&
+      other.shared == shared &&
+      other.canManage == canManage &&
+      listEquals(other.people, people) &&
+      listEquals(other.adding, adding);
+
+  @override
+  int get hashCode => Object.hash(
+    shared,
+    canManage,
+    Object.hashAll(people),
+    Object.hashAll(adding),
+  );
 }
 
 /// An invite this device has open.

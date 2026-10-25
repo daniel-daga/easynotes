@@ -20,12 +20,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachment_files.dart';
+import '../core/app_visibility.dart';
 import '../core/content_interchange.dart';
 import '../core/content_sharing.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
 import 'attachments.dart';
+import 'collaborator_stack.dart';
 import 'invites.dart';
 import 'live_text.dart';
 import 'note_appearance.dart';
@@ -115,6 +117,18 @@ class _NoteScreenState extends State<NoteScreen> {
   /// the next note (on any of their devices) opens the way this one was left.
   late bool _crossedOffExpanded = widget.library?.tickedShown ?? false;
   bool _deletionPopScheduled = false;
+
+  /// How long the app bar's stack of people may go without asking the core
+  /// again. A person can be let in while this note stays open, and nothing on
+  /// this screen's streams fires for that: the note's access package changes,
+  /// not its content. Local and cheap, so a slow tick is enough.
+  static const Duration _peopleRefresh = Duration(seconds: 20);
+
+  /// Everybody on this note, as the sharing screen lists them, for the app
+  /// bar's stack of initials (see [CollaboratorStack]).
+  People _people = const People(canManage: false);
+  Timer? _peoplePoll;
+
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
 
@@ -168,6 +182,31 @@ class _NoteScreenState extends State<NoteScreen> {
       );
       _refreshPending();
     });
+    _people = _readPeople() ?? _people;
+    appIsForeground.addListener(_onForeground);
+    _peoplePoll = Timer.periodic(_peopleRefresh, (_) {
+      if (appIsForeground.value) _loadPeople();
+    });
+  }
+
+  /// The sharing screen's answer for this note, or null when this device cannot
+  /// be asked about it yet.
+  People? _readPeople() {
+    try {
+      return widget.invites.people(widget.noteId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _loadPeople() {
+    final people = _readPeople();
+    if (people == null || !mounted || people == _people) return;
+    setState(() => _people = people);
+  }
+
+  void _onForeground() {
+    if (appIsForeground.value) _loadPeople();
   }
 
   Future<void> _refreshPending() async {
@@ -508,6 +547,8 @@ class _NoteScreenState extends State<NoteScreen> {
     unawaited(_playerPositionWatch?.cancel());
     unawaited(_playerDurationWatch?.cancel());
     unawaited(_playerCompleteWatch?.cancel());
+    _peoplePoll?.cancel();
+    appIsForeground.removeListener(_onForeground);
     if (_audioPlayer case final player?) unawaited(player.dispose());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
@@ -608,6 +649,27 @@ class _NoteScreenState extends State<NoteScreen> {
       noteId: widget.noteId,
       relayUrl: widget.relayUrl,
       relayAccess: widget.relayAccess,
+    );
+    if (!mounted) return;
+    // Somebody may have been let in while that screen was open. Its own poll
+    // tick is the one that approves them, so the answer is current now.
+    _loadPeople();
+  }
+
+  /// Share, or — once anybody else is on the note — the people who are, as a
+  /// stack of initials that leads to the same screen.
+  Widget _shareAction(Color? tint) {
+    final people = _people;
+    return IconButton(
+      key: const Key('share-button'),
+      tooltip: 'Share',
+      onPressed: _share,
+      icon: CollaboratorStack.entriesFor(people).isEmpty
+          ? const Icon(Icons.person_add_outlined)
+          : CollaboratorStack(
+              people: people,
+              ringColor: tint ?? Theme.of(context).colorScheme.surface,
+            ),
     );
   }
 
@@ -964,14 +1026,7 @@ class _NoteScreenState extends State<NoteScreen> {
         appBar: AppBar(
           backgroundColor: tint,
           title: null,
-          actions: [
-            IconButton(
-              key: const Key('share-button'),
-              icon: const Icon(Icons.person_add_outlined),
-              tooltip: 'Share',
-              onPressed: _share,
-            ),
-          ],
+          actions: [_shareAction(tint)],
         ),
         body: Column(
           children: [
