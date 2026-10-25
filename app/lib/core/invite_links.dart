@@ -88,8 +88,11 @@ String inviteLinkWithRelay(String link, InviteRelay? relay) {
   return '$_scheme$params$_paramsEnd$secret';
 }
 
-/// On web, make a link that opens this deployed app; native apps use the
-/// registered custom scheme. [web] is for tests, which do not run on one.
+/// Make the link a person can tap. On web it opens this deployed app; on
+/// native it is the custom scheme by default, unless the caller asks for the
+/// https form ([web]) that a messenger will linkify. The relay serves that
+/// form's page at its own root, so a native share can name the relay's origin.
+/// [web] defaults to [kIsWeb]; a test or a native caller can pass it.
 String inviteLinkForSharing(
   String link, {
   String? webOrigin,
@@ -116,11 +119,16 @@ String inviteLinkForSharing(
     scheme: current.scheme,
     host: current.host,
     port: current.hasPort ? current.port : null,
-    path: current.path,
+    path: current.path.isEmpty ? '/' : current.path,
   );
+  // The parameter block is encoded so that the shared message holds exactly
+  // one `http(s)://`: a messenger that linkifies only those schemes otherwise
+  // turns the relay address inside the fragment into a second, dead link
+  // (Android did, and the invite part was not a link at all). `inviteLinkFrom`
+  // decodes the fragment, so the core still reads the same fields.
   return head.isEmpty
       ? '$page#join$_paramsEnd$secret'
-      : '$page#join$_paramsEnd$head$_paramsEnd$secret';
+      : '$page#join$_paramsEnd${Uri.encodeComponent(head)}$_paramsEnd$secret';
 }
 
 /// Percent-decode a fragment, or hand it back as it came when it is not

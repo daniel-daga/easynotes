@@ -230,8 +230,14 @@ await tap(a, /^New invite link$/);
 // The status cell says when the link expires on a line of its own.
 await find(a, n => /^Not opened yet(\n|$)/.test(n.text.trim()));
 const message = await a.page.evaluate(() => window.__shared ?? '');
+// The link is the last `http` run in the message, and the only one: the relay
+// address inside the fragment is percent-encoded, so a messenger cannot pick
+// it out and leave the invite as plain text.
 const link = message.slice(message.lastIndexOf('http'));
-check(link.startsWith(url) && link.endsWith('#join#' + link.split('#').pop()), `A made a link: ${link.replace(/#join#.*/, '#join#…')}`);
+check(
+  link.startsWith(url) && link.includes('#join#') && link.split('http').length === 2,
+  `A made a link: ${link.replace(/#join#.*/, '#join#…')}`,
+);
 
 // --- B opens it, and is let in without anyone asking -------------------------
 // In a tab of its own, as a link opened from a message would be. The same tab

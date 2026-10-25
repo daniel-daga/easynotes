@@ -54,12 +54,42 @@ void main() {
       relay: (url: relay, access: access),
       web: true,
     );
-    expect(
-      link,
-      'https://notes.example/app/#join#relay=$relay;access=$access#$secret',
-    );
+    final params = Uri.encodeComponent('relay=$relay;access=$access');
+    expect(link, 'https://notes.example/app/#join#$params#$secret');
     expect(inviteLinkFrom(link), withRelay);
     expect(relayFromInvite(link), (url: relay, access: access));
+  });
+
+  test('a native share is the relay page, with one link to tap', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: relay,
+      relay: (url: relay, access: access),
+      web: true,
+    );
+    expect(link, startsWith('https://sync.example.com/#join#'));
+    expect(link, endsWith('#$secret'));
+    // The parameter block is encoded, so the relay address inside the fragment
+    // is not a second `https://` token that Android can linkify on its own.
+    expect('https://'.allMatches(link).length, 1);
+    expect(link, contains(Uri.encodeComponent('relay=$relay;access=$access')));
+    expect(inviteLinkFrom(link), withRelay);
+    expect(relayFromInvite(link), (url: relay, access: access));
+  });
+
+  test('a relay with no key is still one encoded field', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: relay,
+      relay: (url: relay, access: null),
+      web: true,
+    );
+    expect(
+      link,
+      'https://sync.example.com/#join#${Uri.encodeComponent('relay=$relay')}'
+      '#$secret',
+    );
+    expect(inviteLinkFrom(link), 'easynotes://join#relay=$relay#$secret');
   });
 
   test('a relay with no key is named on its own', () {

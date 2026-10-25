@@ -22,6 +22,8 @@ Future<void> pumpScreen(
   FakeNoteCore core, {
   FakeStorageHealth? storage,
   FakeNoteLibrary? invites,
+  String? relayUrl,
+  String? relayAccess,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -30,6 +32,8 @@ Future<void> pumpScreen(
         storage: storage ?? FakeStorageHealth(),
         noteId: 'this-note',
         invites: invites ?? (FakeNoteLibrary()..setUpSharing()),
+        relayUrl: relayUrl,
+        relayAccess: relayAccess,
       ),
     ),
   );
@@ -601,6 +605,43 @@ void main() {
       // The link last, so a pasted message still reads as one.
       expect(sent, ['Join my shared note in EasyNotes: $link']);
       expect(find.text('Link copied'), findsNothing);
+    });
+
+    testWidgets('Send link shares the relay page, not the custom scheme', (
+      tester,
+    ) async {
+      const channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+      final sent = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        sent.add((call.arguments as Map)['text'] as String);
+        return true;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(
+        tester,
+        FakeNoteCore(),
+        invites: invites,
+        relayUrl: 'https://sync.example.com',
+        relayAccess: 'KEY',
+      );
+
+      final id = await makeLink(tester, invites);
+
+      final message = sent.single;
+      expect(
+        message,
+        startsWith(
+          'Join my shared note in EasyNotes: https://sync.example.com/#join#',
+        ),
+      );
+      expect(message, endsWith('#$id'));
+      // One link, so a messenger cannot pick the relay address out of the
+      // fragment and leave the invite as plain text.
+      expect('https://'.allMatches(message).length, 1);
+      expect(message, isNot(contains('easynotes://')));
     });
 
     testWidgets('with no share sheet, Send link copies instead', (

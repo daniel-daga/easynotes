@@ -24,6 +24,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -280,10 +281,24 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   String _link(Invite invite) {
     final url = widget.relayUrl;
+    final relay = url == null ? null : (url: url, access: widget.relayAccess);
+    if (!kIsWeb && url != null) {
+      // The relay serves the join page at its own root, so a native share is a
+      // plain https address that every messenger linkifies. Tapping it hands
+      // the fragment to the app; a guest without it sees the copy fallback.
+      return inviteLinkForSharing(
+        invite.link,
+        webOrigin: url,
+        relay: relay,
+        web: true,
+      );
+    }
+    // On web the link opens this app, which handles the fragment itself. With
+    // no relay there is nothing to page to and the custom scheme stays.
     return inviteLinkForSharing(
       invite.link,
       webOrigin: Uri.base.toString(),
-      relay: url == null ? null : (url: url, access: widget.relayAccess),
+      relay: relay,
     );
   }
 

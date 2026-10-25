@@ -330,6 +330,23 @@ Anyone holding the link can use the relay for as long as the key is valid, the
 same as today's relay lets anyone who finds it. What it cannot do is read a
 note: those are encrypted under keys the relay never holds.
 
+**Invite links are tappable.** When a list is shared from the app, the message
+carries an `https://` link to this relay, with the invite in the fragment (the
+relay address inside it is percent-encoded, so the message holds exactly one
+link):
+
+```text
+https://your-relay-hostname/#join#…#secret
+```
+
+Messengers linkify that address, and the relay's root serves a small join page
+that hands the fragment to the installed app (or shows the same link to copy
+when it is not installed). The page is part of the relay image; there is
+nothing to configure, and the optional web container is not needed for it.
+The fragment never reaches the relay, so the page's server logs hold neither
+the invite nor the access key. Opening the relay root without a fragment shows
+"this link is incomplete" rather than anything about the relay.
+
 **Rotating** takes the key away from people who should no longer have it:
 
 1. Add a new key beside the old one, comma separated, and restart the relay.
@@ -358,6 +375,10 @@ with an old key, or a stranger who found the hostname.
 - **Browser handshake fails:** check the browser page's exact origin in
   `RELAY_ALLOWED_ORIGINS` (scheme and hostname; no path), then recreate/restart
   the relay container after editing `.env`.
+- **An invite link shows a 404 or "incomplete":** the reverse proxy must send
+  the whole host to the relay, not only `/v1`. The link's invite lives in the
+  fragment, so a page that loads without it can only say the link is
+  incomplete.
 - **WebSocket fails but health works:** check the DSM reverse proxy's WebSocket
   custom header and confirm the client uses `wss://` through the HTTPS hostname.
 - **Relay does not start:** check that Postgres is healthy and inspect the
