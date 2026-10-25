@@ -425,6 +425,30 @@ void main() {
       expect(find.byKey(const Key('join-banner-abc')), findsNothing);
     });
 
+    testWidgets('a note already open is not announced as somewhere to go', (
+      tester,
+    ) async {
+      // Long enough that the note is opened before the banner's next look.
+      inviteBannerPollInterval = const Duration(seconds: 30);
+      final library = twoLists()..setUpSharing('Anna');
+      await library.requestJoin('easynotes://join#abc');
+      await pumpList(tester, library);
+
+      // Let in while the list is up: the note arrives, and is opened by hand.
+      library.fakeAnswer('abc', JoinState.joined);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('note:joined-0')));
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('openNote(joined-0)'));
+
+      await tester.pump(inviteBannerPollInterval);
+      await tester.pumpAndSettle();
+
+      // It is already on screen, so there is nowhere for a snackbar to send
+      // anyone.
+      expect(find.byKey(const Key('joined-in-background')), findsNothing);
+    });
+
     testWidgets(
       'someone who opened a link is let in and shown above the grid',
       (tester) async {

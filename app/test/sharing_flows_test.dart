@@ -223,6 +223,45 @@ void main() {
     expect(library.pendingJoins, hasLength(1));
   });
 
+  testWidgets('the banner leaves a wait the dialog is showing for it', (
+    tester,
+  ) async {
+    // The banner looks far more often than the dialog here, so it is the one
+    // that would see the answer first.
+    inviteBannerPollInterval = const Duration(milliseconds: 50);
+    invitePollInterval = const Duration(seconds: 1);
+    final library = FakeNoteLibrary()..setUpSharing('Anna');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteListScreen(
+          library: library,
+          initialInviteLink: 'easynotes://join#abc',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('join-confirm')));
+    await waitAWhile(tester);
+    expect(find.byKey(const Key('join-waiting')), findsOneWidget);
+
+    library.fakeAnswer('abc', JoinState.joined);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump();
+
+    // The banner said nothing and took nothing: the dialog still has the
+    // answer to show, and will open the note with it.
+    expect(find.byKey(const Key('joined-in-background')), findsNothing);
+    expect(find.byKey(const Key('join-waiting')), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(
+      library.calls.where((c) => c.startsWith('openNote(joined-')),
+      hasLength(1),
+    );
+    expect(find.byKey(const Key('joined-in-background')), findsNothing);
+  });
+
   testWidgets(
     'Get a new phone: twelve words bring every note back, shared ones too',
     (tester) async {

@@ -1099,6 +1099,7 @@ class InviteBanners extends StatefulWidget {
     required this.titleOf,
     required this.onReview,
     required this.onJoined,
+    this.handledElsewhere,
   });
 
   final Invites invites;
@@ -1111,6 +1112,11 @@ class InviteBanners extends StatefulWidget {
 
   /// A request of this device's was let in and its note has opened.
   final void Function(String noteId) onJoined;
+
+  /// Whether something else — a wait dialog for that join — is answering it,
+  /// and will open the note itself. Asked on every check, so an answer is never
+  /// taken from under the dialog that is showing it.
+  final bool Function(String inviteId)? handledElsewhere;
 
   @override
   State<InviteBanners> createState() => _InviteBannersState();
@@ -1165,6 +1171,8 @@ class _InviteBannersState extends State<InviteBanners> {
         }
       }
       for (final join in widget.invites.pendingJoins) {
+        // A wait dialog is showing this one; it opens the note when it lands.
+        if (widget.handledElsewhere?.call(join.inviteId) ?? false) continue;
         try {
           final check = await widget.invites.checkJoin(join.inviteId);
           switch (check.state) {
