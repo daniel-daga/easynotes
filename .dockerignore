@@ -22,3 +22,13 @@ app/linux/flutter/ephemeral
 tools/web-smoke/node_modules
 tools/web-bench/node_modules
 tools/web-media/node_modules
+# Native Flutter platform trees and host-only Dart tests/tools. Neither build
+# uses them, and keeping them out means a change there does not invalidate the
+# web build layer.
+app/android
+app/ios
+app/macos
+app/windows
+app/linux
+app/test
+app/tool
