@@ -3338,8 +3338,11 @@ class _NoteCardFace extends StatelessWidget {
     final isList = note.kind == NoteKind.checklist;
     // Only a list counts what it is not showing: a text note's preview is lines
     // of prose, and "+3 more" under a paragraph would be counting items it
-    // does not have.
-    final notShown = isList ? note.items - note.preview.length : 0;
+    // does not have. Crossed-off items are not in the preview, so they are not
+    // part of what is left over either.
+    final notShown = isList
+        ? note.items - note.checked - note.preview.length
+        : 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,

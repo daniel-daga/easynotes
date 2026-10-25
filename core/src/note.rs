@@ -267,8 +267,10 @@ pub struct NoteSummary {
     /// Every item, checked or not.
     pub items: usize,
     pub checked: usize,
-    /// The first few lines of the body, then the first few items, so a card can
-    /// show what the note is about. Most shopping lists never get a title.
+    /// The first few lines of the body, then the first few items still to do,
+    /// so a card can show what the note is about. Crossed-off items are left
+    /// out: they are done, and the note itself still shows them. Most shopping
+    /// lists never get a title.
     pub preview: Vec<String>,
     /// What this person has done with the note: its colour, whether it is
     /// pinned, and whether it is in the archive or the trash. Personal, and from
@@ -1333,8 +1335,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             kind: view.kind,
             title: view.title,
             body: crate::index::body_lines(&view.body),
-            checked: view.items.iter().filter(|i| i.checked).count(),
-            items: view.items.into_iter().map(|i| i.text).collect(),
+            items: view
+                .items
+                .into_iter()
+                .map(|i| crate::index::IndexItem {
+                    text: i.text,
+                    checked: i.checked,
+                })
+                .collect(),
             cover: view
                 .attachments
                 .iter()
@@ -1467,7 +1475,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                     kind: entry.kind,
                     title: entry.title.clone(),
                     items: entry.items.len(),
-                    checked: entry.checked,
+                    checked: entry.items.iter().filter(|item| item.checked).count(),
                     preview: entry.preview().take(PREVIEW_ITEMS).cloned().collect(),
                     placement,
                     labels: self.labels_of(*id),

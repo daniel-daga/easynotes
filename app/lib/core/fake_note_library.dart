@@ -985,7 +985,8 @@ class FakeNoteLibrary implements NoteLibrary {
           checked: _cores[id]!.current.checkedCount,
           preview: [
             ..._bodyLines(_cores[id]!.current.body),
-            for (final item in _cores[id]!.current.items) item.text,
+            for (final item in _cores[id]!.current.items)
+              if (!item.checked) item.text,
           ].take(4).toList(),
           images: _cores[id]!.current.attachments
               .where((a) => a.kind == AttachmentKind.image)

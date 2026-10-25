@@ -283,8 +283,9 @@ pub struct NoteSummaryView {
     pub title: String,
     pub items: u32,
     pub checked: u32,
-    /// The first few lines of the body, then the first few items. A card shows
-    /// these under the title, and most shopping lists do not have one.
+    /// The first few lines of the body, then the first few items still to do.
+    /// A card shows these under the title, and most shopping lists do not have
+    /// one. Crossed-off items are left out.
     pub preview: Vec<String>,
     /// How many live pictures and sound files the note holds, for a card to
     /// say so and a search to filter by, without opening it.

@@ -65,7 +65,29 @@ fn a_summary_says_what_the_note_says<D: NoteDoc>() {
     assert_eq!(notes[0].items, 2);
     assert_eq!(notes[0].checked, 1);
     // What a card shows when the note has no title, which most of them do not.
-    assert_eq!(notes[0].preview, ["milk", "bread"]);
+    // The milk is crossed off, so it is still on the list and in the count but
+    // not on the card.
+    assert_eq!(notes[0].preview, ["bread"]);
+}
+
+/// Crossing something off does not use up a line of the card. The four lines a
+/// preview holds belong to what is still to do, even when the crossed-off
+/// items were added first.
+fn crossed_off_items_do_not_fill_the_preview<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    for i in 0..2 {
+        let (item, _) = core.add_item(id, format!("done {i}")).unwrap();
+        core.set_checked(id, item, true).unwrap();
+    }
+    for i in 0..6 {
+        core.add_item(id, format!("todo {i}")).unwrap();
+    }
+
+    let notes = core.notes().unwrap();
+    assert_eq!(notes[0].items, 8);
+    assert_eq!(notes[0].checked, 2);
+    assert_eq!(notes[0].preview, ["todo 0", "todo 1", "todo 2", "todo 3"]);
 }
 
 /// A preview is a preview: a long list must not put its whole self through the
@@ -232,6 +254,10 @@ macro_rules! backend_suite {
             #[test]
             fn a_preview_stops_at_a_few_items() {
                 super::a_preview_stops_at_a_few_items::<$backend>()
+            }
+            #[test]
+            fn crossed_off_items_do_not_fill_the_preview() {
+                super::crossed_off_items_do_not_fill_the_preview::<$backend>()
             }
             #[test]
             fn an_edit_reaches_the_list() {
