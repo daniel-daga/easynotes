@@ -634,7 +634,7 @@ void main() {
       expect(
         message,
         startsWith(
-          'Join my shared note in EasyNotes: https://sync.example.com/#join#',
+          'Join my shared note in EasyNotes: https://sync.example.com/#',
         ),
       );
       expect(message, endsWith('#$id'));

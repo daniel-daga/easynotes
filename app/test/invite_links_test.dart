@@ -60,21 +60,14 @@ void main() {
     expect(relayFromInvite(link), (url: relay, access: access));
   });
 
-  test('a native share is the relay page, with one link to tap', () {
-    final link = inviteLinkForSharing(
-      native,
-      webOrigin: relay,
-      relay: (url: relay, access: access),
-      web: true,
-    );
-    expect(link, startsWith('https://sync.example.com/#join#'));
-    expect(link, endsWith('#$secret'));
-    // The parameter block is encoded, so the relay address inside the fragment
-    // is not a second `https://` token that Android can linkify on its own.
+  test('a native share is the relay page, with only the secret', () {
+    final link = inviteLinkForRelayPage(native, relay);
+    expect(link, 'https://sync.example.com/#$secret');
+    // One address, one fragment: nothing to split, and the origin is the
+    // relay. The page adds the relay when it hands the fragment to the app.
     expect('https://'.allMatches(link).length, 1);
-    expect(link, contains(Uri.encodeComponent('relay=$relay;access=$access')));
-    expect(inviteLinkFrom(link), withRelay);
-    expect(relayFromInvite(link), (url: relay, access: access));
+    expect(inviteLinkFrom(link), 'easynotes://join#relay=$relay#$secret');
+    expect(relayFromInvite(link), (url: relay, access: null));
   });
 
   test('a percent-encoded handoff reads back to the same invite', () {
@@ -86,6 +79,18 @@ void main() {
         '%23$secret';
     expect(inviteLinkFrom(handoff), 'easynotes://join#relay=$relay#$secret');
     expect(relayFromInvite(handoff), (url: relay, access: null));
+  });
+
+  test('a relay page under a base path keeps that path', () {
+    final link = 'https://notes.example/relay/#$secret';
+    expect(
+      inviteLinkFrom(link),
+      'easynotes://join#relay=https://notes.example/relay#$secret',
+    );
+    expect(relayFromInvite(link), (
+      url: 'https://notes.example/relay',
+      access: null,
+    ));
   });
 
   test('a relay with no key is still one encoded field', () {

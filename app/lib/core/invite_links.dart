@@ -8,6 +8,11 @@
 // keeps a link made here readable by a build that predates the relay part.
 //
 // `easynotes://join#[relay=<url>;access=<key>#]<secret>`
+//
+// A native share points at the relay's own page, `https://<relay>/#<secret>`:
+// the page adds the relay when it hands the link to the app. The web app's
+// links carry it explicitly, because that app's origin is not the relay:
+// `<origin>#join#[relay=<url>;access=<key>#]<secret>`.
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 
@@ -42,9 +47,13 @@ String? inviteLinkFrom(String value) {
 
   final fragment = _decode(uri.fragment);
   if (fragment.isEmpty) return null;
-  // A web address with a fragment is not an invite unless it says so: a page
-  // that routes with `#/notes` would otherwise look like one on every load.
-  if (web && !fragment.startsWith('join#')) return null;
+  if (web && !fragment.startsWith('join#')) {
+    // The relay's own page: its host is the relay, so the fragment is the
+    // secret alone. A page that routes with `#/notes`, or a link with a
+    // heading after the `#`, is not a secret and not an invite.
+    if (!_isSecret(fragment)) return null;
+    return '$_scheme$_relayParam${_originOf(uri)}$_paramsEnd$fragment';
+  }
   final at = fragment.lastIndexOf(_paramsEnd);
   final secret = at < 0 ? fragment : fragment.substring(at + 1);
   if (secret.isEmpty) return null;
@@ -88,11 +97,10 @@ String inviteLinkWithRelay(String link, InviteRelay? relay) {
   return '$_scheme$params$_paramsEnd$secret';
 }
 
-/// Make the link a person can tap. On web it opens this deployed app; on
-/// native it is the custom scheme by default, unless the caller asks for the
-/// https form ([web]) that a messenger will linkify. The relay serves that
-/// form's page at its own root, so a native share can name the relay's origin.
-/// [web] defaults to [kIsWeb]; a test or a native caller can pass it.
+/// Make a link the web app can open. Its origin is that app, so the link has
+/// to carry the relay it belongs to. Native shares use
+/// [inviteLinkForRelayPage] instead. [web] defaults to [kIsWeb]; a test can
+/// pass it.
 String inviteLinkForSharing(
   String link, {
   String? webOrigin,
@@ -131,6 +139,21 @@ String inviteLinkForSharing(
       : '$page#join$_paramsEnd${Uri.encodeComponent(head)}$_paramsEnd$secret';
 }
 
+/// The link a native share puts in a message: the relay's own page, with only
+/// the secret after the `#`. The relay is the link's origin, so repeating it
+/// inside the fragment would say nothing; the page adds it when it hands the
+/// fragment to the app, and a pasted link is read the same way.
+String inviteLinkForRelayPage(String link, String relay) {
+  final normalized = inviteLinkFrom(link);
+  if (normalized == null) return link;
+  final at = normalized.lastIndexOf(_paramsEnd);
+  final secret = normalized.substring(at + 1);
+  final base = relay.endsWith('/')
+      ? relay.substring(0, relay.length - 1)
+      : relay;
+  return '$base/$_paramsEnd$secret';
+}
+
 /// Percent-decode a fragment, or hand it back as it came when it is not
 /// well-formed: a pasted link is a person's typing, not a promise.
 String _decode(String fragment) {
@@ -140,6 +163,21 @@ String _decode(String fragment) {
     return fragment;
   }
 }
+
+/// A whole invite secret: the version byte and 32 bytes, base64url with no
+/// padding, so 44 characters. A page's fragment is not an invite by accident.
+final _secretPattern = RegExp(r'^[A-Za-z0-9_-]{44}$');
+
+bool _isSecret(String code) => _secretPattern.hasMatch(code);
+
+/// The relay a page link belongs to: its origin and base path, without the
+/// page's query, fragment or trailing slash.
+String _originOf(Uri uri) => Uri(
+  scheme: uri.scheme,
+  host: uri.host,
+  port: uri.hasPort ? uri.port : null,
+  path: uri.path == '/' ? '' : uri.path.replaceFirst(RegExp(r'/+$'), ''),
+).toString();
 
 /// Web links carry a `join` marker before their parameters; native ones do not.
 String _withoutJoinMarker(String head) {

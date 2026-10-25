@@ -331,21 +331,22 @@ same as today's relay lets anyone who finds it. What it cannot do is read a
 note: those are encrypted under keys the relay never holds.
 
 **Invite links are tappable.** When a list is shared from the app, the message
-carries an `https://` link to this relay, with the invite in the fragment (the
-relay address inside it is percent-encoded, so the message holds exactly one
-link):
+carries an `https://` link to this relay, with only the invite secret in the
+fragment:
 
 ```text
-https://your-relay-hostname/#join#…#secret
+https://your-relay-hostname/#<secret>
 ```
 
 Messengers linkify that address, and the relay's root serves a small join page
-that hands the fragment to the installed app (or shows the same link to copy
-when it is not installed). The page is part of the relay image; there is
-nothing to configure, and the optional web container is not needed for it.
-The fragment never reaches the relay, so the page's server logs hold neither
-the invite nor the access key. Opening the relay root without a fragment shows
-"this link is incomplete" rather than anything about the relay.
+that adds its own relay, hands the link to the installed app (or shows the
+same link to copy when it is not installed). The page is part of the relay
+image; there is nothing to configure, and the optional web container is not
+needed for it. The fragment never reaches the relay, so the page's server logs
+hold neither the invite nor the access key. Opening the relay root without a
+fragment shows "this link is incomplete" rather than anything about the relay.
+A browser app served from a different origin keeps the longer
+`#join#relay=…` form, because that origin is not the relay.
 
 **Rotating** takes the key away from people who should no longer have it:
 

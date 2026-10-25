@@ -283,15 +283,10 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     final url = widget.relayUrl;
     final relay = url == null ? null : (url: url, access: widget.relayAccess);
     if (!kIsWeb && url != null) {
-      // The relay serves the join page at its own root, so a native share is a
-      // plain https address that every messenger linkifies. Tapping it hands
-      // the fragment to the app; a guest without it sees the copy fallback.
-      return inviteLinkForSharing(
-        invite.link,
-        webOrigin: url,
-        relay: relay,
-        web: true,
-      );
+      // The relay is the link's base, so its own page needs only the secret
+      // after the `#`. Tapping it hands the fragment to the app, which is told
+      // the relay by the page; a pasted link is read the same way.
+      return inviteLinkForRelayPage(invite.link, url);
     }
     // On web the link opens this app, which handles the fragment itself. With
     // no relay there is nothing to page to and the custom scheme stays.

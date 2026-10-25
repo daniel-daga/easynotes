@@ -161,9 +161,9 @@
           location.origin + location.pathname.replace(/\/+$/, "");
 
         // What follows `easynotes://join#`, or "" when the fragment is not an
-        // invite. A link shared from the app is `<origin>#join#<body>`; a
-        // message a messenger linkified only from the embedded relay address
-        // arrives as the bare secret, and this page knows which relay it is.
+        // invite. A native share is `<origin>#<secret>`: this page is the
+        // relay, so the fragment is the secret alone. A web app's link is
+        // `<origin>#join#<body>` and carries its own relay.
         function bodyFrom(fragment) {
           var body;
           if (fragment.indexOf("join#") === 0) {
