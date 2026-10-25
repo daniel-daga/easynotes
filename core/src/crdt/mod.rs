@@ -242,6 +242,17 @@ pub enum Edit {
         /// [`crate::collaborators::sign`]'s output, already encoded.
         record: String,
     },
+    /// A guest's signed statement that they left the note, written while they
+    /// delete their account
+    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    ///
+    /// The owner is the only one who can act on it: their next settle enqueues
+    /// the removal and rotates the note key.
+    SetMemberLeft {
+        member: crate::crypto::AuthorKey,
+        /// [`crate::collaborators::sign_left`]'s output, already encoded.
+        record: String,
+    },
 }
 
 /// An item as [`Edit::ToChecklist`] adds, with its order key already worked out.
@@ -330,6 +341,11 @@ pub trait NoteDoc: Sized {
     /// the note ID and the member's key.
     fn member_names(&self) -> Vec<(crate::crypto::AuthorKey, String)>;
 
+    /// Every leave record this document holds, as written, keyed by the member
+    /// who signed it. Verification is the caller's, because it needs the note
+    /// ID and the member's key.
+    fn member_leaves(&self) -> Vec<(crate::crypto::AuthorKey, String)>;
+
     /// Every attachment object this document still names, or `None` when one
     /// of its descriptors does not say: see [`live_objects`].
     fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>>;
@@ -374,6 +390,20 @@ pub(crate) fn name_key(member: crate::crypto::AuthorKey) -> String {
 
 pub(crate) fn parse_name_key(key: &str) -> Option<crate::crypto::AuthorKey> {
     let raw = key.strip_prefix("n:")?;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let bytes: [u8; 32] = URL_SAFE_NO_PAD.decode(raw).ok()?.try_into().ok()?;
+    Some(crate::crypto::AuthorKey(bytes))
+}
+
+/// The root key one person's leave record hangs off. A separate prefix from
+/// the name record's so an old build — and a note's view — can tell them apart.
+pub(crate) fn left_key(member: crate::crypto::AuthorKey) -> String {
+    format!("l:{}", member.encode())
+}
+
+pub(crate) fn parse_left_key(key: &str) -> Option<crate::crypto::AuthorKey> {
+    let raw = key.strip_prefix("l:")?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     let bytes: [u8; 32] = URL_SAFE_NO_PAD.decode(raw).ok()?.try_into().ok()?;

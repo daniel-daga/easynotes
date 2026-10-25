@@ -713,6 +713,55 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         std::mem::take(&mut self.removals)
     }
 
+    /// Write a signed "left" record into every note this person joined, as the
+    /// last thing this device does before its account is deleted
+    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    ///
+    /// The owner is the only one who can remove a member, so a guest cannot
+    /// clean up its own row. This is the message it can leave instead: its
+    /// member key signs that it left *this invite's membership*, and the
+    /// owner's next settle removes that membership and rotates the note key.
+    ///
+    /// Returns the sealed envelope per note for the caller to hand to the
+    /// relay before wiping. A note this device cannot open has nothing to
+    /// write and is skipped: without the note key there is no message the
+    /// owner could read.
+    pub fn leave_joined_notes(&mut self) -> Result<Vec<(NoteId, Vec<u8>)>> {
+        let Ok(member) = self.member() else {
+            return Ok(Vec::new());
+        };
+        let joined: Vec<(NoteId, InviteId)> = account::note_access_of(self.account.doc.entries())
+            .into_iter()
+            .filter_map(|(note, record)| match record {
+                NoteRecord::Guest { invite, .. } => Some((note, invite)),
+                NoteRecord::Owner { .. } | NoteRecord::Key { .. } => None,
+            })
+            .collect();
+        let mut written = Vec::new();
+        for (note, invite) in joined {
+            if !self.can_open(note) {
+                continue;
+            }
+            let was_open = self.open.contains_key(&note);
+            let record = crate::collaborators::sign_left(&member, note, invite);
+            match self.apply_local(
+                note,
+                Edit::SetMemberLeft {
+                    member: member.id(),
+                    record,
+                },
+            ) {
+                Ok(envelope) => written.push((note, envelope)),
+                Err(CoreError::UnknownNote(_) | CoreError::AccessPending) => continue,
+                Err(e) => return Err(e),
+            }
+            if !was_open {
+                self.open.remove(&note);
+            }
+        }
+        Ok(written)
+    }
+
     // -- the owner's side ---------------------------------------------------
 
     /// The owner's own entry on a list, as it stands now.
@@ -740,6 +789,75 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok(Some(
             members.into_iter().map(|m| (m.membership(), m)).collect(),
         ))
+    }
+
+    /// Turn every valid "I left" record in the note into this owner device's
+    /// removal of exactly that membership
+    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    ///
+    /// The record names the invite as well as the member, so a person invited
+    /// again later — under a new invite, and so a new membership — is not
+    /// removed by the record of the membership they left. Only a member's own
+    /// signature can produce one, and only for themselves; anything that does
+    /// not verify is ignored. A record for someone the current package does
+    /// not list yet drops a pending add instead, so an owner never re-adds a
+    /// person who has already gone.
+    fn enqueue_leaves(&mut self, id: NoteId) -> Result<()> {
+        if !self.can_manage_collaborators(id) {
+            return Ok(());
+        }
+        let ledger = self.ledger(id)?;
+        // A note nobody was ever let into has no leaves and no package, and
+        // opening every note at every settle is exactly what the lazy note
+        // list is not for.
+        if ledger.current().is_none() {
+            return Ok(());
+        }
+        self.ensure_open(id)?;
+        let leaves = match self.open.get(&id) {
+            Some(note) => note.doc.member_leaves(),
+            None => return Ok(()),
+        };
+        if leaves.is_empty() {
+            return Ok(());
+        }
+        let list = self.current_list(&ledger)?.unwrap_or_default();
+        let mut intents = self.intents(id)?;
+        let mut changed = false;
+        for (member, raw) in leaves {
+            let Some(invite) = crate::collaborators::read_left(&raw, id, member) else {
+                continue;
+            };
+            let membership = Membership { member, invite };
+            match list.get(&membership) {
+                Some(person) if person.owner => continue,
+                Some(_) => {
+                    if intents.iter().any(|intent| {
+                        matches!(intent, Intent::Remove { .. })
+                            && intent.membership().ok() == Some(membership)
+                    }) {
+                        continue;
+                    }
+                    intents.retain(|intent| intent.membership().ok() != Some(membership));
+                    intents.push(Intent::remove(&membership));
+                    changed = true;
+                }
+                None => {
+                    // Still on its way in, or already gone: drop an approval
+                    // that would let them back in.
+                    let before = intents.len();
+                    intents.retain(|intent| {
+                        !(matches!(intent, Intent::Add { .. })
+                            && intent.membership().ok() == Some(membership))
+                    });
+                    changed |= intents.len() != before;
+                }
+            }
+        }
+        if changed {
+            self.put_intents(id, &intents)?;
+        }
+        Ok(())
     }
 
     /// On an owner device, publish the package that makes the current list
@@ -1020,6 +1138,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 ..Outgoing::default()
             });
         }
+        self.enqueue_leaves(id)?;
         if let Some(built) = self.build_if_needed(id)? {
             // A new key's package holds everything a switch's update did,
             // under a key the update was not sealed with.

@@ -29,8 +29,9 @@
 
 use super::attachment_fields as field;
 use super::{
-    attachment_key, attachment_view, live_objects, name_key, parse_attachment_key, parse_name_key,
-    sort_attachments, sort_items, Colour, Edit, ItemView, NoteDoc, NoteKind, NoteView,
+    attachment_key, attachment_view, left_key, live_objects, name_key, parse_attachment_key,
+    parse_left_key, parse_name_key, sort_attachments, sort_items, Colour, Edit, ItemView, NoteDoc,
+    NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -224,6 +225,9 @@ impl NoteDoc for AutomergeNote {
                     Edit::SetMemberName { member, record } => {
                         tx.put(ROOT, name_key(*member), record.as_str())?;
                     }
+                    Edit::SetMemberLeft { member, record } => {
+                        tx.put(ROOT, left_key(*member), record.as_str())?;
+                    }
                 }
                 Ok(())
             })
@@ -321,6 +325,16 @@ impl NoteDoc for AutomergeNote {
             .keys(ROOT)
             .filter_map(|key| {
                 let member = parse_name_key(&key)?;
+                Some((member, Self::str_at(&self.doc, &ROOT, &key)))
+            })
+            .collect()
+    }
+
+    fn member_leaves(&self) -> Vec<(crate::crypto::AuthorKey, String)> {
+        self.doc
+            .keys(ROOT)
+            .filter_map(|key| {
+                let member = parse_left_key(&key)?;
                 Some((member, Self::str_at(&self.doc, &ROOT, &key)))
             })
             .collect()

@@ -19,7 +19,7 @@
 <main>
   <h1>Deleting your EasyNotes account</h1>
   <p class="draft"><strong>Draft for publication.</strong> Check the support email and deletion steps against the version of the app you publish.</p>
-  <p><strong>Last updated: 17 October 2026</strong></p>
+  <p><strong>Last updated: 26 October 2026</strong></p>
 
   <p>This page explains how to delete an EasyNotes account and its data. EasyNotes has no usernames, email addresses or passwords. Your account is the twelve-word recovery phrase you wrote down. Notes are encrypted on your device before they reach a relay. A relay operator cannot read their contents or look you up by name or email, so deletion must be requested from a device that can prove control of the account.</p>
 
@@ -45,8 +45,8 @@
   <h2>What deletion does not remove</h2>
   <ul>
     <li><strong>Copies other people already have.</strong> People you shared a list with keep copies on their devices. Those copies stop syncing, and the app tells them the list was deleted.</li>
-    <li><strong>Lists other people shared with you.</strong> They remain with their owner. Your past edits in them remain part of those lists.</li>
-    <li><strong>Your other devices' local copies.</strong> Each device is told the account was deleted, but keeps its local data until you remove the account from that device too.</li>
+    <li><strong>Lists other people shared with you.</strong> They remain with their owner. You leave each one as you delete your account: when its owner's device next syncs, your name drops off their People list and their device changes the list's key, so the deleted account cannot open it again. Your past edits in them remain part of those lists.</li>
+    <li><strong>Your other devices' local copies.</strong> Each device is told the account was deleted. It keeps its copy of lists you own until you remove the account from that device too; lists you joined leave every device when the owner next syncs.</li>
     <li><strong>Relay backups.</strong> A relay operator may keep encrypted backups under its own retention policy. The documented EasyNotes Synology backup setup keeps backups for up to 30 days by default; another operator may use a different period. Backups contain encrypted data that the relay cannot read.</li>
     <li><strong>A deletion marker on the relay.</strong> A small opaque marker remains to stop an old device from re-creating a deleted list by syncing it again. It contains no note contents or account name.</li>
     <li><strong>Connection information already seen by a relay operator.</strong> A relay can see that a device connected, when it connected and its IP address. The operator controls its logs and retention. See the <a href="/privacy.html">EasyNotes privacy policy</a> and the relay operator's own privacy notice.</li>

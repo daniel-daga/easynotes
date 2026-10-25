@@ -453,6 +453,11 @@ both_backends!(
     two_phones_renaming_at_once_settle_on_one_name,
     a_note_that_was_never_shared_gains_no_name_record,
     a_rename_shows_before_the_note_is_opened,
+    a_guest_who_deletes_their_account_leaves_the_owners_list,
+    a_leave_reaches_an_owner_who_was_offline,
+    a_restored_guest_phone_cannot_reopen_a_note_after_leaving,
+    a_guest_can_be_invited_again_after_leaving,
+    a_forged_leave_record_removes_nobody,
 );
 
 // ---------------------------------------------------------------------------
@@ -1567,4 +1572,203 @@ fn a_rename_shows_before_the_note_is_opened<D: NoteDoc>() {
     anna.relaunch();
     anna.core().notes().unwrap();
     assert_eq!(anna.names(note), vec!["Olga K", "Anna"]);
+}
+
+// ---------------------------------------------------------------------------
+// Leaving on account deletion (ADR 0034)
+// ---------------------------------------------------------------------------
+
+/// What deleting an account does to a note this person joined: one signed
+/// record per note, onto the relay, before the device is wiped.
+fn leave_everything<D: NoteDoc>(guest: &mut Phone<D>, relay: &mut Relay) -> Vec<NoteId> {
+    let written = guest.core().leave_joined_notes().unwrap();
+    for (note, envelope) in &written {
+        relay.append(*note, envelope);
+    }
+    written.into_iter().map(|(note, _)| note).collect()
+}
+
+/// The bug from issue 61: the owner's People list kept a person who had
+/// deleted their account, as a live grant. The leave record is what the owner
+/// acts on, and the removal rotates the key.
+fn a_guest_who_deletes_their_account_leaves_the_owners_list<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+    let before = owner.key_id(note).unwrap();
+    let member = anna.member();
+
+    let written = anna.core().leave_joined_notes().unwrap();
+    assert_eq!(written.len(), 1, "one record for the one joined note");
+    assert_eq!(written[0].0, note);
+    relay.append(note, &written[0].1);
+
+    // Owner online: the arrival, and the settle the engine runs once its
+    // backlog is drained. Until the package is on the relay, the row says
+    // "Removing…".
+    owner.core().apply_remote(note, &written[0].1).unwrap();
+    let out = owner.core().settle_note(note).unwrap();
+    assert!(out.rekey, "a removal rotates the note key");
+    let rows = owner.peek().people(note).unwrap().people;
+    assert!(
+        rows.iter()
+            .all(|person| person.member != member || person.removing),
+        "the owner has dropped them, or shows the removal in progress"
+    );
+    for envelope in &out.envelopes {
+        relay.append(note, envelope);
+    }
+    owner.sync(&mut relay, note);
+
+    assert!(
+        !owner
+            .peek()
+            .people(note)
+            .unwrap()
+            .people
+            .iter()
+            .any(|person| person.member == member),
+        "the owner's People list drops them"
+    );
+    assert_eq!(owner.names(note), ["Olga"]);
+    assert_ne!(owner.key_id(note).unwrap(), before, "the key rotated");
+
+    // The guest's own copy goes the next time it syncs.
+    assert!(anna.sync(&mut relay, note).removed);
+    assert!(!anna.peek().can_open(note));
+}
+
+/// The owner was offline when the guest deleted their account: the record is
+/// waiting on the relay, and the owner's own unsent work is still there when
+/// the removal finally happens.
+fn a_leave_reaches_an_owner_who_was_offline<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+    let member = anna.member();
+
+    // The owner types something it has not sent. The guest deletes their
+    // account meanwhile.
+    owner.core().set_title(note, "Groceries, offline").unwrap();
+    leave_everything(&mut anna, &mut relay);
+
+    let out = owner.sync(&mut relay, note);
+    assert!(out.rekey);
+    assert_eq!(
+        owner.title(note).as_deref(),
+        Some("Groceries, offline"),
+        "the owner's note is not lost"
+    );
+    assert_eq!(owner.names(note), ["Olga"]);
+    assert!(!owner
+        .peek()
+        .people(note)
+        .unwrap()
+        .people
+        .iter()
+        .any(|person| person.member == member));
+}
+
+/// A phone restored from the deleted person's words knows the note ID and has
+/// the packages, and still cannot open it: the current one no longer grants
+/// them, and the record marks them removed on the way.
+fn a_restored_guest_phone_cannot_reopen_a_note_after_leaving<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    leave_everything(&mut anna, &mut relay);
+    owner.sync(&mut relay, note);
+    assert_eq!(owner.names(note), ["Olga"]);
+
+    // Restored before the guest's own account document learns of the removal,
+    // so the stale record still names the note.
+    let mut restored = anna.restored();
+    restored.sync_account(&mut relay);
+    assert!(
+        restored.peek().syncable().unwrap().contains(&note),
+        "the stale account still names it"
+    );
+    let out = restored.sync(&mut relay, note);
+    assert!(out.removed);
+    assert!(!restored.peek().can_open(note));
+    assert_eq!(restored.title(note), None);
+    assert!(
+        restored
+            .core()
+            .apply_remote(note, &relay.log(note)[0])
+            .is_err(),
+        "the old first envelope grants nothing it can read"
+    );
+}
+
+/// Inviting the same person again after they left works, and the record of the
+/// old membership does not sweep away the new one.
+fn a_guest_can_be_invited_again_after_leaving<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    leave_everything(&mut anna, &mut relay);
+    owner.sync(&mut relay, note);
+    assert!(anna.sync(&mut relay, note).removed);
+    assert!(!anna.peek().can_open(note));
+
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    assert_eq!(anna.title(note).as_deref(), Some("Groceries"));
+    assert_eq!(owner.names(note), ["Olga", "Anna"]);
+    assert_eq!(anna.names(note), ["Olga", "Anna"]);
+    assert!(owner
+        .peek()
+        .people(note)
+        .unwrap()
+        .people
+        .iter()
+        .any(|person| person.member == anna.member()));
+}
+
+/// Any member can write any key in the note, so only the signature makes a
+/// leave record theirs. One member cannot write another's.
+fn a_forged_leave_record_removes_nobody<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    owner.sync(&mut relay, note);
+
+    let anna_member = anna.peek().member().unwrap();
+    let owner_member = owner.peek().member().unwrap().id();
+    let forged = easynotes_core::collaborators::sign_left(
+        &anna_member,
+        note,
+        InviteId::from_bytes([7u8; 16]),
+    );
+    anna.core()
+        .apply_local(
+            note,
+            easynotes_core::crdt::Edit::SetMemberLeft {
+                member: owner_member,
+                record: forged,
+            },
+        )
+        .unwrap();
+    anna.sync(&mut relay, note);
+    owner.sync(&mut relay, note);
+
+    assert_eq!(owner.names(note), ["Olga", "Anna"]);
 }

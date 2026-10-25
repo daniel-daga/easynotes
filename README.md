@@ -274,6 +274,7 @@ file refuses to start without both.
 | [ADR 0030](docs/adr/0030-a-link-lets-its-first-person-in.md) | A link lets its first person in, without the owner's phone: the invite carries a pre-sealed grant |
 | [ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md) | Sync is a server and the account that belongs to it: one setup, no upload before the account, and what "backup" means |
 | [ADR 0032](docs/adr/0032-a-name-that-follows-the-person.md) | A name that follows the person: each member signs their own name into the note, so a rename reaches collaborators both ways |
+| [ADR 0034](docs/adr/0034-leaving-on-account-deletion.md) | A guest leaves when their account is deleted: a signed record in each joined note, a removal and a key rotation on the owner's next sync |
 
 ## Reporting a vulnerability
 

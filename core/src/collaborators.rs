@@ -13,10 +13,16 @@
 //! somebody else — and because it lives inside the note rather than in the
 //! owner's package, a guest can rename themselves without the owner having to
 //! republish anything.
+//!
+//! The same document carries a signed "I left" record when a guest deletes
+//! their account ([ADR 0034](../../docs/adr/0034-leaving-on-account-deletion.md)).
+//! It is keyed by the member who signed it and names the invite they joined
+//! with, so the owner can remove exactly that membership and rotate the note
+//! key.
 use crate::access::MAX_NAME_BYTES;
 use crate::account::MemberIdentity;
 use crate::crypto::{AuthorKey, SIG_LEN};
-use crate::ids::NoteId;
+use crate::ids::{InviteId, NoteId};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -25,6 +31,10 @@ use serde::{Deserialize, Serialize};
 /// generation. Public. A record copied into another note, or signed over
 /// different bytes, fails to verify.
 const NAME_CONTEXT: &[u8] = b"easynotes/member-name/v1";
+
+/// The domain for a guest's signed statement that they left a note. Separate
+/// from the name record's so neither signature can stand in for the other.
+const LEFT_CONTEXT: &[u8] = b"easynotes/member-left/v1";
 
 /// Bytes of the rename generation in front of a name.
 const SEQ_LEN: usize = 8;
@@ -115,6 +125,46 @@ pub fn read(raw: &str, note: NoteId, member: AuthorKey) -> Option<MemberName> {
         })
 }
 
+fn left_signed(note: NoteId, member: AuthorKey, invite: InviteId) -> Vec<u8> {
+    let mut message = Vec::with_capacity(LEFT_CONTEXT.len() + 16 + 32 + 16);
+    message.extend_from_slice(LEFT_CONTEXT);
+    message.extend_from_slice(note.as_bytes());
+    message.extend_from_slice(&member.0);
+    message.extend_from_slice(invite.as_bytes());
+    message
+}
+
+/// One member's statement that they left the note, signed by their own member
+/// key, as a note document stores it.
+///
+/// The invite is part of the statement because a membership is the pair: a
+/// person invited again later has a new invite, and the old record must not
+/// remove the new membership.
+pub fn sign_left(member: &MemberIdentity, note: NoteId, invite: InviteId) -> String {
+    let mut out = Vec::with_capacity(16 + SIG_LEN);
+    out.extend_from_slice(invite.as_bytes());
+    out.extend_from_slice(&member.sign(&left_signed(note, member.id(), invite)));
+    URL_SAFE_NO_PAD.encode(out)
+}
+
+/// Read and verify a stored leave record, or `None` for one that is not this
+/// person's signed statement about this note and invite.
+pub fn read_left(raw: &str, note: NoteId, member: AuthorKey) -> Option<InviteId> {
+    if raw.len() > MAX_RECORD_CHARS {
+        return None;
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    if bytes.len() != 16 + SIG_LEN {
+        return None;
+    }
+    let (invite, signature) = bytes.split_at(16);
+    let invite = InviteId::from_bytes(invite.try_into().ok()?);
+    let signature: &[u8; SIG_LEN] = signature.try_into().ok()?;
+    member
+        .verify(&left_signed(note, member, invite), signature)
+        .then_some(invite)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +244,44 @@ mod tests {
         let read_back = read(&record, note, member.id()).unwrap();
         assert_eq!(read_back.name, crate::access::clip_name(&long));
         assert!(read_back.name.len() <= MAX_NAME_BYTES);
+    }
+
+    #[test]
+    fn a_leave_record_reads_back_only_for_its_own_note_member_and_invite() {
+        let member = someone();
+        let other = someone();
+        let note = NoteId::from_bytes([5u8; 16]);
+        let invite = InviteId::from_bytes([9u8; 16]);
+        let record = sign_left(&member, note, invite);
+        assert_eq!(read_left(&record, note, member.id()), Some(invite));
+        assert_eq!(
+            read_left(&record, NoteId::from_bytes([6u8; 16]), member.id()),
+            None
+        );
+        assert_eq!(read_left(&record, note, other.id()), None);
+    }
+
+    #[test]
+    fn a_tampered_leave_record_is_refused() {
+        let member = someone();
+        let note = NoteId::from_bytes([5u8; 16]);
+        let record = sign_left(&member, note, InviteId::from_bytes([9u8; 16]));
+        let mut raw = URL_SAFE_NO_PAD.decode(&record).unwrap();
+        raw[0] ^= 1;
+        assert_eq!(
+            read_left(&URL_SAFE_NO_PAD.encode(raw), note, member.id()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_leave_record_is_not_a_name_record() {
+        let member = someone();
+        let note = NoteId::from_bytes([5u8; 16]);
+        let left = sign_left(&member, note, InviteId::from_bytes([9u8; 16]));
+        let name = sign(&member, note, "Ada", 1);
+        assert_eq!(read(&left, note, member.id()), None);
+        assert_eq!(read_left(&name, note, member.id()), None);
     }
 
     #[test]

@@ -1120,6 +1120,40 @@ void main() {
       },
     );
 
+    test("a guest who deletes their account leaves the owner's People list "
+        '(ADR 0034)', () async {
+      final (owner, a, noteId) = await owned();
+      await a.setTitle('Groceries');
+      final (guest, b) = await share(owner, noteId);
+      await _until(
+        b.watch(),
+        (view) => view.title == 'Groceries',
+        'the guest never received the list',
+      );
+      final anna = owner
+          .people(noteId)
+          .people
+          .firstWhere((person) => !person.owner);
+      await b.dispose();
+
+      await guest.deleteAccount();
+
+      // The owner's engine receives the record and removes them. Polling
+      // and syncing is what a screen that stays open does.
+      final deadline = DateTime.now().add(patience);
+      while (owner
+          .people(noteId)
+          .people
+          .any((person) => person.member == anna.member)) {
+        if (DateTime.now().isAfter(deadline)) {
+          fail('the deleted guest stayed in the People list');
+        }
+        await owner.syncNow();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(owner.people(noteId).people.map((person) => person.owner), [true]);
+    });
+
     test(
       "joining adds a note with its colour, and not the owner's labels",
       () async {

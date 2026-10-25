@@ -3,7 +3,7 @@
 > **Draft for publication.** The support email and deletion steps should be
 > checked against the version of the app you publish.
 
-**Last updated: 17 October 2026**
+**Last updated: 26 October 2026**
 
 This page is for anyone who wants their EasyNotes account and data deleted,
 including people who no longer have the app installed. It is the page to give
@@ -53,9 +53,13 @@ request; they stay encrypted and unreadable.
 - **Copies other people already have.** People you shared a list with keep what
   is on their devices. It stops syncing, and they are told it was deleted.
 - **Lists other people shared with you.** They belong to the person who made
-  them. Your past edits in them stay part of those lists.
-- **Your other devices.** Each keeps its copy until you delete the account on it
-  too. Each is told the account was deleted.
+  them. You leave each one as you delete your account: when its owner's device
+  next syncs, your name drops off their People list and their device changes
+  the list's key, so the deleted account cannot open it again. Your past edits
+  in them stay part of those lists.
+- **Your other devices.** Each is told the account was deleted. It keeps its
+  copy of lists you own until you delete the account there too; lists you
+  joined leave every device when the owner next syncs.
 - **Relay backups.** A relay operator may keep encrypted backups, under its
   own retention policy. The documented EasyNotes Synology backup setup keeps
   backups for up to 30 days by default; another operator may use a different

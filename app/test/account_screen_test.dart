@@ -482,6 +482,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('stay theirs'), findsOneWidget);
+      expect(find.textContaining('leaves their People list'), findsOneWidget);
       expect(find.textContaining('up to 30 days'), findsOneWidget);
 
       final confirm = find.byKey(const Key('delete-account-confirm'));
