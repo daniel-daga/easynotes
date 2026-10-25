@@ -319,6 +319,18 @@ void main() {
       expect(find.byKey(const Key('join-waiting')), findsNothing);
     });
 
+    testWidgets('a pasted web link joins as the same invite', (tester) async {
+      final library = twoLists()..setUpSharing('Anna');
+      await pumpList(tester, library);
+
+      await ask(tester, 'https://notes.example/#join#abc');
+
+      expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
+      library.fakeAnswer('abc', JoinState.joined);
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('a tapped link only asks for a yes', (tester) async {
       final library = twoLists()..setUpSharing('Anna');
       await tester.pumpWidget(

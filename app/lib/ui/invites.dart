@@ -858,8 +858,13 @@ class _JoinDialogState extends State<JoinDialog> {
   }
 
   Future<void> _ask() async {
-    final link = _link.text.trim();
-    if (link.isEmpty) return;
+    final text = _link.text.trim();
+    if (text.isEmpty) return;
+    // A tapped link is already in the core's form, but a pasted one can be the
+    // relay page's address, its copy fallback (percent-encoded), or the whole
+    // message. Normalise it once here, so the core reads one shape and a
+    // hand-off carries the same link back.
+    final link = inviteLinkFrom(text) ?? text;
     // A link can name the relay it belongs to. One that names a relay this
     // device is not on cannot be joined from here: the request would be posted
     // to the wrong server. The app moves the device over and brings the link

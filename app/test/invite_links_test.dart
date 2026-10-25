@@ -77,6 +77,17 @@ void main() {
     expect(relayFromInvite(link), (url: relay, access: access));
   });
 
+  test('a percent-encoded handoff reads back to the same invite', () {
+    // What the relay's join page sends to the app: one literal `#`, with the
+    // secret's separator encoded inside the fragment. An OS that treats a
+    // second `#` as a fragment boundary cannot drop the secret here.
+    final handoff =
+        'easynotes://join#${Uri.encodeComponent('relay=$relay')}'
+        '%23$secret';
+    expect(inviteLinkFrom(handoff), 'easynotes://join#relay=$relay#$secret');
+    expect(relayFromInvite(handoff), (url: relay, access: null));
+  });
+
   test('a relay with no key is still one encoded field', () {
     final link = inviteLinkForSharing(
       native,

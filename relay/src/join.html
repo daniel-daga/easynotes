@@ -190,12 +190,20 @@
           return;
         }
 
-        var link = "easynotes://join#" + body;
+        // The tap goes through one literal `#`, and only one: the secret's
+        // separator is encoded too. An OS that treats a second `#` as another
+        // fragment boundary would otherwise drop everything after it and hand
+        // the app a link with the relay fields where the secret should be.
+        // The app decodes the fragment once, so this reads back as the same
+        // body. The copy fallback shows the raw form, which is what older
+        // builds read when it is pasted rather than opened.
+        var rawLink = "easynotes://join#" + body;
+        var link = "easynotes://join#" + encodeURIComponent(body);
         open.href = link;
         open.hidden = false;
         help.hidden = false;
         copyRow.hidden = false;
-        linkBox.textContent = link;
+        linkBox.textContent = rawLink;
 
         // One attempt without a gesture on a phone, where the app can be;
         // desktop builds do not register the scheme, and a failed launch there
@@ -216,7 +224,7 @@
             selection.addRange(range);
           }
           if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(link).then(
+            navigator.clipboard.writeText(rawLink).then(
               function () {
                 copied.hidden = false;
               },
