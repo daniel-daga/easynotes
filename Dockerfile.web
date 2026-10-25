@@ -42,8 +42,9 @@ RUN rustup toolchain install "${RUST_NIGHTLY}" --profile minimal --component rus
  && rustup target add wasm32-unknown-unknown
 
 # wasm-bindgen-cli is preinstalled so wasm-pack uses it rather than building it
-# under the WebAssembly RUSTFLAGS, which cannot link for the host. The versions
-# match `just setup-web`.
+# under the WebAssembly RUSTFLAGS, which cannot link for the host. wasm-pack is
+# pinned too, because it also chooses the binaryen it downloads for wasm-opt;
+# wasm-bindgen matches `just setup-web`.
 RUN cargo install wasm-pack --version "${WASM_PACK_VERSION}" --locked \
  && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
 
