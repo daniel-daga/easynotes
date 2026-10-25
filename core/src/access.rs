@@ -80,7 +80,10 @@ pub struct Member {
     pub box_key: [u8; 32],
     pub owner: bool,
     pub invite: InviteId,
-    /// Chosen by the person. A label, not a verified identity.
+    /// The name they joined under, chosen by the person: a label, not a
+    /// verified identity. A record in the note's document may be newer — a
+    /// rename travels there, signed by the person it belongs to
+    /// ([ADR 0032](../../docs/adr/0032-a-name-that-follows-the-person.md)).
     pub name: String,
 }
 

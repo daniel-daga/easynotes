@@ -747,6 +747,9 @@ class FakeNoteLibrary implements NoteLibrary {
     if (!_hasAccount) throw 'this device has no account yet';
     if (name.trim().isEmpty) throw 'sharing needs a name: set one up first';
     _profileName = name.trim();
+    // The name is drawn in the list and on every share screen, and the real
+    // core writes it into each shared note; the fake's `_me` reads it.
+    _emit();
   }
 
   /// A device that has already set sharing up, as most tests want.

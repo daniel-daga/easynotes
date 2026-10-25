@@ -2264,6 +2264,11 @@ impl Library {
             .locked()?
             .open_note(id)
             .map_err(|e| e.to_string())?;
+        // Settling is what brings this person's name record up to date if a
+        // rename happened on another phone while this note was shut, and it
+        // sends the envelope that says so ([ADR
+        // 0032](../../../../docs/adr/0032-a-name-that-follows-the-person.md)).
+        self.shared.settle(id);
         Ok(Note {
             shared: self.shared.clone(),
             id,
@@ -2853,10 +2858,17 @@ impl Library {
     }
 
     pub fn set_profile_name(&self, name: String) -> Result<(), String> {
-        self.shared
-            .locked()?
-            .set_profile_name(&name)
-            .map_err(|e| e.to_string())
+        let written = {
+            let mut core = self.shared.locked()?;
+            core.set_profile_name(&name).map_err(|e| e.to_string())?
+        };
+        // Every share a rename touched, handed to the relay the way any other
+        // edit is. A note with no connection keeps its envelope in the log
+        // until one exists.
+        for (note, envelope) in written {
+            self.shared.send_edit(note, envelope, false);
+        }
+        Ok(())
     }
 
     /// Adopt the account twelve words name, keeping what this device already

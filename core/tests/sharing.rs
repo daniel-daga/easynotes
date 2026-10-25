@@ -447,6 +447,12 @@ both_backends!(
     stop_sharing_removes_everyone_but_the_owner,
     an_offline_rotation_loses_to_a_deletion_that_syncs_first,
     an_offline_rotation_loses_to_a_deletion_that_syncs_second,
+    an_owner_rename_reaches_their_collaborators,
+    a_guest_rename_reaches_the_owner_and_every_other_guest,
+    a_name_record_signed_by_somebody_else_is_ignored,
+    two_phones_renaming_at_once_settle_on_one_name,
+    a_note_that_was_never_shared_gains_no_name_record,
+    a_rename_shows_before_the_note_is_opened,
 );
 
 // ---------------------------------------------------------------------------
@@ -1413,4 +1419,152 @@ fn an_offline_rotation_loses_to_a_deletion_that_syncs_first<D: NoteDoc>() {
 
 fn an_offline_rotation_loses_to_a_deletion_that_syncs_second<D: NoteDoc>() {
     an_offline_rotation_against_a_deletion::<D>(true);
+}
+
+// ---------------------------------------------------------------------------
+// Renames (ADR 0032)
+// ---------------------------------------------------------------------------
+
+/// The bug this exists for: people the note was shared with kept seeing the
+/// name it was shared under after it changed.
+fn an_owner_rename_reaches_their_collaborators<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    assert_eq!(anna.names(note), vec!["Olga", "Anna"]);
+
+    owner.core().set_profile_name("Olga K").unwrap();
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    assert_eq!(anna.names(note), vec!["Olga K", "Anna"]);
+    // The note list, not only the sharing screen: this is where the stale
+    // name was being drawn.
+    let listed = anna
+        .core()
+        .notes()
+        .unwrap()
+        .into_iter()
+        .find(|summary| summary.id == note)
+        .unwrap();
+    assert_eq!(
+        listed
+            .collaborators
+            .iter()
+            .map(|person| person.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Olga K"]
+    );
+}
+
+/// A guest cannot change the owner's package, which is why the record lives in
+/// the note: they sign it with their own member key instead.
+fn a_guest_rename_reaches_the_owner_and_every_other_guest<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let mut ben = Phone::<D>::person("Ben");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    let_in(&mut relay, &mut owner, &mut ben, note);
+
+    anna.core().set_profile_name("Anna B").unwrap();
+    anna.sync(&mut relay, note);
+    owner.sync(&mut relay, note);
+    ben.sync(&mut relay, note);
+
+    assert_eq!(owner.names(note), vec!["Olga", "Anna B", "Ben"]);
+    assert_eq!(ben.names(note), vec!["Olga", "Anna B", "Ben"]);
+    assert_eq!(anna.names(note), vec!["Olga", "Anna B", "Ben"]);
+}
+
+/// A record under somebody's key has to be signed by *that* member key. Any
+/// other member can write the key, so the signature is what makes it theirs.
+fn a_name_record_signed_by_somebody_else_is_ignored<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+
+    let anna_member = anna.peek().member().unwrap();
+    let owner_member = owner.peek().member().unwrap().id();
+    let forged = easynotes_core::collaborators::sign(&anna_member, note, "Mallory", 9);
+    anna.core()
+        .apply_local(
+            note,
+            easynotes_core::crdt::Edit::SetMemberName {
+                member: owner_member,
+                record: forged,
+            },
+        )
+        .unwrap();
+    anna.sync(&mut relay, note);
+    owner.sync(&mut relay, note);
+
+    assert_eq!(owner.names(note), vec!["Olga", "Anna"]);
+}
+
+/// Two phones of one person, neither having read the other's rename, write two
+/// records for the same generation. The account document picks one name and
+/// every note follows it.
+fn two_phones_renaming_at_once_settle_on_one_name<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut phone = owner.restored();
+    phone.sync_account(&mut relay);
+    phone.sync(&mut relay, note);
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+    phone.sync_account(&mut relay);
+    phone.sync(&mut relay, note);
+
+    // Offline from each other: the account documents have not met.
+    owner.core().set_profile_name("Olga A").unwrap();
+    phone.core().set_profile_name("Olga B").unwrap();
+
+    for _ in 0..3 {
+        owner.sync_account(&mut relay);
+        phone.sync_account(&mut relay);
+        owner.sync(&mut relay, note);
+        phone.sync(&mut relay, note);
+        anna.sync(&mut relay, note);
+    }
+
+    let settled = owner.peek().profile_name().unwrap();
+    assert_eq!(phone.peek().profile_name(), Some(settled.clone()));
+    assert_eq!(anna.names(note), vec![settled.as_str(), "Anna"]);
+}
+
+/// No package, nobody else to tell: a rename on a note that was never shared
+/// writes nothing into the note.
+fn a_note_that_was_never_shared_gains_no_name_record<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let mut owner = Phone::<D>::person("Olga");
+    owner.sync_account(&mut relay);
+    let note = owner.core().create_note(NoteKind::Checklist).unwrap();
+    let before = owner.peek().store().load(note).unwrap().len();
+
+    owner.core().set_profile_name("Olga K").unwrap();
+
+    assert_eq!(owner.peek().store().load(note).unwrap().len(), before);
+    assert_eq!(owner.peek().profile_name().as_deref(), Some("Olga K"));
+}
+
+/// The share screen is opened from the grid too, where the note is not open.
+/// The name has to be right there as well, so the index keeps the names the
+/// document held when it was last read.
+fn a_rename_shows_before_the_note_is_opened<D: NoteDoc>() {
+    let mut relay = Relay::default();
+    let (mut owner, note) = shared::<D>(&mut relay, "Groceries");
+    let mut anna = Phone::<D>::person("Anna");
+    let_in(&mut relay, &mut owner, &mut anna, note);
+
+    owner.core().set_profile_name("Olga K").unwrap();
+    owner.sync(&mut relay, note);
+    anna.sync(&mut relay, note);
+
+    // The app restarted: every document is shut, and only the index is there.
+    anna.relaunch();
+    anna.core().notes().unwrap();
+    assert_eq!(anna.names(note), vec!["Olga K", "Anna"]);
 }

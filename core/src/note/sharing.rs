@@ -181,8 +181,17 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Choose the name this person's requests carry, on every device of the
-    /// account. A name already recorded in a note's package is not changed.
-    pub fn set_profile_name(&mut self, name: &str) -> Result<()> {
+    /// account, and say so in every note that already names them.
+    ///
+    /// Returns the envelopes it wrote, one per shared note, for the caller to
+    /// hand to the relay. An envelope is in that note's log before this
+    /// returns, so a caller that is offline loses nothing by dropping them.
+    ///
+    /// The name in a note's package is the owner's to write, so a guest could
+    /// never change theirs there. The note's own document carries a record each
+    /// person signs, and that is what a rename updates
+    /// ([ADR 0032](../../../docs/adr/0032-a-name-that-follows-the-person.md)).
+    pub fn set_profile_name(&mut self, name: &str) -> Result<Vec<(NoteId, Vec<u8>)>> {
         if !self.has_account() {
             return Err(CoreError::NoAccount);
         }
@@ -190,9 +199,124 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         if name.is_empty() {
             return Err(CoreError::NoProfileName);
         }
+        // A new generation, so a device that has not read this rename yet
+        // cannot overwrite the record with the name it still holds.
+        let seq = self.placements.profile_seq + 1;
         self.apply_account(AccountEdit::SetProfileName {
             name: name.to_string(),
-        })
+            seq,
+        })?;
+        self.rewrite_names()
+    }
+
+    /// Put the new name into every shared note this device holds. Notes it
+    /// opened for this are closed again: a rename is rare, keeping every shared
+    /// note open is not.
+    fn rewrite_names(&mut self) -> Result<Vec<(NoteId, Vec<u8>)>> {
+        let mut written = Vec::new();
+        for id in self.store.notes()? {
+            if self.is_account(id) || self.ledger(id)?.current().is_none() {
+                continue;
+            }
+            if self.keyring.note_key(id)?.is_none() {
+                continue;
+            }
+            let was_open = self.open.contains_key(&id);
+            match self.ensure_open(id) {
+                Ok(()) => {
+                    if let Some(envelope) = self.refresh_name(id)? {
+                        written.push((id, envelope));
+                    }
+                }
+                // A package that does not let this device in yet, or a note it
+                // cannot read, gets its record when it opens.
+                Err(CoreError::AccessPending | CoreError::UnknownNote(_)) => continue,
+                Err(e) => return Err(e),
+            }
+            if !was_open {
+                self.open.remove(&id);
+            }
+        }
+        Ok(written)
+    }
+
+    /// Write this person's current name into `id`'s document when the record
+    /// there is missing or from an earlier rename. Returns the envelope to
+    /// send, if it wrote one.
+    pub(super) fn refresh_name(&mut self, id: NoteId) -> Result<Option<Vec<u8>>> {
+        let Some((member, record)) = self.name_record_to_write(id)? else {
+            return Ok(None);
+        };
+        self.apply_local(id, Edit::SetMemberName { member, record })
+            .map(Some)
+    }
+
+    fn name_record_to_write(&self, id: NoteId) -> Result<Option<(AuthorKey, String)>> {
+        let Some(name) = self.profile_name() else {
+            return Ok(None);
+        };
+        let Ok(member) = self.member() else {
+            return Ok(None);
+        };
+        let ledger = self.ledger(id)?;
+        let Some(list) = self.current_list(&ledger)? else {
+            // Never shared: nobody reads a name off it but its owner, and the
+            // first package will carry the current one.
+            return Ok(None);
+        };
+        let Some(on_list) = list.values().find(|m| m.member == member.id()) else {
+            return Ok(None);
+        };
+        let Some(note) = self.open.get(&id) else {
+            return Ok(None);
+        };
+        let seq = self.placements.profile_seq;
+        let current = note
+            .doc
+            .member_names()
+            .into_iter()
+            .find(|(written, _)| *written == member.id())
+            .and_then(|(_, raw)| crate::collaborators::read(&raw, id, member.id()));
+        let write = match current {
+            Some(record) => record.is_behind(&name, seq),
+            // No record yet: one is only needed when the package's name (the
+            // one they joined under) is already out of date.
+            None => on_list.name != name,
+        };
+        Ok(write.then(|| {
+            (
+                member.id(),
+                crate::collaborators::sign(&member, id, &name, seq),
+            )
+        }))
+    }
+
+    /// The names a note's document holds for its people, verified. While the
+    /// note is not open, the names the index recorded when it last was — those
+    /// came through this same check, on their way into the note list.
+    fn name_records(&self, id: NoteId) -> BTreeMap<AuthorKey, String> {
+        if let Some(note) = self.open.get(&id) {
+            return note
+                .doc
+                .member_names()
+                .into_iter()
+                .filter_map(|(member, raw)| {
+                    crate::collaborators::read(&raw, id, member).map(|record| (member, record.name))
+                })
+                .collect();
+        }
+        self.index
+            .get(&id)
+            .map(|entry| {
+                entry
+                    .collaborators
+                    .iter()
+                    .filter_map(|person| {
+                        Some((AuthorKey::decode(&person.id)?, person.name.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     // -- what is stored -----------------------------------------------------
@@ -902,6 +1026,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             out.then(built);
         }
         self.settle_intents(id)?;
+        // A rename that happened on another phone of this account reaches the
+        // note through the account document, and this is where this device
+        // notices it has a record to bring up to date. Not while a removal is
+        // waiting: the note is still under the key the removed person holds.
+        if !holding && self.open.contains_key(&id) {
+            if let Some(envelope) = self.refresh_name(id)? {
+                out.envelopes.push(envelope);
+            }
+        }
         // A package that only adds people changes no key and so no document,
         // but it changes who a search can find the note by.
         if self.open.contains_key(&id)
@@ -948,6 +1081,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .collect();
         let list = self.current_list(&ledger)?;
         let shared = list.as_ref().is_some_and(|l| l.values().any(|m| !m.owner));
+        let names = self.name_records(id);
         let mut people: Vec<Person> = match list {
             Some(list) => list.into_values().collect(),
             None => match (&record, self.member()) {
@@ -966,7 +1100,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             removing: removing.contains(&m.membership()),
             me: Some(m.member) == me,
             owner: m.owner,
-            name: m.name,
+            // One's own name is the one the account document holds: it is what
+            // a record here would say, and it is right even on a note this
+            // device has not opened.
+            name: if Some(m.member) == me {
+                self.profile_name().unwrap_or(m.name)
+            } else {
+                names.get(&m.member).cloned().unwrap_or(m.name)
+            },
         })
         .collect();
         people.sort_by(|a, b| {
@@ -999,6 +1140,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     pub fn collaborators(&self, id: NoteId) -> Result<Vec<crate::collaborators::Collaborator>> {
         let me = self.member().ok().map(|m| m.id());
         let ledger = self.ledger(id)?;
+        let names = self.name_records(id);
         let mut people: Vec<_> = self
             .current_list(&ledger)?
             .unwrap_or_default()
@@ -1006,7 +1148,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .filter(|m| Some(m.member) != me)
             .map(|m| crate::collaborators::Collaborator {
                 id: m.member.encode(),
-                name: m.name,
+                name: names.get(&m.member).cloned().unwrap_or(m.name),
             })
             .collect();
         people.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.name.cmp(&b.name)));

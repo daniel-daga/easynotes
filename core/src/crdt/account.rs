@@ -128,6 +128,11 @@ const REMOVED: &str = "removed:";
 /// The name this person's requests carry. One register, so every device of
 /// the account asks to join under the same one.
 const PROFILE_NAME: &str = "profile:name";
+/// Which rename the name above belongs to ([ADR
+/// 0032](../../../docs/adr/0032-a-name-that-follows-the-person.md)). It
+/// advances on every rename, so a device that has not yet read a rename knows
+/// it is behind and does not overwrite what the note now says.
+const PROFILE_SEQ: &str = "profile:seq";
 /// A reminder's scalar fields. Reminders deliberately have no container: two
 /// devices may create or amend them at once, so they follow the account
 /// document's flat-register rule.
@@ -385,6 +390,8 @@ pub struct AccountView {
     pub settings: BTreeMap<String, String>,
     /// The name this person shares under, once they have chosen one.
     pub profile_name: Option<String>,
+    /// Which rename `profile_name` belongs to. Zero until the first one.
+    pub profile_seq: u64,
 }
 
 impl AccountView {
@@ -578,9 +585,10 @@ pub enum AccountEdit {
         note: NoteId,
         invite: InviteId,
     },
-    /// The name this person shares under.
+    /// The name this person shares under, and which rename it is.
     SetProfileName {
         name: String,
+        seq: u64,
     },
     /// Create or amend all fields in one CRDT transaction. The individual
     /// fields are registers so independent concurrent amendments survive.
@@ -808,9 +816,10 @@ impl AccountEdit {
                 (note_key_key(*note), None),
                 (removed_key(*note, *invite), Some(Value::Bool(true))),
             ],
-            AccountEdit::SetProfileName { name } => {
-                vec![(PROFILE_NAME.to_string(), Some(Value::Str(name.clone())))]
-            }
+            AccountEdit::SetProfileName { name, seq } => vec![
+                (PROFILE_NAME.to_string(), Some(Value::Str(name.clone()))),
+                (PROFILE_SEQ.to_string(), Some(Value::Str(seq.to_string()))),
+            ],
             AccountEdit::SetReminder { reminder } => vec![
                 (
                     reminder_key(reminder.id, REMINDER_NOTE),
@@ -1093,6 +1102,12 @@ pub fn view_of(entries: impl IntoIterator<Item = (String, Value)>) -> AccountVie
             if let Value::Str(name) = value {
                 let name = crate::access::clip_name(&name);
                 view.profile_name = (!name.is_empty()).then(|| name.to_string());
+            }
+            continue;
+        }
+        if key == PROFILE_SEQ {
+            if let Value::Str(seq) = value {
+                view.profile_seq = seq.parse().unwrap_or(0);
             }
             continue;
         }

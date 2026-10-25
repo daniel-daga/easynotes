@@ -1032,6 +1032,47 @@ void main() {
     );
 
     test(
+      'a rename reaches the other person in both directions',
+      () async {
+        final (owner, a, noteId) = await owned();
+        await a.setTitle('Groceries');
+        final (guest, _) = await share(owner, noteId);
+
+        // The owner renames. The guest's list must stop showing the name the
+        // note was shared under.
+        await owner.setProfileName('Olga K');
+        await _untilNotes(
+          guest.watchNotes(),
+          (notes) => notes.any(
+            (n) =>
+                n.id == noteId &&
+                n.collaborators.any((c) => c.name == 'Olga K'),
+          ),
+          'the guest kept the name the note was shared under',
+        );
+
+        // And a guest cannot change the owner's package, so this way round has
+        // to work through the note itself.
+        await guest.setProfileName('Anna B');
+        await _untilNotes(
+          owner.watchNotes(),
+          (notes) => notes.any(
+            (n) =>
+                n.id == noteId &&
+                n.collaborators.any((c) => c.name == 'Anna B'),
+          ),
+          'the owner kept the name the guest joined under',
+        );
+
+        // The sharing screen reads the same records as the list.
+        expect(owner.people(noteId).people.map((p) => p.name), [
+          'Olga K',
+          'Anna B',
+        ]);
+      },
+    );
+
+    test(
       'deleting an account purges the lists it owns: the guest keeps '
       'a copy that no longer syncs, and the device starts again empty',
       () async {

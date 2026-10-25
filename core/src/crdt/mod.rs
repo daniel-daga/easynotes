@@ -231,6 +231,17 @@ pub enum Edit {
     RemoveAttachment {
         id: AttachmentId,
     },
+    /// A person's current name, signed by their own member key
+    /// ([ADR 0032](../../docs/adr/0032-a-name-that-follows-the-person.md)).
+    ///
+    /// Shared content, like the title: a rename has to reach everybody the
+    /// package named, and only a record that travels with the note can do that
+    /// without the owner republishing for somebody else's name.
+    SetMemberName {
+        member: crate::crypto::AuthorKey,
+        /// [`crate::collaborators::sign`]'s output, already encoded.
+        record: String,
+    },
 }
 
 /// An item as [`Edit::ToChecklist`] adds, with its order key already worked out.
@@ -314,6 +325,11 @@ pub trait NoteDoc: Sized {
 
     fn view(&self) -> NoteView;
 
+    /// Every member name record this document holds, as written, keyed by the
+    /// member it belongs to. Verification is the caller's, because it needs
+    /// the note ID and the member's key.
+    fn member_names(&self) -> Vec<(crate::crypto::AuthorKey, String)>;
+
     /// Every attachment object this document still names, or `None` when one
     /// of its descriptors does not say: see [`live_objects`].
     fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>>;
@@ -347,6 +363,21 @@ pub(crate) fn attachment_key(id: AttachmentId) -> String {
 
 pub(crate) fn parse_attachment_key(key: &str) -> Option<AttachmentId> {
     AttachmentId::decode(key.strip_prefix("a:")?).ok()
+}
+
+/// The root key one person's name record hangs off. `n:` cannot occur in an
+/// item ID — `:` is not base64url — so an item and a name record can share the
+/// root without either being mistaken for the other.
+pub(crate) fn name_key(member: crate::crypto::AuthorKey) -> String {
+    format!("n:{}", member.encode())
+}
+
+pub(crate) fn parse_name_key(key: &str) -> Option<crate::crypto::AuthorKey> {
+    let raw = key.strip_prefix("n:")?;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let bytes: [u8; 32] = URL_SAFE_NO_PAD.decode(raw).ok()?.try_into().ok()?;
+    Some(crate::crypto::AuthorKey(bytes))
 }
 
 /// The fields of an attachment's map. Shared so the two backends cannot spell

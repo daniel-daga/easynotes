@@ -14,8 +14,8 @@
 
 use super::attachment_fields as field;
 use super::{
-    attachment_key, attachment_view, live_objects, parse_attachment_key, sort_attachments,
-    sort_items, splice, Colour, Edit, ItemView, NoteDoc, NoteKind, NoteView,
+    attachment_key, attachment_view, live_objects, name_key, parse_attachment_key, parse_name_key,
+    sort_attachments, sort_items, splice, Colour, Edit, ItemView, NoteDoc, NoteKind, NoteView,
 };
 use crate::attachment::Media;
 use crate::error::{CoreError, Result};
@@ -246,6 +246,10 @@ impl NoteDoc for YrsNote {
                         }
                     }
                 }
+                Edit::SetMemberName { member, record } => {
+                    self.root
+                        .insert(&mut txn, name_key(*member), record.as_str());
+                }
             }
         }
         self.take_pending()
@@ -332,6 +336,20 @@ impl NoteDoc for YrsNote {
             attachments,
             retired_attachments,
         }
+    }
+
+    fn member_names(&self) -> Vec<(crate::crypto::AuthorKey, String)> {
+        let txn = self.doc.transact();
+        self.root
+            .iter(&txn)
+            .filter_map(|(key, value)| {
+                let member = parse_name_key(key)?;
+                match value {
+                    Out::Any(Any::String(record)) => Some((member, record.to_string())),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     fn live_media(&self) -> Option<Vec<crate::ids::MediaObjectId>> {
