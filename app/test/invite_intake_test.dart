@@ -7,15 +7,17 @@
 library;
 
 import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/main.dart';
+import 'package:easynotes/ui/invites.dart' show invitePollInterval;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _secret = 'ASRciIVJtU8m60KIfMaTLg1HrJI9dhPOzsPW5gQdPigp';
-const _access = 'Zm9vYmFyLXJlbGF5LWtleQ';
+const _access = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const _relay = 'https://sync.example.com';
 const _params = 'relay=$_relay;access=$_access';
 const _link = 'easynotes://join#$_params#$_secret';
@@ -129,6 +131,61 @@ void main() {
       ),
       findsNothing,
     );
+  });
+
+  testWidgets('a first-time joiner can finish from the copy alone', (
+    tester,
+  ) async {
+    final (session, _) = await pumpApp(tester, link: _link, account: false);
+    expect(find.text('One step before you join'), findsOneWidget);
+
+    // The copy says to create the twelve words; that is the only account step.
+    await tester.tap(find.byKey(const Key('create-account-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Save these twelve words'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('phrase-written')),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.byKey(const Key('phrase-written')));
+    await tester.pumpAndSettle();
+    for (var i = 1; i <= FakeNoteLibrary.phrase.length; i++) {
+      final field = find.byKey(Key('check-word-$i'));
+      if (field.evaluate().isNotEmpty) {
+        await tester.enterText(field, FakeNoteLibrary.phrase[i - 1]);
+      }
+    }
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('check-confirm')),
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.byKey(const Key('check-confirm')));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    // The name people on the note see, then the join itself.
+    expect(find.byKey(const Key('profile-name-field')), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('profile-name-field')), 'Bea');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('profile-name-save')));
+    await tester.pumpAndSettle();
+    expect(find.text('Open this shared note?'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('join-confirm')));
+    await tester.pump();
+    expect(find.byKey(const Key('join-waiting')), findsOneWidget);
+
+    // The owner's device answers, and the note opens.
+    (session.library as FakeNoteLibrary).fakeAnswer(
+      _secret,
+      JoinState.joined,
+    );
+    await tester.pump(invitePollInterval);
+    await tester.pumpAndSettle();
+    expect(find.text('Shared list'), findsWidgets);
   });
 
   testWidgets('a link that arrived during onboarding waits for it', (
