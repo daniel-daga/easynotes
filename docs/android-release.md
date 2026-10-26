@@ -145,9 +145,19 @@ The same install, update and downgrade sequence, from `0.1.0` through `0.1.2`,
 had run on the `Medium_Phone` x86_64 emulator (Android 16 / API 36) on
 2026-10-22.
 
+A two-device sharing run on **2026-10-26** used a Pixel 10 Pro and an iPad.
+Share, join, the shared colour, attachment add/remove and revoke passed. Live
+collaboration still needs polish, offline edits were not tried, and deleting
+the guest's account left it in the owner's People list. The build, OS versions
+and relay operator were not recorded, and an iPad is not a second Android
+phone, so this is **not** gate item 2.
+[`two-phone-run-2026-10-26.md`](two-phone-run-2026-10-26.md) records it, and
+[#63](https://github.com/daniel-daga/easynotes/issues/63) tracks the two-Android
+rerun.
+
 This is not the whole app working. The sharing journey — share, join, offline
 edits, revoke, attachments and account deletion — still has to pass on two
-physical phones against a TLS relay, and no draft has been published or
+physical Android phones against a TLS relay, and no draft has been published or
 uploaded to Play. That is launch gate item 2; publishing and the Play upload
 are also still open. See the [production readiness
 report](production-readiness-2026-09-30.md#launch-gate-updated).

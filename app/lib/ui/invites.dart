@@ -864,10 +864,17 @@ class _JoinDialogState extends State<JoinDialog> {
     // device is not on cannot be joined from here: the request would be posted
     // to the wrong server. The app moves the device over and brings the link
     // back, so this is one step, not a trip to settings.
+    // A tapped link has been through the app already, which settled its relay
+    // before showing this dialog. Handing it off again would only bring the
+    // same dialog back, and a disagreement about the relay would loop.
     final named = relayFromInvite(link);
     if (named != null &&
+        widget.initialLink == null &&
         widget.onHandOff != null &&
         !_isCurrentRelay(named.url)) {
+      debugPrint(
+        'join: handing off ${named.url} (this device: ${widget.profile?.url})',
+      );
       Navigator.of(context).pop();
       widget.onHandOff!(link);
       return;

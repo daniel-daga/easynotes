@@ -86,8 +86,12 @@ To distribute externally:
 
 ### 5. Run the hardware walkthrough on two iPhones
 
-The Android side is still owed the same thing; for iOS it has never been run at
-all. Repeat the release gate on two physical iPhones against a TLS relay:
+The Android side is still owed the same thing. On **2026-10-26** one iPad
+completed share, join, the shared colour, attachment add/remove and revoke
+against a TLS relay, but live collaboration still needs polish, offline edits
+were not tried, and deleting the guest's account left it in the owner's People
+list. That is a useful partial data point, not the walkthrough. Repeat the
+release gate on two physical iPhones against a TLS relay:
 
 share → join → concurrent and offline edits → revoke → attachment add and
 remove (camera, gallery, large file on mobile data, background kill mid-upload)
@@ -95,6 +99,7 @@ remove (camera, gallery, large file on mobile data, background kill mid-upload)
 and build. The camera string in `Info.plist` currently mentions only the QR
 transfer, so confirm the attachment flows do not hit the camera without a
 matching purpose string (attachments use the document picker, not the camera).
+See [`two-phone-run-2026-10-26.md`](two-phone-run-2026-10-26.md).
 
 ### 6. Publish
 

@@ -465,6 +465,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
   Future<void> _takeInvite(String link) async {
     if (!mounted) return;
     final relay = relayFromInvite(link);
+    debugPrint(
+      'join: link names ${relay?.url} (this device: ${_session.profile.url})',
+    );
     if (relay != null && !await _settleRelay(relay)) return;
     if (!mounted) return;
     // Cleared first, so that the same link delivered twice still shows: the
