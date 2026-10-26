@@ -105,6 +105,11 @@ test-app:
     # gone and a dlopen that can only say `error code 126`.
     cd app && EASYNOTES_NATIVE_LIB='{{native_lib}}' EASYNOTES_RELAY_BIN='{{relay_bin}}' flutter test
 
+# Exercises the NAS update script's control flow with a stub Docker. Builds and
+# starts nothing; it copies update.sh into throwaway trees under the temp dir.
+test-update-script:
+    sh deploy/synology/test-update.sh
+
 # Does the web build run in a browser and keep what it is given?
 #
 # Builds nothing: run `just build-web` first. It needs `playwright-core`, which
