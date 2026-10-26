@@ -66,9 +66,10 @@ this:
   before listing items and their ticks.
 
 Deleting all of an item's text removes the row; if a field is emptied and then
-typed into, the app can log `Unhandled Exception: unknown item <id>`. The
-script appends to existing text instead of clearing it, which is also what a
-person adding a word does.
+typed into, the app can log `Unhandled Exception: unknown item <id>`
+([#64](https://github.com/daniel-daga/easynotes/issues/64)). The script appends
+to existing text instead of clearing it, which is also what a person adding a
+word does.
 
 ## Evidence from 2026-10-26
 
