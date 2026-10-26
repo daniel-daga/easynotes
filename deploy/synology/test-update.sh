@@ -364,4 +364,51 @@ LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
         echo "scenario 24 failed:"; cat "$root/out"; exit 1; }
 grep -q 'build web' "$root/log"
 
+# Scenario 25: an inline comment after a profile.
+root=$work/v1-profile-comment
+make_tree "$root"
+printf 'COMPOSE_PROFILES=web # browser app\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 25 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 26: an inline comment after a quoted profile.
+root=$work/v1-quoted-profile-comment
+make_tree "$root"
+printf "COMPOSE_PROFILES='web' # browser app\n" >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 26 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 27: an inline comment after a profile list.
+root=$work/v1-list-comment
+make_tree "$root"
+printf 'COMPOSE_PROFILES=debug,web # browser app\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 27 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 28: an inline comment after an export line.
+root=$work/v1-export-comment
+make_tree "$root"
+printf 'export COMPOSE_PROFILES=web # browser app\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 28 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 29: an exported empty value overrides .env and means no profile.
+root=$work/v1-empty-export-profile
+make_tree "$root"
+printf 'COMPOSE_PROFILES=web\n' >> "$root/.env"
+COMPOSE_PROFILES= LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 29 failed:"; cat "$root/out"; exit 1; }
+if grep -q 'build web' "$root/log"; then
+    echo "scenario 29: exported empty profile did not override .env"; exit 1
+fi
+
 echo "update.sh tests passed"
