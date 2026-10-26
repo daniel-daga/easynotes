@@ -517,7 +517,8 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     } on SyncSetupCancelled {
       return false;
     } on Object catch (error) {
-      _say('Could not open the note: $error');
+      debugPrint('join: could not switch to $target: $error');
+      _say('Could not open the note. Ask for a new link.');
       return false;
     }
   }
