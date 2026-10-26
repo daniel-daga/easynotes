@@ -251,7 +251,7 @@ file refuses to start without both.
 ## Documentation
 
 - [Design document](docs/design.md) — product and architecture
-- [Market position](docs/market-report.md) — competitors, and where EasyNotes fits
+- [Launch copy](docs/launch-copy.md) — the buyer and partner voices, and the public comparison
 - [Production readiness report](docs/production-readiness-2026-09-30.md)
 - [Security policy](SECURITY.md) and [crypto review](docs/crypto-review.md)
 - [Synology deployment](deploy/synology/README.md)
