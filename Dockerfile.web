@@ -12,6 +12,11 @@ ARG WASM_BINDGEN_VERSION=0.2.128
 ARG RUST_NIGHTLY=nightly-2026-10-24
 ARG WASM_PACK_VERSION=0.15.0
 ARG FLUTTER_SHA256=2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb
+ARG BINARYEN_VERSION=117
+ARG BINARYEN_SHA256=3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212
+# wasm-pack's cache directory is a hash of its binaryen download URL. It moves
+# with WASM_PACK_VERSION or BINARYEN_VERSION.
+ARG BINARYEN_CACHE=wasm-opt-1ceaaea8b7b5f7e0
 
 WORKDIR /src
 
@@ -47,6 +52,20 @@ RUN rustup toolchain install "${RUST_NIGHTLY}" --profile minimal --component rus
 # wasm-bindgen matches `just setup-web`.
 RUN cargo install wasm-pack --version "${WASM_PACK_VERSION}" --locked \
  && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
+
+# wasm-pack downloads binaryen with its own HTTP client when it first builds.
+# That is another network dependency on every source change and, behind a
+# proxy, fails where curl succeeds (CLAUDE.md). Seed the cache it looks in so
+# the app build below needs no download of its own.
+RUN set -eux; \
+    curl -fsSL -o /tmp/binaryen.tar.gz \
+        "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"; \
+    echo "${BINARYEN_SHA256}  /tmp/binaryen.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/binaryen.tar.gz -C /tmp; \
+    mkdir -p "/root/.cache/.wasm-pack/${BINARYEN_CACHE}/bin"; \
+    cp "/tmp/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" \
+        "/root/.cache/.wasm-pack/${BINARYEN_CACHE}/bin/wasm-opt"; \
+    rm -rf /tmp/binaryen.tar.gz "/tmp/binaryen-version_${BINARYEN_VERSION}"
 
 # Manifests first, so these expensive layers change only with the workspace or
 # the lockfile. Cargo loads every workspace member, so these paths track the
