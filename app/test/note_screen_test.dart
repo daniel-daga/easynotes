@@ -555,6 +555,33 @@ void main() {
     expect(visibleItems(tester), ['bread']);
   });
 
+  testWidgets('backspace past empty removes the row under a queued write '
+      'without an unhandled exception', (tester) async {
+    final core = _SlowAddCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(Key('text:$id'));
+
+    await tester.showKeyboard(field);
+    await tester.pumpAndSettle();
+
+    // A keystroke is on its way to the core when the text is cleared.
+    await tester.enterText(field, 'milk and');
+    await tester.enterText(field, '');
+    // Backspace on empty removes the row, out from under the write.
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.enterText(field, 'bread');
+    await tester.pumpAndSettle(const Duration(milliseconds: 50));
+
+    expect(core.edits, contains('removeItem($id)'));
+    expect(core.current.items, isEmpty);
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'a write for a row that is gone has nothing left to say',
+    );
+  });
+
   group('sharing', () {
     setUp(() => invitePollInterval = const Duration(milliseconds: 100));
     tearDown(() => joinAlerts = null);

@@ -190,6 +190,19 @@ void main() {
         expect(core.current.items.map((i) => i.text), ['eggs (12)']);
       });
 
+      test('a text write for a removed item says so by name', () async {
+        final core = await openInTempDir();
+        final milk = await core.addItem('milk');
+        await core.removeItem(milk);
+
+        // What a keystroke queued behind a backspace removal meets. The screen
+        // tells it apart from any other refusal by name and drops the write.
+        await expectLater(
+          core.editItemText(milk, 'milk', 'milk and'),
+          throwsA(isA<UnknownItemException>()),
+        );
+      });
+
       test('moving an item lands it where the UI asked', () async {
         final core = await openInTempDir();
         await core.addItem('one');

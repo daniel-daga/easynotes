@@ -18,6 +18,21 @@ import 'dart:typed_data';
 import 'note_view.dart';
 import 'sync_status.dart';
 
+/// A text write's refusal when the item it names is no longer in the note.
+///
+/// The UI can meet this without anything being wrong: a write may still be on
+/// its way when the row it was typed in is removed, as holding backspace past
+/// empty does. A caller that can tell it raced a removal treats this as "the
+/// row is already gone" and drops the write.
+class UnknownItemException implements Exception {
+  const UnknownItemException(this.itemId);
+
+  final String itemId;
+
+  @override
+  String toString() => 'unknown item $itemId';
+}
+
 abstract class NoteCore {
   /// The current view, then every subsequent one. Emits immediately on listen.
   Stream<NoteView> watch();

@@ -101,8 +101,20 @@ class RustNoteCore implements NoteCore {
       _note.setItemText(item: itemId, text: text);
 
   @override
-  Future<int> editItemText(String itemId, String from, String to) =>
-      _note.editItemText(item: itemId, from: from, to: to);
+  Future<int> editItemText(String itemId, String from, String to) async {
+    try {
+      return await _note.editItemText(item: itemId, from: from, to: to);
+    } on String catch (message) {
+      // A remove can overtake a keystroke already on its way, and the core
+      // answers for a row it no longer holds. The note API hands the core's
+      // words back as a plain string, so give that one refusal a name the
+      // screen can know.
+      if (message == 'unknown item $itemId') {
+        throw UnknownItemException(itemId);
+      }
+      rethrow;
+    }
+  }
 
   @override
   Future<void> setChecked(String itemId, bool checked) =>

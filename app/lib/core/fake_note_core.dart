@@ -359,7 +359,7 @@ class FakeNoteCore implements NoteCore {
 
   _Item _find(String id) => _items.firstWhere(
     (i) => i.id == id,
-    orElse: () => throw StateError('no item $id'),
+    orElse: () => throw UnknownItemException(id),
   );
 
   String _nextId() => 'item-${_counter++}';

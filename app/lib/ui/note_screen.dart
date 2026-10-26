@@ -1773,6 +1773,12 @@ class _ItemRowState extends State<_ItemRow> {
         _lastWritten = next;
         next = _queuedText;
       }
+    } on UnknownItemException {
+      // The row was removed while this write was still on its way — holding
+      // backspace past empty does exactly that. There is nothing left to type
+      // into, so drop the write and whatever was queued behind it instead of
+      // letting it escape as an unhandled exception.
+      _queuedText = null;
     } finally {
       _writing = false;
       _writeDone = null;
