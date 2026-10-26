@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
@@ -559,6 +558,19 @@ abstract class Note implements RustOpaqueInterface {
   /// views newer than it.
   Future<int> editBody({required String from, required String to});
 
+  /// Set an item's text from the field's own edit: the text it was showing
+  /// and the text it shows now. Replayed onto what the item says by the time
+  /// it arrives, so typing in the same item as somebody else keeps both
+  /// people's words.
+  ///
+  /// Returns the revision the edit landed at, like
+  /// [`set_item_text`](Self::set_item_text).
+  Future<int> editItemText({
+    required String item,
+    required String from,
+    required String to,
+  });
+
   String id();
 
   /// Attach a file handed over whole: a tab's picked file, or a photo in
@@ -955,8 +967,9 @@ class NoteSummaryView {
   final int items;
   final int checked;
 
-  /// The first few lines of the body, then the first few items. A card shows
-  /// these under the title, and most shopping lists do not have one.
+  /// The first few lines of the body, then the first few items still to do.
+  /// A card shows these under the title, and most shopping lists do not have
+  /// one. Crossed-off items are left out.
   final List<String> preview;
 
   /// How many live pictures and sound files the note holds, for a card to

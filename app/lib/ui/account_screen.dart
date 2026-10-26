@@ -806,14 +806,18 @@ class _DeleteAccountDialogState extends State<DeleteAccountDialog> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Lists other people shared with you stay theirs. They are '
-                'removed from this device only.',
+                'Lists other people shared with you stay theirs. When their '
+                'owner next syncs, you are removed from each one: your name '
+                'leaves their People list and the list key changes, so this '
+                'account cannot open them again. Your past edits stay part of '
+                'those lists.',
               ),
               if (widget.hasAccount) ...[
                 const SizedBox(height: 8),
                 const Text(
-                  'Your other devices keep their copies until you delete the '
-                  'account there too.',
+                  'Your other devices keep their copies of lists you own until '
+                  'you delete the account there too. Lists you joined are '
+                  'removed from every device when the owner next syncs.',
                 ),
               ],
               const SizedBox(height: 8),

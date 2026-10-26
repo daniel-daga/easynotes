@@ -655,7 +655,6 @@ async fn disconnecting_leaves_the_app_working() {
 fn quick() -> Pacing {
     Pacing {
         quiet: Duration::from_millis(300),
-        min_interval: Duration::ZERO,
         max_hold: Duration::from_secs(60),
     }
 }
@@ -665,7 +664,6 @@ fn quick() -> Pacing {
 fn never() -> Pacing {
     Pacing {
         quiet: Duration::from_secs(3600),
-        min_interval: Duration::ZERO,
         max_hold: Duration::from_secs(3600),
     }
 }
@@ -739,7 +737,6 @@ async fn typing_that_never_pauses_still_goes_at_the_cap() {
         &endpoint,
         Pacing {
             quiet: Duration::from_secs(3600),
-            min_interval: Duration::ZERO,
             max_hold: Duration::from_millis(500),
         },
     );
@@ -762,15 +759,16 @@ async fn typing_that_never_pauses_still_goes_at_the_cap() {
     );
 }
 
+/// Two pauses in a row each send. There is no spacing between automatic
+/// batches: a person's own rhythm is not a burst to be bundled (issue 62).
 #[tokio::test]
-async fn automatic_typing_batches_respect_minimum_spacing() {
+async fn each_pause_sends_without_waiting_for_spacing() {
     let (_relay, log, endpoint) = relay().await;
     let mut a = App::owner("A");
     a.connect_paced(
         &endpoint,
         Pacing {
-            quiet: Duration::from_millis(20),
-            min_interval: Duration::from_millis(400),
+            quiet: Duration::from_millis(100),
             max_hold: Duration::from_secs(2),
         },
     );
@@ -780,9 +778,8 @@ async fn automatic_typing_batches_respect_minimum_spacing() {
     a.type_into(item, "first");
     wait_for_head(&log, a.note, 2).await;
 
+    // Straight into the next pause, with nothing holding it back.
     a.type_into(item, "second");
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(log.head(&a.note.encode()).await.unwrap(), 2);
     wait_for_head(&log, a.note, 3).await;
 }
 

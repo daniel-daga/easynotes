@@ -16,9 +16,13 @@ that stores and forwards ciphertext and nothing else.
 > **Status: not production-ready.** Slices 1 and 2 are complete, and
 > attachments work on native and on the web. Android has been built and
 > exercised on a Pixel 10 Pro, where the signed `v0.1.5` draft installs, updates
-> and restores from the recovery phrase; none of the drafts up to `v0.1.5` has
-> been published, and the two-phone sharing journey is open. iOS builds upload
-> to TestFlight but have not run on a device. See the
+> and restores from the recovery phrase; none of the drafts up to `v0.1.6` has
+> been published, and the two-phone sharing journey is open. A Pixel 10 Pro +
+> iPad run passed share, join, shared colour, attachments and revoke, but live
+> collaboration needs polish, offline edits are unrun, and account deletion
+> leaves a stale guest ([record](docs/two-phone-run-2026-10-26.md)). iOS builds
+> upload to TestFlight; the iPad run is a partial device data point, not the iOS
+> hardware walkthrough. See the
 > [production readiness report](docs/production-readiness-2026-09-30.md),
 > [`docs/slice-02-results.md`](docs/slice-02-results.md) and
 > [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
@@ -40,7 +44,9 @@ that stores and forwards ciphertext and nothing else.
   [ADR 0025](docs/adr/0025-links-that-let-people-in.md)).
 - **Sharing with people, not phones** — a collaborator is an account, so one
   person's several devices are one entry, and revocation rotates the note key
-  ([ADR 0023](docs/adr/0023-access-packages.md)).
+  ([ADR 0023](docs/adr/0023-access-packages.md)). A rename reaches every note
+  the person is on, in either direction, because each member signs their own
+  name into the note ([ADR 0032](docs/adr/0032-a-name-that-follows-the-person.md)).
 - **Personal placement**: labels, pins, archive and trash are private to each
   device's account document; a colour is shared with everyone on the note, since
   two people looking at one list should see it the same shade (see the 2026-10-24
@@ -57,7 +63,7 @@ that stores and forwards ciphertext and nothing else.
   account document ([ADR 0013](docs/adr/0013-recovery-phrase.md)).
 - **Sync is one decision** — a sync server and the account that belongs to it
   are set up together; a local profile has neither. Without sync, notes stay on
-  the device and are not backed up ([ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md)).
+  the device and are not backed up ([ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md)).
 - **Permanent deletion** of notes from the log, snapshot, index and key
   ([ADR 0010](docs/adr/0010-forgetting-a-note.md)).
 - **Self-hostable relay** with storage quotas, per-address rate limits,
@@ -89,7 +95,7 @@ make it readable on another device. The relay cannot read it, and neither can
 its operator. Without sync, a profile stays on this device and is not backed
 up. An operator's database dump is disaster recovery for the relay, not a user
 backup — without the account phrase it is ciphertext nobody can open. See
-[ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md) and
+[ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md) and
 [ADR 0013](docs/adr/0013-recovery-phrase.md).
 
 ### Repository layout
@@ -229,6 +235,7 @@ file refuses to start without both.
 ## Documentation
 
 - [Design document](docs/design.md) — product and architecture
+- [Market position](docs/market-report.md) — competitors, and where EasyNotes fits
 - [Production readiness report](docs/production-readiness-2026-09-30.md)
 - [Security policy](SECURITY.md) and [crypto review](docs/crypto-review.md)
 - [Synology deployment](deploy/synology/README.md)
@@ -268,7 +275,10 @@ file refuses to start without both.
 | [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
 | [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet |
 | [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
-| [ADR 0031](docs/adr/0031-sync-is-a-server-and-an-account.md) | Sync is a server and the account that belongs to it: one setup, no upload before the account, and what "backup" means |
+| [ADR 0030](docs/adr/0030-a-link-lets-its-first-person-in.md) | A link lets its first person in, without the owner's phone: the invite carries a pre-sealed grant |
+| [ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md) | Sync is a server and the account that belongs to it: one setup, no upload before the account, and what "backup" means |
+| [ADR 0032](docs/adr/0032-a-name-that-follows-the-person.md) | A name that follows the person: each member signs their own name into the note, so a rename reaches collaborators both ways |
+| [ADR 0034](docs/adr/0034-leaving-on-account-deletion.md) | A guest leaves when their account is deleted: a signed record in each joined note, a removal and a key rotation on the owner's next sync |
 
 ## Reporting a vulnerability
 

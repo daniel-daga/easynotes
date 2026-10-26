@@ -131,6 +131,20 @@ fn a_search_finds_an_item_the_card_does_not_show<D: NoteDoc>() {
     );
 }
 
+/// Crossing an item off takes it off the card, not out of the note: it is still
+/// there under "Crossed off", and a search still finds it.
+fn a_search_finds_a_crossed_off_item<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    let id = core.create_note(NoteKind::Checklist).unwrap();
+    let (milk, _) = core.add_item(id, "milk").unwrap();
+    core.set_checked(id, milk, true).unwrap();
+
+    let hits = core.search("milk").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].matched, "milk");
+    assert!(!hits[0].summary.preview.contains(&"milk".to_string()));
+}
+
 fn a_search_ignores_case_on_both_sides<D: NoteDoc>() {
     let mut core = in_memory::<D>();
     let id = core.create_note(NoteKind::Checklist).unwrap();
@@ -372,6 +386,10 @@ macro_rules! backend_suite {
             #[test]
             fn an_edit_is_searchable_at_once() {
                 super::an_edit_is_searchable_at_once::<$backend>()
+            }
+            #[test]
+            fn a_search_finds_a_crossed_off_item() {
+                super::a_search_finds_a_crossed_off_item::<$backend>()
             }
             #[test]
             fn a_relaunch_lists_and_searches_without_opening_a_note() {

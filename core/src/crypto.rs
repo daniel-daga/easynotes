@@ -164,6 +164,13 @@ impl AuthorKey {
         URL_SAFE_NO_PAD.encode(self.0)
     }
 
+    /// The key a member list or a stored ID names, or `None` for a string that
+    /// is not one.
+    pub fn decode(s: &str) -> Option<Self> {
+        let bytes: [u8; PUBKEY_LEN] = URL_SAFE_NO_PAD.decode(s).ok()?.try_into().ok()?;
+        Some(Self(bytes))
+    }
+
     fn verifying_key(&self) -> Result<VerifyingKey> {
         VerifyingKey::from_bytes(&self.0)
             .map_err(|_| CoreError::Crypto("not a valid Ed25519 point"))

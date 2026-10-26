@@ -12,6 +12,7 @@ import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
+import 'package:easynotes/ui/live_text.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,6 +23,8 @@ Future<void> pumpScreen(
   FakeNoteCore core, {
   FakeStorageHealth? storage,
   FakeNoteLibrary? invites,
+  String? relayUrl,
+  String? relayAccess,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -30,6 +33,8 @@ Future<void> pumpScreen(
         storage: storage ?? FakeStorageHealth(),
         noteId: 'this-note',
         invites: invites ?? (FakeNoteLibrary()..setUpSharing()),
+        relayUrl: relayUrl,
+        relayAccess: relayAccess,
       ),
     ),
   );
@@ -162,6 +167,110 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
     expect(find.text('Share as checklist'), findsOneWidget);
+  });
+
+  testWidgets('a shared note draws the people on it instead of the add icon', (
+    tester,
+  ) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          Person(
+            member: 'me',
+            invite: '',
+            name: 'Anna Berg',
+            owner: true,
+            me: true,
+          ),
+          Person(member: 'olga', invite: 'i1', name: 'Olga Petrov'),
+          Person(member: 'ben', invite: 'i2', name: 'Ben Ash'),
+          Person(member: 'cara', invite: 'i3', name: 'Cara Vale'),
+        ],
+      ),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+
+    expect(find.byIcon(Icons.person_add_outlined), findsNothing);
+    expect(find.text('OP'), findsOneWidget);
+    expect(find.text('BA'), findsOneWidget);
+    expect(find.text('CV'), findsOneWidget);
+    expect(find.text('AB'), findsNothing, reason: 'this person is not drawn');
+  });
+
+  testWidgets('the stack follows somebody let in while Share is open', (
+    tester,
+  ) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    const me = Person(
+      member: 'me',
+      invite: '',
+      name: 'Anna Berg',
+      owner: true,
+      me: true,
+    );
+    const olga = Person(member: 'olga', invite: 'i1', name: 'Olga Petrov');
+    invites.setPeople(
+      'this-note',
+      const People(shared: true, canManage: true, people: [me, olga]),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+    expect(find.text('OP'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('share-button')));
+    await tester.pumpAndSettle();
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          me,
+          olga,
+          Person(member: 'ben', invite: 'i2', name: 'Ben Ash'),
+        ],
+      ),
+    );
+    await tester.tap(find.byKey(const Key('share-done')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('BA'), findsOneWidget);
+  });
+
+  testWidgets('the stack asks again while the note stays open', (tester) async {
+    final invites = FakeNoteLibrary()..setUpSharing('Anna Berg');
+    const me = Person(
+      member: 'me',
+      invite: '',
+      name: 'Anna Berg',
+      owner: true,
+      me: true,
+    );
+    invites.setPeople(
+      'this-note',
+      const People(shared: true, canManage: true, people: [me]),
+    );
+    await pumpScreen(tester, FakeNoteCore(), invites: invites);
+    expect(find.byIcon(Icons.person_add_outlined), findsOneWidget);
+
+    invites.setPeople(
+      'this-note',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          me,
+          Person(member: 'olga', invite: 'i1', name: 'Olga Petrov'),
+        ],
+      ),
+    );
+    await tester.pump(const Duration(seconds: 20));
+    await tester.pump();
+
+    expect(find.text('OP'), findsOneWidget);
   });
   testWidgets('renders the title and items it is given', (tester) async {
     final core = FakeNoteCore(
@@ -499,6 +608,43 @@ void main() {
       expect(find.text('Link copied'), findsNothing);
     });
 
+    testWidgets('Send link shares the relay page, not the custom scheme', (
+      tester,
+    ) async {
+      const channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+      final sent = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        sent.add((call.arguments as Map)['text'] as String);
+        return true;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final invites = FakeNoteLibrary()..setUpSharing();
+      await pumpScreen(
+        tester,
+        FakeNoteCore(),
+        invites: invites,
+        relayUrl: 'https://sync.example.com',
+        relayAccess: 'KEY',
+      );
+
+      final id = await makeLink(tester, invites);
+
+      final message = sent.single;
+      expect(
+        message,
+        startsWith(
+          'Join my shared note in EasyNotes: https://sync.example.com/#',
+        ),
+      );
+      expect(message, endsWith('#$id'));
+      // One link, so a messenger cannot pick the relay address out of the
+      // fragment and leave the invite as plain text.
+      expect('https://'.allMatches(message).length, 1);
+      expect(message, isNot(contains('easynotes://')));
+    });
+
     testWidgets('with no share sheet, Send link copies instead', (
       tester,
     ) async {
@@ -741,6 +887,50 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(visibleItems(tester), ['eggs (12)']);
+  });
+
+  testWidgets('a remote change to a row is pointed out rather than silent', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['eggs']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(id: id, text: 'eggs (12)', checked: false, order: '0000'),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(ValueKey('flash:$id:1')), findsOneWidget);
+  });
+
+  testWidgets('two people typing in one item keep one line', (tester) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    final controller = tester.widget<TextField>(field).controller!;
+
+    // This person starts the line.
+    await tester.enterText(field, 'milk and');
+    await tester.pumpAndSettle();
+
+    // The other person's line lands in the core while this row is still open,
+    // and is taken so the next letter builds on it instead of replacing it.
+    await core.remoteItemText(id, 'milk and eggs');
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk and eggs');
+
+    // Carrying on neither duplicates the other person's words nor drops them.
+    await tester.enterText(field, 'milk and eggs, please');
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk and eggs, please');
+    expect(core.current.items.single.text, 'milk and eggs, please');
   });
 
   testWidgets('a remote edit to the item being typed in appears in place', (
@@ -1214,6 +1404,34 @@ void main() {
       expect(core.edits, isEmpty);
     });
 
+    testWidgets('a remote edit waits until this person pauses', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await pumpScreen(tester, core);
+      final field = find.byKey(const Key('body-text'));
+      final controller = bodyField(tester).controller!;
+
+      await tester.enterText(field, 'milk and');
+
+      // The other device's line arrives between two keystrokes. Taking it now
+      // would move the words under the caret, so it waits for a pause.
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'milk and eggs',
+          items: [],
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(controller.text, 'milk and');
+      expect(controller.selection, const TextSelection.collapsed(offset: 8));
+
+      // A pause, and it lands, with this person's text still in it.
+      await tester.pump(typingGrace);
+      await tester.pumpAndSettle();
+      expect(controller.text, 'milk and eggs');
+    });
+
     testWidgets('a body view from before the last send does not wind back', (
       tester,
     ) async {
@@ -1271,5 +1489,11 @@ class _SlowAddCore extends FakeNoteCore {
   Future<int> setItemText(String itemId, String text) async {
     await Future<void>.delayed(const Duration(milliseconds: 30));
     return super.setItemText(itemId, text);
+  }
+
+  @override
+  Future<int> editItemText(String itemId, String from, String to) async {
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    return super.editItemText(itemId, from, to);
   }
 }

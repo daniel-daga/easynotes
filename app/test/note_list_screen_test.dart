@@ -144,6 +144,41 @@ void main() {
 
     expect(find.text('1 of 3 done'), findsOneWidget);
     expect(find.text('• jam'), findsOneWidget);
+    // The milk is crossed off, so the card leaves it out even though it is
+    // still on the list — and the count above still says three.
+    expect(find.text('• milk'), findsNothing);
+  });
+
+  testWidgets('crossed off items are not counted as more to show', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary(
+      notes: {'groceries': FakeNoteCore(title: 'Groceries')},
+    );
+    await pumpList(tester, library);
+
+    library
+        .core('groceries')
+        .pushRemote(
+          const NoteView(
+            title: 'Groceries',
+            items: [
+              ItemView(id: 'a', text: 'done 0', checked: true, order: '0000'),
+              ItemView(id: 'b', text: 'done 1', checked: true, order: '0001'),
+              ItemView(id: 'c', text: 'todo 0', checked: false, order: '0002'),
+              ItemView(id: 'd', text: 'todo 1', checked: false, order: '0003'),
+              ItemView(id: 'e', text: 'todo 2', checked: false, order: '0004'),
+              ItemView(id: 'f', text: 'todo 3', checked: false, order: '0005'),
+            ],
+          ),
+        );
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 of 6 done'), findsOneWidget);
+    expect(find.text('• todo 3'), findsOneWidget);
+    // Every item still to do is on the card, so there is nothing left to count.
+    expect(find.text('+2 more'), findsNothing);
+    expect(find.text('+0 more'), findsNothing);
   });
 
   testWidgets('the create-note button reveals the note types', (tester) async {
@@ -284,6 +319,18 @@ void main() {
       expect(find.byKey(const Key('join-waiting')), findsNothing);
     });
 
+    testWidgets('a pasted web link joins as the same invite', (tester) async {
+      final library = twoLists()..setUpSharing('Anna');
+      await pumpList(tester, library);
+
+      await ask(tester, 'https://notes.example/#join#abc');
+
+      expect(library.calls, contains('requestJoin(easynotes://join#abc)'));
+      library.fakeAnswer('abc', JoinState.joined);
+      await tester.pump(invitePollInterval);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('a tapped link only asks for a yes', (tester) async {
       final library = twoLists()..setUpSharing('Anna');
       await tester.pumpWidget(
@@ -388,6 +435,30 @@ void main() {
 
       expect(find.byKey(const Key('joined-in-background')), findsOneWidget);
       expect(find.byKey(const Key('join-banner-abc')), findsNothing);
+    });
+
+    testWidgets('a note already open is not announced as somewhere to go', (
+      tester,
+    ) async {
+      // Long enough that the note is opened before the banner's next look.
+      inviteBannerPollInterval = const Duration(seconds: 30);
+      final library = twoLists()..setUpSharing('Anna');
+      await library.requestJoin('easynotes://join#abc');
+      await pumpList(tester, library);
+
+      // Let in while the list is up: the note arrives, and is opened by hand.
+      library.fakeAnswer('abc', JoinState.joined);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('note:joined-0')));
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('openNote(joined-0)'));
+
+      await tester.pump(inviteBannerPollInterval);
+      await tester.pumpAndSettle();
+
+      // It is already on screen, so there is nowhere for a snackbar to send
+      // anyone.
+      expect(find.byKey(const Key('joined-in-background')), findsNothing);
     });
 
     testWidgets(

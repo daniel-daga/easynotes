@@ -192,6 +192,14 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// same link being started twice while its dialog is open.
   bool _joining = false;
 
+  /// The join a dialog on top of this screen is waiting on, if one is.
+  ///
+  /// [InviteBanners] leaves it alone until the dialog closes: the dialog opens
+  /// the note itself, so a snackbar would announce a note already on its way to
+  /// the screen, and a second check would take the answer the dialog is waiting
+  /// for and leave it spinning for good.
+  String? _joiningInDialog;
+
   /// Watches the list for notes this device was just removed from, to say so
   /// once: “You no longer have access to ‘Groceries’.”
   StreamSubscription<List<NoteSummary>>? _removalSubscription;
@@ -644,13 +652,26 @@ class _NoteListScreenState extends State<NoteListScreen> {
       await _openNote(join.noteId!);
       return;
     }
-    final id = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => WaitingDialog(invites: widget.library, join: join),
-    );
+    final id = await _waitForJoin(join);
     if (id == null || !mounted) return;
     await _openNote(id);
+  }
+
+  /// Show the wait for [join], and stay out of [InviteBanners]'s way while it
+  /// is up. Pops with the note once it opens, or with null if the person chose
+  /// to keep waiting in the background.
+  Future<String?> _waitForJoin(PendingJoin join) async {
+    _joiningInDialog = join.inviteId;
+    try {
+      return await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) =>
+            WaitingDialog(invites: widget.library, join: join),
+      );
+    } finally {
+      _joiningInDialog = null;
+    }
   }
 
   void _showJoinForLink(String link) {
@@ -691,8 +712,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
   );
 
   /// A request that was waiting in the background was let in.
+  ///
+  /// A note that is already on screen — or on its way there — needs no
+  /// invitation to open it: the tap that opened it was the answer.
   void _joinedInBackground(String noteId) {
     if (!mounted) return;
+    if (noteId == _expandedNoteId.value || noteId == _openingNoteId) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         key: const Key('joined-in-background'),
@@ -1288,6 +1313,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                   titleOf: _titleOf,
                   onReview: _review,
                   onJoined: _joinedInBackground,
+                  handledElsewhere: (inviteId) => inviteId == _joiningInDialog,
                 ),
                 Expanded(child: _body(all, notes)),
               ],
@@ -3338,8 +3364,11 @@ class _NoteCardFace extends StatelessWidget {
     final isList = note.kind == NoteKind.checklist;
     // Only a list counts what it is not showing: a text note's preview is lines
     // of prose, and "+3 more" under a paragraph would be counting items it
-    // does not have.
-    final notShown = isList ? note.items - note.preview.length : 0;
+    // does not have. Crossed-off items are not in the preview, so they are not
+    // part of what is left over either.
+    final notShown = isList
+        ? note.items - note.checked - note.preview.length
+        : 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,

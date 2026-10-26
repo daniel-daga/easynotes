@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex" />
+    <title>Join a shared note · EasyNotes</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --paper: #ffffff;
+        --ink: #111111;
+        --muted: #5f5f5f;
+        --line: #d9d9d9;
+        --wash: #efefef;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #111111;
+          --ink: #f2f2f2;
+          --muted: #a6a6a6;
+          --line: #333333;
+          --wash: #262626;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--wash);
+        color: var(--ink);
+        font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main {
+        width: 100%;
+        max-width: 30rem;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--paper);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.5rem;
+        line-height: 1.2;
+      }
+      p {
+        margin: 0 0 16px;
+      }
+      a.button,
+      button {
+        display: inline-block;
+        width: 100%;
+        padding: 12px 18px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--ink);
+        color: var(--paper);
+        font: inherit;
+        font-weight: 600;
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      a.button:focus-visible,
+      button:focus-visible {
+        outline: 2px solid var(--ink);
+        outline-offset: 3px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      #copy-row {
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+      code {
+        display: block;
+        margin-bottom: 12px;
+        padding: 12px;
+        border-radius: 10px;
+        background: var(--wash);
+        font: 0.8rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow-wrap: anywhere;
+        user-select: all;
+      }
+      #copied {
+        margin: 8px 0 0;
+        font-size: 0.9rem;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Join a shared note</h1>
+      <p id="intro">Opening EasyNotes…</p>
+      <p><a id="open" class="button" href="#" hidden>Open in EasyNotes</a></p>
+      <p id="help" class="muted" hidden>
+        If EasyNotes did not open, install it and open this link again — or copy
+        the link below and paste it in EasyNotes under
+        <strong>Join with a link</strong>.
+      </p>
+      <div id="copy-row" hidden>
+        <code id="link"></code>
+        <button id="copy" type="button">Copy link</button>
+        <p id="copied" role="status" aria-live="polite" hidden>Link copied.</p>
+      </div>
+      <p id="broken" class="muted" hidden>
+        This link is incomplete. Open the whole link from the message that was
+        sent to you.
+      </p>
+      <noscript>
+        <p class="muted">
+          Turn on JavaScript to open EasyNotes, or copy this page's address and
+          paste it in EasyNotes under <strong>Join with a link</strong>.
+        </p>
+      </noscript>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+
+        // A note's invite secret is 32 bytes in base64url. Anything else in the
+        // fragment is not one, and this page will not guess.
+        var SECRET = /^[A-Za-z0-9_-]{16,}$/;
+
+        var intro = document.getElementById("intro");
+        var open = document.getElementById("open");
+        var help = document.getElementById("help");
+        var copyRow = document.getElementById("copy-row");
+        var linkBox = document.getElementById("link");
+        var copied = document.getElementById("copied");
+        var broken = document.getElementById("broken");
+
+        // The fragment is all this page ever gets: the browser does not send it
+        // to the relay, so the secret stays between the guest and their app.
+        function decodedHash() {
+          var raw = location.hash.replace(/^#/, "");
+          if (!raw) return "";
+          try {
+            return decodeURIComponent(raw);
+          } catch (error) {
+            return raw;
+          }
+        }
+
+        // The relay this page is served by, including a base path when one is
+        // in front of it. The page itself is at the end of that path.
+        var relayBase =
+          location.origin + location.pathname.replace(/\/+$/, "");
+
+        // What follows `easynotes://join#`, or "" when the fragment is not an
+        // invite. A native share is `<origin>#<secret>`: this page is the
+        // relay, so the fragment is the secret alone. A web app's link is
+        // `<origin>#join#<body>` and carries its own relay.
+        function bodyFrom(fragment) {
+          var body;
+          if (fragment.indexOf("join#") === 0) {
+            body = fragment.slice("join#".length);
+          } else if (SECRET.test(fragment)) {
+            body = fragment;
+          } else {
+            return "";
+          }
+          // A body with no relay field is completed with this one: the link
+          // was opened here, so it belongs to this relay.
+          if (body.indexOf("relay=") !== 0 && body.indexOf("=") < 0) {
+            body = "relay=" + relayBase + "#" + body;
+          }
+          var at = body.lastIndexOf("#");
+          var secret = at < 0 ? body : body.slice(at + 1);
+          return SECRET.test(secret) ? body : "";
+        }
+
+        var body = bodyFrom(decodedHash());
+        if (!body) {
+          intro.hidden = true;
+          broken.hidden = false;
+          return;
+        }
+
+        // The tap goes through one literal `#`, and only one: the secret's
+        // separator is encoded too. An OS that treats a second `#` as another
+        // fragment boundary would otherwise drop everything after it and hand
+        // the app a link with the relay fields where the secret should be.
+        // The app decodes the fragment once, so this reads back as the same
+        // body. The copy fallback shows the raw form, which is what older
+        // builds read when it is pasted rather than opened.
+        var rawLink = "easynotes://join#" + body;
+        var link = "easynotes://join#" + encodeURIComponent(body);
+        open.href = link;
+        open.hidden = false;
+        help.hidden = false;
+        copyRow.hidden = false;
+        linkBox.textContent = rawLink;
+
+        // One attempt without a gesture on a phone, where the app can be;
+        // desktop builds do not register the scheme, and a failed launch there
+        // is an error dialog. The button stays for a retry either way, and
+        // copying is the way out when the app is not installed.
+        if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+          setTimeout(function () {
+            location.href = link;
+          }, 350);
+        }
+
+        document.getElementById("copy").addEventListener("click", function () {
+          function selected() {
+            var range = document.createRange();
+            range.selectNodeContents(linkBox);
+            var selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(rawLink).then(
+              function () {
+                copied.hidden = false;
+              },
+              function () {
+                selected();
+              }
+            );
+          } else {
+            selected();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

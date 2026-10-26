@@ -6,6 +6,7 @@ pub mod app;
 pub mod auth;
 pub mod error;
 pub mod invite;
+pub mod join;
 pub mod limit;
 pub mod media;
 pub mod metrics;

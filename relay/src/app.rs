@@ -415,6 +415,10 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
     let counted = state.metrics.clone();
     let spoken = state.metrics.clone();
     Router::new()
+        // The landing end of a shared invite: a plain https page that hands the
+        // fragment to the app. Public, and outside the `/v1` limiter and
+        // protocol check, so a guest with no app yet still reaches it.
+        .route("/", get(crate::join::page))
         .route("/v1/challenge", post(challenge))
         .route("/v1/token", post(token))
         // One socket per device, every note on it.

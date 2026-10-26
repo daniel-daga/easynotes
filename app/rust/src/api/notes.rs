@@ -283,8 +283,9 @@ pub struct NoteSummaryView {
     pub title: String,
     pub items: u32,
     pub checked: u32,
-    /// The first few lines of the body, then the first few items. A card shows
-    /// these under the title, and most shopping lists do not have one.
+    /// The first few lines of the body, then the first few items still to do.
+    /// A card shows these under the title, and most shopping lists do not have
+    /// one. Crossed-off items are left out.
     pub preview: Vec<String>,
     /// How many live pictures and sound files the note holds, for a card to
     /// say so and a search to filter by, without opening it.
@@ -2264,6 +2265,11 @@ impl Library {
             .locked()?
             .open_note(id)
             .map_err(|e| e.to_string())?;
+        // Settling is what brings this person's name record up to date if a
+        // rename happened on another phone while this note was shut, and it
+        // sends the envelope that says so ([ADR
+        // 0032](../../../../docs/adr/0032-a-name-that-follows-the-person.md)).
+        self.shared.settle(id);
         Ok(Note {
             shared: self.shared.clone(),
             id,
@@ -2656,10 +2662,15 @@ impl Library {
     /// Delete this person's account from the relay and everything from this
     /// device ([ADR 0026](../../../../docs/adr/0026-deleting-an-account.md)).
     ///
-    /// Withdraws this device's open invites, purges from the relay every note
-    /// this person owns and then the account document, and wipes this
-    /// profile's notes, keys and device identity. Lists this person joined are
-    /// left to their owners. A profile with no relay has nothing to purge.
+    /// Withdraws this device's open invites, tells every list this person
+    /// joined that they have left
+    /// ([ADR 0034](../../../../docs/adr/0034-leaving-on-account-deletion.md)),
+    /// purges from the relay every note this person owns and then the account
+    /// document, and wipes this profile's notes, keys and device identity.
+    /// Lists this person joined are left to their owners; the leave records
+    /// let those owners remove the membership and rotate the note key on their
+    /// next sync. A profile with no relay has nothing to purge and nothing to
+    /// tell.
     ///
     /// If the relay cannot be reached, or refuses, nothing local has changed
     /// and the error says so; it is safe to try again. On success the library
@@ -2671,13 +2682,25 @@ impl Library {
         let access = crate::lock::lock(&self.shared.access)
             .map_err(|_| "relay lock poisoned")?
             .clone();
-        let (plan, invites) = {
-            let core = self.shared.locked()?;
+        let (plan, invites, leaves) = {
+            let mut core = self.shared.locked()?;
             (
                 core.purge_plan().map_err(|e| e.to_string())?,
                 core.invites().map_err(|e| e.to_string())?,
+                core.leave_joined_notes().map_err(|e| e.to_string())?,
             )
         };
+        // The leave records go out while the socket that carries them is still
+        // up. The owner's device acts on them on its next sync, which may be
+        // long after this one is gone; a relay that does not take them means
+        // nothing is deleted here, and the person can try again.
+        if !leaves.is_empty() {
+            for (note, envelope) in &leaves {
+                self.shared.send_edit(*note, envelope.clone(), false);
+            }
+            let notes: Vec<NoteId> = leaves.iter().map(|(note, _)| *note).collect();
+            self.flush_notes(&notes).await?;
+        }
         // Every socket first. A relay that purges a topic tells whoever is
         // subscribed, and a `gone` recorded after the wipe would write a row
         // for a note this device no longer has.
@@ -2853,10 +2876,17 @@ impl Library {
     }
 
     pub fn set_profile_name(&self, name: String) -> Result<(), String> {
-        self.shared
-            .locked()?
-            .set_profile_name(&name)
-            .map_err(|e| e.to_string())
+        let written = {
+            let mut core = self.shared.locked()?;
+            core.set_profile_name(&name).map_err(|e| e.to_string())?
+        };
+        // Every share a rename touched, handed to the relay the way any other
+        // edit is. A note with no connection keeps its envelope in the log
+        // until one exists.
+        for (note, envelope) in written {
+            self.shared.send_edit(note, envelope, false);
+        }
+        Ok(())
     }
 
     /// Adopt the account twelve words name, keeping what this device already
@@ -3795,6 +3825,72 @@ impl Library {
         Ok(())
     }
 
+    /// Send what is waiting for `notes`, wait for the relay to deliver it back,
+    /// and wait until none of it is unacknowledged.
+    ///
+    /// For the one caller that is about to destroy the log holding those
+    /// envelopes: deleting an account, whose leave records must reach the
+    /// owners of the lists this person joined
+    /// ([ADR 0034](../../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    /// A refresh barrier goes first, because a status that was caught up
+    /// before the publish would otherwise answer "done" too soon.
+    async fn flush_notes(&self, notes: &[NoteId]) -> Result<(), String> {
+        if notes.is_empty() {
+            return Ok(());
+        }
+        // Refuse now rather than wait out the timeout: a deletion that must
+        // leave joined lists needs a socket, and a device that is not
+        // connected should hear that in words it can act on.
+        let connected = crate::lock::lock(&self.shared.connections)
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        if !notes.iter().all(|note| connected.contains(note)) {
+            return Err(
+                "This device is not connected to the sync server. Reconnect, then delete \
+                 the account again."
+                    .to_string(),
+            );
+        }
+        self.send_held_edits()?;
+        static FLUSH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let refresh_id = FLUSH_ID.fetch_add(1, Ordering::Relaxed).to_string();
+        let refresh = crate::lock::lock(&self.shared.device)
+            .map_err(|_| "sync lock poisoned".to_string())?
+            .as_ref()
+            .map(|device| device.refresh(refresh_id));
+        let Some(refresh) = refresh else {
+            return Err(
+                "This device is not connected to the sync server. Reconnect, then delete \
+                 the account again."
+                    .to_string(),
+            );
+        };
+        refresh.await?;
+        let mut status = self.shared.statuses.overall.subscribe();
+        let wait = async {
+            loop {
+                if notes
+                    .iter()
+                    .all(|note| self.shared.statuses.acknowledged(*note))
+                {
+                    return Ok(());
+                }
+                status
+                    .changed()
+                    .await
+                    .map_err(|_| "sync status closed".to_string())?;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), wait)
+            .await
+            .map_err(|_| {
+                "The sync server did not acknowledge the last changes within 30 seconds."
+                    .to_string()
+            })?
+    }
+
     /// Lifecycle entry point for the bridge. Hidden callers flush local work
     /// and held edits before the Dart coordinator starts its bounded grace.
     pub async fn set_foreground(&self, foreground: bool) -> Result<(), String> {
@@ -4201,6 +4297,25 @@ impl Note {
             let mut core = self.shared.locked()?;
             let envelope = core
                 .set_item_text(self.id, item_id(&item)?, text)
+                .map_err(|e| e.to_string())?;
+            (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
+        };
+        self.send(envelope, true);
+        Ok(rev)
+    }
+
+    /// Set an item's text from the field's own edit: the text it was showing
+    /// and the text it shows now. Replayed onto what the item says by the time
+    /// it arrives, so typing in the same item as somebody else keeps both
+    /// people's words.
+    ///
+    /// Returns the revision the edit landed at, like
+    /// [`set_item_text`](Self::set_item_text).
+    pub fn edit_item_text(&self, item: String, from: String, to: String) -> Result<u32, String> {
+        let (envelope, rev) = {
+            let mut core = self.shared.locked()?;
+            let envelope = core
+                .edit_item_text(self.id, item_id(&item)?, &from, &to)
                 .map_err(|e| e.to_string())?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };

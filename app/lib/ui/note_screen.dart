@@ -20,12 +20,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachment_files.dart';
+import '../core/app_visibility.dart';
 import '../core/content_interchange.dart';
 import '../core/content_sharing.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/note_view.dart';
 import 'attachments.dart';
+import 'collaborator_stack.dart';
 import 'invites.dart';
 import 'live_text.dart';
 import 'note_appearance.dart';
@@ -115,6 +117,18 @@ class _NoteScreenState extends State<NoteScreen> {
   /// the next note (on any of their devices) opens the way this one was left.
   late bool _crossedOffExpanded = widget.library?.tickedShown ?? false;
   bool _deletionPopScheduled = false;
+
+  /// How long the app bar's stack of people may go without asking the core
+  /// again. A person can be let in while this note stays open, and nothing on
+  /// this screen's streams fires for that: the note's access package changes,
+  /// not its content. Local and cheap, so a slow tick is enough.
+  static const Duration _peopleRefresh = Duration(seconds: 20);
+
+  /// Everybody on this note, as the sharing screen lists them, for the app
+  /// bar's stack of initials (see [CollaboratorStack]).
+  People _people = const People(canManage: false);
+  Timer? _peoplePoll;
+
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
 
@@ -168,6 +182,31 @@ class _NoteScreenState extends State<NoteScreen> {
       );
       _refreshPending();
     });
+    _people = _readPeople() ?? _people;
+    appIsForeground.addListener(_onForeground);
+    _peoplePoll = Timer.periodic(_peopleRefresh, (_) {
+      if (appIsForeground.value) _loadPeople();
+    });
+  }
+
+  /// The sharing screen's answer for this note, or null when this device cannot
+  /// be asked about it yet.
+  People? _readPeople() {
+    try {
+      return widget.invites.people(widget.noteId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _loadPeople() {
+    final people = _readPeople();
+    if (people == null || !mounted || people == _people) return;
+    setState(() => _people = people);
+  }
+
+  void _onForeground() {
+    if (appIsForeground.value) _loadPeople();
   }
 
   Future<void> _refreshPending() async {
@@ -508,6 +547,8 @@ class _NoteScreenState extends State<NoteScreen> {
     unawaited(_playerPositionWatch?.cancel());
     unawaited(_playerDurationWatch?.cancel());
     unawaited(_playerCompleteWatch?.cancel());
+    _peoplePoll?.cancel();
+    appIsForeground.removeListener(_onForeground);
     if (_audioPlayer case final player?) unawaited(player.dispose());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
@@ -609,6 +650,27 @@ class _NoteScreenState extends State<NoteScreen> {
       relayUrl: widget.relayUrl,
       relayAccess: widget.relayAccess,
     );
+    if (!mounted) return;
+    // Somebody may have been let in while that screen was open. Its own poll
+    // tick is the one that approves them, so the answer is current now.
+    _loadPeople();
+  }
+
+  /// Share, or — once anybody else is on the note — the people who are, as a
+  /// stack of initials that leads to the same screen.
+  Widget _shareAction(Color? tint) {
+    final people = _people;
+    return IconButton(
+      key: const Key('share-button'),
+      tooltip: 'Share',
+      onPressed: _share,
+      icon: CollaboratorStack.entriesFor(people).isEmpty
+          ? const Icon(Icons.person_add_outlined)
+          : CollaboratorStack(
+              people: people,
+              ringColor: tint ?? Theme.of(context).colorScheme.surface,
+            ),
+    );
   }
 
   Future<void> _shareContent(NoteView note) => showDialog<void>(
@@ -636,8 +698,8 @@ class _NoteScreenState extends State<NoteScreen> {
     reorderIndex: reorderIndex,
     onChecked: (v) async =>
         widget.core.setChecked(await _resolve(item.id), v ?? false),
-    onTextChanged: (t) async =>
-        widget.core.setItemText(await _resolve(item.id), t),
+    onTextChanged: (from, to) async =>
+        widget.core.editItemText(await _resolve(item.id), from, to),
     onWriteStateChanged: _itemWriteStateChanged,
     onDelete: () async => _removeItem(await _resolve(item.id)),
     onSettled: widget.library?.sendHeldEdits,
@@ -964,14 +1026,7 @@ class _NoteScreenState extends State<NoteScreen> {
         appBar: AppBar(
           backgroundColor: tint,
           title: null,
-          actions: [
-            IconButton(
-              key: const Key('share-button'),
-              icon: const Icon(Icons.person_add_outlined),
-              tooltip: 'Share',
-              onPressed: _share,
-            ),
-          ],
+          actions: [_shareAction(tint)],
         ),
         body: Column(
           children: [
@@ -1442,7 +1497,7 @@ class _TitleFieldState extends State<_TitleField> {
 /// them. With both, the core replays this person's change onto whatever the
 /// body now says ([NoteCore.editBody]).
 ///
-/// Three more things make it safe, and they live here because only this widget
+/// Four more things make it safe, and they live here because only this widget
 /// knows when the person is mid-word:
 ///
 /// * **Sends go one at a time.** The bridge runs calls on a pool, so two sends in
@@ -1458,6 +1513,12 @@ class _TitleFieldState extends State<_TitleField> {
 ///   put the cursor at the end, mid-sentence, every time the other person typed.
 ///   The change is found as the one splice between the old text and the new,
 ///   and the selection is carried across it.
+/// * **A remote change waits for a pause.** The relay sends whole batches now,
+///   and a batch can still land between two keystrokes. Moving the text then
+///   moves it under the caret mid-word, so the newest view is kept and shown
+///   once this person has been quiet for [typingGrace]. Nothing is lost in the
+///   meantime: this field's sends say what they changed, and the core replays
+///   them onto the peer's text.
 class _BodyField extends StatefulWidget {
   const _BodyField({
     super.key,
@@ -1497,7 +1558,16 @@ class _BodyFieldState extends State<_BodyField> {
   bool _sending = false;
   String? _queued;
 
+  /// Restarted by every keystroke; while it runs, a remote change is held in
+  /// [_pending] rather than moved under the caret.
+  Timer? _idle;
+
+  /// A view that arrived mid-word, waiting for this person to pause.
+  (String, int)? _pending;
+
   Future<void> _send(String text) async {
+    _idle?.cancel();
+    _idle = Timer(typingGrace, _settle);
     if (_sending) {
       _queued = text;
       return;
@@ -1532,6 +1602,31 @@ class _BodyFieldState extends State<_BodyField> {
   void _consider(String body, int rev) {
     if (_sending) return;
     if (isOwnEcho(rev: rev, mine: _mine, text: body, shown: _base)) return;
+    if (_idle != null) {
+      // Mid-word. Keep the newest view and show it when this person pauses,
+      // rather than shifting the line under their fingers.
+      _pending = (body, rev);
+      return;
+    }
+    _take(body, rev);
+  }
+
+  /// This person stopped typing long enough for a held change to be read.
+  void _settle() {
+    _idle = null;
+    final pending = _pending;
+    if (pending == null) return;
+    // A send in flight looks at the latest view when it returns.
+    if (_sending) return;
+    _pending = null;
+    _take(pending.$1, pending.$2);
+  }
+
+  /// Show [body] as what the core now holds, at [rev].
+  void _take(String body, int rev) {
+    _pending = null;
+    // Older than what the field already shows.
+    if (rev < _mine) return;
     _mine = rev;
     // Someone else's change, or theirs merged with this field's: either way
     // it is what the core now holds, and what the next send changes from.
@@ -1546,6 +1641,7 @@ class _BodyFieldState extends State<_BodyField> {
 
   @override
   void dispose() {
+    _idle?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -1599,7 +1695,7 @@ class _ItemRow extends StatefulWidget {
   final int rev;
   final int? reorderIndex;
   final ValueChanged<bool?> onChecked;
-  final Future<int> Function(String) onTextChanged;
+  final Future<int> Function(String from, String to) onTextChanged;
   final ValueChanged<bool> onWriteStateChanged;
   final VoidCallback onDelete;
   final Future<void> Function() onBackspaceEmpty;
@@ -1629,6 +1725,14 @@ class _ItemRowState extends State<_ItemRow> {
   bool _writing = false;
   String? _queuedText;
   Completer<void>? _writeDone;
+
+  /// How many times this row has been changed by somebody else. Each one plays
+  /// a short highlight, so an edit that landed is noticed without the row
+  /// moving — which is what a flash is for.
+  int _flash = 0;
+
+  /// This row's own tick is on its way back as a view; landing it is not news.
+  bool _checkedHere = false;
 
   @override
   void initState() {
@@ -1660,7 +1764,11 @@ class _ItemRowState extends State<_ItemRow> {
       String? next = text;
       while (next != null) {
         _queuedText = null;
-        final rev = await widget.onTextChanged(next);
+        // What this field was showing when the edit was made. The core replays
+        // the change onto whatever the line says by the time it arrives, so a
+        // send that crosses somebody else's edit keeps both.
+        final from = _lastWritten;
+        final rev = await widget.onTextChanged(from, next);
         if (rev > _mine) _mine = rev;
         _lastWritten = next;
         next = _queuedText;
@@ -1703,12 +1811,28 @@ class _ItemRowState extends State<_ItemRow> {
   @override
   void didUpdateWidget(_ItemRow old) {
     super.didUpdateWidget(old);
+    // A tick is not typed, so a change to it came from somewhere else — unless
+    // this row made the tap that is now coming back as a view.
+    if (old.item.checked != widget.item.checked) {
+      if (_checkedHere) {
+        _checkedHere = false;
+      } else {
+        _flashRemote();
+      }
+    }
     _consider(widget.item.text, widget.rev);
   }
 
   /// The view's text arrived at [rev]. Take it unless it is this row's own
   /// typing coming back, and keep the caret where the person left it when it is
   /// not.
+  ///
+  /// Unlike the body, a line is taken at once rather than after a pause. An
+  /// item's text is one string, not a text CRDT: a stale string written after
+  /// somebody else's edit replaces their words. Taking theirs immediately is
+  /// what makes the next keystroke build on it. What keeps a line calm is that
+  /// the relay now sends whole batches ([typingGrace] covers the body), so it
+  /// moves in words rather than letters.
   ///
   /// While a send is in flight every view is passed over: one of them may be
   /// older than what is in the field, and adopting it would wind the text back
@@ -1723,7 +1847,17 @@ class _ItemRowState extends State<_ItemRow> {
     // what the core holds now, and what leaving this row would send from.
     _lastWritten = text;
     if (text == _controller.text) return;
+    _flashRemote();
     adoptText(_controller, text);
+  }
+
+  /// Point out, gently, that this row changed somewhere else.
+  void _flashRemote() {
+    if (!mounted) {
+      _flash++;
+      return;
+    }
+    setState(() => _flash++);
   }
 
   @override
@@ -1736,7 +1870,7 @@ class _ItemRowState extends State<_ItemRow> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
-    return ListTile(
+    final tile = ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 8),
       minLeadingWidth: 0,
       dense: true,
@@ -1758,7 +1892,10 @@ class _ItemRowState extends State<_ItemRow> {
           Checkbox(
             key: Key('check:${item.id}'),
             value: item.checked,
-            onChanged: widget.onChecked,
+            onChanged: (checked) {
+              _checkedHere = true;
+              widget.onChecked(checked);
+            },
           ),
         ],
       ),
@@ -1807,6 +1944,22 @@ class _ItemRowState extends State<_ItemRow> {
               onPressed: widget.onDelete,
             )
           : null,
+    );
+    if (_flash == 0) return tile;
+    // A change that landed here from another device: a short wash of the
+    // accent colour, then back to nothing. Keyed on the count so each new
+    // change restarts it.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('flash:${item.id}:$_flash'),
+      tween: Tween(begin: 1, end: 0),
+      duration: const Duration(milliseconds: 900),
+      builder: (context, t, child) => ColoredBox(
+        color: Theme.of(
+          context,
+        ).colorScheme.primary.withValues(alpha: 0.08 * t),
+        child: child,
+      ),
+      child: tile,
     );
   }
 }

@@ -647,6 +647,59 @@ async fn deleting_an_account_purges_what_it_owns_and_leaves_what_it_joined() {
     assert!(olga.core.lock().unwrap().notes().unwrap().is_empty());
 }
 
+/// ADR 0034 / issue 61: a guest deletes their account, the record reaches the
+/// owner over the relay, and the owner's People list drops them and rotates
+/// the note key.
+#[tokio::test]
+async fn a_guest_deleting_their_account_leaves_the_owners_list() {
+    let (relay, _) = relay().await;
+    let endpoint = RelayEndpoint::parse(&relay.http_base()).unwrap();
+    let owner = Phone::new("Olga", &endpoint);
+    let anna = Phone::new("Anna", &endpoint);
+    let note = owner.create_note("Groceries");
+    let_in(&owner, &anna, note).await;
+    anna.wait_until("the shared title", || {
+        anna.title(note).as_deref() == Some("Groceries")
+    })
+    .await;
+    let key = |phone: &Phone| {
+        let blob = phone.core.lock().unwrap().export_share_blob(note).unwrap();
+        easynotes_core::crypto::import_share_blob(&blob).unwrap().1
+    };
+    let old_key = key(&owner);
+    let member = anna.core.lock().unwrap().member().unwrap().id().encode();
+
+    // What deleting the account does before it wipes: one record into every
+    // joined note, onto the relay.
+    let written = anna.core.lock().unwrap().leave_joined_notes().unwrap();
+    assert_eq!(written.len(), 1);
+    for (note, envelope) in written {
+        anna.engines.lock().unwrap()[&note].publish(envelope);
+    }
+
+    owner
+        .wait_until("the guest gone from the People list", || {
+            owner
+                .core
+                .lock()
+                .unwrap()
+                .people(note)
+                .unwrap()
+                .people
+                .iter()
+                .all(|person| person.member != member)
+        })
+        .await;
+    owner
+        .wait_until("the key rotated", || key(&owner).id() != old_key.id())
+        .await;
+    // The guest's own device is told it lost the note, so its copy goes too.
+    anna.wait_until("the guest removed", || {
+        !anna.core.lock().unwrap().can_open(note)
+    })
+    .await;
+}
+
 /// Wait until the relay holds more of `topic` than `seq`.
 async fn head_above(log: &Arc<dyn RelayStore>, topic: NoteId, seq: i64) {
     let deadline = tokio::time::Instant::now() + PATIENCE;

@@ -134,6 +134,11 @@ until it has a second real use or a clear independent role.
   identities, pending requests, invite links, and owner-only Remove everyone.
   Names are self-chosen; older shares may lack directory entries. People search
   matches device identity, so equal names do not merge different collaborators.
+  Once anybody else is on the note, the action draws them as a stack of up to
+  three initials circles instead of the person-plus icon; a faded circle means
+  their access is still arriving, and the last circle counts whoever did not
+  fit. Tapping it opens the same screen. See
+  [plan-live-collaborators.md](./plan-live-collaborators.md).
 - Send a copy lives in the bottom-right overflow menu below Reminders. It opens
   the content preview with system sharing and copy actions.
 - Add attachment (`add_box_outlined`) is the first control at the bottom left

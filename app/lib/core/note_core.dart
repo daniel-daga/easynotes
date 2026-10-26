@@ -48,6 +48,12 @@ abstract class NoteCore {
   /// field that made it can tell its own echo from somebody else's change.
   Future<int> setItemText(String itemId, String text);
 
+  /// Set an item's text as the field's own edit: the text it was showing and
+  /// the text it shows now. Replayed onto whatever the item says by the time it
+  /// arrives, so typing in the same item as somebody else keeps both people's
+  /// words. Returns the revision it landed at, like [setItemText].
+  Future<int> editItemText(String itemId, String from, String to);
+
   Future<void> setChecked(String itemId, bool checked);
 
   /// Move an item so it lands at [toIndex] in the current display order.

@@ -24,6 +24,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -280,10 +281,19 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   String _link(Invite invite) {
     final url = widget.relayUrl;
+    final relay = url == null ? null : (url: url, access: widget.relayAccess);
+    if (!kIsWeb && url != null) {
+      // The relay is the link's base, so its own page needs only the secret
+      // after the `#`. Tapping it hands the fragment to the app, which is told
+      // the relay by the page; a pasted link is read the same way.
+      return inviteLinkForRelayPage(invite.link, url);
+    }
+    // On web the link opens this app, which handles the fragment itself. With
+    // no relay there is nothing to page to and the custom scheme stays.
     return inviteLinkForSharing(
       invite.link,
       webOrigin: Uri.base.toString(),
-      relay: url == null ? null : (url: url, access: widget.relayAccess),
+      relay: relay,
     );
   }
 
@@ -843,16 +853,28 @@ class _JoinDialogState extends State<JoinDialog> {
   }
 
   Future<void> _ask() async {
-    final link = _link.text.trim();
-    if (link.isEmpty) return;
+    final text = _link.text.trim();
+    if (text.isEmpty) return;
+    // A tapped link is already in the core's form, but a pasted one can be the
+    // relay page's address, its copy fallback (percent-encoded), or the whole
+    // message. Normalise it once here, so the core reads one shape and a
+    // hand-off carries the same link back.
+    final link = inviteLinkFrom(text) ?? text;
     // A link can name the relay it belongs to. One that names a relay this
     // device is not on cannot be joined from here: the request would be posted
     // to the wrong server. The app moves the device over and brings the link
     // back, so this is one step, not a trip to settings.
+    // A tapped link has been through the app already, which settled its relay
+    // before showing this dialog. Handing it off again would only bring the
+    // same dialog back, and a disagreement about the relay would loop.
     final named = relayFromInvite(link);
     if (named != null &&
+        widget.initialLink == null &&
         widget.onHandOff != null &&
         !_isCurrentRelay(named.url)) {
+      debugPrint(
+        'join: handing off ${named.url} (this device: ${widget.profile?.url})',
+      );
       Navigator.of(context).pop();
       widget.onHandOff!(link);
       return;
@@ -1099,6 +1121,7 @@ class InviteBanners extends StatefulWidget {
     required this.titleOf,
     required this.onReview,
     required this.onJoined,
+    this.handledElsewhere,
   });
 
   final Invites invites;
@@ -1111,6 +1134,11 @@ class InviteBanners extends StatefulWidget {
 
   /// A request of this device's was let in and its note has opened.
   final void Function(String noteId) onJoined;
+
+  /// Whether something else — a wait dialog for that join — is answering it,
+  /// and will open the note itself. Asked on every check, so an answer is never
+  /// taken from under the dialog that is showing it.
+  final bool Function(String inviteId)? handledElsewhere;
 
   @override
   State<InviteBanners> createState() => _InviteBannersState();
@@ -1165,6 +1193,8 @@ class _InviteBannersState extends State<InviteBanners> {
         }
       }
       for (final join in widget.invites.pendingJoins) {
+        // A wait dialog is showing this one; it opens the note when it lands.
+        if (widget.handledElsewhere?.call(join.inviteId) ?? false) continue;
         try {
           final check = await widget.invites.checkJoin(join.inviteId);
           switch (check.state) {

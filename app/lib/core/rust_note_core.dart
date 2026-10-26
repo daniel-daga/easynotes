@@ -101,6 +101,10 @@ class RustNoteCore implements NoteCore {
       _note.setItemText(item: itemId, text: text);
 
   @override
+  Future<int> editItemText(String itemId, String from, String to) =>
+      _note.editItemText(item: itemId, from: from, to: to);
+
+  @override
   Future<void> setChecked(String itemId, bool checked) =>
       _note.setChecked(item: itemId, checked: checked);
 

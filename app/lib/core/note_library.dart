@@ -155,8 +155,9 @@ class NoteSummary {
   final int items;
   final int checked;
 
-  /// The first few lines of the body, then the first few items, so a card can
-  /// show what the note is about. Most shopping lists never get a title.
+  /// The first few lines of the body, then the first few items still to do,
+  /// so a card can show what the note is about. Crossed-off items are left
+  /// out. Most shopping lists never get a title.
   final List<String> preview;
 
   /// Live pictures and sound files on the note.

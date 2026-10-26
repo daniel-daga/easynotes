@@ -44,7 +44,20 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 6;
+pub const ENTRY_VERSION: u8 = 7;
+
+/// One checklist item as the index keeps it: its text, and whether it has been
+/// crossed off.
+///
+/// The flag is here so that a card can leave crossed-off items out of its
+/// preview while a search still reads every item. The index is a cache, so
+/// adding it is a version bump and nothing more: an old entry is ignored and
+/// rebuilt from the note.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexItem {
+    pub text: String,
+    pub checked: bool,
+}
 
 /// One note, as the list and the search read it.
 ///
@@ -63,9 +76,8 @@ pub struct IndexEntry {
     /// The body, one entry per line with something on it. Lines rather than one
     /// string because a card previews lines and a search reports one.
     pub body: Vec<String>,
-    /// Every item's text, in display order.
-    pub items: Vec<String>,
-    pub checked: usize,
+    /// Every item's text and checked state, in display order.
+    pub items: Vec<IndexItem>,
     /// Each live attachment's kind and file name, in display order. Names are
     /// searched; what is in a picture or a recording is not, since reading it
     /// would take OCR or transcription this device does not do.
@@ -116,10 +128,26 @@ impl IndexEntry {
         Some(entry)
     }
 
-    /// What a card previews: the body's lines, then the items. Both, whatever
-    /// the kind, for the reason [`crate::crdt::NoteView`] gives.
+    /// What a card previews: the body's lines, then the items still to do. A
+    /// crossed-off item is finished rather than forgotten, so it stays in the
+    /// note — and in a search — but does not use up a line of the card. Both
+    /// body and items whatever the kind, for the reason
+    /// [`crate::crdt::NoteView`] gives.
     pub fn preview(&self) -> impl Iterator<Item = &String> {
-        self.body.iter().chain(self.items.iter())
+        self.body.iter().chain(
+            self.items
+                .iter()
+                .filter(|item| !item.checked)
+                .map(|item| &item.text),
+        )
+    }
+
+    /// Every line a search may match, whether or not a card would show it.
+    fn searchable_lines(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.title)
+            .chain(self.body.iter())
+            .chain(self.items.iter().map(|item| &item.text))
+            .chain(self.attachments.iter().map(|(_, name)| name))
     }
 
     /// How many live attachments of `kind` the note has.
@@ -146,19 +174,14 @@ impl IndexEntry {
         if terms.is_empty() {
             return None;
         }
-        let lines = || {
-            std::iter::once(&self.title)
-                .chain(self.preview())
-                .chain(self.attachments.iter().map(|(_, name)| name))
-        };
         let holds = |line: &str, term: &String| line.to_lowercase().contains(term.as_str());
         if !terms
             .iter()
-            .all(|term| lines().any(|line| holds(line, term)))
+            .all(|term| self.searchable_lines().any(|line| holds(line, term)))
         {
             return None;
         }
-        lines()
+        self.searchable_lines()
             .find(|line| terms.iter().any(|term| holds(line, term)))
             .map(String::as_str)
     }
@@ -193,12 +216,11 @@ mod tests {
     fn an_entry_from_before_colour_was_shared_still_reads() {
         let old = r#"{
             "collaborators": [],
-            "version": 6,
+            "version": 7,
             "kind": "checklist",
             "title": "groceries",
             "body": [],
-            "items": ["milk"],
-            "checked": 0,
+            "items": [{"text": "milk", "checked": false}],
             "attachments": [],
             "cover": null,
             "log_len": 3
@@ -218,7 +240,6 @@ mod tests {
             title: String::new(),
             body: Vec::new(),
             items: Vec::new(),
-            checked: 0,
             attachments: Vec::new(),
             cover: None,
             colour: Some(Colour::Teal),
