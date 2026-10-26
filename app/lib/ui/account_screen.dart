@@ -37,6 +37,7 @@ class AccountScreen extends StatefulWidget {
     this.profile,
     this.onDeleted,
     this.creating = false,
+    this.joining = false,
   });
 
   final Accounts library;
@@ -46,6 +47,11 @@ class AccountScreen extends StatefulWidget {
   /// device and deletion rows, and closes once there is an account to go
   /// back to.
   final bool creating;
+
+  /// The join flow's way in: the account step is one step before opening a
+  /// shared note, not a general setup screen. It keeps the explanation to
+  /// the twelve words and what they are for.
+  final bool joining;
 
   /// What the app does once the account is deleted: open this profile again,
   /// empty. Called after this screen has closed itself.
@@ -84,8 +90,11 @@ class _AccountScreenState extends State<AccountScreen> {
     // The route below is where they are shown and where they die.
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) =>
-            RecoveryPhraseScreen(words: words, ask: widget.ask),
+        builder: (context) => RecoveryPhraseScreen(
+          words: words,
+          ask: widget.ask,
+          joining: widget.joining,
+        ),
       ),
     );
     if (!mounted) return;
@@ -102,6 +111,7 @@ class _AccountScreenState extends State<AccountScreen> {
         builder: (context) => AdoptAccountScreen(
           library: widget.library,
           profile: widget.profile,
+          joining: widget.joining,
         ),
       ),
     );
@@ -190,8 +200,13 @@ class _AccountScreenState extends State<AccountScreen> {
       rethrow;
     }
     final accountExplanation = widget.creating
-        ? 'Your account is the twelve words. They are the only way to get '
-              'your notes back on another device. '
+        ? widget.joining
+              ? 'This note is kept where you both can open it. EasyNotes '
+                    'needs twelve words that belong to you: write them down, '
+                    'and they bring your notes back on a new phone. It takes '
+                    'a minute. '
+              : 'Your account is the twelve words. They are the only way to '
+                    'get your notes back on another device. '
         : widget.profile?.url == null
         ? 'Sync is off. Your notes stay on this device and are not backed '
               'up anywhere. Set up sync in Sync & devices to use them on '
@@ -249,10 +264,10 @@ class _AccountScreenState extends State<AccountScreen> {
               const SizedBox(height: 12),
               Text(
                 '$accountExplanation'
-                '${widget.creating ? 'Your account is a recovery phrase, not '
-                          'a password or email. Write the twelve words down and '
-                          'keep them safe: anyone with the phrase can access your '
-                          'notes.' : ''}',
+                '${widget.creating && !widget.joining ? 'Your account is a '
+                          'recovery phrase, not a password or email. Write the '
+                          'twelve words down and keep them safe: anyone with '
+                          'the phrase can access your notes.' : ''}',
               ),
               if (widget.creating) ...[
                 const SizedBox(height: 24),
@@ -266,7 +281,11 @@ class _AccountScreenState extends State<AccountScreen> {
                 OutlinedButton.icon(
                   key: const Key('adopt-account-button'),
                   icon: const Icon(Icons.edit_note),
-                  label: const Text('Use recovery phrase'),
+                  label: Text(
+                    widget.joining
+                        ? 'I already have twelve words'
+                        : 'Use recovery phrase',
+                  ),
                   onPressed: _busy ? null : _adopt,
                 ),
               ],
@@ -294,7 +313,9 @@ class _AccountScreenState extends State<AccountScreen> {
       appBar: AppBar(
         title: Text(
           widget.creating
-              ? 'Set up your account'
+              ? (widget.joining
+                    ? 'One step before you join'
+                    : 'Set up your account')
               : (has ? 'Your devices' : 'Your account'),
         ),
       ),
@@ -332,12 +353,22 @@ class _AccountScreenState extends State<AccountScreen> {
 /// this. What cannot happen is the quiet version, a tap past the words that
 /// looks like finishing.
 class RecoveryPhraseScreen extends StatefulWidget {
-  const RecoveryPhraseScreen({super.key, required this.words, this.ask});
+  const RecoveryPhraseScreen({
+    super.key,
+    required this.words,
+    this.ask,
+    this.joining = false,
+  });
 
   final List<String> words;
 
   /// Which words to ask for, 1-based. Random when null.
   final List<int>? ask;
+
+  /// The join flow's copy: the words bring the note back on a new phone. The
+  /// account-transfer tour belongs to the setup screen, not to somebody who
+  /// opened a link.
+  final bool joining;
 
   @override
   State<RecoveryPhraseScreen> createState() => _RecoveryPhraseScreenState();
@@ -442,7 +473,13 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_checking ? 'Check your words' : 'Your recovery phrase'),
+          title: Text(
+            _checking
+                ? 'Check your words'
+                : (widget.joining
+                      ? 'Save these twelve words'
+                      : 'Your recovery phrase'),
+          ),
         ),
         body: _checking ? _checkBody() : _wordsBody(),
       ),
@@ -454,13 +491,18 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        const Text(
-          'Write these twelve words down, in order, on paper. Use them to '
-          'restore your account on another device. If you can still use this '
-          'device, you can also transfer account access with a one-time QR '
-          'code. The new device needs the same sync server and its separate '
-          'access key, if the server has one. These words will not be shown '
-          'again.',
+        Text(
+          widget.joining
+              ? 'Write these twelve words down, in order, on paper. They '
+                    'bring your notes back on a new phone, and they will not '
+                    'be shown again. Keep them to yourself: they are the way '
+                    'into your notes.'
+              : 'Write these twelve words down, in order, on paper. Use them '
+                    'to restore your account on another device. If you can '
+                    'still use this device, you can also transfer account '
+                    'access with a one-time QR code. The new device needs the '
+                    'same sync server and its separate access key, if the '
+                    'server has one. These words will not be shown again.',
         ),
         const SizedBox(height: 20),
         // Two columns of six, numbered, so that a word copied into the wrong
@@ -504,9 +546,11 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        const Text(
-          'Anyone who has these words has your notes. Do not photograph them '
-          'or keep them in another app.',
+        Text(
+          widget.joining
+              ? 'Keep them to yourself: they are the way into your notes.'
+              : 'Anyone who has these words has your notes. Do not photograph '
+                    'them or keep them in another app.',
         ),
         const SizedBox(height: 24),
         FilledButton(
@@ -574,13 +618,22 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
 /// field serves both. The core is the judge of whether the words are a phrase —
 /// it knows the wordlist and the checksum — so all this counts is how many.
 class AdoptAccountScreen extends StatefulWidget {
-  const AdoptAccountScreen({super.key, required this.library, this.profile});
+  const AdoptAccountScreen({
+    super.key,
+    required this.library,
+    this.profile,
+    this.joining = false,
+  });
 
   final Accounts library;
 
   /// Where the account's notes come from: the relay this profile uses, and
   /// only that one.
   final RelayProfile? profile;
+
+  /// The join flow's way in: an existing account on the note's server, with
+  /// the server-switching instructions left out of the way.
+  final bool joining;
 
   @override
   State<AdoptAccountScreen> createState() => _AdoptAccountScreenState();
@@ -632,29 +685,40 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
   Widget build(BuildContext context) {
     final count = _count;
     return Scaffold(
-      appBar: AppBar(title: const Text('Use your recovery phrase')),
+      appBar: AppBar(
+        title: Text(
+          widget.joining ? 'Use your twelve words' : 'Use your recovery phrase',
+        ),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          const Text(
-            'Type the twelve words you wrote down when you set up your '
-            'account, in order. The notes already on this device are kept.',
+          Text(
+            widget.joining
+                ? 'Type the twelve words you wrote down when you set up '
+                      'EasyNotes, in order. Your notes on this device stay '
+                      'where they are.'
+                : 'Type the twelve words you wrote down when you set up your '
+                      'account, in order. The notes already on this device are '
+                      'kept.',
           ),
-          if (widget.profile case final profile?) ...[
-            const SizedBox(height: 12),
-            Text(
-              profile.url == null
-                  ? 'This device is not using a sync server, so your notes '
-                        'cannot come back until you choose the server you used '
-                        'before in Sync & devices → Sync server.'
-                  : 'Your notes come back from ${profile.url}. If you used a '
-                        'different server before, choose it in Sync & devices '
-                        '→ Sync server '
-                        'first: a phrase restores nothing from another server. '
-                        '${profile.access == null ? 'If this server has an access key, add it there too: the phrase does not include it.' : 'This server\'s access key is saved; the phrase does not include it.'}',
-              key: const Key('adopt-relay'),
-            ),
-          ],
+          if (!widget.joining)
+            if (widget.profile case final profile?) ...[
+              const SizedBox(height: 12),
+              Text(
+                profile.url == null
+                    ? 'This device is not using a sync server, so your notes '
+                          'cannot come back until you choose the server you '
+                          'used before in Sync & devices → Sync server.'
+                    : 'Your notes come back from ${profile.url}. If you used '
+                          'a different server before, choose it in Sync & '
+                          'devices → Sync server '
+                          'first: a phrase restores nothing from another '
+                          'server. '
+                          '${profile.access == null ? 'If this server has an access key, add it there too: the phrase does not include it.' : 'This server\'s access key is saved; the phrase does not include it.'}',
+                key: const Key('adopt-relay'),
+              ),
+            ],
           const SizedBox(height: 20),
           TextField(
             key: const Key('adopt-phrase-field'),

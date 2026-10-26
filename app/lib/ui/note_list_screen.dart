@@ -634,7 +634,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _join({String? initialLink}) async {
     // Joining needs an account and a name; the first time, this asks for them
     // and carries straight on.
-    if (!await ensureSharingSetUp(context, widget.library) || !mounted) return;
+    if (!await ensureSharingSetUp(context, widget.library, joining: true) ||
+        !mounted) {
+      return;
+    }
     final join = await showDialog<PendingJoin>(
       context: context,
       builder: (context) => JoinDialog(

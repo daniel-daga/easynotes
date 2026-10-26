@@ -406,7 +406,7 @@ void main() {
       );
     });
 
-    testWidgets('joining by link names the relay both people need', (
+    testWidgets('joining by link names the shared note, not the relay', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -418,8 +418,86 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('Joining through https://relay.example'),
+        find.textContaining('Joining adds the note'),
         findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          RegExp('relay|server|key|encrypt|ciphertext', caseSensitive: false),
+        ),
+        findsNothing,
+      );
+    });
+  });
+
+  group('joining a shared note', () {
+    const relay = RelayProfile(id: 'relay', url: 'https://relay.example');
+
+    testWidgets('the account step explains the twelve words, not the server', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AccountScreen(
+            library: FakeNoteLibrary(),
+            creating: true,
+            joining: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('One step before you join'), findsOneWidget);
+      expect(find.textContaining('needs twelve words'), findsOneWidget);
+      expect(
+        find.textContaining(
+          RegExp('server|access key|encrypt|ciphertext', caseSensitive: false),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('the recovery screen is about the new phone, not transfer', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RecoveryPhraseScreen(
+            words: FakeNoteLibrary.phrase,
+            joining: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Save these twelve words'), findsOneWidget);
+      expect(find.textContaining('new phone'), findsOneWidget);
+      expect(
+        find.textContaining(
+          RegExp('server|access key|encrypt|ciphertext|QR', caseSensitive: false),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('an existing account comes in without server instructions', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AdoptAccountScreen(
+            library: FakeNoteLibrary(),
+            profile: relay,
+            joining: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Use your twelve words'), findsOneWidget);
+      expect(find.textContaining('this device stay'), findsOneWidget);
+      expect(
+        find.textContaining(
+          RegExp('server|access key|encrypt|ciphertext', caseSensitive: false),
+        ),
+        findsNothing,
       );
     });
   });
