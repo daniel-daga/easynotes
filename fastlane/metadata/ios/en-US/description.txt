@@ -1,22 +1,21 @@
-EasyNotes is notes and checklists in the style of Google Keep, where every note is encrypted on your device before it goes anywhere.
+EasyNotes is a Google Keep-style notes and lists app for Android and the web, with one difference: the relay holds ciphertext and cannot read your notes.
 
-LOCAL FIRST
-EasyNotes starts on your device only. Nothing is sent anywhere until you choose a sync server in Sync settings. There is no built-in cloud and no default server.
+THE SHAPE YOU KNOW
+A grid of notes and checklists, colours, pins, labels, reminders and search that works offline. If you have used Keep, you already know where everything is.
 
-SYNC THROUGH A SERVER YOU CHOOSE
-A sync server stores and forwards encrypted notes and cannot read them — not titles, not text, not labels, colours or reminders. You can run one yourself; the server is part of this project's source.
+THE DIFFERENCE
+Every note is sealed on your device before it goes anywhere. The relay that stores and forwards it holds ciphertext, not titles, text, labels, colours or reminders. You can run the relay yourself; its operator still cannot read your lists.
 
-SHARE WITHOUT AN EMAIL ACCOUNT
-Send a link. The first person to open it joins the list, and edits appear live on every device. You can remove people again, and stop sharing altogether.
+SHARE WITH A LINK
+Send one link. The first person to open it is on the note, and edits appear live on both devices. No email address, no invitation queue, no approval step. Remove someone later, or stop sharing.
 
-NO ACCOUNT TO SIGN UP FOR
-Your account is twelve words you write down once. Enter them on another device to get your notes there. Without them nobody can restore your notes, including the server's operator.
-
-Also: labels, colours, pins, an archive, the trash, reminders, offline search, voice notes, and notes shared into it from other apps.
+NO EMAIL ADDRESS OR PASSWORD
+Your account is twelve words you write down once. Enter them on another device to get your notes there. Without them nobody can restore your notes, including the relay's operator.
 
 WORTH KNOWING BEFORE YOU START
+• The encryption has had one internal review and no external audit yet. Do not rely on EasyNotes for anything where a flaw would put someone at risk.
 • Notes kept only on this device are not backed up. Losing the device loses them.
-• Each sync server keeps its own notes. Switching servers does not move them.
-• Deleting a list or your account removes it from the server, but not the copies held by people you shared it with.
+• Each relay keeps its own notes. Switching relay does not move them.
+• Deleting a note or your account removes it from the relay, but not the copies of people you shared it with.
 
 No analytics, no advertising, no crash reporting. Free software under the GNU Affero GPL, version 3 or later.

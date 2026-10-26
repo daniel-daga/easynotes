@@ -1,20 +1,19 @@
-<p>Notes and checklists in the style of Google Keep, where every note is encrypted on your device before it goes anywhere.</p>
+<p><b>EasyNotes is a Google Keep-style notes and lists app for Android and the web, with one difference: the relay holds ciphertext and cannot read your notes.</b></p>
 
-<p><b>Local first.</b> EasyNotes starts on your device only. Nothing is sent anywhere until you choose a relay in Relay settings. There is no built-in cloud and no default server.</p>
+<p><b>The shape you know.</b> A grid of notes and checklists, colours, pins, labels, reminders and search that works offline. If you have used Keep, you already know where everything is.</p>
 
-<p><b>Sync through a relay.</b> A relay stores and forwards encrypted notes and cannot read them: not titles, not text, not labels, colours or reminders. You can run one yourself; the relay is part of this project's source.</p>
+<p><b>The difference.</b> Every note is sealed on your device before it goes anywhere. The relay that stores and forwards it holds ciphertext, not titles, text, labels, colours or reminders. You can run the relay yourself; its operator still cannot read your lists.</p>
 
-<p><b>Share without an email account.</b> Send a link. The first person to open it joins the list, and edits appear live on every device. You can remove people again, and stop sharing altogether.</p>
+<p><b>Share with a link.</b> Send one link. The first person to open it is on the note, and edits appear live on both devices. No email address, no invitation queue, no approval step. Remove someone later, or stop sharing.</p>
 
-<p><b>No account to sign up for.</b> Your account is twelve words you write down once. Enter them on another device to get your notes there. Without them nobody can restore your notes, including the relay's operator.</p>
-
-<p>Also: labels, colours, pins, an archive, the trash, reminders, search that works offline, and notes shared into it from other apps.</p>
+<p><b>No email address or password.</b> Your account is twelve words you write down once. Enter them on another device to get your notes there. Without them nobody can restore your notes, including the relay's operator.</p>
 
 <p><b>Worth knowing before you start:</b></p>
 <ul>
+<li>The encryption has had one internal review and no external audit yet. Do not rely on EasyNotes for anything where a flaw would put someone at risk.</li>
 <li>Notes kept only on this device are not backed up. Losing the device loses them.</li>
 <li>Each relay keeps its own notes. Switching relay does not move them.</li>
-<li>Deleting a list or your account removes it from the relay, but not the copies of people you shared it with.</li>
+<li>Deleting a note or your account removes it from the relay, but not the copies of people you shared it with.</li>
 <li>The F-Droid build and the Google Play build are signed differently. You cannot switch between them without uninstalling, which removes notes kept only on this device.</li>
 </ul>
 

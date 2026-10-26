@@ -1,1 +1,1 @@
-notes,checklist,encrypted,encryption,secure,lists,shared,sync,keep
+notes,checklist,keep,encrypted,private,shared,lists,sync,offline
