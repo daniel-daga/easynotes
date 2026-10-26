@@ -84,8 +84,10 @@ services:
       - "127.0.0.1:${RELAY_METRICS_PORT:-19090}:9090"
 
   # Optional browser app. Its image builds the Flutter app from this repository
-  # (Dockerfile.web), so nothing has to be copied onto the NAS. The first build
-  # downloads Flutter and takes a while; later builds reuse the layers.
+  # (Dockerfile.web), so nothing has to be copied onto the NAS. It needs an
+  # x86_64 NAS and outbound network: Flutter publishes no Linux ARM64 SDK. The
+  # first build downloads Flutter and takes a while; later builds reuse the
+  # toolchain layers.
   web:
     container_name: easynotes-web
     build:

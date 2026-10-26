@@ -14,13 +14,15 @@ keep the repository structure intact.
 
 In that folder, copy `.env.example` to `.env`. Edit `.env`:
 
-- To serve the browser app from this project, build it on a computer with the
-  web toolchain (`just setup-web`, then `just build-web`) and copy the contents
-  of `app/build/web` to the same path in the NAS project folder. The build is
-  static and works across NAS CPU architectures. In `.env`, set
-  `COMPOSE_PROFILES=web` to enable the optional web container; leave it empty
-  to run only the relay and database. `WEB_PORT` defaults to `18081` and is
-  bound to the NAS loopback for DSM's reverse proxy.
+- The browser app is optional: set `COMPOSE_PROFILES=web` in `.env` to include
+  it, or leave it empty for a relay-and-database-only install; after clearing
+  the setting, stop the existing web container (its name ends in
+  `easynotes-web`). Its image is built from this repository on the NAS by
+  `update.sh` (or Container Manager's **Build**), so nothing has to be copied
+  there. It needs an x86_64 NAS — Flutter publishes no Linux ARM64 SDK — and
+  outbound network; the first build downloads Flutter and the wasm toolchain
+  and takes a while. `WEB_PORT` defaults to `18081` and is bound to the NAS
+  loopback for DSM's reverse proxy.
 - Set `RELAY_ALLOWED_ORIGINS` to the exact browser-app origin, such as
   `https://notes.example.net`. This is required for browser-to-relay sync.
   Native apps do not send browser origins; if you only use native apps, set it
@@ -86,13 +88,23 @@ In **Container Manager → Project → Create**:
 3. Choose the Compose file `compose.synology.yaml`.
 4. Build the project, then start it.
 
-The first build compiles Rust and can take a while on the NAS. The relay runs
-database schema migrations when it starts. Check the relay container log for
-`relay listening`. Container Manager should then show the relay as
-**healthy**: the Compose file checks `/v1/ready` from inside the container every
-30 seconds, which means the relay is up and its database answers. After
-configuring the reverse proxy in the next step, check that its health endpoint
-returns HTTP 200.
+Alternatively, skip the project creation and run
+`/volume1/docker/easynotes/deploy/synology/update.sh` over SSH; on a first run
+it creates the stack itself, using `COMPOSE_PROJECT_NAME` or the repository
+folder name as the Compose project. Choose one route or the other.
+
+A stack created by `update.sh` is not a Container Manager project: rerun
+`update.sh` to update it or to apply a changed `.env`; Container Manager's
+container list can still stop and start its containers.
+
+The first build compiles Rust and, when `COMPOSE_PROFILES=web` is set, the
+Flutter app; it can take a long time, and later builds reuse Docker's layers.
+See section 4 for updates. The relay runs database schema migrations when it
+starts. Check the relay container log for `relay listening`. Container Manager
+should then show the relay as **healthy**: the Compose file checks `/v1/ready`
+from inside the container every 30 seconds, which means the relay is up and its
+database answers. After configuring the reverse proxy in the next step, check
+that its health endpoint returns HTTP 200.
 
 ## 3. Add the DSM reverse proxy
 
@@ -201,21 +213,32 @@ To update, copy/pull the new repository version, then run over SSH:
 /volume1/docker/easynotes/deploy/synology/update.sh
 ```
 
-It takes a backup first, rebuilds the relay image, recreates the containers,
-and waits until the relay reports healthy, printing its recent log if it does
-not. Container Manager may prefix container names with a hash of its own
-(`c86b..._easynotes-db`); the scripts match the compose name at the end, and
-`update.sh` reads the compose project from the relay's labels, so it updates
-that stack instead of creating a second one. If it cannot find the project,
-set `COMPOSE_PROJECT_NAME` in `.env` to the project's name in Container
-Manager, or update from the Project page instead. In Container Manager the
-same is **Project → Action → Build** then **Start**. The database directory is separate
-from the containers and survives normal rebuilds. A stop is graceful: the relay
-stops taking connections, closes every device's sync socket cleanly so the app
-reconnects on its own, and gives uploads in flight up to eight seconds
-(`RELAY_DRAIN_SECONDS`) to finish before it exits. The log says `stopped
-cleanly`, or that the drain period ran out; the second costs a device a resumed
-upload, not data. Do not remove the project's
+It takes a backup first, rebuilds the relay image and, when
+`COMPOSE_PROFILES=web` is set, the web image, recreates the containers, and
+waits until the relay reports healthy, printing recent logs if it does not. The
+backup is skipped only when there is neither an `easynotes-db` container nor
+`$NAS_DATA_DIR/postgres`; an unreadable or non-literal `NAS_DATA_DIR` stops the
+update instead of skipping the backup. On a fresh install it creates the stack
+itself (project name from `COMPOSE_PROJECT_NAME`, else the repository folder
+name) and skips the backup. Container Manager may prefix container names with a
+hash of its own (`c86b..._easynotes-db`); the scripts match the compose name at
+the end, and `update.sh` reads the compose project from the service
+containers' labels, so it updates that stack instead of creating a second one.
+For a Container Manager project, if `update.sh` cannot find the project, set
+`COMPOSE_PROJECT_NAME` in `.env` to the project's name in Container Manager, or
+update from the Project page instead. In Container Manager the same is
+**Project → Action → Build** then **Start**.
+The web app and `deploy/synology/nginx-web.conf` are baked into the web image,
+so changing either needs a rebuild — rerun `update.sh` with
+`COMPOSE_PROFILES=web` set — not a file copy. On an ARM NAS or one without
+outbound network, do not enable the web image: leave `COMPOSE_PROFILES` empty
+and stop the existing web container (its name ends in `easynotes-web`). The
+database directory is separate from the containers and survives normal
+rebuilds. A stop is graceful: the relay stops taking connections, closes
+every device's sync socket cleanly so the app reconnects on its own, and gives
+uploads in flight up to eight seconds (`RELAY_DRAIN_SECONDS`) to finish before
+it exits. The log says `stopped cleanly`, or that the drain period ran out; the
+second costs a device a resumed upload, not data. Do not remove the project's
 data directory when cleaning up containers.
 
 On start the relay brings its database up to date by itself, applying any new
@@ -287,10 +310,12 @@ handshake. To rotate:
 
 1. Generate a new key with the command in step 1, and replace the value in
    `.env`. Update your protected backup at the same time.
-2. Recreate the relay container (**Project → Action → Stop**, then **Start**). If
-   you run more than one relay instance, give every instance the new key before
-   starting any of them. An instance still on the old key would refuse tokens
-   issued by the others.
+2. Recreate the relay container by rerunning `update.sh`. Do not only stop and
+   start it from Container Manager's container list: a container's environment
+   is fixed when it is created, so the new key would not take effect. If you run
+   more than one relay instance, give every instance the new key before starting
+   any of them. An instance still on the old key would refuse tokens issued by
+   the others.
 3. Check the log line above, then `/v1/health`.
 
 Rotate after the key may have leaked (an `.env` copied somewhere it should not
@@ -332,12 +357,14 @@ note: those are encrypted under keys the relay never holds.
 
 **Rotating** takes the key away from people who should no longer have it:
 
-1. Add a new key beside the old one, comma separated, and restart the relay.
-   Both work.
+1. Add a new key beside the old one, comma separated, and recreate the relay
+   by rerunning `update.sh`. Both keys work. A stop and start alone keeps the
+   old environment, so the new key would not be read.
 2. Hand the new relay link to everyone who should keep using the relay. Each
    device enters it under **Settings → Relay → Change access key**.
-3. Once they have, remove the old key and restart. A device still on it is
-   told the relay needs an access key, and its notes stay on the device.
+3. Once they have, remove the old key and recreate the relay by rerunning
+   `update.sh`. A device still on it is told the relay needs an access key, and
+   its notes stay on the device.
 
 Tokens already issued last up to fifteen minutes, so a removed key stops
 working within that. Rotating the signing key (step 6) at the same time ends it
@@ -355,9 +382,19 @@ with an old key, or a stranger who found the hostname.
 
 - **Container Manager cannot build:** confirm it has access to the full
   repository, including the workspace crates and `Cargo.lock`.
+- **The web image build fails:** it needs outbound network for the Flutter SDK,
+  crates, pub and `wasm-pack`'s binaryen, several GB free for Docker's build
+  cache, and an x86_64 NAS. Check the first failed download or compile in the
+  build log; on an ARM or offline NAS, leave `COMPOSE_PROFILES` empty, stop the
+  existing web container (its name ends in `easynotes-web`), and run the relay
+  only.
+- **You changed the web app or `nginx-web.conf` and nothing happened:**
+  there is no build output to copy onto the NAS: pull or copy the changed
+  repository there, then rerun `update.sh` with `COMPOSE_PROFILES=web` set,
+  which rebuilds the image and recreates the container.
 - **Browser handshake fails:** check the browser page's exact origin in
-  `RELAY_ALLOWED_ORIGINS` (scheme and hostname; no path), then recreate/restart
-  the relay container after editing `.env`.
+  `RELAY_ALLOWED_ORIGINS` (scheme and hostname; no path), then recreate the
+  relay container after editing `.env`.
 - **WebSocket fails but health works:** check the DSM reverse proxy's WebSocket
   custom header and confirm the client uses `wss://` through the HTTPS hostname.
 - **Relay does not start:** check that Postgres is healthy and inspect the
