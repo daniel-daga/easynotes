@@ -1,15 +1,18 @@
 # EasyNotes
 
-End-to-end encrypted notes and lists — a Google Keep–style app where every note
-is encrypted on the device, lists can be edited live by several people, and
-sharing needs no email account.
+**Keep, but nobody can read it.** EasyNotes is a Google Keep-style notes and
+lists app for Android and the web. Every note is sealed on the device before it
+syncs, so the relay that stores it holds ciphertext and nothing else. A shared
+note gets its second person in with a link, not an email address.
 
 [![CI](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml/badge.svg)](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](COPYING.md)
 
 One Rust core handles crypto, CRDT merging, storage and sync. It drives a
-Flutter UI on Android, iOS, Linux, Windows and the web, and talks to a relay
-that stores and forwards ciphertext and nothing else.
+Flutter UI on Android and the web — the two platforms exercised on hardware and
+in browser tests — and builds for iOS, Linux and Windows without claiming them
+for this launch. It talks to a relay that stores and forwards ciphertext and
+nothing else.
 
 ---
 
@@ -30,6 +33,19 @@ that stores and forwards ciphertext and nothing else.
 > **Not audited.** There has been one internal review of the cryptography, and no
 > external audit. Do not rely on EasyNotes for anything where a flaw would put
 > someone at risk. See [`SECURITY.md`](SECURITY.md).
+
+## How it compares
+
+Three apps people actually consider, and the gap that matters.
+
+| App | What it gets right | Where it leaves a gap |
+| --- | --- | --- |
+| **Google Keep** | Free, instant, live shared lists, on Android and the web. | Google can read every note, and a Google account is required. |
+| **Apple Notes** | Fast, free, live shared notes. | End-to-end encryption needs Advanced Data Protection turned on; Apple devices only. |
+| **CryptPad** | Encrypted, live collaboration, self-hostable, and usable without an account. | A document suite, not a Keep-style list; no native mobile app. |
+
+EasyNotes is the one that keeps Keep's shape, encrypts by default, and gets the
+second person in with a link.
 
 ## Features
 
