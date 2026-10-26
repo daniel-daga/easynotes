@@ -1,0 +1,8 @@
+Updates since v0.1.6:
+
+- An invite is now a link a messenger can tap: it opens the note, joins through your relay, and works before the app is set up
+- The Share action shows the people on a note, and a rename now reaches every shared copy
+- Crossed-off items stay out of a card's preview, so the card shows what is still to do
+- Shared typing waits for a pause instead of arriving as small bursts
+- Deleting your account leaves the lists you joined and removes you from their People lists
+- A relay now always has its account, set up in one place under Sync & devices
