@@ -75,8 +75,10 @@ fi
 
 # Container Manager on DSM 7.1 and earlier ships `docker-compose`; 7.2 ships
 # the `docker compose` plugin. Use whichever this NAS has.
+compose_v2=0
 if docker compose version >/dev/null 2>&1; then
     dc_compose() { docker compose "$@"; }
+    compose_v2=1
 elif command -v docker-compose >/dev/null 2>&1; then
     dc_compose() { docker-compose "$@"; }
 else
@@ -151,21 +153,39 @@ else
     printf 'No database container or data directory yet; skipping the pre-update backup.\n'
 fi
 
-# The profile comes from .env (or the environment) and Compose resolves it for
-# us, so a profile-disabled web service is never built.
 if ! services=$(compose config --services); then
     printf 'error: cannot read the compose service list\n' >&2
     exit 1
 fi
 services=$(printf '%s\n' "$services" | tr -d '\r')
+
+# `docker compose` v2 filters `config --services` by the active profile, but
+# docker-compose v1 (which DSM 7.1 has) prints every service. Read
+# COMPOSE_PROFILES itself on that path, so a disabled web service is not built:
+# on an ARM or offline NAS that build fails and takes the relay update with it.
 web=0
-case "
+if [ "$compose_v2" = 1 ]; then
+    case "
 $services
 " in
-    *"
+        *"
 web
 "*) web=1 ;;
-esac
+    esac
+else
+    profiles=${COMPOSE_PROFILES-}
+    if [ -z "${COMPOSE_PROFILES+x}" ]; then
+        profiles=$(sed -n 's/^[[:space:]]*COMPOSE_PROFILES[[:space:]]*=[[:space:]]*//p' .env |
+            tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+        case "$profiles" in
+            \"*\") profiles=${profiles#\"}; profiles=${profiles%\"} ;;
+            \'*\") profiles=${profiles#\'}; profiles=${profiles%\'} ;;
+        esac
+    fi
+    case " $(printf '%s' "$profiles" | tr ',' ' ') " in
+        *" web "*|*" * "*) web=1 ;;
+    esac
+fi
 
 printf 'Building the relay image...\n'
 compose build relay
