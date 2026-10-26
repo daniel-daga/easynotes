@@ -31,7 +31,7 @@ case "$*" in
             exit 1
         fi
         if [ "${V1:-0}" = 1 ]; then
-            printf 'db relay web\n'
+            printf 'db\nrelay\nweb\n'
         else
             printf 'db\nrelay\n'
             [ "${SERVICES_WEB:-1}" = 1 ] && printf 'web\n'
@@ -306,6 +306,62 @@ printf 'COMPOSE_PROFILES=web\n' >> "$root/.env"
 LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
     "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
         echo "scenario 18 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 19: a single-quoted profile from .env.
+root=$work/v1-single-quoted-profile
+make_tree "$root"
+printf "COMPOSE_PROFILES='web'\n" >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 19 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 20: an export line in .env.
+root=$work/v1-export-profile
+make_tree "$root"
+printf 'export COMPOSE_PROFILES=web\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 20 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 21: an exported profile wins over an empty .env value.
+root=$work/v1-exported-profile
+make_tree "$root"
+printf 'COMPOSE_PROFILES=\n' >> "$root/.env"
+COMPOSE_PROFILES=web LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 21 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 22: a comma-separated profile list.
+root=$work/v1-profile-list
+make_tree "$root"
+printf 'COMPOSE_PROFILES=web,debug\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 22 failed:"; cat "$root/out"; exit 1; }
+grep -q 'build web' "$root/log"
+
+# Scenario 23: webhook is not the web profile.
+root=$work/v1-webhook-profile
+make_tree "$root"
+printf 'COMPOSE_PROFILES=webhook\n' >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 23 failed:"; cat "$root/out"; exit 1; }
+if grep -q 'build web' "$root/log"; then
+    echo "scenario 23: webhook was mistaken for web"; exit 1
+fi
+
+# Scenario 24: a single-quoted comma-separated list.
+root=$work/v1-quoted-list
+make_tree "$root"
+printf "COMPOSE_PROFILES='web,debug'\n" >> "$root/.env"
+LOG=$root/log RELAY_STATE=$root/relay PATH=$root/bin:$PATH EXISTING=0 V1=1 \
+    "$root/deploy/synology/update.sh" > "$root/out" 2>&1 || {
+        echo "scenario 24 failed:"; cat "$root/out"; exit 1; }
 grep -q 'build web' "$root/log"
 
 echo "update.sh tests passed"
