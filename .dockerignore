@@ -2,6 +2,10 @@
 # manifests of the other workspace members, and third_party/. Everything here
 # is either the repository's own history or an artifact of another toolchain
 # that the build context does not need.
+# The NAS stack's secrets. Neither image reads them, but every build otherwise
+# uploads them to the Docker daemon with the context.
+.env
+.env.*
 .git
 .github
 target
