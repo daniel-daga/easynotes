@@ -15,6 +15,19 @@ library;
 
 import 'package:flutter/widgets.dart';
 
+/// How long a field waits for this person to pause before it takes a remote
+/// change to the same text.
+///
+/// The relay delivers whole batches now ([ADR 0016]), but a batch can still land
+/// between two of this person's keystrokes. Taking it immediately moves the words
+/// under the caret; waiting for a pause means it arrives between words, which is
+/// where someone else's edit belongs. Nothing waits this long on its own: a
+/// keystroke restarts it.
+///
+/// 1.5 s is shorter than the engine's six-second quiet, so a change does not
+/// wait for the next send as well.
+const typingGrace = Duration(milliseconds: 1500);
+
 /// Whether a view is this field's own echo, and so has nothing to adopt.
 ///
 /// [mine] is the newest revision the field has accounted for: the revision its

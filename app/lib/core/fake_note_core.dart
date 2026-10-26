@@ -126,6 +126,26 @@ class FakeNoteCore implements NoteCore {
   }
 
   @override
+  Future<int> editItemText(String itemId, String from, String to) async {
+    // What the real core does, in miniature: the field's splice is replayed
+    // onto what the line says now, so an edit made while somebody else wrote
+    // the same line keeps both. Recorded like [setItemText] because that is
+    // what a test means by it.
+    edits.add('setItemText($itemId, $to)');
+    final item = _find(itemId);
+    item.text = _replay(from, to, item.text);
+    return _emit().rev;
+  }
+
+  /// Somebody else's edit to an item, landing in the core the way one from the
+  /// relay does: the line says [text] now, and a view follows. Not recorded in
+  /// [edits], because this device did not make it.
+  Future<void> remoteItemText(String itemId, String text) async {
+    _find(itemId).text = text;
+    _emit();
+  }
+
+  @override
   Future<void> setChecked(String itemId, bool checked) async {
     edits.add('setChecked($itemId, $checked)');
     _find(itemId).checked = checked;
@@ -349,6 +369,39 @@ class FakeNoteCore implements NoteCore {
   /// Zero-padded so string comparison matches numeric order, as the real
   /// fractional index keys do.
   String _key(int i) => i.toString().padLeft(4, '0');
+}
+
+/// [text]'s one splice from [base], replayed at the same place in [current].
+///
+/// A miniature of the core's `text::rebase`, enough for the short lines a
+/// widget test types: where the splice starts in the base is where it starts
+/// in the current text, provided the change before it is an append.
+String _replay(String base, String text, String current) {
+  if (base == current) return text;
+  final at = _commonPrefix(base, text);
+  final tail = _commonSuffix(base, text, at);
+  final inserted = text.substring(at, text.length - tail);
+  final ahead = _commonPrefix(base, current);
+  final start = ahead >= at ? at : ahead;
+  return current.substring(0, start) + inserted + current.substring(start);
+}
+
+int _commonPrefix(String a, String b) {
+  var i = 0;
+  while (i < a.length && i < b.length && a.codeUnitAt(i) == b.codeUnitAt(i)) {
+    i++;
+  }
+  return i;
+}
+
+int _commonSuffix(String a, String b, int prefix) {
+  var i = 0;
+  while (i < a.length - prefix &&
+      i < b.length - prefix &&
+      a.codeUnitAt(a.length - 1 - i) == b.codeUnitAt(b.length - 1 - i)) {
+    i++;
+  }
+  return i;
 }
 
 (String, bool) _parseTaskLine(String line) {

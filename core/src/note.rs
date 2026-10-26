@@ -2806,6 +2806,32 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         )
     }
 
+    /// Set an item's text from an edit that says what it changed.
+    ///
+    /// [`set_item_text`](Self::set_item_text) writes the whole string, so two
+    /// people typing in one item quietly replace each other's words. A screen
+    /// sends the text it was showing and the text it shows now instead, and
+    /// that splice is replayed onto whatever the item says by the time it
+    /// arrives — the same rule a body has ([`crate::text::rebase`]).
+    pub fn edit_item_text(
+        &mut self,
+        id: NoteId,
+        item: ItemId,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<u8>> {
+        self.require_item(id, item)?;
+        let current = self
+            .view(id)?
+            .items
+            .into_iter()
+            .find(|shown| shown.id == item)
+            .map(|shown| shown.text)
+            .unwrap_or_default();
+        let text = crate::text::rebase(from, to, &current);
+        self.apply_local(id, Edit::SetItemText { id: item, text })
+    }
+
     pub fn set_checked(&mut self, id: NoteId, item: ItemId, checked: bool) -> Result<Vec<u8>> {
         self.require_item(id, item)?;
         self.apply_local(id, Edit::SetChecked { id: item, checked })

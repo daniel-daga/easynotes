@@ -206,6 +206,29 @@ fn a_concurrent_rename_and_check_both_survive<D: NoteDoc>() {
     assert!(it.checked, "the check was lost");
 }
 
+/// Two people type into one item, and the one who heard about the other's line
+/// keeps both. An item is a single string, so a plain write replaces the peer's
+/// words; a field sends the splice it made, and the core replays it.
+fn an_item_edit_replays_onto_a_peer_line<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "milk").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    // A appends at the end of the line.
+    let from_a = a.edit_item_text(id, item, "milk", "milk and eggs").unwrap();
+    b.apply_remote(id, &from_a).unwrap();
+
+    // B's field was still showing "milk" and appends after it, so B's splice is
+    // replayed onto A's line rather than replacing it.
+    let from_b = b.edit_item_text(id, item, "milk", "milk, please").unwrap();
+    a.apply_remote(id, &from_b).unwrap();
+
+    let text = a.view(id).unwrap().items[0].text.clone();
+    assert!(text.contains("eggs"), "A's words are gone: {text:?}");
+    assert!(text.contains("please"), "B's words are gone: {text:?}");
+    assert_eq!(text, b.view(id).unwrap().items[0].text, "diverged");
+}
+
 fn a_concurrent_delete_and_edit_do_not_resurrect_a_ghost<D: NoteDoc>() {
     let (mut a, mut b, id) = pair::<D>();
     let (item, e) = a.add_item(id, "bread").unwrap();
@@ -568,6 +591,10 @@ macro_rules! backend_suite {
             #[test]
             fn a_concurrent_rename_and_check_both_survive() {
                 super::a_concurrent_rename_and_check_both_survive::<$backend>()
+            }
+            #[test]
+            fn an_item_edit_replays_onto_a_peer_line() {
+                super::an_item_edit_replays_onto_a_peer_line::<$backend>()
             }
             #[test]
             fn a_concurrent_delete_and_edit_do_not_resurrect_a_ghost() {

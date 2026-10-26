@@ -4304,6 +4304,25 @@ impl Note {
         Ok(rev)
     }
 
+    /// Set an item's text from the field's own edit: the text it was showing
+    /// and the text it shows now. Replayed onto what the item says by the time
+    /// it arrives, so typing in the same item as somebody else keeps both
+    /// people's words.
+    ///
+    /// Returns the revision the edit landed at, like
+    /// [`set_item_text`](Self::set_item_text).
+    pub fn edit_item_text(&self, item: String, from: String, to: String) -> Result<u32, String> {
+        let (envelope, rev) = {
+            let mut core = self.shared.locked()?;
+            let envelope = core
+                .edit_item_text(self.id, item_id(&item)?, &from, &to)
+                .map_err(|e| e.to_string())?;
+            (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
+        };
+        self.send(envelope, true);
+        Ok(rev)
+    }
+
     pub fn set_checked(&self, item: String, checked: bool) -> Result<(), String> {
         let envelope = {
             let mut core = self.shared.locked()?;

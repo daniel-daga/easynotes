@@ -12,6 +12,7 @@ import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
+import 'package:easynotes/ui/live_text.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -888,6 +889,50 @@ void main() {
     expect(visibleItems(tester), ['eggs (12)']);
   });
 
+  testWidgets('a remote change to a row is pointed out rather than silent', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['eggs']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+
+    core.pushRemote(
+      NoteView(
+        title: core.current.title,
+        items: [
+          ItemView(id: id, text: 'eggs (12)', checked: false, order: '0000'),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(ValueKey('flash:$id:1')), findsOneWidget);
+  });
+
+  testWidgets('two people typing in one item keep one line', (tester) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    final id = core.current.items[0].id;
+    final field = find.byKey(ValueKey('text:$id'));
+    final controller = tester.widget<TextField>(field).controller!;
+
+    // This person starts the line.
+    await tester.enterText(field, 'milk and');
+    await tester.pumpAndSettle();
+
+    // The other person's line lands in the core while this row is still open,
+    // and is taken so the next letter builds on it instead of replacing it.
+    await core.remoteItemText(id, 'milk and eggs');
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk and eggs');
+
+    // Carrying on neither duplicates the other person's words nor drops them.
+    await tester.enterText(field, 'milk and eggs, please');
+    await tester.pumpAndSettle();
+    expect(controller.text, 'milk and eggs, please');
+    expect(core.current.items.single.text, 'milk and eggs, please');
+  });
+
   testWidgets('a remote edit to the item being typed in appears in place', (
     tester,
   ) async {
@@ -1359,6 +1404,34 @@ void main() {
       expect(core.edits, isEmpty);
     });
 
+    testWidgets('a remote edit waits until this person pauses', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await pumpScreen(tester, core);
+      final field = find.byKey(const Key('body-text'));
+      final controller = bodyField(tester).controller!;
+
+      await tester.enterText(field, 'milk and');
+
+      // The other device's line arrives between two keystrokes. Taking it now
+      // would move the words under the caret, so it waits for a pause.
+      core.pushRemote(
+        const NoteView(
+          kind: NoteKind.text,
+          title: '',
+          body: 'milk and eggs',
+          items: [],
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(controller.text, 'milk and');
+      expect(controller.selection, const TextSelection.collapsed(offset: 8));
+
+      // A pause, and it lands, with this person's text still in it.
+      await tester.pump(typingGrace);
+      await tester.pumpAndSettle();
+      expect(controller.text, 'milk and eggs');
+    });
+
     testWidgets('a body view from before the last send does not wind back', (
       tester,
     ) async {
@@ -1416,5 +1489,11 @@ class _SlowAddCore extends FakeNoteCore {
   Future<int> setItemText(String itemId, String text) async {
     await Future<void>.delayed(const Duration(milliseconds: 30));
     return super.setItemText(itemId, text);
+  }
+
+  @override
+  Future<int> editItemText(String itemId, String from, String to) async {
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    return super.editItemText(itemId, from, to);
   }
 }

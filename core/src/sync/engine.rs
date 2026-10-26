@@ -57,13 +57,15 @@ pub const MAX_RETRY: Duration = Duration::from_secs(60);
 /// and the argument. Everything else — a tick, an item added or moved — goes the
 /// moment it is made, because somebody on the other end of a shared list is
 /// waiting to see it.
+///
+/// There is deliberately no minimum spacing between automatic batches. A long
+/// enough pause is the only thing that sends one, so spacing on top of it would
+/// turn a person's own rhythm into bursts, which is what the issue this came
+/// from reported as "every few seconds".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pacing {
     /// A pause in the typing this long sends what it wrote.
     pub quiet: Duration,
-    /// Minimum time between automatic typing batches. The first batch is not
-    /// spaced from anything and explicit flushes bypass this delay.
-    pub min_interval: Duration,
     /// However long the typing goes on, nothing waits longer than this.
     pub max_hold: Duration,
 }
@@ -71,9 +73,8 @@ pub struct Pacing {
 impl Default for Pacing {
     fn default() -> Self {
         Self {
-            quiet: Duration::from_secs(3),
-            min_interval: Duration::from_secs(5),
-            max_hold: Duration::from_secs(30),
+            quiet: Duration::from_secs(6),
+            max_hold: Duration::from_secs(20),
         }
     }
 }
@@ -1385,9 +1386,6 @@ impl Device {
         for envelope in &batch {
             sync.append(id, envelope).await.map_err(|e| e.to_string())?;
         }
-        if automatic {
-            live.last_automatic = Some(super::timer::now());
-        }
         Ok(())
     }
 
@@ -1572,7 +1570,6 @@ struct Live {
     quiet: Option<super::timer::Timer>,
     /// Started by the first held edit of a batch, and left alone by the rest.
     cap: Option<super::timer::Timer>,
-    last_automatic: Option<Duration>,
     cursor: SyncCursor,
     /// What the store holds, so a cursor that has not moved is not written again.
     saved: SyncCursor,
@@ -1597,7 +1594,6 @@ impl Live {
             pacing,
             quiet: None,
             cap: None,
-            last_automatic: None,
             cursor: SyncCursor::default(),
             saved: SyncCursor::default(),
         }
@@ -1689,14 +1685,8 @@ impl Live {
         if self.held.is_empty() {
             self.cap = Some(super::timer::timer(self.pacing.max_hold));
         }
-        let min_wait = self.last_automatic.map_or(Duration::ZERO, |last| {
-            self.pacing
-                .min_interval
-                .saturating_sub(super::timer::now().saturating_sub(last))
-        });
-        let quiet_or_spacing = self.pacing.quiet.max(min_wait);
-        let maximum_wait = self.pacing.max_hold;
-        self.quiet = Some(super::timer::timer(quiet_or_spacing.min(maximum_wait)));
+        let quiet = self.pacing.quiet.min(self.pacing.max_hold);
+        self.quiet = Some(super::timer::timer(quiet));
         self.held.push(envelope);
         self.publish();
     }
@@ -1930,10 +1920,9 @@ mod tests {
     }
 
     #[test]
-    fn typing_defaults_use_three_second_quiet_five_second_spacing_and_thirty_second_cap() {
-        assert_eq!(Pacing::default().quiet, Duration::from_secs(3));
-        assert_eq!(Pacing::default().min_interval, Duration::from_secs(5));
-        assert_eq!(Pacing::default().max_hold, Duration::from_secs(30));
+    fn typing_defaults_wait_for_a_six_second_pause_and_never_more_than_twenty_seconds() {
+        assert_eq!(Pacing::default().quiet, Duration::from_secs(6));
+        assert_eq!(Pacing::default().max_hold, Duration::from_secs(20));
     }
 
     #[test]
