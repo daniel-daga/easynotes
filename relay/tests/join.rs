@@ -37,7 +37,11 @@ async fn the_root_serves_the_join_page() {
 
     let body = response.text().await.unwrap();
     assert!(body.contains("Join a shared note"));
+    assert!(body.contains("This link adds you to the note. It works once, for one person."));
     assert!(body.contains("Open in EasyNotes"));
+    assert!(!body.to_lowercase().contains("encrypt"));
+    assert!(!body.to_lowercase().contains("ciphertext"));
+    assert!(!body.contains("access key"));
     // The page turns the fragment into the scheme the app handles; it does not
     // hardcode a relay or an app-store address.
     assert!(body.contains("easynotes://join#"));
