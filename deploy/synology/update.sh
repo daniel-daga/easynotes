@@ -177,13 +177,19 @@ else
     if [ -z "${COMPOSE_PROFILES+x}" ]; then
         profiles=$(sed -n 's/^[[:space:]]*COMPOSE_PROFILES[[:space:]]*=[[:space:]]*//p' .env |
             tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+        if [ -z "$profiles" ]; then
+            profiles=$(sed -n 's/^[[:space:]]*export[[:space:]][[:space:]]*COMPOSE_PROFILES[[:space:]]*=[[:space:]]*//p' .env |
+                tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+        fi
         case "$profiles" in
             \"*\") profiles=${profiles#\"}; profiles=${profiles%\"} ;;
-            \'*\") profiles=${profiles#\'}; profiles=${profiles%\'} ;;
+            \'*\') profiles=${profiles#\'}; profiles=${profiles%\'} ;;
         esac
     fi
-    case " $(printf '%s' "$profiles" | tr ',' ' ') " in
-        *" web "*|*" * "*) web=1 ;;
+    # v1 splits COMPOSE_PROFILES on commas and has no `*` wildcard. Matching
+    # between commas keeps a profile named `web` from matching `webhook`.
+    case ",$profiles," in
+        *,web,*) web=1 ;;
     esac
 fi
 
