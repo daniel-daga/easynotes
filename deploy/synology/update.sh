@@ -181,6 +181,9 @@ else
             profiles=$(sed -n 's/^[[:space:]]*export[[:space:]][[:space:]]*COMPOSE_PROFILES[[:space:]]*=[[:space:]]*//p' .env |
                 tail -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//')
         fi
+        # dotenv strips a whitespace-preceded `#` comment. Do it only for the
+        # .env value; an exported value is used literally, as Compose uses it.
+        profiles=$(printf '%s\n' "$profiles" | sed 's/[[:space:]]#.*$//' | sed 's/[[:space:]]*$//')
         case "$profiles" in
             \"*\") profiles=${profiles#\"}; profiles=${profiles%\"} ;;
             \'*\') profiles=${profiles#\'}; profiles=${profiles%\'} ;;
