@@ -32,19 +32,26 @@ void main() {
     String? existingRelay,
     String? link,
     bool onboarding = false,
+    bool account = true,
   }) async {
     final profiles = RelayProfiles();
     await profiles.load();
     if (existingRelay != null) {
       await profiles.activate(await profiles.prepare(existingRelay));
     }
+    FakeNoteLibrary library() {
+      final next = FakeNoteLibrary();
+      if (account) next.setUpSharing('Anna');
+      return next;
+    }
+
     final opened = <FakeNoteLibrary>[];
     final session = RelaySession(
       profiles: profiles,
-      library: FakeNoteLibrary()..setUpSharing('Anna'),
+      library: library(),
       profile: profiles.selected,
       open: (profile, {connect = true, allowEphemeral = true}) async {
-        final next = FakeNoteLibrary()..setUpSharing('Anna');
+        final next = library();
         opened.add(next);
         return next;
       },
@@ -97,7 +104,11 @@ void main() {
     );
 
     // Nothing moved, and nothing joined, until the question is answered.
-    expect(find.text('Switch to the server this note is on?'), findsOneWidget);
+    expect(find.text('This note is kept somewhere else'), findsOneWidget);
+    expect(
+      find.textContaining(RegExp('server|relay', caseSensitive: false)),
+      findsNothing,
+    );
     await tester.tap(find.byKey(const Key('join-switch-cancel')));
     for (var i = 0; i < 5; i++) {
       await tester.pump(const Duration(milliseconds: 10));
@@ -105,6 +116,19 @@ void main() {
     expect(session.profile.url, 'https://mine.example');
     expect(find.byKey(const Key('join-confirm')), findsNothing);
     expect(opened, isEmpty);
+  });
+
+  testWidgets('a first-time joiner gets the join account copy', (tester) async {
+    await pumpApp(tester, link: _link, account: false);
+
+    expect(find.text('One step before you join'), findsOneWidget);
+    expect(find.textContaining('needs twelve words'), findsOneWidget);
+    expect(
+      find.textContaining(
+        RegExp('server|access key|encrypt|ciphertext', caseSensitive: false),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('a link that arrived during onboarding waits for it', (

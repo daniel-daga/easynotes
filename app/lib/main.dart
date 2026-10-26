@@ -315,13 +315,21 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
 
   /// The account half of sync setup, over the library that is about to be
   /// bound to [profile]'s server. Returns whether an account now exists.
-  Future<bool> _setUpAccount(NoteLibrary library, RelayProfile profile) async {
+  Future<bool> _setUpAccount(
+    NoteLibrary library,
+    RelayProfile profile, {
+    bool joining = false,
+  }) async {
     final navigator = _navigatorKey.currentState;
     if (navigator == null) return false;
     await navigator.push<void>(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            AccountScreen(library: library, profile: profile, creating: true),
+        builder: (_) => AccountScreen(
+          library: library,
+          profile: profile,
+          creating: true,
+          joining: joining,
+        ),
       ),
     );
     return library.hasAccount;
@@ -331,11 +339,13 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     String address, {
     String? access,
     required bool moveNotes,
+    bool joining = false,
   }) => _session.connectNewServer(
     address,
     access: access,
     moveNotes: moveNotes,
-    setUpAccount: _setUpAccount,
+    setUpAccount: (library, profile) =>
+        _setUpAccount(library, profile, joining: joining),
   );
 
   Future<void> _setUpSync() async {
@@ -492,32 +502,37 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     final current = _session.profile.url;
     if (target == current) return true;
     // A device with no server yet has nothing to lose, and asks nothing.
-    if (current != null && !await _confirmRelaySwitch(target)) return false;
+    if (current != null && !await _confirmRelaySwitch()) return false;
     try {
       // Joining needs the server *and* the account that belongs to it
       // (ADR 0031). A new server is set up in one step here, before the
       // join request goes anywhere.
-      await _connectNewServer(target, access: relay.access, moveNotes: false);
+      await _connectNewServer(
+        target,
+        access: relay.access,
+        moveNotes: false,
+        joining: true,
+      );
       return true;
     } on SyncSetupCancelled {
       return false;
     } on Object catch (error) {
-      _say('Could not switch to $target: $error');
+      _say('Could not open the note: $error');
       return false;
     }
   }
 
-  Future<bool> _confirmRelaySwitch(String target) async {
+  Future<bool> _confirmRelaySwitch() async {
     final context = _navigatorKey.currentContext;
     if (context == null) return true;
     final go = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Switch to the server this note is on?'),
-        content: Text(
-          'This note is shared through $target. Joining means switching '
-          'EasyNotes to that server. The notes on this device stay where they '
-          'are, and come back when you switch back.',
+        title: const Text('This note is kept somewhere else'),
+        content: const Text(
+          'This note is shared through a different EasyNotes setup. Joining '
+          'switches this app to it. Your own notes stay where they are and '
+          'come back when you switch back.',
         ),
         actions: [
           TextButton(
