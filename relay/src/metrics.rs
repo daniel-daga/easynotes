@@ -1,5 +1,4 @@
-//! What the relay is doing, for whoever runs it (production readiness review,
-//! F6).
+//! What the relay is doing, for whoever runs it.
 //!
 //! Counters live in [`Metrics`], which the handlers bump as they go; totals
 //! come from the store when asked, as [`crate::store::Usage`]. [`router`]
@@ -9,7 +8,7 @@
 //! a relay holds and how close it is to refusing more is the operator's
 //! business, and a public route would also sit behind the rate limiter.
 //!
-//! For a relay anyone can write to ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)),
+//! For a relay anyone can write to ([ADR 0024](../../docs/decisions.md#adr-0024)),
 //! how close a ceiling is *is* the operational signal: the example alerts in
 //! `deploy/prometheus/alerts.yml` fire at 80% of each.
 
@@ -31,8 +30,7 @@ pub(crate) enum Bucket {
     Sockets,
     Invites,
     Media,
-    /// Bytes written, appends and chunks together ([ADR
-    /// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+    /// Bytes written, appends and chunks together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     Writes,
 }
 
@@ -44,8 +42,8 @@ const BUCKETS: [(Bucket, &str); 5] = [
     (Bucket::Writes, "writes"),
 ];
 
-/// Which budget refused a write ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md),
-/// [ADR 0027](../../docs/adr/0027-attachments.md) §4).
+/// Which budget refused a write ([ADR 0024](../../docs/decisions.md#adr-0024),
+/// [ADR 0027](../../docs/decisions.md#adr-0027)).
 #[derive(Clone, Copy)]
 pub(crate) enum Refused {
     LogNote,
@@ -363,7 +361,7 @@ pub async fn render(state: &AppState) -> String {
         "easynotes_relay_protocol_requests_total",
         "counter",
         "Requests by the protocol version the client named. A version is \
-         dropped only once this stops rising for it (ADR 0029 §4).",
+         dropped only once this stops rising for it (ADR 0029).",
         &std::array::from_fn::<_, SPOKEN, _>(|i| {
             (
                 format!("{{protocol=\"{}\"}}", PROTOCOL_MIN as usize + i),

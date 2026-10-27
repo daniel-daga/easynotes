@@ -42,7 +42,7 @@ impl Device {
         Self::wrap(name, core, note, http_base, ws_base).await
     }
 
-    /// A device that joins from a share blob — the Slice 1 stand-in for an
+    /// A device that joins from a share blob — the the initial implementation stand-in for an
     /// invite link.
     pub async fn guest(name: &'static str, blob: &str, http_base: &str, ws_base: &str) -> Self {
         let mut core: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();

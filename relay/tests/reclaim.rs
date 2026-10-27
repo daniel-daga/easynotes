@@ -1,6 +1,6 @@
 //! Freeing a removed attachment's bytes: a compaction's live list, the
 //! objects it dooms, and the sweep that deletes them
-//! ([ADR 0027](../../docs/adr/0027-attachments.md) §5).
+//! ([ADR 0027](../../docs/decisions.md#adr-0027)).
 //!
 //! The memory store always; Postgres when `DATABASE_URL` is set, which CI
 //! does. Below the socket, like `quota.rs`: the stores are handed proposals

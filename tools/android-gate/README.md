@@ -1,8 +1,7 @@
 # The offline gate, on two Android devices
 
-`offline_gate.py` drives launch gate item 2's offline half — issue
-[#60](https://github.com/daniel-daga/easynotes/issues/60) — on two Android
-devices. It is the scripted form of the seven manual steps:
+`offline_gate.py` drives the offline half of the two-device sharing gate on two
+Android devices. It is the scripted form of the seven manual steps:
 
 1. Both devices online, on one shared list, both **Up to date**.
 2. Both into airplane mode.
@@ -13,10 +12,9 @@ devices. It is the scripted form of the seven manual steps:
 7. The same item is edited on both while offline, and must settle to the same
    value on both.
 
-The devices can be two emulators (as in
-[the 2026-10-26 run](../../docs/offline-gate-2026-10-26.md)) or two phones on
-`adb`. Emulators are evidence for the offline behaviour; **they are not gate
-item 2**, which asks for two physical Android phones. That gap is #63.
+The devices can be two emulators (as in the 2026-10-26 run) or two phones on
+`adb`. Emulators are evidence for the offline behaviour; **they are not the
+gate**, which asks for two physical Android phones. That gap is still open.
 
 ## Before the script
 
@@ -26,7 +24,7 @@ person to write it down. The one-time setup is:
 
 - Two devices or emulators with an accessibility service enabled. Without one
   Flutter publishes no semantics and `uiautomator` sees an opaque canvas;
-  `docs/android-on-windows.md` has the commands.
+  `docs/android-release.md` has the commands.
 - A relay both devices can reach, and both devices pointed at it in Relay
   settings. A debug build may use plain `http://`; a release build may not.
   On an emulator the host is `10.0.2.2`.
@@ -66,15 +64,14 @@ this:
   before listing items and their ticks.
 
 Deleting all of an item's text removes the row; if a field is emptied and then
-typed into, the app can log `Unhandled Exception: unknown item <id>`
-([#64](https://github.com/daniel-daga/easynotes/issues/64)). The script appends
-to existing text instead of clearing it, which is also what a person adding a
-word does.
+typed into, the app can log `Unhandled Exception: unknown item <id>` (a known
+bug). The script appends to existing text instead of clearing it, which is also
+what a person adding a word does.
 
 ## Evidence from 2026-10-26
 
 Two Android 17 (API 37) emulators, debug build of `e51bd1d`, one list titled
 `Gate3`, a local plain-HTTP relay: all checks passed, including the
 force-stop/relaunch and the same-item conflict (`apples red` won over
-`apples green` on both devices). The result and its caveats are in
-[`docs/offline-gate-2026-10-26.md`](../../docs/offline-gate-2026-10-26.md).
+`apples green` on both devices). This is evidence for the offline behaviour, not
+the two-phone gate.

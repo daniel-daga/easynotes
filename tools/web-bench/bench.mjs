@@ -22,8 +22,8 @@
 import { chromium } from 'playwright-core';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8100/';
-// As in `web-smoke`: no browser of its own, because a cloud session and a CI
-// runner both already have one.
+// As in `web-smoke`: no browser of its own, because a CI runner or a
+// developer's machine already has one.
 const executablePath = process.env.CHROME_EXECUTABLE;
 
 /// How many notes a device holds. The same three the native table has, so the

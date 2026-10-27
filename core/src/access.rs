@@ -4,7 +4,7 @@
 //! signed by the note's owner key. It carries the whole list of people, the
 //! change it makes to that list, a grant of the note key for every person on
 //! it, and — when it removes anyone — a fresh key and a snapshot sealed under
-//! it. See [ADR 0023](../../docs/adr/0023-access-packages.md) for the
+//! it. See [ADR 0023](../../docs/decisions.md#adr-0023) for the
 //! decisions; this module is the format and the rule for which package is
 //! current, and nothing here touches a store or a relay.
 //!
@@ -23,7 +23,7 @@
 //! just been removed and holds no key that opens anything — reaches the same
 //! answer about which package is current. So does the relay, which reads the
 //! compaction key out of the current package to decide who may compact the
-//! note's log ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+//! note's log ([ADR 0024](../../docs/decisions.md#adr-0024)).
 
 use crate::account::MemberIdentity;
 use crate::crypto::{random_bytes, AuthorKey, DeviceIdentity, Envelope, EnvelopeKind, NoteKey};
@@ -83,7 +83,7 @@ pub struct Member {
     /// The name they joined under, chosen by the person: a label, not a
     /// verified identity. A record in the note's document may be newer — a
     /// rename travels there, signed by the person it belongs to
-    /// ([ADR 0032](../../docs/adr/0032-a-name-that-follows-the-person.md)).
+    /// ([ADR 0032](../../docs/decisions.md#adr-0032)).
     pub name: String,
 }
 

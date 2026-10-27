@@ -1,4 +1,4 @@
-//! Attachment objects on the relay ([ADR 0027](../../docs/adr/0027-attachments.md) §4):
+//! Attachment objects on the relay ([ADR 0027](../../docs/decisions.md#adr-0027)):
 //! reserved, uploaded a chunk at a time, committed against a digest, fetched
 //! whole or by range, resumed after an interruption, held to budgets, expired
 //! when abandoned and purged with their topic.

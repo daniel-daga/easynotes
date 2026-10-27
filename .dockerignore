@@ -10,7 +10,6 @@
 .github
 target
 .idea
-.codex-remote-attachments
 app/.dart_tool
 app/build
 app/.flutter-plugins*

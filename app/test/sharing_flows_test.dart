@@ -1,5 +1,4 @@
-/// The plan's flow table, one widget test per row
-/// (`docs/plan-account-collaboration.md`, "User flows").
+/// The sharing flow table, one widget test per row.
 ///
 /// Each test walks what a person does, from the first tap to the end state the
 /// table promises, against the faked library: the steps marked *once* happen

@@ -1,7 +1,7 @@
 /// Where this device's master key lives.
 ///
 /// One secret unlocks everything local: the note keys, the device identity and
-/// the sync cursors are all sealed under it ([ADR 0005](../../../docs/adr/0005-local-store.md)).
+/// the sync cursors are all sealed under it ([ADR 0005](../../../docs/decisions.md#adr-0005)).
 /// It belongs in the OS keychain — Keystore, the Keychain, libsecret, DPAPI —
 /// and the OS keychain is something Dart can reach and the Rust core cannot, so
 /// this is the one piece of key handling that lives up here.
@@ -94,8 +94,7 @@ class MasterKeyStore {
   /// What it does buy is that the shape is the same everywhere: one secret, one
   /// place, handed to the core from outside it. The day a browser offers
   /// somewhere real to put it — a passphrase, or a WebAuthn PRF — it is this
-  /// method that changes and nothing below it. [ADR
-  /// 0011](../../../docs/adr/0011-the-web-store.md) has the rest.
+  /// method that changes and nothing below it. [ADR 0011](../../../docs/decisions.md#adr-0011) has the rest.
   ///
   /// There is no file to carry over, because no version of this app ever wrote
   /// one in a browser.

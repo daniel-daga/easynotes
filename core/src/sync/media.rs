@@ -1,5 +1,5 @@
 //! Moving an attachment's sealed bytes to and from the relay
-//! ([ADR 0027](../../../docs/adr/0027-attachments.md) §4).
+//! ([ADR 0027](../../../docs/decisions.md#adr-0027)).
 //!
 //! Written once over the transport's `call`, as the invite calls are over its
 //! `post`, and once over [`MediaStorage`], so a tab moves bytes between the

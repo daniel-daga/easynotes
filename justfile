@@ -81,8 +81,8 @@ test-core:
 test-relay:
     cargo test -p easynotes-relay
 
-# Write this build's compatibility fixtures to compat/v<version>/ (ADR 0029
-# §6), which every later `cargo test` reads back. Run once per release, before
+# Write this build's compatibility fixtures to compat/v<version>/ (ADR 0029),
+# which every later `cargo test` reads back. Run once per release, before
 # it is tagged, and commit the result; the release workflow refuses a tag
 # without it. It needs pg_dump on the path and DATABASE_URL naming an *empty*
 # database, since the relay's dump is part of the set; take a pg_dump of the
@@ -303,7 +303,7 @@ bench-web port="8100":
     cargo build --release -p easynotes-web-bench --target wasm32-unknown-unknown
     # `--target web`, so the page loads it as a module with no bundler in the
     # way. No `wasm-opt`: it is a size pass, the build is already `--release`,
-    # and reaching for it would drag in the binaryen download that CLAUDE.md
+    # and reaching for it would drag in the binaryen download that CONTRIBUTING.md
     # has to work around.
     wasm-bindgen --target web --no-typescript --out-dir "$out" \
         '{{justfile_directory()}}/target/wasm32-unknown-unknown/release/easynotes_web_bench.wasm'

@@ -1,5 +1,4 @@
-/// A note's photos and sound files, as the editor draws them
-/// ([plan](../../../docs/plan-attachments.md), "User interface").
+/// A note's photos and sound files, as the editor draws them.
 ///
 /// Display only. Where the bytes come from, whether an upload is waiting and
 /// what removing one means are the screen's and the core's; these widgets are

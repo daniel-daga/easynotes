@@ -8,12 +8,12 @@
 //! | `ops.envelope`, `snapshots.envelope` | Ciphertext already, sealed under the note key by the core before it ever reaches a store |
 //! | `meta.value` | Sealed under the master key, bound to the note and the key name |
 //! | `keys.secret` (the keyring) | The device seed and the note keys, sealed under the master key |
-//! | `ops.note`, the sizes, the ordering | Opaque, and not encrypted — see [ADR 0005](../../../docs/adr/0005-local-store.md) |
+//! | `ops.note`, the sizes, the ordering | Opaque, and not encrypted — see [ADR 0005](../../../docs/decisions.md#adr-0005) |
 //!
 //! So a stolen database without the master key yields no note content, no keys
 //! and no identity: only how many notes this device has, how big they are, and
 //! in what order they were written. That is the same class of metadata the relay
-//! already sees, and [ADR 0005](../../../docs/adr/0005-local-store.md) says what
+//! already sees, and [ADR 0005](../../../docs/decisions.md#adr-0005) says what
 //! it would take to hide it too.
 //!
 //! The log and the keys are two files, `notes.db` and `keys.db`, for the reason
@@ -88,7 +88,7 @@ fn checkpoint(conn: &Connection) {
 /// costs no table.
 ///
 /// `steps[0]` creates version 1 and `steps[n]` takes version `n` to `n + 1`
-/// ([ADR 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5).
+/// ([ADR 0029](../../../docs/decisions.md#adr-0029)).
 /// A new database runs all of them rather than a schema of its own, so that a
 /// fresh install and an upgraded one cannot end up different. Every step, and
 /// the version, is in one transaction: a step that fails leaves the database
@@ -102,7 +102,7 @@ fn checkpoint(conn: &Connection) {
 pub(crate) fn migrate(conn: &mut Connection, steps: &[&str]) -> Result<()> {
     let newest = steps.len() as i32;
     // IMMEDIATE so that two processes opening the database at the same moment do
-    // not both decide it is empty. Slice 1 learned this against Postgres, where a
+    // not both decide it is empty. the initial implementation learned this against Postgres, where a
     // racing `CREATE TABLE IF NOT EXISTS` deadlocked on the system catalog.
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -186,7 +186,7 @@ impl OpStore for SqliteStore {
     fn append(&mut self, note: NoteId, envelope: &[u8]) -> Result<()> {
         // One statement, so the next sequence number is chosen under the write
         // lock that inserts it. The same `MAX(seq) + 1` in two statements is what
-        // collapsed under concurrency in the relay's Postgres store in Slice 1.
+        // collapsed under concurrency in the relay's Postgres store in the initial implementation.
         self.conn
             .execute(
                 "INSERT INTO ops (note, seq, envelope)
@@ -368,7 +368,7 @@ const KEYRING_SCHEMA_1: &str = "
 
 /// The device seed and the note keys, each sealed under the master key.
 ///
-/// This is not yet the OS keychain the design doc calls for — that needs the
+/// This is not yet the OS keychain the design calls for — that needs the
 /// platform, and the platform is Dart's. It is the step that makes the keychain a
 /// change of *where the master key comes from* rather than a rewrite: everything
 /// here is already wrapped, and moving the master key into Keystore or Keychain
@@ -507,7 +507,7 @@ impl Keyring for SqliteKeyring {
 ///
 /// This is the whole of "where does this app keep things", in one place the
 /// tests can reach without a Flutter toolchain: the database, the keyring, and
-/// the one-time carry-over from the directory of files Slice 1 wrote. A user
+/// the one-time carry-over from the directory of files the initial implementation wrote. A user
 /// who updates the app has not agreed to lose their list.
 ///
 /// `master` comes from the caller and is not read from anywhere near here. On a

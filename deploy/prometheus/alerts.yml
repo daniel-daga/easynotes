@@ -1,5 +1,5 @@
-# Example Prometheus alerting rules for an EasyNotes relay (production
-# readiness review, F6). Load with `rule_files:` in prometheus.yml, next to a
+# Example Prometheus alerting rules for an EasyNotes relay. Load with
+# `rule_files:` in prometheus.yml, next to a
 # scrape job named `easynotes-relay` pointed at RELAY_METRICS_ADDR:
 #
 #   scrape_configs:
@@ -41,7 +41,7 @@ groups:
           summary: Note logs hold {{ $value | humanizePercentage }} of RELAY_STORAGE_CEILING.
 
       # At the ceiling no attachment can be added anywhere. Space is not freed
-      # when attachments are removed yet (ADR 0027 §5), so this only climbs.
+      # when attachments are removed yet (ADR 0027), so this only climbs.
       - alert: EasyNotesRelayMediaNearCeiling
         expr: sum without (state) (easynotes_relay_media_bytes) / easynotes_relay_media_ceiling_bytes > 0.8
         for: 10m
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: More than 5% of the relay's responses are server errors.
 
-      # Clients this relay cannot talk to (ADR 0029 §4). They keep working
+      # Clients this relay cannot talk to (ADR 0029). They keep working
       # offline and say why; they sync again once their app, or this relay, is
       # updated. `easynotes_relay_protocol_requests_total` shows which versions
       # the rest speak.

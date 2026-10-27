@@ -1,4 +1,4 @@
-//! Compatibility fixtures ([ADR 0029](../../docs/adr/0029-compatibility-across-releases.md) §6):
+//! Compatibility fixtures ([ADR 0029](../../docs/decisions.md#adr-0029)):
 //! data written by each release, read by every build after it.
 //!
 //! `compat/v<version>/` holds what one release wrote, made by
@@ -671,7 +671,7 @@ async fn write_compat_fixtures() {
         format!(
             "# Compatibility fixtures written by {version}\n\n\
              Made by `just compat-fixtures` and read by `relay/tests/compat.rs` on every \
-             test run ([ADR 0029](../../docs/adr/0029-compatibility-across-releases.md) §6). \
+             test run ([ADR 0029](../../docs/decisions.md#adr-0029)). \
              Never edit anything here: once this release is tagged, these files are its \
              record of what it wrote. The phrase and keys are test data.\n"
         ),

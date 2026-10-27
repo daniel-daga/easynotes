@@ -123,7 +123,7 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_OUTPUT"
 
-      # ADR 0029 §6: a release is tagged with the record of what it writes,
+      # ADR 0029: a release is tagged with the record of what it writes,
       # which every later build's tests read back. Written by `just
       # compat-fixtures` and committed before the tag; the Rust version is
       # checked too, because it is what the fixtures are named after.

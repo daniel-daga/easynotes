@@ -98,7 +98,7 @@ pub struct AppState {
     /// Who may get a token or use an invite ([`crate::access`]).
     pub access: Access,
     /// Bytes written per client address, appends and attachment chunks
-    /// together ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+    /// together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
 }
 
@@ -304,19 +304,19 @@ pub struct RelayConfig {
     /// to reconnect its notes.
     pub invites: RateLimit,
     /// How much one note may keep, and the whole relay
-    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    /// ([ADR 0024](../../docs/decisions.md#adr-0024)).
     pub storage: Limits,
     /// Every attachment call, per address. A 50 MB file is fifty-odd chunk
     /// requests, so this is looser than the rest.
     pub media_rate: RateLimit,
     /// Where attachment bytes go and how much of them there may be
-    /// ([ADR 0027](../../docs/adr/0027-attachments.md) §4).
+    /// ([ADR 0027](../../docs/decisions.md#adr-0027)).
     pub media: crate::media::MediaConfig,
     /// The peers whose `X-Forwarded-For` names the client the rate limits are
     /// keyed on: the relay's own reverse proxy, and nothing else.
     pub trusted_proxies: TrustedProxies,
     /// Who may get a token or use an invite
-    /// ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    /// ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub access: Access,
     /// Bytes written per address, appends and attachment chunks together.
     pub writes: RateLimit,
@@ -449,7 +449,7 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         )
         .route("/v1/pairings/{id}/close", post(crate::pairing::close))
         .route("/v1/purge", post(purge))
-        // Attachment objects (ADR 0027 §4). `status` and `commit` are static
+        // Attachment objects (ADR 0027). `status` and `commit` are static
         // segments, so they win over `{index}` in the same place.
         .route(
             "/v1/media/{note}/{object}",
@@ -522,8 +522,8 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-/// Refuse a client that does not speak a protocol this relay does (ADR 0029
-/// §4), with the range it would have needed.
+/// Refuse a client that does not speak a protocol this relay does (ADR 0029),
+/// with the range it would have needed.
 ///
 /// Every `/v1` route but health and readiness, which are for load balancers and
 /// monitoring rather than clients, and which a client reads to learn the range
@@ -769,7 +769,7 @@ pub(crate) async fn append(
     }
 }
 
-/// Purge topics ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+/// Purge topics ([ADR 0026](../../docs/decisions.md#adr-0026)).
 ///
 /// Each under its own append lock, so an append racing a purge lands wholly
 /// before it (and is deleted) or finds the topic gone. Subscribers are told

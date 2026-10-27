@@ -17,7 +17,7 @@
 //! What the relay checks is the whole of what it can: that the hashes match,
 //! that the invite has not expired or been claimed already, and that nothing
 //! is larger than it should be. What it cannot check is anything inside
-//! a request or a grant, and it does not try — see `docs/adr/0015-invites.md`.
+//! a request or a grant, and it does not try — see `docs/decisions.md#adr-0015`.
 //!
 //! **None of this is tied to a device key.** The note endpoints want a token
 //! from the signed handshake; these do not, on purpose. Were an invite opened
@@ -85,7 +85,7 @@ fn holds(secret: &str, expected: &[u8]) -> bool {
 }
 
 /// Whether the caller holds the relay's access key, on a relay that has one
-/// ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The proof is
+/// ([ADR 0028](../../docs/decisions.md#adr-0028)). The proof is
 /// over the invite ID, which everyone holding the link shares, so it names
 /// nobody: the reason these calls have no device key still holds.
 fn admitted(state: &AppState, id: &str, proof: Option<&str>) -> Result<()> {

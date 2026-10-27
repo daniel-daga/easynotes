@@ -11,7 +11,7 @@
 //!
 //! **One socket per device.** A [`Device`] is one engine, and so one
 //! connection to the relay and one token handshake, however many notes are
-//! synced over it ([ADR 0017](../../../docs/adr/0017-one-socket-per-device.md)).
+//! synced over it ([ADR 0017](../../../docs/decisions.md#adr-0017)).
 //! A [`Connection`] is one note's subscription on it.
 
 use crate::api::notes::Statuses;
@@ -209,7 +209,7 @@ impl Connection {
     }
 
     /// Compact the note soon, so the relay can free what was just removed
-    /// from it (ADR 0027 §5).
+    /// from it (ADR 0027).
     pub fn reclaim(&self) {
         self.handle.reclaim();
     }

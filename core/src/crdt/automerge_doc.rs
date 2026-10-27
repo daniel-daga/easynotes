@@ -25,7 +25,7 @@
 //! left is the note written before bodies existed that two devices both start
 //! typing into offline: each creates a body, Automerge keeps one, and the other
 //! device's text is lost. That is a real difference from Yrs, and one more reason
-//! Yrs is the default ([ADR 0001](../../../docs/adr/0001-crdt.md)).
+//! Yrs is the default ([ADR 0001](../../../docs/decisions.md#adr-0001)).
 
 use super::attachment_fields as field;
 use super::{

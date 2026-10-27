@@ -3,8 +3,8 @@
 //! This is the whole of "one person" in EasyNotes. There is no server-side
 //! account, no password and no email address: a person *is* twelve words, and a
 //! device belongs to them if it can derive the same account root from those
-//! words. See [ADR 0013](../../docs/adr/0013-recovery-phrase.md) for why, and
-//! [ADR 0014](../../docs/adr/0014-what-the-relay-learns.md) for what this
+//! words. See [ADR 0013](../../docs/decisions.md#adr-0013) for why, and
+//! [ADR 0014](../../docs/decisions.md#adr-0014) for what this
 //! deliberately does not tell the relay.
 //!
 //! ## What the phrase derives, and what it does not
@@ -18,7 +18,7 @@
 //! ```
 //!
 //! The last two are this person as the people they share notes with know them
-//! ([ADR 0023](../../docs/adr/0023-access-packages.md)): the member key's
+//! ([ADR 0023](../../docs/decisions.md#adr-0023)): the member key's
 //! public half is their member ID, and every access grant is sealed to the box
 //! key, so a phone restored from the words opens every note shared with them.
 //! Neither ever authors an envelope, which is what keeps them away from the
@@ -40,8 +40,7 @@
 //! ## Why the document needs an ID of its own
 //!
 //! Locally the account document lives under a reserved ID of sixteen zero bytes
-//! ([`crate::note::ACCOUNT_DOC`], [ADR
-//! 0008](../../docs/adr/0008-account-document.md)). That is a fine local
+//! ([`crate::note::ACCOUNT_DOC`], [ADR 0008](../../docs/decisions.md#adr-0008)). That is a fine local
 //! address and an impossible wire address: the relay keeps one log per
 //! note ID, so an account document that synced under zeros would
 //! put every user of every relay on one topic — reading each other's placements
@@ -229,7 +228,7 @@ impl AccountRoot {
 
     /// This person as the people they share notes with know them: the member
     /// key that signs their invite requests and the box key their grants are
-    /// sealed to ([ADR 0023](../../docs/adr/0023-access-packages.md) §1).
+    /// sealed to ([ADR 0023](../../docs/decisions.md#adr-0023)).
     ///
     /// Derived, so a phone restored from the phrase holds both before anything
     /// has synced, and so every note shared with this person opens on it.

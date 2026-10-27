@@ -1,6 +1,6 @@
 //! Asking the relay to forget a topic for good.
 //!
-//! [ADR 0026](../../docs/adr/0026-deleting-an-account.md). A purge deletes
+//! [ADR 0026](../../docs/decisions.md#adr-0026). A purge deletes
 //! every envelope the relay holds for one topic and leaves a tombstone, so it is
 //! the most destructive request the relay takes. It is signed, by the key the
 //! relay already trusts to say what happens to that topic: the owner key the

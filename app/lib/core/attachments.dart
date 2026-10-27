@@ -1,5 +1,5 @@
 /// Photos and sound files on a note, as the UI sees them
-/// ([ADR 0027](../../../docs/adr/0027-attachments.md)).
+/// ([ADR 0027](../../../docs/decisions.md#adr-0027)).
 ///
 /// Plain values, like [NoteView]. An attachment's bytes never live here: a
 /// screen asks [NoteCore.readAttachment] for them when it is about to draw or

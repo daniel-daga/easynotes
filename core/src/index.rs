@@ -1,11 +1,11 @@
 //! The sealed index: what a note says, written down so that listing and
 //! searching do not have to open it.
 //!
-//! Two problems, one answer. [ADR 0007](../../docs/adr/0007-note-list.md) said
+//! Two problems, one answer. [ADR 0007](../../docs/decisions.md#adr-0007) said
 //! that listing notes means opening them — a title is ciphertext until a key
 //! decrypts it — and measured what that costs at launch: two hundred notes take
 //! most of a second, because every envelope in every log is signature-verified
-//! before it is decrypted. [ADR 0005](../../docs/adr/0005-local-store.md) said
+//! before it is decrypted. [ADR 0005](../../docs/decisions.md#adr-0005) said
 //! that search cannot use SQLite's own FTS5, because the text is not in a column
 //! at all. Both of them pointed at the same thing: an index of titles and text,
 //! sealed like everything else this device keeps, built once and used for both.

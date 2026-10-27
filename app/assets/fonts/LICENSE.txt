@@ -12,7 +12,7 @@ glyphs, the same metrics, the same 896 code points.
 
 They are here because Flutter's web engine otherwise fetches Roboto from
 fonts.gstatic.com on every launch, which is a third-party request this app must
-not make. See docs/adr/0002-web-core.md.
+not make. See docs/decisions.md#adr-0002.
 
 --------------------------------------------------------------------------------
 

@@ -135,7 +135,7 @@ jobs:
         working-directory: app
         run: flutter build linux --release
 
-  # A debug APK, the build docs/android-on-windows.md makes by hand, so that one
+  # A debug APK, the kind the Android release docs build by hand, so that one
   # can be installed without that machine and so a change that breaks the
   # Android build is found here rather than there. Only builds: there is no
   # emulator on the runner, and the tests that matter already run in `ci.yml`'s `flutter` job.

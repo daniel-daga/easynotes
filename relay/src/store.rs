@@ -3,7 +3,7 @@
 //! Two implementations: Postgres for production, in-memory for tests and for
 //! `just run-relay`. Both are logs keyed by note ID, with a per-note monotonic
 //! sequence number. They only grow, except where a member compacts one to a
-//! base ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)), which drops
+//! base ([ADR 0024](../../docs/decisions.md#adr-0024)), which drops
 //! what the base makes redundant and leaves gaps behind it: a `since` cursor
 //! means "after this", never "exactly this many".
 //!
@@ -70,7 +70,7 @@ pub trait RelayStore: Send + Sync + 'static {
     /// base as a new envelope at the head. Returns the base's sequence number.
     ///
     /// With a live list, in the same transaction, the topic's committed
-    /// objects are sorted by it (ADR 0027 §5): a listed one is no longer
+    /// objects are sorted by it (ADR 0027): a listed one is no longer
     /// doomed; an unlisted one committed or asked about within
     /// `media.fresh_secs` of `now` is left alone; any other unlisted one is
     /// doomed at `now`, if it is not already.
@@ -170,7 +170,7 @@ pub trait RelayStore: Send + Sync + 'static {
         signature: [u8; easynotes_core::crypto::SIG_LEN],
     ) -> Result<std::result::Result<(), Refusal>>;
 
-    // -- media (ADR 0027 §4) ------------------------------------------------
+    // -- media (ADR 0027) ------------------------------------------------
     //
     // The metadata of attachment objects; the bytes are `crate::media::Blobs`'.
     // Times are Unix seconds, passed in as for invites.
@@ -203,7 +203,7 @@ pub trait RelayStore: Send + Sync + 'static {
     async fn expire_media(&self, before: i64) -> Result<Vec<(String, String)>>;
 
     /// Delete every object doomed before `before`, and say which, so their
-    /// bytes can go too (ADR 0027 §5).
+    /// bytes can go too (ADR 0027).
     async fn sweep_media(&self, before: i64) -> Result<Vec<(String, String)>>;
 
     /// How much the relay holds, for monitoring ([`crate::metrics`]). The
@@ -231,7 +231,7 @@ pub struct Usage {
     pub media_objects: u64,
     pub media_committed_bytes: u64,
     /// Bytes of committed objects no compaction lists any more, waiting to be
-    /// deleted (ADR 0027 §5). Not counted against their note; counted against
+    /// deleted (ADR 0027). Not counted against their note; counted against
     /// the media ceiling until they go.
     pub media_doomed_bytes: u64,
     /// Bytes reserved by uploads not yet committed. They count against the
@@ -839,8 +839,7 @@ impl PostgresStore {
     ///
     /// A database that has recorded migrations this build does not know is
     /// from a newer release. It is used as it is, not refused: migrations are
-    /// expand-then-contract ([ADR
-    /// 0029](../../docs/adr/0029-compatibility-across-releases.md) §5), so the
+    /// expand-then-contract ([ADR 0029](../../docs/decisions.md#adr-0029)), so the
     /// release before a change runs on the schema after it, which is what a
     /// rolling deploy and a rollback both need.
     pub async fn migrate(&self) -> Result<()> {

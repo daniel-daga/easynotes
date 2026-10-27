@@ -1,5 +1,5 @@
 //! Where a tab keeps attachment bytes: rows in a key-value store it has to
-//! wait for ([ADR 0027](../../../docs/adr/0027-attachments.md) §3).
+//! wait for ([ADR 0027](../../../docs/decisions.md#adr-0027)).
 //!
 //! The same promises as the directory in [`super::store`], kept with the tools
 //! a browser has. IndexedDB has no files to rename and no `fsync`, but it has

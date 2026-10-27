@@ -10,7 +10,7 @@
 //! So the limit is on the two unauthenticated doors — `/v1/challenge` and
 //! `/v1/token` — and on opening a socket. Publishing has a budget of its own,
 //! in bytes rather than requests: appends and attachment chunks together, per
-//! address ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3).
+//! address ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //! Device keys are free, so a budget per key would be a budget per nothing.
 //!
 //! ## Why a token bucket, and why it is keyed on the socket's peer
@@ -240,7 +240,7 @@ impl TrustedProxies {
         if !self.trusts(peer) {
             return peer;
         }
-        // Several headers are one list, in order (RFC 9110 §5.3).
+        // Several headers are one list, in order (RFC 9110).
         let entries: Vec<&str> = forwarded
             .flat_map(|h| h.split(','))
             .map(str::trim)

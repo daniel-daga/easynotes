@@ -1,7 +1,7 @@
 //! The CRDT layer, behind a trait so decision D1 stays reversible.
 //!
-//! Slice 1 ships two interchangeable backends, Automerge and Yrs, and a benchmark
-//! that measures them (see `benches/` and `docs/adr/0001-crdt.md`). Everything above
+//! the initial implementation ships two interchangeable backends, Automerge and Yrs, and a benchmark
+//! that measures them (see `benches/` and `docs/decisions.md#adr-0001`). Everything above
 //! this module talks to [`NoteDoc`] and never names a backend.
 //!
 //! ## Why a map of items and not the CRDT's own list type (decision D3)
@@ -102,7 +102,7 @@ impl NoteKind {
 /// into the side that was just emptied still has their edit merged in — and the
 /// rule is that a merge never *hides* anything. So a checklist can arrive with
 /// text in its body, and a text note with items on it, and a screen draws both
-/// rather than choosing. See `docs/plan-note-kinds.md`.
+/// rather than choosing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoteView {
     pub kind: NoteKind,
@@ -112,7 +112,7 @@ pub struct NoteView {
     /// The colour everyone on this note sees, or none. `colour_set` says
     /// whether the note has recorded one at all: a note that never has falls
     /// back to each person's own placement, so colours chosen before this was
-    /// shared keep showing ([ADR 0008](../../../docs/adr/0008-account-document.md)).
+    /// shared keep showing ([ADR 0008](../../../docs/decisions.md#adr-0008)).
     pub colour: Option<Colour>,
     /// Whether [`colour`](Self::colour) came from the note document rather
     /// than from the default. A colour cleared on one device is cleared for
@@ -141,7 +141,7 @@ impl NoteView {
     }
 
     /// Checked items are not deleted and not hidden here: hiding them is a view
-    /// setting, per the design doc, so it belongs to the UI and not to the data.
+    /// setting, per the design, so it belongs to the UI and not to the data.
     pub fn checked_count(&self) -> usize {
         self.items.iter().filter(|i| i.checked).count()
     }
@@ -188,7 +188,7 @@ pub enum Edit {
     /// A colour everyone on the note sees, or none. It is the note document's
     /// rather than a placement's because two people looking at one list should
     /// see it the same shade; whether a note is pinned, archived or labelled is
-    /// still each person's own ([ADR 0008](../../../docs/adr/0008-account-document.md)).
+    /// still each person's own ([ADR 0008](../../../docs/decisions.md#adr-0008)).
     SetColour(Option<Colour>),
     /// Replace the body's text. The backend works out the smallest splice that
     /// turns the old text into this one and applies only that, so a peer typing
@@ -232,7 +232,7 @@ pub enum Edit {
         id: AttachmentId,
     },
     /// A person's current name, signed by their own member key
-    /// ([ADR 0032](../../docs/adr/0032-a-name-that-follows-the-person.md)).
+    /// ([ADR 0032](../../../docs/decisions.md#adr-0032)).
     ///
     /// Shared content, like the title: a rename has to reach everybody the
     /// package named, and only a record that travels with the note can do that
@@ -244,7 +244,7 @@ pub enum Edit {
     },
     /// A guest's signed statement that they left the note, written while they
     /// delete their account
-    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    /// ([ADR 0034](../../../docs/decisions.md#adr-0034)).
     ///
     /// The owner is the only one who can act on it: their next settle enqueues
     /// the removal and rotates the note key.
@@ -329,7 +329,7 @@ pub trait NoteDoc: Sized {
     /// [`NoteDoc::apply_local`] returns.
     ///
     /// What lets a burst of typing reach the relay as one envelope rather than
-    /// one per keystroke ([ADR 0016](../../../docs/adr/0016-batching-edits.md)).
+    /// one per keystroke ([ADR 0016](../../../docs/decisions.md#adr-0016)).
     /// Applying the result must leave any replica exactly where applying every
     /// input in order would, including one that has already seen some of them.
     fn merge_updates(updates: &[Vec<u8>]) -> Result<Vec<u8>>;
@@ -357,7 +357,7 @@ pub trait NoteDoc: Sized {
     /// one. Idempotent like [`NoteDoc::apply_remote`], and it keeps everything
     /// this document already had: a device switching to a new key merges the
     /// snapshot rather than replacing its copy with it
-    /// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §7).
+    /// ([ADR 0023](../../../docs/decisions.md#adr-0023)).
     fn merge_snapshot(&mut self, snapshot: &[u8]) -> Result<()>;
 
     /// One update holding everything this document has that `base` — a
@@ -448,7 +448,7 @@ pub(crate) fn attachment_view(
 
 /// The attachment objects a document still names, from each attachment map's
 /// `media` field and `removed` flag: what a compaction lists for the relay
-/// to keep ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+/// to keep ([ADR 0027](../../../docs/decisions.md#adr-0027)).
 ///
 /// Read for the object IDs alone, not through [`Media::decode`]: a descriptor
 /// this build cannot read may be a newer build's live one, and its bytes are
@@ -499,7 +499,7 @@ pub(crate) fn sort_items(items: &mut [ItemView]) {
     items.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
 }
 
-/// The backend the app uses. See [ADR 0001](../../../docs/adr/0001-crdt.md).
+/// The backend the app uses. See [ADR 0001](../../../docs/decisions.md#adr-0001).
 ///
 /// Everything outside this module refers to the alias, never the concrete type,
 /// so revisiting D1 means changing this line and re-running the suite. The

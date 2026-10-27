@@ -1,5 +1,5 @@
-//! The protocol version ([ADR 0029](../../docs/adr/0029-compatibility-across-releases.md)
-//! §3–§4): every request names the protocol it speaks, a relay refuses one it
+//! The protocol version ([ADR 0029](../../docs/decisions.md#adr-0029)
+//!–): every request names the protocol it speaks, a relay refuses one it
 //! does not speak with a `426` a client can read, and the client turns that
 //! into the right one of two things to tell a person.
 
@@ -118,7 +118,7 @@ async fn a_refused_protocol_costs_no_rate_limit() {
         .expect("the refusals spent the handshake budget");
 }
 
-/// ADR 0029 §3 for HTTP: a newer client may send a field an older relay does
+/// ADR 0029 for HTTP: a newer client may send a field an older relay does
 /// not know, and the older relay carries on.
 #[tokio::test]
 async fn a_request_field_the_relay_does_not_know_is_ignored() {

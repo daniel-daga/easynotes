@@ -1,6 +1,6 @@
 //! Encrypting an attached file, a chunk at a time.
 //!
-//! The format ([ADR 0027](../../../docs/adr/0027-attachments.md) §2):
+//! The format ([ADR 0027](../../../docs/decisions.md#adr-0027)):
 //!
 //! * Each attachment has a random 32-byte **content key**, carried in its
 //!   descriptor. The original and the thumbnail are sealed under two subkeys

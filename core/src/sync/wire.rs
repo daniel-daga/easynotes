@@ -84,19 +84,18 @@ pub enum Incoming {
     /// The relay refused something. Not fatal — the connection stays up.
     Rejected(String),
     /// The note's relay log has grown enough to compact. Said only to the
-    /// device whose append crossed the line ([ADR
-    /// 0024](../../../docs/adr/0024-relay-storage-quota.md)).
+    /// device whose append crossed the line ([ADR 0024](../../../docs/decisions.md#adr-0024)).
     Crowded,
     /// The relay would not take this device's base. Nothing is lost: the log
     /// it would have replaced is still there.
     CompactRefused(String),
     /// The note was purged from the relay, by its owner deleting it or their
-    /// account ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)).
+    /// account ([ADR 0026](../../../docs/decisions.md#adr-0026)).
     /// Nothing more of it will be stored or sent.
     Gone,
     /// This device has written more than the relay takes from one address in
-    /// a while ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)
-    /// §3). The relay closes the socket after saying so; what was refused is
+    /// a while ([ADR 0028](../../../docs/decisions.md#adr-0028)
+    ///). The relay closes the socket after saying so; what was refused is
     /// still in the outbox, and goes again once the engine has backed off.
     RateLimited { retry_after: std::time::Duration },
 }
@@ -126,7 +125,7 @@ pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
 
 // -- the protocol version ----------------------------------------------------
 //
-// ADR 0029 §4. Every request names the protocol it speaks in `?p=`, and a relay
+// ADR 0029. Every request names the protocol it speaks in `?p=`, and a relay
 // that does not speak it answers `426` with the range it does. A query
 // parameter rather than a header, because a browser cannot set headers on a
 // WebSocket and a new header would put a CORS preflight in front of requests
@@ -136,8 +135,8 @@ pub(crate) fn net(e: impl std::fmt::Display) -> CoreError {
 ///
 /// Bumped only for a change an older peer cannot ignore: a new required field,
 /// a changed meaning, a removed message. Something an older peer can skip
-/// (ADR 0029 §3) does not bump it. A client is to keep speaking the version
-/// before this one as well (ADR 0029 §4); while there has only been one
+/// (ADR 0029) does not bump it. A client is to keep speaking the version
+/// before this one as well (ADR 0029); while there has only been one
 /// version, there is nothing to fall back to.
 pub const PROTOCOL: u32 = 2;
 
@@ -295,7 +294,7 @@ mod protocol_tests {
 
     #[test]
     fn a_relay_answer_with_fields_this_build_does_not_know_still_reads() {
-        // ADR 0029 §3: JSON bodies ignore what they do not know, in both
+        // ADR 0029: JSON bodies ignore what they do not know, in both
         // directions. A newer relay adding a field must not break the handshake.
         let challenge: ChallengeResponse =
             serde_json::from_str(r#"{"nonce":"abc","expires_in":60,"hint":"x"}"#).unwrap();
@@ -329,7 +328,7 @@ enum DeviceMessage<'a> {
         note: &'a str,
         covers: i64,
         base: String,
-        /// The live list (ADR 0027 §5), as object IDs. Left out when there is
+        /// The live list (ADR 0027), as object IDs. Left out when there is
         /// none, which a relay reads as "vouch for nothing".
         #[serde(skip_serializing_if = "Option::is_none")]
         media: Option<Vec<String>>,

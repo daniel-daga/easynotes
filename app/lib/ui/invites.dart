@@ -182,7 +182,7 @@ class CollaboratorsScreen extends StatefulWidget {
   final String? relayUrl;
 
   /// That relay's access key, when its operator gave this device one
-  /// ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). It
+  /// ([ADR 0028](../../../docs/decisions.md#adr-0028)). It
   /// travels in the invite, which is single-use and expires — narrower than
   /// the relay link, which lets whoever holds it use the relay for good.
   final String? relayAccess;

@@ -1,6 +1,6 @@
 //! One person's two devices.
 //!
-//! Slice 3 item 2. Everything here is the thing that did not exist before: a
+//! the later milestone item 2. Everything here is the thing that did not exist before: a
 //! person. Until this landed a colour, a label, a pin and a placement stayed on
 //! the device that chose them, not because syncing them was hard but because
 //! there was nothing to sync them *to* — no such thing as one person's second
@@ -61,7 +61,7 @@ fn deliver_account<D: NoteDoc, S: OpStore, K: Keyring, S2: OpStore, K2: Keyring>
 // The address and the key
 // ---------------------------------------------------------------------------
 
-/// The constraint that is not in the plan and is fatal without it: the relay
+/// The constraint that is easy to miss and is fatal without it: the relay
 /// keeps one log per note ID, so an account document that synced under the
 /// reserved ID would put every user of every relay on one topic.
 fn an_account_moves_the_document_off_the_reserved_id<D: NoteDoc>() {

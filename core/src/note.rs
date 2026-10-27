@@ -1,7 +1,7 @@
 //! The API the UI talks to: one object that owns the keys, the CRDT and the log,
 //! and hands out a stream of [`NoteView`]s.
 //!
-//! The shape is the one the Slice 1 plan names:
+//! The shape is the one the initial implementation names:
 //! `create_note`, `open_note`, `apply_local`, `apply_remote`, `export_share_blob`,
 //! `import_share_blob`, `watch`. The share-blob pair has since become test
 //! scaffolding behind the `test-support` feature; invites replaced it.
@@ -90,7 +90,7 @@ pub struct SyncCursor {
 ///
 /// It is the row that puts a note on the disk the moment it is made, which is
 /// what stops an untyped-in note from vanishing on the next launch
-/// ([ADR 0007](../../docs/adr/0007-note-list.md)). And it is what a placement is
+/// ([ADR 0007](../../docs/decisions.md#adr-0007)). And it is what a placement is
 /// seeded from: a device that had notes before the account document existed gets
 /// its grid back in the order it left it, because that order is still written
 /// here.
@@ -120,7 +120,7 @@ const NEXT_COUNTER: &str = "next-counter";
 const ACCESS: &str = "access";
 /// What an owner device has been asked to change about who is on a note and
 /// has not yet seen take effect: approvals and removals, kept across restarts
-/// ([ADR 0023](../../docs/adr/0023-access-packages.md) §5–6).
+/// ([ADR 0023](../../docs/decisions.md#adr-0023)–6).
 const ACCESS_INTENTS: &str = "access-intents";
 
 /// The setting that says whether the note list is a grid or one column.
@@ -143,8 +143,7 @@ pub const TICKED: &str = "ticked";
 pub const INVITES: &str = "invites";
 pub const JOINS: &str = "joins";
 
-/// Set on a topic the relay has purged ([ADR
-/// 0026](../../docs/adr/0026-deleting-an-account.md)): it is never subscribed
+/// Set on a topic the relay has purged ([ADR 0026](../../docs/decisions.md#adr-0026)): it is never subscribed
 /// again, and its local copy is kept.
 pub const GONE: &str = "gone";
 
@@ -177,7 +176,7 @@ pub struct OutgoingInvite {
     pub expires_at: i64,
     /// The request the owner approved, saved before anything else happens so
     /// that the package and the answer that follow can be retried after a
-    /// crash ([ADR 0023](../../docs/adr/0023-access-packages.md) §3), and
+    /// crash ([ADR 0023](../../docs/decisions.md#adr-0023)), and
     /// the relay's name for it.
     pub approval: Option<(String, crate::invite::JoinRequest)>,
 }
@@ -191,7 +190,7 @@ pub struct PendingJoin {
     /// What this person called themselves, to show on the waiting screen.
     pub name: String,
     /// The note this link's pre-grant opened, when it did
-    /// ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// ([ADR 0030](../../docs/decisions.md#adr-0030)).
     /// The request is still answered later — an approval adds this person to
     /// the package, a decline takes the note away — so the row stays.
     pub note: Option<NoteId>,
@@ -321,13 +320,13 @@ pub const PREVIEW_ITEMS: usize = 4;
 ///
 /// A number, not a science: 256 envelopes is a few weeks of a household's
 /// shopping list and replays in well under a millisecond on the Yrs backend
-/// ([ADR 0001](../../docs/adr/0001-crdt.md) measures 1 000 inserts at 10.7 ms).
+/// ([ADR 0001](../../docs/decisions.md#adr-0001) measures 1 000 inserts at 10.7 ms).
 /// What makes it safe to pick roughly is that the trade is not close. A 20-item
 /// list with 256 toggles is a 55 KiB log against a 5 KiB snapshot on Yrs, and
 /// opening it costs 18 ms from the log against 0.3 ms from the snapshot —
 /// because replay verifies a signature per envelope, at 68 µs each, whichever
 /// backend is underneath. `just bench-compaction` measures it, and
-/// [ADR 0006](../../docs/adr/0006-compaction.md) reads it.
+/// [ADR 0006](../../docs/decisions.md#adr-0006) reads it.
 pub const COMPACT_AFTER: usize = 256;
 
 /// The most plaintext one merged envelope is built from.
@@ -396,7 +395,7 @@ struct OpenNote<D: NoteDoc> {
 ///
 /// The counter is in memory and per process. It is not written to the log or
 /// the index and never leaves the device, so it is not part of the format
-/// [ADR 0029](../../docs/adr/0029-compatibility-across-releases.md) guards.
+/// [ADR 0029](../../docs/decisions.md#adr-0029) guards.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteViewAt {
     /// Strictly increasing for the life of one open note.
@@ -466,8 +465,7 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// because the reserved ID is a fine *local* address and an impossible wire
     /// one: the relay keeps one log per note ID, so every user in the
     /// world syncing under zeros would be one topic. See
-    /// [`crate::account`] and [ADR
-    /// 0013](../../docs/adr/0013-recovery-phrase.md).
+    /// [`crate::account`] and [ADR 0013](../../docs/decisions.md#adr-0013).
     account_id: NoteId,
     /// What that document currently says, kept beside it so that refreshing the
     /// list does not re-read the whole document on every keystroke.
@@ -573,7 +571,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Two cases, and the difference between them is the whole of item 2. With
     /// no account root the document is local-only, addressed by the reserved
     /// ID, under a random key minted here and kept in the keyring — exactly
-    /// what [ADR 0008](../../docs/adr/0008-account-document.md) built. With one,
+    /// what [ADR 0008](../../docs/decisions.md#adr-0008) built. With one,
     /// both the ID and the key are *derived*, so any device that can say the
     /// twelve words arrives at the same two values and needs nothing carried
     /// between them.
@@ -598,7 +596,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// No snapshot row is read, because none is written: this document's
     /// snapshot is an envelope *in its own log*
-    /// ([ADR 0012](../../docs/adr/0012-compacting-the-account-document.md)), so
+    /// ([ADR 0012](../../docs/decisions.md#adr-0012)), so
     /// replaying the log is the whole of opening it whether or not it has been
     /// compacted, and the loop below does not know which it is looking at.
     fn open_account(
@@ -661,7 +659,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // One person, as twelve words. There is no server-side account here, no
     // password and no email address: a phrase derives an account root, the root
     // derives this document's ID and key, and a device belongs to the person who
-    // can say the words. See [ADR 0013](../../docs/adr/0013-recovery-phrase.md).
+    // can say the words. See [ADR 0013](../../docs/decisions.md#adr-0013).
 
     /// The ID this device's account document syncs under, if it has an account.
     ///
@@ -687,7 +685,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// The phrase is **not stored**, here or anywhere else. What is kept is the
     /// root it derives, which is enough to reopen the document on this device
     /// for ever and not enough to reconstruct the words. That is the whole
-    /// reason the design doc asks for a forced backup check at setup: this is
+    /// reason the design asks for a forced backup check at setup: this is
     /// the only moment the phrase exists, and the app has to make somebody write
     /// it down before the moment passes.
     ///
@@ -746,15 +744,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// *both* addresses rather than at neither. The next launch reads the new
     /// one -- the root is written first -- and the stale zeros log is so much
     /// dead weight until the `forget` that follows it is retried, which is
-    /// exactly the shape [ADR 0010](../../docs/adr/0010-forgetting-a-note.md)
+    /// exactly the shape [ADR 0010](../../docs/decisions.md#adr-0010)
     /// gives an interrupted delete.
     ///
     /// The document is re-sealed rather than re-keyed in place, because there is
     /// no such thing as re-keying an envelope: every one of them binds its note
     /// ID into the AAD and its author's signature, so an envelope written for
     /// the reserved ID cannot be presented under the derived one. Rewriting the
-    /// whole document as a single snapshot envelope is [ADR
-    /// 0012](../../docs/adr/0012-compacting-the-account-document.md)'s
+    /// whole document as a single snapshot envelope is [ADR 0012](../../docs/decisions.md#adr-0012)'s
     /// compaction doing double duty, and it drops the history of placements this
     /// person set before they had an account -- which nothing was ever going to
     /// show them.
@@ -844,7 +841,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// syncs, rather than merely to store their ciphertext. Only a record's own
     /// key is taken, and only for a note that has no current access package:
     /// a shared note's key is its package's to give
-    /// ([ADR 0023](../../docs/adr/0023-access-packages.md) §7).
+    /// ([ADR 0023](../../docs/decisions.md#adr-0023)).
     ///
     /// Run when a batch of updates has **settled** — at launch, and on the
     /// relay's `Caught` ([`crate::sync::wire::Incoming`]), which is exactly the
@@ -1001,7 +998,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // worse answer than either keeping it or refusing to make it. What it
         // costs is that a note made by accident stays until there is a way to
         // delete one, which is the trash — a personal placement in the account
-        // document, item 6 of the Slice 2 plan.
+        // document, item 6 of the second milestone.
         self.store.put_meta(id, ADDED, &added.to_be_bytes())?;
         self.store.put_meta(id, NEXT_COUNTER, &0u64.to_be_bytes())?;
         // An empty entry, so that the note has a card from the moment it exists
@@ -1243,7 +1240,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // A note list is not a query: every title in it is inside an envelope that
     // only a key opens, so a device that kept nothing but the log would have to
     // open every note to draw a grid. That is the cost of the store holding
-    // nothing in the clear ([ADR 0005](../../docs/adr/0005-local-store.md)), and
+    // nothing in the clear ([ADR 0005](../../docs/decisions.md#adr-0005)), and
     // the sealed index is how it is paid once instead of at every launch — a
     // card is drawn from an entry, and the entry is rewritten from the document
     // by everything that changes one, so the two cannot disagree
@@ -1285,7 +1282,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// Local and nothing but local: it reads the same sealed entries the grid is
     /// drawn from, so it works with no network, in an aeroplane, and against a
-    /// relay that is down — which is the point of the design doc putting search
+    /// relay that is down — which is the point of the design putting search
     /// over "the decrypted local database only". Archived and trashed notes are
     /// in the results with their placements on them, for the reason they are in
     /// the list: which of them to show is the screen's question.
@@ -1527,7 +1524,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // a colour, a pin, the archive, the trash, the order of the grid, a view
     // setting — and none of it reaches the note, so none of it reaches whoever
     // else is on the note. That separation is the whole reason the document
-    // exists ([ADR 0008](../../docs/adr/0008-account-document.md)).
+    // exists ([ADR 0008](../../docs/decisions.md#adr-0008)).
 
     /// This person's placements and settings, as they stand.
     pub fn account(&self) -> &AccountView {
@@ -1974,7 +1971,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// Not one envelope, unlike the other `_many` calls: each note's
     /// [`AccountEdit::DeleteNote`] marker is that note's recovery record
-    /// ([ADR 0010](../../docs/adr/0010-forgetting-a-note.md)), and a note whose
+    /// ([ADR 0010](../../docs/decisions.md#adr-0010)), and a note whose
     /// local cleanup failed has to be findable on its own.
     pub fn forget_notes(&mut self, ids: &[NoteId]) -> Result<usize> {
         let ids: Vec<_> = distinct(ids).collect();
@@ -1989,7 +1986,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     // The one operation here that destroys something. Everything else in this
     // file can be undone by doing the opposite of it; this cannot be undone at
     // all, which is why the UI reaches it only from the trash and only behind a
-    // confirmation. [ADR 0010](../../docs/adr/0010-forgetting-a-note.md) records
+    // confirmation. [ADR 0010](../../docs/decisions.md#adr-0010) records
     // what it does, in what order, and what it cannot do.
 
     /// Permanently delete a note from this person's account. The encrypted
@@ -2059,7 +2056,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// What deleting this account asks the relay to purge: every note this
     /// person owns, then the account document, each with the key the relay
     /// should accept and the one to try if it does not
-    /// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md) §1, §4).
+    /// ([ADR 0026](../../docs/decisions.md#adr-0026),).
     ///
     /// Lists this person joined are not here: they are the owner's. Nor is a
     /// note held by a bare share-blob key, which has no owner to speak for it.
@@ -2286,7 +2283,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// entry points rather than six, several of which write more than once, so
     /// it pushes to [`AccountEnvelopeSink`] instead. Either way the envelope is
     /// in the log before it is offered to anybody
-    /// ([ADR 0004](../../docs/adr/0004-sync-engine.md)): the relay hearing about
+    /// ([ADR 0004](../../docs/decisions.md#adr-0004)): the relay hearing about
     /// it is a separate thing from it being safe.
     fn apply_account(&mut self, edit: AccountEdit) -> Result<()> {
         if let Some(note) = Self::edited_note(&edit).filter(|note| self.is_deleted_note(*note)) {
@@ -2500,7 +2497,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// The test of residue is **ciphertext, not the key**. A note with a log or a
     /// snapshot is left exactly where it is even though this device cannot read
-    /// it: `copy_store` can carry a log whose key never arrived, and Slice 3's
+    /// it: `copy_store` can carry a log whose key never arrived, and the later milestone's
     /// recovery phrase is a key arriving later for a log that is still here.
     /// Sweeping on a missing key alone would delete the note that feature is
     /// meant to give back. A row with no ciphertext under it cannot be given back
@@ -2872,7 +2869,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// The caller decides *when*: a synced note's descriptor goes in only once
     /// its bytes are on the relay, so that nobody is handed an attachment they
-    /// cannot fetch ([ADR 0027](../../docs/adr/0027-attachments.md) §3).
+    /// cannot fetch ([ADR 0027](../../docs/decisions.md#adr-0027)).
     pub fn add_attachment(
         &mut self,
         id: NoteId,
@@ -2973,7 +2970,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Remove an attachment for everyone on the note. The bytes stay where
     /// they are — on this device until its media store collects them, on the
     /// relay until a compaction no longer lists them and a week has passed
-    /// (ADR 0027 §5), and on anyone's device who already had them — but no
+    /// (ADR 0027), and on anyone's device who already had them — but no
     /// one reading the note from here on is handed the key.
     pub fn remove_attachment(&mut self, id: NoteId, attachment: AttachmentId) -> Result<Vec<u8>> {
         self.require_attachment(id, attachment)?;
@@ -2981,7 +2978,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Where an attachment stands in its note: what a staged import is
-    /// reconciled against on the next launch ([ADR 0027](../../docs/adr/0027-attachments.md) §3).
+    /// reconciled against on the next launch ([ADR 0027](../../docs/decisions.md#adr-0027)).
     ///
     /// * [`AttachmentState::Pending`] — not in the note: publish it when its
     ///   bytes are on the relay.
@@ -3264,7 +3261,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     // -- persistence --------------------------------------------------------
 
-    /// Write an encrypted snapshot. Slice 2 uses this to compact the log; Slice 1
+    /// Write an encrypted snapshot. the second milestone uses this to compact the log; the initial implementation
     /// writes it so that `open_note` exercises the snapshot path.
     pub fn save_snapshot(&mut self, id: NoteId) -> Result<()> {
         self.ensure_open(id)?;
@@ -3292,7 +3289,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// Replace a note's log with a snapshot plus whatever the relay has not
     /// acknowledged. Returns how many envelopes were dropped.
     ///
-    /// **What compaction may not drop** is the outbox. [ADR 0004](../../docs/adr/0004-sync-engine.md)
+    /// **What compaction may not drop** is the outbox. [ADR 0004](../../docs/decisions.md#adr-0004)
     /// derives it from the log rather than keeping it beside one, so this
     /// device's own envelopes are the only copy of any edit the relay has not
     /// confirmed. Two cases follow from that, and both are the same rule:
@@ -3359,15 +3356,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// This is [`NoteCore::compact`] for the document that is not a note, and it
     /// can drop *everything* where a note's compaction may drop almost nothing.
-    /// [ADR 0006](../../docs/adr/0006-compaction.md) forbids a never-synced note
+    /// [ADR 0006](../../docs/decisions.md#adr-0006) forbids a never-synced note
     /// to shorten its log because the log is the only route its content has to a
     /// relay or a guest — a snapshot sits in a store row nothing sends. The rule
     /// is kept here and the premise is not: the snapshot goes into the log, as an
     /// ordinary sealed envelope with a counter above every one this device has
-    /// used, so the outbox [ADR 0004](../../docs/adr/0004-sync-engine.md) derives
+    /// used, so the outbox [ADR 0004](../../docs/decisions.md#adr-0004) derives
     /// from the log still holds the whole document. What a relay would be told is
     /// the same account, in one envelope instead of hundreds.
-    /// [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md) has the
+    /// [ADR 0012](../../docs/decisions.md#adr-0012) has the
     /// argument and what it rests on.
     ///
     /// One store call rather than two, because the snapshot *is* the new log:
@@ -3406,7 +3403,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// A base for the relay: the whole document, sealed as an ordinary update
     /// by this device, and signed with the topic's compaction key as covering
     /// everything up to relay sequence `covers`
-    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    /// ([ADR 0024](../../docs/decisions.md#adr-0024)).
     ///
     /// The caller — the sync engine — vouches that this device has applied
     /// everything the relay holds up to `covers` and that the relay holds
@@ -3478,7 +3475,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         note.next_counter += 1;
         let base = Envelope::seal(identity, id, &note.key, counter, &note.doc.snapshot())?;
         // From the same document as the base, so the relay is told what the
-        // base names (ADR 0027 §5). An import that is committed and not yet
+        // base names (ADR 0027). An import that is committed and not yet
         // in the note is not in it, and needs not be: the relay keeps what
         // was committed or asked about in the last day, and the queue asks
         // again before it publishes.
@@ -3597,7 +3594,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// device made and has not seen echoed come first, whatever their counter.
     /// And while a removal is waiting to be made, this device's updates stay in
     /// the log and out of here: they are under the key the person being
-    /// removed holds ([ADR 0023](../../docs/adr/0023-access-packages.md) §6).
+    /// removed holds ([ADR 0023](../../docs/decisions.md#adr-0023)).
     pub fn unsent(&self, id: NoteId, after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
         if account::is_deleted(self.account.doc.entries(), id) {
             return Ok(Vec::new());
@@ -3624,7 +3621,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// the log in their place. Returns what to send instead, oldest first.
     ///
     /// The other half of the engine holding typing back
-    /// ([ADR 0016](../../docs/adr/0016-batching-edits.md)): a keystroke is still
+    /// ([ADR 0016](../../docs/decisions.md#adr-0016)): a keystroke is still
     /// sealed and logged the moment it is made, so nothing waits in memory
     /// where a crash could take it, and what reaches the relay is one envelope
     /// per burst. Rewriting those rows is allowed for the reason compaction may

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Run launch gate item 2's offline half on two Android devices.
+"""Run the offline half of the two-device sharing gate on two Android devices.
 
-The manual steps are in issue #60 and in `docs/production-readiness-2026-09-30.md`:
-two devices on one shared list, both offline, each making a different edit,
-one force-stopped and relaunched while still offline, then reconnected one at
-a time, and finally the same item edited on both while offline. The list has
-to converge with every change, no duplicates, and the same value for the
-conflicted item.
+The manual steps are the offline half of the sharing gate: two devices on one
+shared list, both offline, each making a different edit, one force-stopped and
+relaunched while still offline, then reconnected one at a time, and finally the
+same item edited on both while offline. The list has to converge with every
+change, no duplicates, and the same value for the conflicted item.
 
 This drives both devices through `adb` and uiautomator (`adb_ui.py`), against
 a relay the caller has already started. It assumes the two devices are
@@ -18,7 +17,7 @@ needs a person to write it down.
         --a emulator-5554 --b emulator-5556 --title Gate --host 10.0.2.2
 
 The devices must have an accessibility service enabled, as
-`docs/android-on-windows.md` explains: without one Flutter publishes no
+`docs/android-release.md` explains: without one Flutter publishes no
 semantics and uiautomator sees a single opaque canvas.
 
 Everything asserted here is read from the list's card on the grid, not from

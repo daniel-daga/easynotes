@@ -7,7 +7,7 @@
 //! `covers`. The relay then drops what the base makes redundant. That is
 //! destructive, so the relay must be able to tell a member from a stranger who
 //! learned the topic ID, without learning who either of them is
-//! ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+//! ([ADR 0024](../../docs/decisions.md#adr-0024)).
 //!
 //! The answer is a key every member holds and nobody else does: an Ed25519 key
 //! derived from the topic's own key. A member can derive it; the relay sees only
@@ -59,7 +59,7 @@ pub const MAX_LIVE_OBJECTS: usize = 4096;
 
 /// What a compaction signs: the domain, the topic, how far the base reaches, a
 /// hash of the base, and the live list
-/// ([ADR 0027](../../docs/adr/0027-attachments.md) §5): a byte saying whether
+/// ([ADR 0027](../../docs/decisions.md#adr-0027)): a byte saying whether
 /// there is one, and if so a hash of its IDs sorted and without repeats, so
 /// that the order a device listed them in does not matter. Fixed-length, so no
 /// two different requests share one.
@@ -101,7 +101,7 @@ pub struct Request {
     pub base: Vec<u8>,
     /// Every attachment object the base still names, and this device's own
     /// imports not in it yet; the relay lets the rest of the topic's go
-    /// (ADR 0027 §5). `None` vouches for nothing, and the relay deletes
+    /// (ADR 0027). `None` vouches for nothing, and the relay deletes
     /// nothing: a document with a descriptor this build cannot even find the
     /// objects of, and the account document, which has none.
     pub media: Option<Vec<MediaObjectId>>,

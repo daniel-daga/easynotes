@@ -1,8 +1,11 @@
 name: CI
 
-# Lint and tests, run manually from the Actions tab. The release workflow
+# Lint and tests on every pull request and on `main`. The release workflow
 # reuses these checks after it is dispatched.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
   # So that `release.yml` can require the same lint and tests before it builds.
   workflow_call:
@@ -11,6 +14,9 @@ on:
         description: Ref to test, such as the release tag
         required: false
         type: string
+
+permissions:
+  contents: read
 
 # A pull request that is pushed to again needs only its newest run. `main` keeps
 # every run, so that each commit on it has a result.

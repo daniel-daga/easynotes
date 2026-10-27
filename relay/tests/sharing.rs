@@ -1,11 +1,11 @@
 //! Sharing with people, through a real relay, with the engine the app runs.
 //!
-//! `core/tests/sharing.rs` drives every scenario in the plan envelope by
+//! `core/tests/sharing.rs` drives every sharing scenario by
 //! envelope. This runs the same flow the app does — invite endpoints over
 //! HTTP, one engine per document, packages published when a note settles —
 //! and checks the two things only a real relay can show: that it all works
 //! without the test handing anything across, and that the relay learns no
-//! member ID, box key or name from any of it (ADR 0023 §9, scenario 9).
+//! member ID, box key or name from any of it (ADR 0023, scenario 9).
 
 mod support;
 

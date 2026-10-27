@@ -87,7 +87,7 @@ abstract class Library implements RustOpaqueInterface {
   /// the note list, which is how a person gets in while the share dialog is
   /// closed.
   ///
-  /// Letting someone in is ADR 0023 §3's approval: save it, publish the
+  /// Letting someone in is ADR 0023's approval: save it, publish the
   /// package that adds them, and answer the invite once the relay has the
   /// package. A step that cannot finish yet — offline, or the package still
   /// on its way — finishes on a later call, or after a relaunch.
@@ -137,8 +137,7 @@ abstract class Library implements RustOpaqueInterface {
   /// another library, which is what the app's relay profiles do.
   ///
   /// `access` is the relay's access key, base64url, for a relay whose
-  /// operator lets in only the people they gave it to ([ADR
-  /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
+  /// operator lets in only the people they gave it to ([ADR 0028](../../../../../docs/decisions.md#adr-0028)); `None`
   /// for an open relay. Connecting again with another key is how a changed
   /// key takes effect.
   Future<void> connect({required String relay, String? access});
@@ -149,7 +148,7 @@ abstract class Library implements RustOpaqueInterface {
   /// them; they are not stored, here or anywhere, and this is the only moment
   /// they exist. **The caller must make somebody write them down before the
   /// moment passes** — a phrase nobody has is the one state this design cannot
-  /// recover from, and the design doc's risk row asks for a backup check for
+  /// recover from, and the design calls for a backup check for
   /// exactly that reason.
   ///
   /// The account document starts syncing immediately if a relay has been
@@ -173,7 +172,7 @@ abstract class Library implements RustOpaqueInterface {
   });
 
   /// Delete this person's account from the relay and everything from this
-  /// device ([ADR 0026](../../../../docs/adr/0026-deleting-an-account.md)).
+  /// device ([ADR 0026](../../../../../docs/decisions.md#adr-0026)).
   ///
   /// Withdraws this device's open invites, purges from the relay every note
   /// this person owns and then the account document, and wipes this
@@ -197,7 +196,7 @@ abstract class Library implements RustOpaqueInterface {
   /// There is no undo, which is why the UI offers it only from the trash and
   /// only behind a confirmation. Other devices purge their copies when they
   /// sync. A collaborator's separate account and relay history remain. See
-  /// `docs/adr/0010-forgetting-a-note.md`.
+  /// `docs/decisions.md#adr-0010`.
   Future<void> forgetNote({required String id});
 
   /// Permanently delete every note named. Returns how many. Each goes the
@@ -265,7 +264,7 @@ abstract class Library implements RustOpaqueInterface {
   /// `dir` holds the SQLite database and the keyring; `master_key` is the 32
   /// bytes that seal everything in them which is not already an envelope, and
   /// it comes from the OS keychain by way of Dart — the core does not know or
-  /// care where it was kept. Slice 1's directory of files is carried into the
+  /// care where it was kept. the initial implementation's directory of files is carried into the
   /// database the first time this runs, and a device that has the key in a
   /// file beside it is carried over by
   /// [`master_key_beside_the_database`].
@@ -285,8 +284,8 @@ abstract class Library implements RustOpaqueInterface {
   /// Notes that live only in memory and are gone when the tab closes.
   ///
   /// This is what the web build uses today. A browser has no filesystem, and
-  /// the op log's IndexedDB backing is item 4 of the Slice 2 plan — see
-  /// `docs/adr/0002-web-core.md`. Everything above the store is the same code
+  /// the op log's IndexedDB backing is item 4 of the second milestone — see
+  /// `docs/decisions.md#adr-0002`. Everything above the store is the same code
   /// the native build runs, which is what makes this a stepping stone rather
   /// than a mock.
   static Library openEphemeral() =>
@@ -616,7 +615,7 @@ abstract class Note implements RustOpaqueInterface {
 
   /// Remove an attachment for everyone on the note, or give up on an import
   /// of this device's that is not in it yet. The bytes on this device go
-  /// too; nobody else's, and not the relay's (ADR 0027 §5).
+  /// too; nobody else's, and not the relay's (ADR 0027).
   Future<void> removeAttachment({required String attachment});
 
   Future<void> removeItem({required String item});
@@ -1142,7 +1141,7 @@ class PendingJoinView {
   final String name;
 
   /// The note, when the link's pre-grant opened it and this device can read
-  /// it already ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+  /// it already ([ADR 0030](../../../../../docs/decisions.md#adr-0030)).
   /// The app opens it instead of showing the waiting dialog.
   final String? note;
 
@@ -1331,7 +1330,7 @@ class SearchHitView {
 
 /// Which object store a batch is for. The log and the keys are kept apart in a
 /// browser as they are in two SQLite files on a device — as far apart as an
-/// origin allows, which [ADR 0011](../../../docs/adr/0011-the-web-store.md) is
+/// origin allows, which [ADR 0011](../../../../../docs/decisions.md#adr-0011) is
 /// honest about.
 enum StorageArea { notes, keys }
 

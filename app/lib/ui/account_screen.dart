@@ -1,8 +1,7 @@
 /// Where a person becomes one person across their devices, or finds out they
 /// already are.
 ///
-/// There is no login here and there must not be one ([ADR
-/// 0013](../../../docs/adr/0013-recovery-phrase.md)). A person is twelve words:
+/// There is no login here and there must not be one ([ADR 0013](../../../docs/decisions.md#adr-0013)). A person is twelve words:
 /// this screen mints them, shows them once, and does not let the moment pass
 /// until they have been written down — or takes twelve words typed on another
 /// device and makes this one the same person's.

@@ -1,4 +1,4 @@
-//! Who may write to a relay ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)):
+//! Who may write to a relay ([ADR 0028](../../docs/decisions.md#adr-0028)):
 //! a relay gated on an access key lets in only devices proving it, at the
 //! handshake and on every invite call, and leaves purge open; and every relay
 //! holds each client address to a write budget, over the socket and for

@@ -249,7 +249,7 @@ void main() {
     test(
       'settings from a newer build are refused and left as they are',
       () async {
-        // ADR 0029 §5: downgrading is not supported, and rewriting the newer
+        // ADR 0029: downgrading is not supported, and rewriting the newer
         // layout in this one would lose whatever it added.
         final newer = jsonEncode({
           'version': RelayProfiles.version + 1,

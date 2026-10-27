@@ -2,8 +2,7 @@
 ///
 /// Each relay has a profile of its own — its own store, keys, account and
 /// sync state — so moving to another relay is not reconnecting a library: it is
-/// closing this profile's library and opening that one's
-/// ([`docs/plan-relay-settings.md`](../../../docs/plan-relay-settings.md)).
+/// closing this profile's library and opening that one's.
 /// This is the order that has to happen in, kept out of the widget tree so a
 /// test can hold it to it without a device.
 library;

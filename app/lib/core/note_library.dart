@@ -269,11 +269,9 @@ class SearchHit {
 /// has to appear.
 ///
 /// The question is a real one on one platform only. A device with a disk writes
-/// and fsyncs before the edit returns ([ADR
-/// 0005](../../../docs/adr/0005-local-store.md)), so there is nothing to report
+/// and fsyncs before the edit returns ([ADR 0005](../../../docs/decisions.md#adr-0005)), so there is nothing to report
 /// and [storageError] is null for ever. A browser's writes are handed out in
-/// batches for Dart to apply ([ADR
-/// 0011](../../../docs/adr/0011-the-web-store.md)), the core hands each batch
+/// batches for Dart to apply ([ADR 0011](../../../docs/decisions.md#adr-0011)), the core hands each batch
 /// over exactly once and keeps no copy, and so a batch the browser refuses —
 /// out of quota, or a database cleared under the tab — is an edit that is gone.
 abstract interface class StorageHealth {
@@ -487,8 +485,7 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// [watchSync] is where it says how it went.
   ///
   /// [access] is the relay's access key, for a relay that lets in only the
-  /// people its operator gave the key to ([ADR
-  /// 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). Connecting
+  /// people its operator gave the key to ([ADR 0028](../../../docs/decisions.md#adr-0028)). Connecting
   /// again with another key is how a changed key takes effect.
   Future<void> connect(String url, {String? access});
 
@@ -514,7 +511,7 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Send every edit that is waiting for the typing to pause, now.
   ///
   /// Typing reaches the relay a burst at a time rather than a keystroke at a
-  /// time ([ADR 0016](../../../docs/adr/0016-batching-edits.md)), so there is
+  /// time ([ADR 0016](../../../docs/decisions.md#adr-0016)), so there is
   /// always up to a second of it waiting. Nothing waiting is at risk — it is
   /// stored, and the next connection sends it — but the app calls this when it
   /// is about to be hidden, so that a line typed before the phone went into a

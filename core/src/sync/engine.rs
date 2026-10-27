@@ -1,6 +1,6 @@
 //! The sync loop: connect, catch up, publish, reconnect, repeat.
 //!
-//! Slice 1 proved two cores could sync through a real relay, but the loop that
+//! the initial implementation proved two cores could sync through a real relay, but the loop that
 //! did it lived in a test. This is that loop made real, and it is where every
 //! decision a connection needs lives:
 //!
@@ -20,7 +20,7 @@
 //!   keys to try.
 //! * **One socket per device, not per note.** Every note the device syncs is a
 //!   subscription on one connection, with one token handshake and one backoff
-//!   between them ([ADR 0017](../../docs/adr/0017-one-socket-per-device.md)).
+//!   between them ([ADR 0017](../../../docs/decisions.md#adr-0017)).
 //!   Everything above is still per note: its own cursor, outbox and held
 //!   typing, exactly as when each note had a socket of its own.
 
@@ -53,7 +53,7 @@ pub const MAX_RETRY: Duration = Duration::from_secs(60);
 /// When an edit made with [`SyncHandle::publish_soon`] goes to the relay.
 ///
 /// Typing is held back and sent as one envelope per burst rather than one per
-/// keystroke; [ADR 0016](../../docs/adr/0016-batching-edits.md) has the numbers
+/// keystroke; [ADR 0016](../../../docs/decisions.md#adr-0016) has the numbers
 /// and the argument. Everything else — a tick, an item added or moved — goes the
 /// moment it is made, because somebody on the other end of a shared list is
 /// waiting to see it.
@@ -102,7 +102,7 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
     }
 
     /// Whether the relay has said this topic was purged
-    /// ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)). Such a
+    /// ([ADR 0026](../../../docs/decisions.md#adr-0026)). Such a
     /// topic is never subscribed again.
     fn is_gone(&self, note: NoteId) -> Result<bool> {
         let _ = note;
@@ -145,8 +145,7 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
     /// left in — a note created and later forgotten appears, with its key, in the
     /// middle of a log whose end does not mention it — and adoption only ever
     /// adds, so that key would be kept for ever. `Caught` is precisely the
-    /// message that says the backlog is drained; see [ADR
-    /// 0013](../../docs/adr/0013-recovery-phrase.md) decision 5. Afterwards
+    /// message that says the backlog is drained; see [ADR 0013](../../../docs/decisions.md#adr-0013) decision 5. Afterwards
     /// every arriving envelope is its own settled batch, and this is called for
     /// each — a live edit is one edit, from a device that was up to date.
     ///
@@ -155,8 +154,7 @@ pub trait SyncPeer: DeviceSigner + Send + 'static {
     ///
     /// For a note it is when the note's access packages are acted on — a new
     /// key switched to, a removal carried out, an owner's change published —
-    /// and what comes back is sent at once ([ADR
-    /// 0023](../../docs/adr/0023-access-packages.md) §5–7). Nothing, by
+    /// and what comes back is sent at once ([ADR 0023](../../../docs/decisions.md#adr-0023)–7). Nothing, by
     /// default: a note without packages means the same thing whether its
     /// envelopes arrived in a backlog or one at a time.
     fn settled(&self, note: NoteId) -> Result<Outgoing> {
@@ -289,8 +287,7 @@ where
 pub struct RelayEndpoint {
     pub http_base: String,
     pub ws_base: String,
-    /// The relay's access key, if its operator gave this device one ([ADR
-    /// 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). Not part
+    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Not part
     /// of the relay's address: changing it is the same relay.
     pub access: Option<RelayAccess>,
 }
@@ -471,7 +468,7 @@ enum Command {
     },
     /// Compact the note as if the relay had asked: this device removed an
     /// attachment, and the base's live list is what frees its bytes
-    /// ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+    /// ([ADR 0027](../../../docs/decisions.md#adr-0027)).
     Reclaim {
         note: NoteId,
     },
@@ -652,7 +649,7 @@ impl SyncHandle {
     /// waits for. What removing an attachment calls: the base's live list is
     /// what lets the relay free the bytes, and it is also what takes the
     /// removed file's key out of the relay's log
-    /// ([ADR 0027](../../../docs/adr/0027-attachments.md) §5).
+    /// ([ADR 0027](../../../docs/decisions.md#adr-0027)).
     ///
     /// Forgotten if the connection drops first, like the relay's own request:
     /// the next compaction the note gets does the same.
@@ -691,7 +688,7 @@ impl SyncHandle {
 // ---------------------------------------------------------------------------
 
 /// One device's sync: one socket to the relay, carrying every note connected
-/// to it ([ADR 0017](../../docs/adr/0017-one-socket-per-device.md)).
+/// to it ([ADR 0017](../../../docs/decisions.md#adr-0017)).
 ///
 /// The split is along a line that was already in the engine. What is about the
 /// socket — the token handshake, the reconnect loop and its one backoff,
@@ -1801,7 +1798,7 @@ impl Live {
     /// for everything up to its cursor: caught up, and with nothing of its own
     /// in flight or held back, so that the relay has every edit this device
     /// made and the base has every edit the relay has
-    /// ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+    /// ([ADR 0024](../../../docs/decisions.md#adr-0024)).
     fn compact_if_due<P: SyncPeer>(&mut self, peer: &P, note: NoteId) {
         if !self.crowded
             || !self.caught

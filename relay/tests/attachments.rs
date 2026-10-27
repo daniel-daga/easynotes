@@ -1,7 +1,7 @@
 //! An attachment from one device to another through a real relay: imported and
 //! sealed on the first, uploaded, published into the note only once the relay
 //! has committed it, downloaded and opened on the second
-//! ([ADR 0027](../../docs/adr/0027-attachments.md) §3–§4).
+//! ([ADR 0027](../../docs/decisions.md#adr-0027)–).
 //!
 //! The descriptor travels as any edit does; how that reaches a peer is covered
 //! elsewhere, so it is handed across directly here and the relay carries only

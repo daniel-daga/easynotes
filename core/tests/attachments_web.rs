@@ -1,5 +1,5 @@
 //! The browser's media store, held to the directory's promises
-//! ([ADR 0027](../../docs/adr/0027-attachments.md) §3) with its rows in memory.
+//! ([ADR 0027](../../docs/decisions.md#adr-0027)) with its rows in memory.
 //! What IndexedDB adds is three operations and no rules; `just web-media` runs
 //! those in a real browser.
 

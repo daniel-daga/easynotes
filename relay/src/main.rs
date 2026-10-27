@@ -28,7 +28,7 @@
 //!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
 //!   64 GiB.
 //!
-//! * `RELAY_ACCESS_KEYS` — who may write here ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)):
+//! * `RELAY_ACCESS_KEYS` — who may write here ([ADR 0028](../../docs/decisions.md#adr-0028)):
 //!   one or more base64url access keys, comma separated, or `open` for anyone.
 //!   More than one so a rotation can overlap. Unset is `open`, with a warning.
 //!   `easynotes-relay access-key` prints a new key.

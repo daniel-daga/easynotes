@@ -1,6 +1,6 @@
 //! The attachment transfer queue: what moves a photo from "saved on this
 //! device" to "on the note for everyone", and fetches other people's
-//! ([ADR 0027](../../../docs/adr/0027-attachments.md) §3–§4).
+//! ([ADR 0027](../../../docs/decisions.md#adr-0027)–).
 //!
 //! [`super::media`] knows how to move one variant; this decides which, when,
 //! and what to do afterwards. It is a loop of its own beside the sync engine,
@@ -11,13 +11,13 @@
 //! * **Uploads are durable because staging records are.** The queue keeps no
 //!   list of its own that could drift: every launch, and every [`kick`], it
 //!   reads [`MediaStore::staged`] and reconciles each record against
-//!   [`TransferPeer::attachment_state`], as §3's table says. An upload
+//!   [`TransferPeer::attachment_state`], as's table says. An upload
 //!   interrupted anywhere is picked up from the record, and the relay's status
 //!   call says which chunks it already has.
 //! * **A descriptor waits for its bytes and for the note.** An import into a
 //!   synced note is uploaded only once the engine says the note is
 //!   [`Reach::Synced`] — the account caught up first, so a deleted note is known
-//!   to be deleted, and the note's access packages settled (ADR 0023 §7) — and
+//!   to be deleted, and the note's access packages settled (ADR 0023) — and
 //!   published only once the relay has committed every object it names. A note
 //!   that does not sync publishes at once. Publication goes through
 //!   `add_attachment`, which refuses a spent ID, after `attachment_state` has
@@ -82,7 +82,7 @@ const RECHECK: Duration = Duration::from_secs(5);
 /// asks the relay again about its bytes. Half the day for which the relay
 /// leaves a committed or asked-about object alone, so that a device away for
 /// longer finds a doom cancelled, or the bytes gone and sends them again,
-/// before anyone else has to (ADR 0027 §5).
+/// before anyone else has to (ADR 0027).
 const REVOUCH: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// How long a token is used for. The relay's last fifteen minutes; this leaves
@@ -122,7 +122,7 @@ pub trait TransferPeer: DeviceSigner + Send + Sync + 'static {
     /// and nothing of this device's waiting to be acknowledged. What an
     /// upload's record waits for after publishing, since until then its
     /// descriptor may not be on the relay, and nothing there names its bytes
-    /// (ADR 0027 §5).
+    /// (ADR 0027).
     fn acknowledged(&self, note: NoteId) -> bool;
 
     /// Put the descriptor into the note — `NoteCore::add_attachment` — and hand
@@ -366,7 +366,7 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
     }
 
     /// The relay's access key, for a relay that lets in only the people its
-    /// operator gave it to ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    /// operator gave it to ([ADR 0028](../../../docs/decisions.md#adr-0028)).
     /// Before [`run`](Self::run), which is the only time it is read.
     pub fn with_access(mut self, access: Option<RelayAccess>) -> Self {
         self.tokens = Arc::new(Tokens {
@@ -610,11 +610,11 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
             .peer
             .publish(staged.note, staged.id, staged.media.clone())
         {
-            // Published and not settled is the state §3 recovers from: the next
+            // Published and not settled is the state recovers from: the next
             // scan finds the record and sees `Live`. Settled now only where
             // there is no relay; otherwise once the relay has the descriptor
             // (`decide`), so that an upload committed and never named on the
-            // relay is still somebody's to vouch for (ADR 0027 §5).
+            // relay is still somebody's to vouch for (ADR 0027).
             Ok(()) if self.peer.reach(staged.note) == Reach::LocalOnly => {
                 let _ = self.store.settle(staged.id).await;
                 Step::Done

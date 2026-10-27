@@ -2,7 +2,7 @@
 ///
 /// The other half of `contentForSharing`: that one sends a note out as plain
 /// text or `[x] item` task lines, and this takes the same format back in through
-/// the platform's share sheet. See `docs/plan-text-interchange.md`.
+/// the platform's share sheet. The format is the same one the app exports.
 ///
 /// Android delivers `ACTION_SEND` of `text/plain` to `MainActivity`, which
 /// hands it over on the channels below — on a cold start through

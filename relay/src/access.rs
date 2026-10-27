@@ -1,4 +1,4 @@
-//! Who may write to this relay ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+//! Who may write to this relay ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //!
 //! Open, as a development relay and the tests run, or gated on one or more
 //! access keys that the operator hands to the people it serves. More than one

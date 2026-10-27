@@ -1,7 +1,7 @@
 //! One person's two devices, through a real relay.
 //!
 //! [`engine.rs`](./engine.rs) proves the loop for a note; this proves it for the
-//! document that makes two devices one person's. Slice 3's definition of done,
+//! document that makes two devices one person's. the later milestone's definition of done,
 //! point 2, asks that two devices adopted from one recovery phrase agree about a
 //! note's contents *and* about its colour, labels, pin and placement.
 //! `core/tests/recovery.rs` holds that with the envelopes handed across by the
@@ -18,7 +18,7 @@
 //! * **Note keys are taken when a batch settles.** `Caught` is the only message
 //!   that says the backlog is drained, and adopting a key out of the middle of a
 //!   replay would keep a key for a note whose end-of-log does not mention it
-//!   ([ADR 0013](../../docs/adr/0013-recovery-phrase.md) decision 5).
+//!   ([ADR 0013](../../docs/decisions.md#adr-0013) decision 5).
 
 mod support;
 

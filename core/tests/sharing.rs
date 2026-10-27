@@ -2,7 +2,7 @@
 //!
 //! `Relay` stands in for the real one — an append-only log per note that
 //! hands every device everything after its cursor — so that each scenario in
-//! the plan (`docs/plan-account-collaboration.md`, "Scenarios that must pass")
+//! the sharing scenarios ("Scenarios that must pass")
 //! can be driven envelope by envelope, in whatever order it needs.
 //! `relay/tests/sharing.rs` runs the flow through a real relay and socket.
 //! Every scenario runs on both CRDT backends: the switch rule is backend code.
@@ -1317,8 +1317,8 @@ fn deleted_here<D: NoteDoc>(phone: &mut Phone<D>, note: NoteId) {
 
 /// The owner's laptop removes Anna while offline — a rotation to a fresh key,
 /// with a new access package granting it to the owner's account and to Ben —
-/// while the owner's phone deletes the note for good (plan-permanent-deletion,
-/// "B … rotates while offline; A deletes").
+/// while the owner's phone deletes the note for good (the
+/// "B … rotates while offline; A deletes" case).
 ///
 /// `rotation_first` says which reaches the relay first. If the deletion does,
 /// the laptop learns of it on reconnecting, before it publishes, and the

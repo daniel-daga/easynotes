@@ -52,7 +52,7 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   (default 64 GiB, or `off`). A removed attachment stops counting against
   its note at the next compaction, which the device that removed it asks
   for, and its bytes are deleted about a week after that
-  ([ADR 0027](../../docs/adr/0027-attachments.md) §5). Until they are, they
+  ([ADR 0027](../../docs/decisions.md#adr-0027)). Until they are, they
   still count against `RELAY_MEDIA_CEILING`, because they are still on the
   disk. `easynotes_relay_media_bytes{state="doomed"}` says how much is
   waiting to go.
@@ -202,7 +202,7 @@ before starting the relay. Restore the two together: a database with no media
 archive lists attachments whose bytes are gone, and devices that still hold
 them have to upload them again. Devices that synced
 after the dump was taken notice the relay went backwards, replay it and resend
-what they still hold ([ADR 0004](../../docs/adr/0004-sync-engine.md), "Relay
+what they still hold ([ADR 0004](../../docs/decisions.md#adr-0004), "Relay
 restore recovery"); history they have already compacted away is not resent. So
 treat a real restore as an incident, and check that two devices converge before
 calling it over.
@@ -248,7 +248,7 @@ way. Migrations only add, so rolling back to the previous release works on the
 newer database. Update the relay before, or together with, the apps that use
 it: an app newer than its relay may need a protocol the relay does not speak
 yet, and it then stops syncing and tells its user to ask you to update
-([ADR 0029](../../docs/adr/0029-compatibility-across-releases.md)).
+([ADR 0029](../../docs/decisions.md#adr-0029)).
 `easynotes_relay_outdated_total` (section 5) counts the requests refused that
 way.
 
@@ -265,7 +265,7 @@ curl -s http://127.0.0.1:19090/metrics | grep -v '^#'
 ```
 
 The numbers that matter most on a relay anyone with the hostname can write to
-([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)):
+([ADR 0024](../../docs/decisions.md#adr-0024)):
 
 - `easynotes_relay_log_bytes` against `easynotes_relay_log_ceiling_bytes`, and
   `easynotes_relay_media_bytes` against `easynotes_relay_media_ceiling_bytes`.
@@ -290,7 +290,7 @@ it does not see a ceiling coming.
 ## 6. Check and rotate the token signing key
 
 The key signs the short-lived access tokens devices get from the handshake
-([ADR 0021](../../docs/adr/0021-stateless-relay-tokens.md)). To confirm the
+([ADR 0021](../../docs/decisions.md#adr-0021)). To confirm the
 relay is using yours, look for this line in the relay container's log at start:
 
 ```text
@@ -328,7 +328,7 @@ keys the relay never holds.
 
 With `RELAY_ACCESS_KEYS` set, the relay issues tokens and takes invites only
 from devices that prove they hold one of its keys
-([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The key is
+([ADR 0028](../../docs/decisions.md#adr-0028)). The key is
 never sent: a device proves it with an HMAC over the handshake, so neither the
 reverse proxy nor anyone reading its logs learns it. The relay's log says at
 start how many keys it has:
@@ -388,7 +388,7 @@ Tokens already issued last up to fifteen minutes, so a removed key stops
 working within that. Rotating the signing key (step 6) at the same time ends it
 at once.
 
-Deleting an account ([ADR 0026](../../docs/adr/0026-deleting-an-account.md))
+Deleting an account ([ADR 0026](../../docs/decisions.md#adr-0026))
 needs no access key: someone whose access was taken away can still remove what
 they put here.
 

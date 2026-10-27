@@ -1,6 +1,6 @@
 //! What compaction buys, in bytes and in milliseconds.
 //!
-//! Prints the table in `docs/adr/0006-compaction.md`. Run it with:
+//! Prints the table in `docs/decisions.md#adr-0006`. Run it with:
 //!
 //! ```sh
 //! cargo run --release -p easynotes-core --example bench_compaction

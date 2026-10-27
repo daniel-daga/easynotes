@@ -7,7 +7,7 @@ bounds. This module is the small part of that a scripted two-device run needs:
 find a node by the words a person would see, tap it, type into it, and read
 what is on screen.
 
-`docs/android-on-windows.md` has the traps this works around: a stale dump, a
+`docs/android-release.md` has the traps this works around: a stale dump, a
 keyboard that eats the first keystrokes into a newly focused field, and an
 invite link whose `#` the device's shell would read as a comment.
 """

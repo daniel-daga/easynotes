@@ -227,7 +227,7 @@ fn rejects_malformed_share_blobs() {
 
 #[test]
 fn share_blob_tolerates_surrounding_whitespace() {
-    // Users paste these by hand in Slice 1.
+    // Users paste these by hand in the initial implementation.
     let blob = export_share_blob(&NoteId::random(), &NoteKey::random());
     assert!(import_share_blob(&format!("  {blob}\n")).is_ok());
 }
@@ -245,7 +245,7 @@ fn an_identity_is_reproducible_from_its_seed() {
 
 #[test]
 fn x25519_agreement_is_symmetric() {
-    // Not used until Slice 3's invite links, but the key pair is part of the
+    // Not used until the later milestone's invite links, but the key pair is part of the
     // identity now, so it is worth knowing it works.
     let a = DeviceIdentity::generate();
     let b = DeviceIdentity::generate();

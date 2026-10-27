@@ -144,7 +144,7 @@ async fn migrating_twice_is_harmless() {
     store.migrate().await.unwrap();
 }
 
-/// Connecting brings the schema to this build's, and records it (ADR 0029 §5).
+/// Connecting brings the schema to this build's, and records it (ADR 0029).
 #[tokio::test]
 async fn records_every_migration_it_applies() {
     let store = store_or_skip!();

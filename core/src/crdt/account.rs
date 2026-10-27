@@ -2,12 +2,12 @@
 //!
 //! A note's *content* is shared with everyone who has its key. Where that note
 //! sits in the grid, whether it is pinned, archived or in the trash, and how
-//! this person likes their list drawn are not shared with anyone: the design doc
+//! this person likes their list drawn are not shared with anyone: the design
 //! keeps them in a private per-user document. This is that document.
 //!
 //! A colour is the exception, since 2026-10-24: it is written into the note's own
 //! document as well, so everyone on the note sees the same shade
-//! ([ADR 0008](../../../docs/adr/0008-account-document.md)). It is still written
+//! ([ADR 0008](../../../docs/decisions.md#adr-0008)). It is still written
 //! here too — a build from before that reads only this, and a note that has
 //! never recorded a shared colour, both fall back to it.
 //!
@@ -69,8 +69,8 @@
 //!
 //! Taking a label off **deletes** the membership key rather than writing
 //! `false`. Nothing compacts a note's document
-//! ([ADR 0006](../../../docs/adr/0006-compaction.md)) and this one is compacted
-//! only at a threshold ([ADR 0012](../../../docs/adr/0012-compacting-the-account-document.md)),
+//! ([ADR 0006](../../../docs/decisions.md#adr-0006)) and this one is compacted
+//! only at a threshold ([ADR 0012](../../../docs/decisions.md#adr-0012)),
 //! so a `false` left behind is a key replayed at every launch, about a label this
 //! person has stopped using — and unlike the five placement fields, which are
 //! bounded, the labels one note could accumulate are not. The price is the one
@@ -89,13 +89,11 @@
 //! This document is the only thing one person's two devices share that nobody
 //! else can read, so it is where a device learns which notes this person has.
 //! A `k:` register per note is what makes a second device adopted from a
-//! recovery phrase find the notes it should sync ([ADR
-//! 0013](../../../docs/adr/0013-recovery-phrase.md)). For a note this person
+//! recovery phrase find the notes it should sync ([ADR 0013](../../../docs/decisions.md#adr-0013)). For a note this person
 //! made, it carries the owner key's seed and the key the note had before it was
 //! shared; for a note somebody shared with them, only the owner key and the
 //! invite that let them in. A shared note's key comes from its current access
-//! package, never from here ([ADR
-//! 0023](../../../docs/adr/0023-access-packages.md)).
+//! package, never from here ([ADR 0023](../../../docs/decisions.md#adr-0023)).
 //!
 //! **[`view_of`] ignores them, on purpose.** An [`AccountView`] is handed out by
 //! [`NoteCore::account`](crate::note::NoteCore::account), cloned on every
@@ -121,15 +119,13 @@ const SETTING: &str = "s:";
 /// merely store it. See the module docs.
 const NOTE_KEY: &str = "k:";
 const DELETED_NOTE: &str = "deleted:";
-/// A membership this person was removed from ([ADR
-/// 0023](../../../docs/adr/0023-access-packages.md) §2). Keyed by the invite
+/// A membership this person was removed from ([ADR 0023](../../../docs/decisions.md#adr-0023)). Keyed by the invite
 /// that admitted it, so a later invite is not blocked by it.
 const REMOVED: &str = "removed:";
 /// The name this person's requests carry. One register, so every device of
 /// the account asks to join under the same one.
 const PROFILE_NAME: &str = "profile:name";
-/// Which rename the name above belongs to ([ADR
-/// 0032](../../../docs/adr/0032-a-name-that-follows-the-person.md)). It
+/// Which rename the name above belongs to ([ADR 0032](../../../docs/decisions.md#adr-0032)). It
 /// advances on every rename, so a device that has not yet read a rename knows
 /// it is behind and does not overwrite what the note now says.
 const PROFILE_SEQ: &str = "profile:seq";
@@ -606,7 +602,7 @@ pub enum AccountEdit {
     /// [`AccountDoc::write`] takes a slice: a peer must not see half a
     /// placement removed. Leaving them would grow this document for ever with
     /// keys about notes nobody can open — and the document is not compacted
-    /// ([ADR 0006](../../../docs/adr/0006-compaction.md)), so every one of them
+    /// ([ADR 0006](../../../docs/decisions.md#adr-0006)), so every one of them
     /// would be replayed at every launch.
     ///
     /// It is **not** an undo of [`AccountEdit::SetTrashed`]: a note with no keys
@@ -913,7 +909,7 @@ pub fn legacy_tag_write(note: NoteId, tag: &str) -> (String, Option<Value>) {
 }
 
 /// What this person holds of one note, as the account document records it
-/// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §2).
+/// ([ADR 0023](../../../docs/decisions.md#adr-0023)).
 ///
 /// Deliberately not part of [`view_of`], and deliberately not a field on
 /// [`AccountView`]. That view is cloned on every change, handed out by

@@ -3,7 +3,7 @@
 # Every one of these compiles for `wasm32-unknown-unknown` and then panics the
 # first time a browser runs it — `operation not supported on this platform`,
 # or `time not implemented on this platform`. That is how the web app died on
-# its first frame in Slice 1 (ADR 0002), from a note watcher that worked on
+# its first frame in the initial implementation (ADR 0002), from a note watcher that worked on
 # Linux. The lint runs with this file only for the wasm target, so a native
 # `#[cfg]` branch that uses them is not flagged and a shared one is.
 disallowed-methods = [

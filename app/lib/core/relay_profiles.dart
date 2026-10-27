@@ -13,7 +13,7 @@ class RelayProfile {
   final String? url;
 
   /// The relay's access key, base64url, if its operator gave this device one
-  /// ([ADR 0028](../../../docs/adr/0028-who-may-write-to-a-relay.md)). Kept in
+  /// ([ADR 0028](../../../docs/decisions.md#adr-0028)). Kept in
   /// the keychain beside the profile rather than in its settings: it is not
   /// part of the relay's address, and changing it is the same profile.
   final String? access;
@@ -45,7 +45,7 @@ class RelayProfiles {
   static String _accessKey(String profileId) =>
       'easynotes.relay-access.$profileId';
 
-  /// The layout [_write] stores, as its `version` field says (ADR 0029 §5).
+  /// The layout [_write] stores, as its `version` field says (ADR 0029).
   /// One more than the number of [_steps].
   static const version = 1;
 

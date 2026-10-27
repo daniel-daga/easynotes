@@ -607,7 +607,7 @@ fn a_fold_replaces_its_edits_in_the_log_and_survives_a_restart<D: NoteDoc, B: Ba
 }
 
 fn moving_to_the_new_store_keeps_the_notes<D: NoteDoc>() {
-    // The app changed store between Slice 1 and Slice 2. A device that had notes
+    // The app changed store between the initial implementation and the second milestone. A device that had notes
     // in the old one has to find them in the new one, under the same identity —
     // a migration that mints a new device key would make this device a stranger
     // to every peer it already shares a list with.

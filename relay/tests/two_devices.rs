@@ -1,6 +1,6 @@
 //! M3 acceptance: the demo, end to end, through a real relay over a real socket.
 //!
-//! These are demo steps 1–5 from the Slice 1 plan, run headlessly so that they
+//! These are demo steps 1–5 from the initial implementation, run headlessly so that they
 //! are in CI rather than in someone's memory of a meeting. Step 6 (relaunch with
 //! no network) lives in `core/tests/persistence.rs`, which needs no relay.
 

@@ -1,5 +1,5 @@
 # Update pull requests for the three things this repository depends on from
-# outside (production readiness review, F7). Weekly and grouped, so that they
+# outside. Weekly and grouped, so that they
 # arrive as a few pull requests a week that CI has already run on, rather than
 # one per crate. Security updates are not held to this schedule: GitHub opens
 # those as soon as an advisory lands, when Dependabot security updates are on

@@ -1,5 +1,5 @@
 //! Compaction and the caps, held to one set of rules in both stores
-//! ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+//! ([ADR 0024](../../docs/decisions.md#adr-0024)).
 //!
 //! The memory store always; Postgres when `DATABASE_URL` is set, which CI does.
 //! Everything here is below the socket: the stores are handed envelopes and

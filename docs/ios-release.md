@@ -8,9 +8,7 @@ Store Connect, and waits for Apple's processing (last green run 2026-10-18).
 This page records what stands between that build and shipping it, and where each
 thing happens. It is the iOS counterpart of
 [`android-release.md`](android-release.md); the shared privacy, security and
-operational gate items are in the
-[production readiness report](production-readiness-2026-09-30.md) and are not
-repeated here.
+operational gate items are not repeated here.
 
 ## Done
 
@@ -72,7 +70,7 @@ App Store Connect's **App Privacy** section needs the data-collection answers,
 mirroring Play's Data safety. The app has no analytics, advertising or crash
 reporting, but the relay sees IP addresses, a random device key, note IDs,
 timestamps and sizes (see the About screen and
-[ADR 0014](adr/0014-what-the-relay-learns.md)). Fill it from that list, and make
+[ADR 0014](decisions.md#adr-0014)). Fill it from that list, and make
 sure it matches the published privacy policy.
 
 ### 4. External beta (TestFlight)
@@ -99,11 +97,11 @@ remove (camera, gallery, large file on mobile data, background kill mid-upload)
 and build. The camera string in `Info.plist` currently mentions only the QR
 transfer, so confirm the attachment flows do not hit the camera without a
 matching purpose string (attachments use the document picker, not the camera).
-See [`two-phone-run-2026-10-26.md`](two-phone-run-2026-10-26.md).
+The 2026-10-26 Pixel + iPad run was a partial data point, not this walkthrough.
 
 ### 6. Publish
 
-When everything above is recorded, submit the build for App Store review. Keep
-the launch gate in the readiness report in mind: iOS being built does not by
-itself make the product ready — the privacy policy, operator identity, support
-and security contacts, and the restore drill apply to every store.
+When everything above is recorded, submit the build for App Store review. iOS
+being built does not by itself make the product ready: the privacy policy,
+operator identity, support and security contacts, and the restore drill apply
+to every store.

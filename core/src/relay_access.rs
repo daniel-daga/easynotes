@@ -1,4 +1,4 @@
-//! Who may write to a relay ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+//! Who may write to a relay ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //!
 //! A relay's operator may set an access key and hand it to the people they let
 //! in. Everyone holds the same one, so proving it tells the relay nothing about

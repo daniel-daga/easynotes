@@ -1,7 +1,7 @@
 //! What opening a device costs *in a browser*, which is the one number
 //! `just bench-library` cannot produce.
 //!
-//! [ADR 0011](../../../docs/adr/0011-the-web-store.md) has a tab read its whole
+//! [ADR 0011](../../../docs/decisions.md#adr-0011) has a tab read its whole
 //! database at open and keep it in memory, because `OpStore` is synchronous and
 //! nothing a browser offers is. That is a bet about size: it holds if reading
 //! and unsealing everything is cheap at the sizes people have, and it stops
@@ -123,7 +123,7 @@ fn from_js(map: &Map) -> Vec<(String, Vec<u8>)> {
 /// make every measured launch the one unrepeatable launch that pays for a
 /// compaction, and would report that as what opening this device costs. What
 /// comes back is the steady state, which is the column
-/// [ADR 0012](../../../docs/adr/0012-compacting-the-account-document.md) reports
+/// [ADR 0012](../../../docs/decisions.md#adr-0012) reports
 /// for a device with a disk.
 #[wasm_bindgen]
 pub fn seed(notes: u32) -> Result<JsValue, JsValue> {

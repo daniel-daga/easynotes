@@ -1,8 +1,8 @@
 //! What it costs to open a device: its whole note list, and its placements.
 //!
-//! Prints the tables in `docs/adr/0007-note-list.md`,
-//! `docs/adr/0008-account-document.md` and
-//! `docs/adr/0012-compacting-the-account-document.md`. Run it with:
+//! Prints the tables in `docs/decisions.md#adr-0007`,
+//! `docs/decisions.md#adr-0008` and
+//! `docs/decisions.md#adr-0012`. Run it with:
 //!
 //! ```sh
 //! cargo run --release -p easynotes-core --example bench_library
@@ -24,7 +24,7 @@
 //! made visible: opening the account document, before a single note is read.
 //! Same three sizes, measured with its log as the placements left it and again
 //! once it has been compacted — which is
-//! [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md), and is
+//! [ADR 0012](../../docs/decisions.md#adr-0012), and is
 //! why the number stopped growing with placements ever made.
 //!
 //! Unlike `bench_compaction` this runs against SQLite in a real directory,
@@ -121,7 +121,7 @@ fn pretend_the_relay_has_it_all(core: &mut Core, notes: &[NoteId]) {
 /// first launch.
 ///
 /// Built by copying it through the trait and leaving the index rows behind,
-/// which is exactly what `open_local` does for a device coming off Slice 1's
+/// which is exactly what `open_local` does for a device coming off the initial implementation's
 /// directory of files.
 fn without_the_index(from: &Path) -> TempDir {
     let to = tempfile::tempdir().unwrap();

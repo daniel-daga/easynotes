@@ -822,7 +822,7 @@ async fn device_refresh_waits_for_each_subscription_barrier() {
 
 /// A removal's package already contains held typing. Sending those old-key
 /// envelopes after it would hand the removed person what was typed while
-/// they were being removed (ADR 0023 §6).
+/// they were being removed (ADR 0023).
 #[tokio::test]
 async fn a_removal_supersedes_typing_held_under_the_old_key() {
     let (_relay, log, endpoint) = relay().await;
@@ -986,7 +986,7 @@ async fn a_base_is_acknowledged_like_an_edit() {
     assert_eq!(log.head(&a.note.encode()).await.unwrap(), head);
 }
 
-/// ADR 0027 §5 end to end: removing an attachment and asking to reclaim
+/// ADR 0027 end to end: removing an attachment and asking to reclaim
 /// makes a base the relay never asked for, and its live list dooms the
 /// removed file's object and keeps the other's.
 #[tokio::test]

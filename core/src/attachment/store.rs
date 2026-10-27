@@ -16,7 +16,7 @@
 //!
 //! What *is* sealed under the master key is the staging record, because it
 //! holds a content key that is not in any note yet. The order an import commits
-//! in is the whole of the crash story ([ADR 0027](../../../docs/adr/0027-attachments.md) §3):
+//! in is the whole of the crash story ([ADR 0027](../../../docs/decisions.md#adr-0027)):
 //!
 //! 1. every object is written to `tmp/`, synced, and renamed into `objects/`;
 //! 2. then the staging record is written the same way. From here the import is

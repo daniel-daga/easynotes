@@ -46,7 +46,7 @@ pub enum CoreError {
     /// format this release takes, too many on one note.
     #[error("{0}")]
     Attachment(String),
-    /// The relay no longer speaks the protocol this build does (ADR 0029 §4).
+    /// The relay no longer speaks the protocol this build does (ADR 0029).
     /// Nothing local is affected: the app keeps working and stops syncing
     /// until it is updated.
     #[error("This sync server needs a newer version of EasyNotes. Update the app to sync again; your notes are safe on this device.")]
@@ -56,8 +56,7 @@ pub enum CoreError {
     #[error("This sync server runs an older version of EasyNotes than this app can sync with. Ask whoever runs it to update it; your notes are safe on this device.")]
     RelayOutdated,
     /// The relay lets in only the people its operator gave its access key
-    /// to, and this device has not got it, or has an old one ([ADR
-    /// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)). The person
+    /// to, and this device has not got it, or has an old one ([ADR 0028](../../docs/decisions.md#adr-0028)). The person
     /// fixes it in Settings, with the relay link they were given.
     #[error("This sync server needs an access key. Ask whoever runs it for its server link, and add it under Settings, Sync server. Your notes are safe on this device.")]
     AccessRequired,

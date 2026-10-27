@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 /// in `tests/protocol.rs` fails if the two ever drift.
 pub const MAX_ENVELOPE_BYTES: usize = 1 << 20;
 
-/// The protocol versions this relay speaks ([ADR
-/// 0029](../../docs/adr/0029-compatibility-across-releases.md) §4). A client
+/// The protocol versions this relay speaks ([ADR 0029](../../docs/decisions.md#adr-0029)). A client
 /// names its own in `?p=` on every request; one outside this range is refused
 /// with `426` before anything else runs.
 ///
@@ -99,11 +98,10 @@ pub const RELAY_FULL: &str = "relay_full";
 
 /// What an append, a compaction or a subscribe is refused with once the topic
 /// has been purged, and what every subscriber is told at the moment it is
-/// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+/// ([ADR 0026](../../docs/decisions.md#adr-0026)).
 pub const GONE: &str = "gone";
 
-/// What an append is refused with past the address's write budget ([ADR
-/// 0028](../../docs/adr/0028-who-may-write-to-a-relay.md) §3). The relay closes
+/// What an append is refused with past the address's write budget ([ADR 0028](../../docs/decisions.md#adr-0028)). The relay closes
 /// the socket after saying so, and the client backs off before it reconnects.
 pub const RATE_LIMITED: &str = "rate_limited";
 
@@ -128,7 +126,7 @@ pub enum SyncClientMessage {
     /// An envelope to append to a note this socket is subscribed to.
     Append { note: String, envelope: String },
     /// Compact a subscribed note to a base: see [`crate::quota`] and
-    /// [ADR 0024](../../docs/adr/0024-relay-storage-quota.md). All base64url.
+    /// [ADR 0024](../../docs/decisions.md#adr-0024). All base64url.
     Compact {
         note: String,
         /// Everything at or below this sequence number is in the base.
@@ -136,7 +134,7 @@ pub enum SyncClientMessage {
         /// The base: an ordinary sealed update holding the whole document.
         base: String,
         /// The attachment objects the base names, as object IDs: the topic's
-        /// other committed objects are doomed (ADR 0027 §5). Absent, nothing
+        /// other committed objects are doomed (ADR 0027). Absent, nothing
         /// is; a client from before clean-up sends none.
         #[serde(default)]
         media: Option<Vec<String>>,
@@ -225,7 +223,7 @@ pub const MAX_INVITE_PAYLOAD_BYTES: usize = 1024;
 pub const MAX_INVITE_GRANT_BYTES: usize = 1024;
 
 /// The pre-grant: a note ID, an owner key and a note key, sealed under the
-/// link's secret, and overhead ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+/// link's secret, and overhead ([ADR 0030](../../docs/decisions.md#adr-0030)).
 pub const MAX_INVITE_PRE_GRANT_BYTES: usize = 256;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -374,7 +372,7 @@ pub struct AnswerInvite {
 pub const MAX_PURGE_TOPICS: usize = 512;
 
 /// `POST /v1/purge`: forget these topics for good
-/// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+/// ([ADR 0026](../../docs/decisions.md#adr-0026)).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PurgeRequest {
     pub topics: Vec<PurgeTopic>,

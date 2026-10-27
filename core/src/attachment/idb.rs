@@ -36,8 +36,7 @@ use web_sys::{
 const STORE: &str = "media";
 
 /// Each step takes the database one IndexedDB version on: `STEPS[0]` creates
-/// version 1 from nothing, `STEPS[n]` takes `n` to `n + 1` ([ADR
-/// 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5). They run
+/// version 1 from nothing, `STEPS[n]` takes `n` to `n + 1` ([ADR 0029](../../../docs/decisions.md#adr-0029)). They run
 /// in the browser's own upgrade transaction, so a step that throws aborts the
 /// whole upgrade and the database stays at the version it was.
 ///

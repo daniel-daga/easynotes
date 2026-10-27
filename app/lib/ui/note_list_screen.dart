@@ -2379,7 +2379,7 @@ class _NoteCollectionState extends State<_NoteCollection>
 /// selection is what a drag that went nowhere means.
 ///
 /// A drop is refused across the pin line. Pinned notes are drawn first but share
-/// one order with the rest ([ADR 0008](../../../docs/adr/0008-account-document.md)),
+/// one order with the rest ([ADR 0008](../../../docs/decisions.md#adr-0008)),
 /// so dragging a pinned card among the unpinned ones would write a move that
 /// nothing on screen could show — the card would spring back to the top and look
 /// broken. Unpin it and it lands where it was dropped.

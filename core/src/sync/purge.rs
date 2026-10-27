@@ -1,5 +1,5 @@
 //! Asking the relay to forget topics for good
-//! ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)).
+//! ([ADR 0026](../../../docs/decisions.md#adr-0026)).
 //!
 //! One plain HTTP call, like the invite calls and for the same reason: it needs
 //! no socket and authenticates as no device. Its authority is the signature on
@@ -56,7 +56,7 @@ pub async fn purge(http_base: &str, topics: &[(NoteId, Request)]) -> Result<Vec<
 /// under its first key, then any the relay refused as unauthorised under its
 /// fallback. Succeeds only when every topic is gone.
 ///
-/// Topics go in the plan's order, which puts the account document last: if
+/// Topics go in the order, which puts the account document last: if
 /// this stops partway, the account document still says what is left, and the
 /// deletion can be finished from here or from any device with the phrase.
 pub async fn purge_all(http_base: &str, plan: &[crate::note::PurgeTarget]) -> Result<()> {

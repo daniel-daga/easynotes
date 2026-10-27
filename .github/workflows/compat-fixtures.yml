@@ -1,6 +1,6 @@
 name: Compatibility fixtures
 
-# Writes compat/v<version>/ for a release (ADR 0029 §6), which every later
+# Writes compat/v<version>/ for a release (ADR 0029), which every later
 # build reads back. Dispatch it after the workspace version is bumped and
 # before the tag: download the artifact, unpack it into compat/, and commit it.
 #

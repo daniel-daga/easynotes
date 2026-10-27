@@ -3,8 +3,8 @@
 //! A share blob put the note key in the link, which made the link the key: it
 //! never expired, nobody could withdraw it, and anyone it was forwarded to was
 //! a member. An invite link carries a secret instead: the first person to open
-//! it claims it, and the owner's device lets them in. See `docs/adr/0015-invites.md` and
-//! `docs/adr/0023-access-packages.md` for the decisions; this module is the
+//! it claims it, and the owner's device lets them in. See `docs/decisions.md#adr-0015` and
+//! `docs/decisions.md#adr-0023` for the decisions; this module is the
 //! cryptography, and nothing here talks to a relay or touches a disk.
 //!
 //! ## What the link's secret derives
@@ -262,7 +262,7 @@ pub fn request_name(secret: &InviteSecret, member: &AuthorKey) -> String {
 /// and what they are called, signed by their member key.
 ///
 /// `04 | member ID | box key | signature | name`, under the request key
-/// ([ADR 0023](../../docs/adr/0023-access-packages.md) §3).
+/// ([ADR 0023](../../docs/decisions.md#adr-0023)).
 pub fn seal_request(secret: &InviteSecret, member: &MemberIdentity, name: &str) -> Result<Vec<u8>> {
     let name = crate::access::clip_name(name);
     if name.is_empty() {
@@ -411,7 +411,7 @@ pub fn open_answer(
 }
 
 /// Seal the note's current key for whoever claims the link
-/// ([ADR 0030](../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+/// ([ADR 0030](../../docs/decisions.md#adr-0030)).
 ///
 /// `06 | note ID | owner key | note key`. Under the link's request key, so the
 /// relay never sees it, and bound to the invite ID in the AAD so it cannot be

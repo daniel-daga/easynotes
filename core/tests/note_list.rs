@@ -1,7 +1,7 @@
 //! The note list: several notes on one device, and what a list of them has to
 //! keep true.
 //!
-//! Slice 1 and most of Slice 2 had exactly one note, so nothing until now held
+//! the initial implementation and most of the second milestone had exactly one note, so nothing until now held
 //! the core to behaving when there are three. These are the properties a grid of
 //! notes rests on — it shows every note the device holds, it shows what each one
 //! currently says, and it holds still while you are looking at it.
@@ -143,7 +143,7 @@ fn a_peers_edit_reaches_the_list<D: NoteDoc>() {
 }
 
 /// Joining adds a note; it does not replace the one that was there. That is the
-/// whole difference between the Slice 1 one-note model and a note list, and it
+/// whole difference between the the initial implementation one-note model and a note list, and it
 /// is the case the app's join button now takes.
 fn joining_adds_a_note<D: NoteDoc>() {
     let mut owner = in_memory::<D>();

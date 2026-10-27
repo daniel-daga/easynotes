@@ -5,8 +5,8 @@
 /// claims it, and the owner's device lets them in without asking anyone; the
 /// link then stops working for everybody else. The owner can remove one
 /// person, and everyone else keeps the note. An invite lasts seven days. See
-/// `docs/adr/0025-links-that-let-people-in.md` and
-/// `docs/adr/0023-access-packages.md`.
+/// `docs/decisions.md#adr-0025` and
+/// `docs/decisions.md#adr-0023`.
 ///
 /// Every call that says "relay" needs one: an invite lives there between the
 /// two people. What this device remembers about its invites and its requests
@@ -195,7 +195,7 @@ class PendingJoin {
   final String name;
 
   /// The note the link's pre-grant opened, when it did
-  /// ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+  /// ([ADR 0030](../../../docs/decisions.md#adr-0030)).
   /// The request is still answered later: an approval adds this person to the
   /// package, and a decline takes the note away again.
   final String? noteId;
@@ -267,7 +267,7 @@ abstract class Accounts {
   Future<void> setProfileName(String name);
 
   /// Delete this person's account from the relay and everything from this
-  /// device ([ADR 0026](../../../docs/adr/0026-deleting-an-account.md)): the
+  /// device ([ADR 0026](../../../docs/decisions.md#adr-0026)): the
   /// lists they own leave the relay, the ones they joined stay their owners',
   /// and this profile is left empty, to be opened again as a new device.
   ///

@@ -40,7 +40,7 @@ and stacks on WASM. It does not change counts or suppress invalid releases, and
 the calls optimize away when the variable is absent. The browser harness and
 capture instructions are in [the smoke-test README](../tools/web-smoke/README.md).
 
-[ADR 0002](../docs/adr/0002-web-core.md) ("Not done, and honest about it") has the
+[ADR 0002](../docs/decisions.md#adr-0002) ("Not done, and honest about it") has the
 stack that showed it, and why the pool was patched rather than swapped for the
 `Nom` codec. That codec needs no lock, but it would turn the other open bridge
 failure, a double release, from a logged panic into a use-after-free.

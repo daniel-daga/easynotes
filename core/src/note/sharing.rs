@@ -5,7 +5,7 @@
 //! switches to the key the current one grants it, deletes its copy when the
 //! current one no longer lists it, and — on the owner's devices — builds the
 //! next package from what the owner asked for. See
-//! [ADR 0023](../../../docs/adr/0023-access-packages.md), §5–7 in particular.
+//! [ADR 0023](../../../docs/decisions.md#adr-0023),–7 in particular.
 //!
 //! Two moments matter, and they are kept apart on purpose. A package that
 //! *arrives* is only recorded ([`NoteCore::apply_remote`]). What this device
@@ -190,7 +190,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// The name in a note's package is the owner's to write, so a guest could
     /// never change theirs there. The note's own document carries a record each
     /// person signs, and that is what a rename updates
-    /// ([ADR 0032](../../../docs/adr/0032-a-name-that-follows-the-person.md)).
+    /// ([ADR 0032](../../../docs/decisions.md#adr-0032)).
     pub fn set_profile_name(&mut self, name: &str) -> Result<Vec<(NoteId, Vec<u8>)>> {
         if !self.has_account() {
             return Err(CoreError::NoAccount);
@@ -504,7 +504,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Move to the key the current package grants this person, if it is not
-    /// the one this device holds (ADR 0023 §7).
+    /// the one this device holds (ADR 0023).
     ///
     /// The document keeps everything it had: the snapshot the key was
     /// introduced with is merged into it, and whatever it holds that the new
@@ -621,7 +621,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Delete this device's copy if the current package has dropped this
-    /// person (ADR 0023 §7).
+    /// person (ADR 0023).
     ///
     /// Only a package that once granted them and a current one that no longer
     /// does counts: a package that has not added them *yet* — an adding
@@ -715,7 +715,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Write a signed "left" record into every note this person joined, as the
     /// last thing this device does before its account is deleted
-    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    /// ([ADR 0034](../../../docs/decisions.md#adr-0034)).
     ///
     /// The owner is the only one who can remove a member, so a guest cannot
     /// clean up its own row. This is the message it can leave instead: its
@@ -793,7 +793,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Turn every valid "I left" record in the note into this owner device's
     /// removal of exactly that membership
-    /// ([ADR 0034](../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    /// ([ADR 0034](../../../docs/decisions.md#adr-0034)).
     ///
     /// The record names the invite as well as the member, so a person invited
     /// again later — under a new invite, and so a new membership — is not
@@ -863,7 +863,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// On an owner device, publish the package that makes the current list
     /// what the owner meant: every addition any package made, minus every
     /// removal, plus this device's own unfinished approvals and removals
-    /// (ADR 0023 §5). Nothing when they already agree.
+    /// (ADR 0023). Nothing when they already agree.
     fn build_if_needed(&mut self, id: NoteId) -> Result<Option<Outgoing>> {
         let Some(record) = self.record(id) else {
             return Ok(None);
@@ -956,7 +956,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         }
         // A removal: the package is now the whole of the note. Everything this
         // device held under the old key is in its snapshot, and none of it may
-        // be sent under that key again (ADR 0023 §6).
+        // be sent under that key again (ADR 0023).
         ledger.hold(&held.id());
         self.put_ledger(id, &ledger)?;
         self.store.replace_log(id, std::slice::from_ref(&bytes))?;
@@ -972,8 +972,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// Change the note's key now, with the same people on it
-    /// ([ADR 0023](../../../docs/adr/0023-access-packages.md) §6, used by
-    /// [ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// ([ADR 0023](../../../docs/decisions.md#adr-0023), used by
+    /// [ADR 0030](../../../docs/decisions.md#adr-0030)).
     ///
     /// What a decline does when the invite had a pre-grant: whoever held the
     /// link may have read the note already, and rotating is the only thing that
@@ -1025,7 +1025,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let entry = Entry::of(&package, true, Some(&body));
 
         // Durable in the order a crash resumes from: log, ledger, counter,
-        // replacement log, key last (ADR 0023 §7).
+        // replacement log, key last (ADR 0023).
         self.store.append(id, &bytes)?;
         ledger.insert(&package.digest, entry);
         ledger.hold(&held.id());
@@ -1076,7 +1076,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     /// Whether this device is waiting to remove somebody from a note. While it
     /// is, nothing but packages is sent for the note: an update now would be
-    /// under the key the person being removed holds (ADR 0023 §6).
+    /// under the key the person being removed holds (ADR 0023).
     pub fn holds_back(&self, id: NoteId) -> Result<bool> {
         Ok(self
             .intents(id)?
@@ -1352,7 +1352,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// The owner approved `request` on `invite`: save it, before anything
-    /// else happens (ADR 0023 §3, step 1).
+    /// else happens (ADR 0023, step 1).
     pub fn approve(
         &mut self,
         invite: crate::ids::InviteId,
@@ -1399,7 +1399,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// The sealed answer to an approved request, once the relay has the
-    /// package that lets that person in (ADR 0023 §3, step 3). `None` while
+    /// package that lets that person in (ADR 0023, step 3). `None` while
     /// it is still on its way.
     pub fn approval_answer(&self, invite: crate::ids::InviteId) -> Result<Option<Vec<u8>>> {
         let outgoing = self
@@ -1432,7 +1432,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// The sealed pre-grant for an open invite: the note key its link hands to
-    /// whoever claims it ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// whoever claims it ([ADR 0030](../../../docs/decisions.md#adr-0030)).
     ///
     /// `None` when this device is not the note's owner, or holds no key for it,
     /// which is what an invite made before the note was readable looks like.
@@ -1462,7 +1462,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// The key is *provisional*. It is written to the keyring like a granted
     /// one, because that is what makes the note readable and syncable, and
-    /// ADR 0023 §7 already does the right thing with it: a package that has not
+    /// ADR 0023 already does the right thing with it: a package that has not
     /// added this person yet is waiting rather than a removal, and the package
     /// that does add them either grants this same key or rotates it and the
     /// ordinary switch follows.

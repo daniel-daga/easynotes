@@ -55,7 +55,7 @@ RUN cargo install wasm-pack --version "${WASM_PACK_VERSION}" --locked \
 
 # wasm-pack downloads binaryen with its own HTTP client when it first builds.
 # That is another network dependency on every source change and, behind a
-# proxy, fails where curl succeeds (CLAUDE.md). Seed the cache it looks in so
+# proxy, fails where curl succeeds. Seed the cache it looks in so
 # the app build below needs no download of its own.
 RUN set -eux; \
     curl -fsSL -o /tmp/binaryen.tar.gz \

@@ -1,21 +1,21 @@
 //! A person on a shared note, as a list or a search shows them.
 //!
 //! Read off the note's current access package
-//! ([ADR 0023](../../docs/adr/0023-access-packages.md)): one entry per member
+//! ([ADR 0023](../../docs/decisions.md#adr-0023)): one entry per member
 //! ID, so one person on two phones is one entry and two people who chose the
 //! same name are two.
 //!
 //! The package names a person as they were when they were let in. A name that
 //! changed afterwards travels in the note's own document instead, as one
 //! signed record per member
-//! ([ADR 0032](../../docs/adr/0032-a-name-that-follows-the-person.md)). Only
+//! ([ADR 0032](../../docs/decisions.md#adr-0032)). Only
 //! that person's member key can sign it, so a collaborator cannot rename
 //! somebody else — and because it lives inside the note rather than in the
 //! owner's package, a guest can rename themselves without the owner having to
 //! republish anything.
 //!
 //! The same document carries a signed "I left" record when a guest deletes
-//! their account ([ADR 0034](../../docs/adr/0034-leaving-on-account-deletion.md)).
+//! their account ([ADR 0034](../../docs/decisions.md#adr-0034)).
 //! It is keyed by the member who signed it and names the invite they joined
 //! with, so the owner can remove exactly that membership and rotate the note
 //! key.

@@ -1,5 +1,5 @@
 //! Attachments: the sealed format, the local media store, and the descriptors
-//! in both CRDT backends ([ADR 0027](../../docs/adr/0027-attachments.md)).
+//! in both CRDT backends ([ADR 0027](../../docs/decisions.md#adr-0027)).
 
 use easynotes_core::attachment::seal::{seal_whole, verify_sealed, CHUNK_OVERHEAD};
 use easynotes_core::attachment::store::{ImportHints, MediaStore, ThumbnailInput};
@@ -825,7 +825,7 @@ fn a_staged_import_is_reconciled_without_resurrecting_it<D: NoteDoc>() {
     );
 }
 
-/// What a compaction tells the relay to keep (ADR 0027 §5): every object of
+/// What a compaction tells the relay to keep (ADR 0027): every object of
 /// every attachment the note still has, thumbnails included, and nothing of
 /// one that was removed, wherever the removal was made.
 fn a_compaction_lists_the_objects_the_note_still_names<D: NoteDoc>() {

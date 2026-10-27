@@ -1,5 +1,5 @@
 //! A base for the relay: what a device hands over when the relay asks it to
-//! compact a note's log ([ADR 0024](../../docs/adr/0024-relay-storage-quota.md)).
+//! compact a note's log ([ADR 0024](../../docs/decisions.md#adr-0024)).
 //!
 //! The relay drops what a base covers, so everything here is about whether a
 //! base is the whole of what it replaces: that a device which only ever sees

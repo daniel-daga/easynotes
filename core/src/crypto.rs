@@ -62,11 +62,11 @@ pub fn random_bytes(dest: &mut [u8]) {
 // ---------------------------------------------------------------------------
 
 /// The 64-byte secret a device is. In production this lives in the OS keychain;
-/// Slice 1 keeps it in a file and says so in the slice write-up.
+/// the initial implementation keeps it in a file.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct DeviceSeed(pub [u8; 64]);
 
-/// Ed25519 for signing updates, X25519 for the wrapped-key exchange Slice 3 adds.
+/// Ed25519 for signing updates, X25519 for the wrapped-key exchange the later milestone adds.
 /// Both are derived from one seed so a device has exactly one thing to back up.
 pub struct DeviceIdentity {
     signing: SigningKey,
@@ -95,7 +95,7 @@ impl DeviceIdentity {
     }
 
     /// An identity that only ever signs: a note's owner key
-    /// ([ADR 0018](../../docs/adr/0018-revocation.md) §1), rebuilt from the
+    /// ([ADR 0018](../../docs/decisions.md#adr-0018)), rebuilt from the
     /// 32-byte seed the owner's account document keeps. Its X25519 half is
     /// derived so the type stays one type, and nothing agrees with it.
     pub fn from_signing_seed(seed: &[u8; 32]) -> Self {
@@ -118,7 +118,7 @@ impl DeviceIdentity {
         x25519_dalek::PublicKey::from(&self.x25519).to_bytes()
     }
 
-    /// Slice 3 uses this to wrap a note key for a joining guest.
+    /// the later milestone uses this to wrap a note key for a joining guest.
     pub fn agree(&self, peer: &[u8; 32]) -> [u8; 32] {
         self.x25519
             .diffie_hellman(&x25519_dalek::PublicKey::from(*peer))
@@ -202,7 +202,7 @@ impl std::fmt::Debug for AuthorKey {
 const INDEX_DOMAIN: &[u8] = b"easynotes/index/v1";
 
 /// The symmetric key for one note. Everyone who can read the note has it;
-/// revocation (Slice 3) means rotating it.
+/// revocation (the later milestone) means rotating it.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct NoteKey(pub [u8; NOTE_KEY_LEN]);
 
@@ -298,7 +298,7 @@ pub enum EnvelopeKind {
     /// updates and access packages, and a snapshot there is refused.
     Snapshot = 1,
     /// An access package, signed by the note's owner key
-    /// ([ADR 0023](../../docs/adr/0023-access-packages.md) §4). Its ciphertext
+    /// ([ADR 0023](../../docs/decisions.md#adr-0023)). Its ciphertext
     /// field starts with a signed cleartext prefix; see
     /// [`Envelope::seal_with_clear`].
     Access = 3,
@@ -709,7 +709,7 @@ pub const LOCAL_BLOB_HEADER_LEN: usize = 1 + NONCE_LEN;
 ///
 /// In the shipping app it lives in the OS keychain. Until the bridge can ask Dart
 /// for it, the native build keeps it in a file beside the database, which is the
-/// same stand-in Slice 1 used for the device seed and no worse than what it
+/// same stand-in the initial implementation used for the device seed and no worse than what it
 /// replaces.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey(pub [u8; MASTER_KEY_LEN]);

@@ -2,22 +2,21 @@
 
 EasyNotes is an end-to-end encrypted notes app. The claim it makes is that a
 relay, or anyone who takes one over, learns what
-[ADR 0014](docs/adr/0014-what-the-relay-learns.md) says it learns and nothing
-more, and cannot change a note in a way its members would accept. A report that
-shows otherwise is the most useful thing anyone can send this project.
+[ADR 0014](docs/decisions.md#adr-0014) says it learns and nothing more, and
+cannot change a note in a way its members would accept. A report that shows
+otherwise is the most useful thing anyone can send this project.
 
 ## Status
 
-**EasyNotes has not been externally audited.** The design schedules an external
-review before 1.0 ([design.md](docs/design.md)). There has been one internal
-review of the cryptography ([crypto-review.md](docs/crypto-review.md)); its three
+**EasyNotes has not been externally audited.** An external review is planned
+before 1.0. There has been one internal review of the cryptography; its three
 findings are fixed and regression-tested. The attachment construction
-([ADR 0027](docs/adr/0027-attachments.md) §2) came after that review and has not
-had one of its own. Do not rely on EasyNotes for anything where a flaw would
-put someone at risk until an audit report is published here.
+([ADR 0027](docs/decisions.md#adr-0027)) came after that review and has not had
+one of its own. Do not rely on EasyNotes for anything where a flaw would put
+someone at risk until an audit report is published here.
 
-There are no releases yet. Only the latest commit on `main` is supported, and a
-fix lands there.
+No store release has been published yet. Only the latest commit on `main` is
+supported, and a fix lands there.
 
 ## Reporting a vulnerability
 
@@ -49,7 +48,7 @@ In scope:
   revocation, recovery phrases, the local stores, and the sync client.
 - The relay (`relay/`): anything that lets a client read, alter, replay or
   delete another client's data, bypass authentication, or exhaust the relay in
-  a way its quotas and rate limits ([ADR 0024](docs/adr/0024-relay-storage-quota.md))
+  a way its quotas and rate limits ([ADR 0024](docs/decisions.md#adr-0024))
   do not already account for.
 - The app (`app/`), where it leaks plaintext or keys — to logs, the clipboard,
   screenshots, other apps, or storage outside the sealed store.
@@ -59,15 +58,16 @@ In scope:
 Known and documented, so not a vulnerability on its own:
 
 - What the relay learns: note IDs, sizes, timing, the addresses devices connect
-  from, and which device keys touch which notes ([ADR 0014](docs/adr/0014-what-the-relay-learns.md)).
-- Any device key may write to a relay up to its storage and media ceilings; a
-  relay does not yet restrict who may use it
-  ([production readiness, F2](docs/production-readiness-2026-09-30.md)).
+  from, and which device keys touch which notes ([ADR 0014](docs/decisions.md#adr-0014)).
+- A relay can require an access key and budget writes per address
+  ([ADR 0028](docs/decisions.md#adr-0028)); a relay open to strangers is not a
+  supported mode yet.
 - A person who has read a shared note keeps what they read after they are
   revoked; revocation protects what is written afterwards
-  ([ADR 0018](docs/adr/0018-revocation.md)).
-- Attachment bytes stay on the relay after they are removed until ADR 0027 §5 is
-  built.
+  ([ADR 0018](docs/decisions.md#adr-0018)).
+- Removed attachment bytes stay on the relay until a compaction stops listing
+  them, and are then reclaimed about a week later
+  ([ADR 0027](docs/decisions.md#adr-0027)).
 
 A report that shows one of these is worse than documented is in scope.
 

@@ -21,8 +21,8 @@ use base64::Engine;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-/// How long an invite lasts unless asked otherwise: the design doc's seven
-/// days, which is also the relay's own default.
+/// How long an invite lasts unless asked otherwise: seven days, which is also
+/// the relay's own default.
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 async fn call<Q: Serialize>(url: &str, body: &Q) -> Result<String> {
@@ -142,7 +142,7 @@ pub async fn request(
 }
 
 /// Seal, or re-seal, the note key this invite hands to whoever claims it
-/// ([ADR 0030](../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+/// ([ADR 0030](../../../docs/decisions.md#adr-0030)).
 ///
 /// Best effort at the call sites: an invite without one still works, with the
 /// guest waiting for the owner's device as before.

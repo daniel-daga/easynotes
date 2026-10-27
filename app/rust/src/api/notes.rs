@@ -1113,8 +1113,7 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
-    /// The relay's access key, if its operator gave this device one ([ADR
-    /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)). Named
+    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../../docs/decisions.md#adr-0028)). Named
     /// with the relay by [`Library::connect`], and not part of its address:
     /// changing it is the same relay, reconnected.
     access: Mutex<Option<RelayAccess>>,
@@ -1122,8 +1121,7 @@ pub(crate) struct Shared {
     /// one it was connected to. It is kept across [`Library::disconnect`] and
     /// never changes, because everything in the store — the account, the
     /// device identity, the note keys, the cursors — was made with that relay,
-    /// and another relay must get a library of its own
-    /// (`docs/plan-relay-settings.md`).
+    /// and another relay must get a library of its own.
     bound: Mutex<Option<String>>,
     /// The engine for that relay: one socket, every note on it.
     device: Mutex<Option<Device>>,
@@ -1143,7 +1141,7 @@ impl Shared {
     /// Start syncing one note, replacing whatever connection it had.
     ///
     /// A subscription on the device's one socket, not a socket of its own
-    /// ([ADR 0017](../../../../docs/adr/0017-one-socket-per-device.md)): a
+    /// ([ADR 0017](../../../../docs/decisions.md#adr-0017)): a
     /// device with twenty notes does one token handshake and holds one
     /// connection. Replacing a note's connection hands the engine a new handle
     /// for it and nothing more — its cursor and anything it is holding carry
@@ -1210,8 +1208,7 @@ impl Shared {
     /// thing that sets it apart is that its ID comes from the recovery phrase
     /// rather than from the note list. A device with no account has no such ID
     /// and nothing is connected for it: its document is local-only, under the
-    /// reserved ID that must never reach a relay ([ADR
-    /// 0013](../../docs/adr/0013-recovery-phrase.md)).
+    /// reserved ID that must never reach a relay ([ADR 0013](../../../../docs/decisions.md#adr-0013)).
     ///
     /// The locks are taken one at a time and in this order on purpose. The
     /// account sink publishes while the core lock is held, and publishing takes
@@ -1278,7 +1275,7 @@ impl Shared {
 
     /// [`Shared::publish`] for a keystroke: the envelope waits until the typing
     /// pauses and goes with the rest of the word, as one
-    /// ([ADR 0016](../../../../docs/adr/0016-batching-edits.md)).
+    /// ([ADR 0016](../../../../docs/decisions.md#adr-0016)).
     fn publish_soon(&self, note: NoteId, envelope: Vec<u8>) {
         self.with_connection(note, |c| c.publish_soon(envelope));
     }
@@ -1300,7 +1297,7 @@ impl Shared {
     /// Hand an edit to the relay — unless a removal is waiting to be made, when
     /// it stays in the log: it is under the key the person being removed holds,
     /// and it reaches everyone else inside the removal's package instead
-    /// (ADR 0023 §6).
+    /// (ADR 0023).
     fn send_edit(&self, note: NoteId, envelope: Vec<u8>, soon: bool) {
         let holding = self
             .locked()
@@ -1529,7 +1526,7 @@ fn boxed_keyring(k: impl Keyring + Send + 'static) -> Box<dyn Keyring + Send> {
 /// wrapped keys, and a master key that seals the second one.
 ///
 /// All of it is `easynotes_core::store::open_local`, including the one-time
-/// carry-over from the directory of files Slice 1 wrote, so that a `cargo test`
+/// carry-over from the directory of files the initial implementation wrote, so that a `cargo test`
 /// with no Flutter in the loop can cover what an app update does to a device
 /// that already has notes on it.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1613,7 +1610,7 @@ pub struct StorageRow {
 
 /// Which object store a batch is for. The log and the keys are kept apart in a
 /// browser as they are in two SQLite files on a device — as far apart as an
-/// origin allows, which [ADR 0011](../../../docs/adr/0011-the-web-store.md) is
+/// origin allows, which [ADR 0011](../../../../docs/decisions.md#adr-0011) is
 /// honest about.
 pub enum StorageArea {
     Notes,
@@ -1721,7 +1718,7 @@ fn reminder_time(s: &str) -> Result<i64, String> {
 // Invites
 // ---------------------------------------------------------------------------
 
-/// How long an invite lasts. The design doc's seven days: long enough for a
+/// How long an invite lasts. Seven days: long enough for a
 /// link sent to a partner to be opened after a weekend, short enough that a
 /// link left in an old chat stops working on its own.
 const INVITE_TTL_SECS: u64 = easynotes_core::sync::invite::DEFAULT_TTL_SECS;
@@ -1787,7 +1784,7 @@ pub struct PendingJoinView {
     pub invite: String,
     pub name: String,
     /// The note, when the link's pre-grant opened it and this device can read
-    /// it already ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// it already ([ADR 0030](../../../../docs/decisions.md#adr-0030)).
     /// The app opens it instead of showing the waiting dialog.
     pub note: Option<String>,
 }
@@ -1844,7 +1841,7 @@ impl JoinCheckView {
 /// next time the process is thawed. Opening the app again then made a second
 /// library on the same SQLite file, with an engine of its own: two writers to
 /// one database, and one more socket to the relay for every back-and-reopen.
-/// Seen on the emulators; see item 5 of the Slice 3 plan.
+/// Seen on the emulators; see item 5 of the later milestone.
 ///
 /// Dart cannot fix this from its side, because the moment it would need to act
 /// is the moment its isolate is being torn down. So the next open does it: a
@@ -1978,7 +1975,7 @@ impl Library {
     /// `dir` holds the SQLite database and the keyring; `master_key` is the 32
     /// bytes that seal everything in them which is not already an envelope, and
     /// it comes from the OS keychain by way of Dart — the core does not know or
-    /// care where it was kept. Slice 1's directory of files is carried into the
+    /// care where it was kept. the initial implementation's directory of files is carried into the
     /// database the first time this runs, and a device that has the key in a
     /// file beside it is carried over by
     /// [`master_key_beside_the_database`].
@@ -2009,8 +2006,8 @@ impl Library {
     /// Notes that live only in memory and are gone when the tab closes.
     ///
     /// This is what the web build uses today. A browser has no filesystem, and
-    /// the op log's IndexedDB backing is item 4 of the Slice 2 plan — see
-    /// `docs/adr/0002-web-core.md`. Everything above the store is the same code
+    /// the op log's IndexedDB backing is item 4 of the second milestone — see
+    /// `docs/decisions.md#adr-0002`. Everything above the store is the same code
     /// the native build runs, which is what makes this a stepping stone rather
     /// than a mock.
     #[frb(sync)]
@@ -2267,8 +2264,7 @@ impl Library {
             .map_err(|e| e.to_string())?;
         // Settling is what brings this person's name record up to date if a
         // rename happened on another phone while this note was shut, and it
-        // sends the envelope that says so ([ADR
-        // 0032](../../../../docs/adr/0032-a-name-that-follows-the-person.md)).
+        // sends the envelope that says so ([ADR 0032](../../../../docs/decisions.md#adr-0032)).
         self.shared.settle(id);
         Ok(Note {
             shared: self.shared.clone(),
@@ -2286,7 +2282,7 @@ impl Library {
     // on any screen can still be pinned from the grid.
     //
     // None of this reaches the note, so none of it reaches whoever else is on
-    // it — see `docs/adr/0008-account-document.md`. A colour is the one
+    // it — see `docs/decisions.md#adr-0008`. A colour is the one
     // exception: it is written into the note as well, because two people
     // looking at one list should see it the same shade.
 
@@ -2582,7 +2578,7 @@ impl Library {
     /// There is no undo, which is why the UI offers it only from the trash and
     /// only behind a confirmation. Other devices purge their copies when they
     /// sync. A collaborator's separate account and relay history remain. See
-    /// `docs/adr/0010-forgetting-a-note.md`.
+    /// `docs/decisions.md#adr-0010`.
     pub fn forget_note(&self, id: String) -> Result<(), String> {
         let id = note_id(&id)?;
         self.forget(id)
@@ -2660,11 +2656,11 @@ impl Library {
     }
 
     /// Delete this person's account from the relay and everything from this
-    /// device ([ADR 0026](../../../../docs/adr/0026-deleting-an-account.md)).
+    /// device ([ADR 0026](../../../../docs/decisions.md#adr-0026)).
     ///
     /// Withdraws this device's open invites, tells every list this person
     /// joined that they have left
-    /// ([ADR 0034](../../../../docs/adr/0034-leaving-on-account-deletion.md)),
+    /// ([ADR 0034](../../../../docs/decisions.md#adr-0034)),
     /// purges from the relay every note this person owns and then the account
     /// document, and wipes this profile's notes, keys and device identity.
     /// Lists this person joined are left to their owners; the leave records
@@ -2837,7 +2833,7 @@ impl Library {
     // Twelve words, and what they unlock. There is no server-side account here:
     // no password, no email address, no login. A person *is* a recovery phrase,
     // and a device belongs to them if it can derive the same account root from
-    // it — see [ADR 0013](../../docs/adr/0013-recovery-phrase.md).
+    // it — see [ADR 0013](../../../../docs/decisions.md#adr-0013).
 
     /// Whether this device has an account, and so whether its notes can reach
     /// another device of the same person.
@@ -2852,7 +2848,7 @@ impl Library {
     /// them; they are not stored, here or anywhere, and this is the only moment
     /// they exist. **The caller must make somebody write them down before the
     /// moment passes** — a phrase nobody has is the one state this design cannot
-    /// recover from, and the design doc's risk row asks for a backup check for
+    /// recover from, and the design calls for a backup check for
     /// exactly that reason.
     ///
     /// The account document starts syncing immediately if a relay has been
@@ -3167,7 +3163,7 @@ impl Library {
     // to the relay are `easynotes_core::sync::invite`; what is here is the
     // order they go in and the lock never being held across one of them.
     //
-    // See `docs/adr/0015-invites.md` and `docs/adr/0025-links-that-let-people-in.md`.
+    // See `docs/decisions.md#adr-0015` and `docs/decisions.md#adr-0025`.
 
     /// Open an invite to a note and return the link to send.
     ///
@@ -3231,7 +3227,7 @@ impl Library {
     /// the note list, which is how a person gets in while the share dialog is
     /// closed.
     ///
-    /// Letting someone in is ADR 0023 §3's approval: save it, publish the
+    /// Letting someone in is ADR 0023's approval: save it, publish the
     /// package that adds them, and answer the invite once the relay has the
     /// package. A step that cannot finish yet — offline, or the package still
     /// on its way — finishes on a later call, or after a relaunch.
@@ -3324,7 +3320,7 @@ impl Library {
     }
 
     /// Seal the note's current key for a link, and leave it on the relay
-    /// ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// ([ADR 0030](../../../../docs/decisions.md#adr-0030)).
     ///
     /// Best effort on purpose: an invite whose pre-grant cannot be sealed or
     /// sent still works, with the guest waiting for this device as before. It
@@ -3623,7 +3619,7 @@ impl Library {
     }
 
     /// Open a link's pre-grant, if this device can use it
-    /// ([ADR 0030](../../../../docs/adr/0030-a-link-lets-its-first-person-in.md)).
+    /// ([ADR 0030](../../../../docs/decisions.md#adr-0030)).
     ///
     /// `Some(note)` when the note is readable now; `None` when this device
     /// already holds a key for it (an older one is never replaced by a link)
@@ -3680,8 +3676,7 @@ impl Library {
     /// another library, which is what the app's relay profiles do.
     ///
     /// `access` is the relay's access key, base64url, for a relay whose
-    /// operator lets in only the people they gave it to ([ADR
-    /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
+    /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
     /// for an open relay. Connecting again with another key is how a changed
     /// key takes effect.
     pub async fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
@@ -3831,7 +3826,7 @@ impl Library {
     /// For the one caller that is about to destroy the log holding those
     /// envelopes: deleting an account, whose leave records must reach the
     /// owners of the lists this person joined
-    /// ([ADR 0034](../../../../docs/adr/0034-leaving-on-account-deletion.md)).
+    /// ([ADR 0034](../../../../docs/decisions.md#adr-0034)).
     /// A refresh barrier goes first, because a status that was caught up
     /// before the publish would otherwise answer "done" too soon.
     async fn flush_notes(&self, notes: &[NoteId]) -> Result<(), String> {
@@ -4215,7 +4210,7 @@ impl Note {
     /// Hand an edit to the relay — unless a removal is waiting to be made, when
     /// it stays in the log: it is under the key the person being removed holds,
     /// and it reaches everyone else inside the removal's package instead
-    /// (ADR 0023 §6).
+    /// (ADR 0023).
     fn send(&self, envelope: Vec<u8>, soon: bool) {
         self.shared.send_edit(self.id, envelope, soon);
     }
@@ -4358,7 +4353,7 @@ impl Note {
     // An import is sealed into this device's store and staged; it is not in
     // the note until the transfer queue publishes it — at once in a note that
     // does not sync, and once its bytes are on the relay in one that does
-    // (ADR 0027 §4). Until then it is one of [`Note::pending_attachments`],
+    // (ADR 0027). Until then it is one of [`Note::pending_attachments`],
     // and nobody else can see it.
 
     /// Attach a file handed over whole: a tab's picked file, or a photo in
@@ -4480,7 +4475,7 @@ impl Note {
         let store = self.shared.media_store().await?;
         let staged = self.staged(&store).await?;
         // A record outlives its publication until the relay has the
-        // descriptor (ADR 0027 §5); by then the note draws it, and it is not
+        // descriptor (ADR 0027); by then the note draws it, and it is not
         // pending any more.
         let mut core = self.shared.locked()?;
         let mut pending = Vec::new();
@@ -4546,7 +4541,7 @@ impl Note {
 
     /// Remove an attachment for everyone on the note, or give up on an import
     /// of this device's that is not in it yet. The bytes on this device go
-    /// too; nobody else's, and not the relay's (ADR 0027 §5).
+    /// too; nobody else's, and not the relay's (ADR 0027).
     pub async fn remove_attachment(&self, attachment: String) -> Result<(), String> {
         let id = attachment_id(&attachment)?;
         let removed = {
@@ -4568,7 +4563,7 @@ impl Note {
         if let Some((envelope, media)) = removed {
             self.send(envelope, false);
             // A base after the removal is what lets the relay free its bytes,
-            // and what takes its key out of the relay's log (ADR 0027 §5).
+            // and what takes its key out of the relay's log (ADR 0027).
             self.shared.with_connection(self.id, Connection::reclaim);
             let store = self.shared.media_store().await?;
             return store

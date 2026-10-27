@@ -7,8 +7,7 @@
 ///
 /// This person is never drawn, somebody on their way out is not drawn, and
 /// somebody who has been let in but whose access is still arriving is drawn
-/// faded. Live presence — marking who has the note open right now — is deferred;
-/// see `docs/plan-live-collaborators.md`.
+/// faded. Live presence — marking who has the note open right now — is deferred.
 library;
 
 import 'package:flutter/material.dart';

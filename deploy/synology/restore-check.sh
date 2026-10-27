@@ -75,7 +75,7 @@ envelopes=$(psql -d "$scratch" -At -c 'SELECT count(*) FROM note_log')
 
 # What the dump says is committed: "<note>/<object> <sealed bytes> <sha256>".
 # A reservation still uploading (no digest) has nothing to find yet. Nor has a
-# doomed object (ADR 0027 §5): nothing lists it any more, and the relay may
+# doomed object (ADR 0027): nothing lists it any more, and the relay may
 # have deleted its bytes between the dump and the archive. A dump from before
 # the relay could doom anything has no `doomed_at` to ask about.
 doomed=

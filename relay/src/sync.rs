@@ -1,8 +1,7 @@
 //! One socket per device: `/v1/sync`.
 //!
 //! A device opens one connection and does one token handshake, however many
-//! notes it syncs, and every note is carried over it — see [ADR
-//! 0017](../../docs/adr/0017-one-socket-per-device.md). Each note's stream
+//! notes it syncs, and every note is carried over it — see [ADR 0017](../../docs/decisions.md#adr-0017). Each note's stream
 //! keeps three rules:
 //!
 //!   * subscribe to the fan-out *before* reading the backlog, so that nothing
@@ -25,8 +24,7 @@
 //!
 //! **What the relay learns:** which notes one device key syncs, which it would
 //! learn anyway from that key appending to them. It still cannot tell two of
-//! one person's devices from two collaborators ([ADR
-//! 0014](../../docs/adr/0014-what-the-relay-learns.md)).
+//! one person's devices from two collaborators ([ADR 0014](../../docs/decisions.md#adr-0014)).
 
 use crate::app::{self, AppState};
 use crate::error::{RelayError, Result};

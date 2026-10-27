@@ -283,7 +283,7 @@ void main() {
 
       // -- search ------------------------------------------------------------
       //
-      // Item 7 of the Slice 2 plan, over the real index: the text is inside an
+      // Item 7 of the second milestone, over the real index: the text is inside an
       // envelope inside the CRDT, so these are the only tests that prove the
       // whole path from a query typed on a screen to a note found on a disk.
 
@@ -344,7 +344,7 @@ void main() {
 
       // -- the master key ----------------------------------------------------
       //
-      // Item 3b of the Slice 2 plan: the key that seals everything local lives in
+      // Item 3b of the second milestone: the key that seals everything local lives in
       // the OS keychain, and Dart is what can reach one. These run against the
       // plugin's own test double — what they are about is the order of
       // preference, which is the part that would cost someone their notes.

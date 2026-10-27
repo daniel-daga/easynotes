@@ -1,6 +1,6 @@
 name: Cross-release compatibility
 
-# ADR 0029 §6, the second job: the last release's relay serving the current
+# ADR 0029, the second job: the last release's relay serving the current
 # client, and the last release's client against the current relay. The fixture
 # tests prove old *data* still opens; this proves an old and a new build still
 # talk to each other over the wire, in both directions.

@@ -1,12 +1,12 @@
 //! Deleting a note for good, across one person's devices.
 //!
-//! The acceptance checks of `docs/plan-permanent-deletion.md`, as far as a core
+//! The acceptance checks for permanent deletion, as far as a core
 //! can run them without a relay: two cores from one recovery phrase, and what
 //! one of them wrote carried to the other by hand, exactly as the sync engine
 //! would carry it over a socket. `relay/tests/account.rs` runs the same path
 //! over a real relay.
 //!
-//! [ADR 0022](../../docs/adr/0022-account-wide-deletion.md) is the design.
+//! [ADR 0022](../../docs/decisions.md#adr-0022) is the design.
 
 use easynotes_core::account::RecoveryPhrase;
 use easynotes_core::crdt::account::{deleted_notes_of, note_access_of};

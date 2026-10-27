@@ -6850,7 +6850,7 @@ class LibraryImpl extends RustOpaque implements Library {
   /// the note list, which is how a person gets in while the share dialog is
   /// closed.
   ///
-  /// Letting someone in is ADR 0023 §3's approval: save it, publish the
+  /// Letting someone in is ADR 0023's approval: save it, publish the
   /// package that adds them, and answer the invite once the relay has the
   /// package. A step that cannot finish yet — offline, or the package still
   /// on its way — finishes on a later call, or after a relaunch.
@@ -6907,8 +6907,7 @@ class LibraryImpl extends RustOpaque implements Library {
   /// another library, which is what the app's relay profiles do.
   ///
   /// `access` is the relay's access key, base64url, for a relay whose
-  /// operator lets in only the people they gave it to ([ADR
-  /// 0028](../../../../docs/adr/0028-who-may-write-to-a-relay.md)); `None`
+  /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
   /// for an open relay. Connecting again with another key is how a changed
   /// key takes effect.
   Future<void> connect({required String relay, String? access}) => RustLib
@@ -6922,7 +6921,7 @@ class LibraryImpl extends RustOpaque implements Library {
   /// them; they are not stored, here or anywhere, and this is the only moment
   /// they exist. **The caller must make somebody write them down before the
   /// moment passes** — a phrase nobody has is the one state this design cannot
-  /// recover from, and the design doc's risk row asks for a backup check for
+  /// recover from, and the design calls for a backup check for
   /// exactly that reason.
   ///
   /// The account document starts syncing immediately if a relay has been
@@ -6959,7 +6958,7 @@ class LibraryImpl extends RustOpaque implements Library {
   );
 
   /// Delete this person's account from the relay and everything from this
-  /// device ([ADR 0026](../../../../docs/adr/0026-deleting-an-account.md)).
+  /// device ([ADR 0026](../../../../docs/decisions.md#adr-0026)).
   ///
   /// Withdraws this device's open invites, purges from the relay every note
   /// this person owns and then the account document, and wipes this
@@ -6986,7 +6985,7 @@ class LibraryImpl extends RustOpaque implements Library {
   /// There is no undo, which is why the UI offers it only from the trash and
   /// only behind a confirmation. Other devices purge their copies when they
   /// sync. A collaborator's separate account and relay history remain. See
-  /// `docs/adr/0010-forgetting-a-note.md`.
+  /// `docs/decisions.md#adr-0010`.
   Future<void> forgetNote({required String id}) =>
       RustLib.instance.api.crateApiNotesLibraryForgetNote(that: this, id: id);
 
@@ -7509,7 +7508,7 @@ class NoteImpl extends RustOpaque implements Note {
 
   /// Remove an attachment for everyone on the note, or give up on an import
   /// of this device's that is not in it yet. The bytes on this device go
-  /// too; nobody else's, and not the relay's (ADR 0027 §5).
+  /// too; nobody else's, and not the relay's (ADR 0027).
   Future<void> removeAttachment({required String attachment}) => RustLib
       .instance
       .api

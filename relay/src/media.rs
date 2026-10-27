@@ -1,5 +1,5 @@
 //! Attachment bytes: sealed objects the relay holds for a topic and cannot open
-//! ([ADR 0027](../../docs/adr/0027-attachments.md) §4).
+//! ([ADR 0027](../../docs/decisions.md#adr-0027)).
 //!
 //! An object is uploaded in the chunks the core sealed it in, then committed,
 //! and from then on it is immutable and can be fetched by anyone who can read
@@ -67,7 +67,7 @@ pub const MAX_PART_BYTES: usize = MAX_CHUNK_SIZE as usize + CHUNK_OVERHEAD;
 pub struct MediaLimits {
     /// Reserved and committed bytes in one topic, doomed ones left out. Above
     /// the 200 MB a note may have live at once, with room for the uploads in
-    /// flight and the removals not yet compacted away (ADR 0027 §5).
+    /// flight and the removals not yet compacted away (ADR 0027).
     pub note_bytes: u64,
     /// Reserved, committed and doomed bytes in every topic together, or
     /// `None`. Doomed bytes count here until they are deleted, because they
@@ -78,7 +78,7 @@ pub struct MediaLimits {
     pub staging_ttl_secs: i64,
     /// A committed object a compaction does not list is left alone if it was
     /// committed or asked about this recently: it may be an upload whose
-    /// descriptor is on its way (ADR 0027 §5).
+    /// descriptor is on its way (ADR 0027).
     pub fresh_secs: i64,
     /// How long a doomed object waits to be deleted, for anything that still
     /// wants it to ask for it.
@@ -172,7 +172,7 @@ pub struct MediaRow {
     /// The digest it was committed under, once it is.
     pub committed: Option<[u8; 32]>,
     /// No compaction lists it any more, and it is waiting to be deleted
-    /// (ADR 0027 §5). Asking for it cancels that.
+    /// (ADR 0027). Asking for it cancels that.
     pub doomed: bool,
 }
 
@@ -679,7 +679,7 @@ async fn row(state: &AppState, note: &str, object: &str) -> Result<MediaRow> {
 }
 
 /// Drop uploads that were abandoned, and objects doomed long enough ago that
-/// nothing has asked for them since (ADR 0027 §5). Run on each reservation,
+/// nothing has asked for them since (ADR 0027). Run on each reservation,
 /// which is when the space would be wanted, and after each compaction, which
 /// is what dooms them; no timer to forget to start.
 pub(crate) async fn expire(state: &Arc<AppState>, blobs: &Arc<dyn Blobs>) -> Result<()> {
@@ -794,7 +794,7 @@ pub(crate) async fn status(
     let row = row(&state, &note, &object).await?;
     // Asked about, so wanted: an upload resuming, or a device about to
     // publish what it uploaded. A committed object is fresh again, and one a
-    // compaction doomed is not doomed any more (ADR 0027 §5).
+    // compaction doomed is not doomed any more (ADR 0027).
     state.store.touch_media(&note, &object, now()).await?;
     Ok(Json(match row.committed {
         Some(_) => MediaStatus {
@@ -882,7 +882,7 @@ pub(crate) async fn fetch(
     if row.doomed {
         // Somebody still draws it: a reader that has not seen it removed, or
         // a live list that was wrong. Kept, and the next compaction decides
-        // again (ADR 0027 §5). Only a doomed one is written to, so an
+        // again (ADR 0027). Only a doomed one is written to, so an
         // ordinary fetch costs the store nothing.
         state.store.touch_media(&note, &object, now()).await?;
     }
@@ -901,7 +901,7 @@ pub(crate) async fn fetch(
         .ok_or_else(|| {
             // Committed in the metadata and not in the directory: a restore
             // that brought back one without the other. Readers report it and
-            // a device holding the object uploads it again (ADR 0027 §4).
+            // a device holding the object uploads it again (ADR 0027).
             tracing::warn!("a committed object is missing its bytes");
             RelayError::NotFound
         })?;

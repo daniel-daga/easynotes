@@ -167,8 +167,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// and a timer that mostly finds an empty queue runs more often. Fifty
   /// milliseconds is below what anyone notices and well under the time a person
   /// takes to close a tab after typing. The native store has no equivalent gap —
-  /// it fsyncs before `append` returns — and [ADR
-  /// 0011](../../../docs/adr/0011-the-web-store.md) says why a browser cannot.
+  /// it fsyncs before `append` returns — and [ADR 0011](../../../docs/decisions.md#adr-0011) says why a browser cannot.
   ///
   /// The window is narrower than this number, because a page being hidden
   /// empties the queue too rather than waiting for the next tick. It is not

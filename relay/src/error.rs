@@ -23,7 +23,7 @@ pub enum RelayError {
     /// The relay is at its ceiling and will not start a new note.
     #[error("relay_full")]
     RelayFull,
-    /// The topic was purged ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+    /// The topic was purged ([ADR 0026](../../docs/decisions.md#adr-0026)).
     #[error("gone")]
     TopicGone,
     /// Something this relay was not set up to do: media without a media
@@ -31,7 +31,7 @@ pub enum RelayError {
     #[error("{0}")]
     Unavailable(&'static str),
     /// A token or invite request without a valid proof of the relay's access
-    /// key ([ADR 0028](../../docs/adr/0028-who-may-write-to-a-relay.md)).
+    /// key ([ADR 0028](../../docs/decisions.md#adr-0028)).
     #[error("access_required")]
     AccessRequired,
     /// Past the address's write budget; try again after this many seconds.

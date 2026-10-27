@@ -896,7 +896,7 @@ fn a_late_envelope_leaves_no_note_behind<D: NoteDoc>() {
 }
 
 /// The sweep tests for ciphertext, not for a key — because a missing key is the
-/// one thing Slice 3 is meant to be able to undo.
+/// one thing the later milestone is meant to be able to undo.
 ///
 /// This is the shape `copy_store` produces when a log is carried over and its
 /// key is not, and the shape a device will be in between restoring a store and
@@ -1247,7 +1247,7 @@ fn a_long_account_log_is_compacted_at_launch<D: NoteDoc>() {
     assert_eq!(core.placement(id), placement);
 }
 
-/// The whole of [ADR 0012](../../docs/adr/0012-compacting-the-account-document.md)'s
+/// The whole of [ADR 0012](../../docs/decisions.md#adr-0012)'s
 /// safety argument, and the reason this may drop what a note's compaction may
 /// not: the snapshot is an envelope *in the log*, so the log is still the whole
 /// document to anyone who replays it — which is what a second device would do,
@@ -1312,7 +1312,7 @@ fn a_compacted_account_document_has_the_whole_document_in_its_outbox<D: NoteDoc>
     );
 }
 
-/// [ADR 0006](../../docs/adr/0006-compaction.md)'s decision 4, for this
+/// [ADR 0006](../../docs/decisions.md#adr-0006)'s decision 4, for this
 /// document: the snapshot is sealed with a counter from this device's own
 /// sequence, so the counter survives a compaction that removed every envelope it
 /// could otherwise be read from. Reusing one would make this device's next edit
@@ -1379,7 +1379,7 @@ fn compacting_the_account_document_again_changes_nothing<D: NoteDoc>() {
 }
 
 /// The first thing that ever took something *out* of this document
-/// ([ADR 0010](../../docs/adr/0010-forgetting-a-note.md)) still takes it out
+/// ([ADR 0010](../../docs/decisions.md#adr-0010)) still takes it out
 /// when what it is removing from is a snapshot rather than a log of appends.
 fn a_note_forgotten_after_a_compaction_stays_forgotten<D: NoteDoc>() {
     let (core, gone) = with_a_long_account_log::<D>(COMPACT_AFTER + 4);

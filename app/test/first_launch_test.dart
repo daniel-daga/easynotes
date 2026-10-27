@@ -7,7 +7,7 @@
 ///
 /// What went wrong on a real Android device: `openLibrary` read the master key
 /// before opening a library, [MasterKeyStore.forDirectory] crossed the bridge to
-/// look for a Slice 1 `master.key` file, and the bridge was not up yet — so the
+/// look for a the initial implementation `master.key` file, and the bridge was not up yet — so the
 /// app died on launch with `flutter_rust_bridge has not been initialized`. Two
 /// things kept it hidden. The keychain read returns early once a key exists, so
 /// only a *first* launch reaches the crossing and any relaunch looks healthy.

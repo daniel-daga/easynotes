@@ -10,11 +10,11 @@
 //! above it changing.
 //!
 //! Four implementations today: [`MemoryStore`] for tests and for a tab with
-//! nowhere to keep anything, [`FileStore`] from Slice 1, [`SqliteStore`] — what
+//! nowhere to keep anything, [`FileStore`] from the initial implementation, [`SqliteStore`] — what
 //! the native app opens — and [`WebStore`], which is what a browser gets.
-//! [ADR 0005](../../docs/adr/0005-local-store.md) says why the third is plain
+//! [ADR 0005](../../docs/decisions.md#adr-0005) says why the third is plain
 //! SQLite with sealed values rather than SQLCipher, and
-//! [ADR 0011](../../docs/adr/0011-the-web-store.md) why the fourth cannot write
+//! [ADR 0011](../../docs/decisions.md#adr-0011) why the fourth cannot write
 //! for itself.
 
 use crate::error::Result;
@@ -94,7 +94,7 @@ pub trait OpStore {
     /// The key is not here, because key material is not kept where the log is:
     /// [`Keyring::forget_note_key`] is the other half, and the order the two go
     /// in is a decision of its own —
-    /// [ADR 0010](../../docs/adr/0010-forgetting-a-note.md).
+    /// [ADR 0010](../../docs/decisions.md#adr-0010).
     fn forget(&mut self, note: NoteId) -> Result<()>;
 }
 
@@ -234,8 +234,8 @@ pub mod file {
             })?;
             f.write_all(&len.to_be_bytes()).map_err(io)?;
             f.write_all(envelope).map_err(io)?;
-            // Slice 1 does not fsync per append; a crash may lose the last edit.
-            // The real store (Slice 2) decides the durability policy.
+            // the initial implementation does not fsync per append; a crash may lose the last edit.
+            // The real store (the second milestone) decides the durability policy.
             Ok(())
         }
 
@@ -425,8 +425,8 @@ pub(crate) fn key_context<'a>(kind: &'a str, id: &'a [u8]) -> [&'a [u8]; 2] {
 /// implementation keeps is already wrapped under a master key, and the master
 /// key itself is the platform's business — the OS keychain on a device, and in
 /// a browser the nearest thing one has
-/// ([ADR 0011](../../docs/adr/0011-the-web-store.md)). [`FileKeyring`] is the
-/// Slice 1 stand-in that wrapped nothing, and is kept for the migration off it.
+/// ([ADR 0011](../../docs/decisions.md#adr-0011)). [`FileKeyring`] is the
+/// the initial implementation stand-in that wrapped nothing, and is kept for the migration off it.
 pub trait Keyring {
     fn device_seed(&self) -> Result<Option<crate::crypto::DeviceSeed>>;
     fn put_device_seed(&mut self, seed: &crate::crypto::DeviceSeed) -> Result<()>;
@@ -458,7 +458,7 @@ pub trait Keyring {
 
     /// Forget every key this keyring holds: the device seed, the account root
     /// and every note key. What deleting an account leaves on the device
-    /// ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)): nothing that
+    /// ([ADR 0026](../../docs/decisions.md#adr-0026)): nothing that
     /// opens anything, and no identity the next thing this device does could
     /// be linked through.
     fn forget_everything(&mut self) -> Result<()>;
@@ -516,7 +516,7 @@ impl Keyring for MemoryKeyring {
     }
 }
 
-/// File-backed keyring. Slice 1 only; see the note on [`Keyring`].
+/// File-backed keyring. the initial implementation only; see the note on [`Keyring`].
 #[cfg(feature = "file-store")]
 pub mod file_keyring {
     use super::*;
@@ -686,7 +686,7 @@ pub fn master_key_from_file(path: impl AsRef<std::path::Path>) -> Result<crate::
 
 /// Copy every note from one store into another, and the keys that go with them.
 ///
-/// A device changes store when the app does — Slice 1's files to Slice 2's
+/// A device changes store when the app does — the initial implementation's files to the second milestone's
 /// database, and the browser's memory to IndexedDB after that. What it must not
 /// do is lose the notes that were there, so the move is a copy the core can make
 /// through the same trait both sides implement, and neither store needs to know

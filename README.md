@@ -16,19 +16,13 @@ nothing else.
 
 ---
 
-> **Status: not production-ready.** Slices 1 and 2 are complete, and
-> attachments work on native and on the web. Android has been built and
-> exercised on a Pixel 10 Pro, where the signed `v0.1.5` draft installs, updates
-> and restores from the recovery phrase; none of the drafts up to `v0.1.6` has
-> been published, and the two-phone sharing journey is open. A Pixel 10 Pro +
-> iPad run passed share, join, shared colour, attachments and revoke, but live
-> collaboration needs polish, offline edits are unrun, and account deletion
-> leaves a stale guest ([record](docs/two-phone-run-2026-10-26.md)). iOS builds
-> upload to TestFlight; the iPad run is a partial device data point, not the iOS
-> hardware walkthrough. See the
-> [production readiness report](docs/production-readiness-2026-09-30.md),
-> [`docs/slice-02-results.md`](docs/slice-02-results.md) and
-> [`docs/plan-slice-03.md`](docs/plan-slice-03.md).
+> **Status: not production-ready.** Android is exercised on a Pixel 10 Pro and
+> the web build passes its browser checks; attachments work on native and on the
+> web. A Pixel 10 Pro + iPad run passed share, join, shared colour, attachments
+> and revoke, but live collaboration still needs polish and the two-Android-phone
+> sharing journey is open. No store release has been published. iOS builds upload
+> to TestFlight but have not been walked through on a device; Linux and Windows
+> builds exist without a launch claim.
 
 > **Not audited.** There has been one internal review of the cryptography, and no
 > external audit. Do not rely on EasyNotes for anything where a flaw would put
@@ -51,37 +45,37 @@ second person in with a link.
 
 - **Text notes and checklists**, offline-first: every action works without a
   network and syncs later. Edits are batched (one envelope per pause, not per
-  keystroke — [ADR 0016](docs/adr/0016-batching-edits.md)) and ride a single
-  socket per device ([ADR 0017](docs/adr/0017-one-socket-per-device.md)).
+  keystroke — [ADR 0016](docs/decisions.md#adr-0016)) and ride a single
+  socket per device ([ADR 0017](docs/decisions.md#adr-0017)).
 - **End-to-end encryption** on every update: XChaCha20-Poly1305, signed with
   each author's Ed25519 device key, verified before decryption.
 - **Live collaboration** through single-use, self-expiring invite links that
-  carry no note key ([ADR 0015](docs/adr/0015-invites.md),
-  [ADR 0025](docs/adr/0025-links-that-let-people-in.md)).
+  carry no note key ([ADR 0015](docs/decisions.md#adr-0015),
+  [ADR 0025](docs/decisions.md#adr-0025)).
 - **Sharing with people, not phones** — a collaborator is an account, so one
   person's several devices are one entry, and revocation rotates the note key
-  ([ADR 0023](docs/adr/0023-access-packages.md)). A rename reaches every note
+  ([ADR 0023](docs/decisions.md#adr-0023)). A rename reaches every note
   the person is on, in either direction, because each member signs their own
-  name into the note ([ADR 0032](docs/adr/0032-a-name-that-follows-the-person.md)).
+  name into the note ([ADR 0032](docs/decisions.md#adr-0032)).
 - **Personal placement**: labels, pins, archive and trash are private to each
   device's account document; a colour is shared with everyone on the note, since
   two people looking at one list should see it the same shade (see the 2026-10-24
-  amendment to [ADR 0008](docs/adr/0008-account-document.md)).
+  amendment to [ADR 0008](docs/decisions.md#adr-0008)).
 - **Labels** that are things, not words — renamable, mergeable, and able to
   outlive the notes that carry them.
 - **Local full-text search** over a sealed index, which also draws the note
-  grid ([ADR 0009](docs/adr/0009-search-index.md)).
+  grid ([ADR 0009](docs/decisions.md#adr-0009)).
 - **Attachments** — photos and audio files encrypted in chunks under their own
-  key, transferred over HTTP ([ADR 0027](docs/adr/0027-attachments.md)).
+  key, transferred over HTTP ([ADR 0027](docs/decisions.md#adr-0027)).
 - **Reminders** as synced account state, scheduled locally
-  ([ADR 0019](docs/adr/0019-reminders.md)).
+  ([ADR 0019](docs/decisions.md#adr-0019)).
 - **Two devices from twelve words** — a BIP-39 recovery phrase that derives the
-  account document ([ADR 0013](docs/adr/0013-recovery-phrase.md)).
+  account document ([ADR 0013](docs/decisions.md#adr-0013)).
 - **Sync is one decision** — a sync server and the account that belongs to it
   are set up together; a local profile has neither. Without sync, notes stay on
-  the device and are not backed up ([ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md)).
+  the device and are not backed up ([ADR 0031](docs/decisions.md#adr-0031)).
 - **Permanent deletion** of notes from the log, snapshot, index and key
-  ([ADR 0010](docs/adr/0010-forgetting-a-note.md)).
+  ([ADR 0010](docs/decisions.md#adr-0010)).
 - **Self-hostable relay** with storage quotas, per-address rate limits,
   Prometheus metrics, graceful shutdown and an optional access-key gate.
 
@@ -111,8 +105,8 @@ make it readable on another device. The relay cannot read it, and neither can
 its operator. Without sync, a profile stays on this device and is not backed
 up. An operator's database dump is disaster recovery for the relay, not a user
 backup — without the account phrase it is ciphertext nobody can open. See
-[ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md) and
-[ADR 0013](docs/adr/0013-recovery-phrase.md).
+[ADR 0031](docs/decisions.md#adr-0031) and
+[ADR 0013](docs/decisions.md#adr-0013).
 
 ### Repository layout
 
@@ -121,7 +115,7 @@ core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform p
 relay/   Rust (axum): WebSocket relay over Postgres. Ciphertext only.
 app/     Flutter app, plus the thin bridge crate in app/rust.
 compat/  What each release wrote, read back by every later build's tests (ADR 0029).
-docs/    Design, plans, and the decision records.
+docs/    Public architecture, decision summaries, build and deployment guides.
 tools/   Measurement helpers and build checks that are not part of the product.
 ```
 
@@ -145,11 +139,11 @@ and that an envelope's note ID matches the note it was sent for — nothing else
 `the_relay_never_sees_plaintext` enforces that against the actual bytes on the
 wire, and the same check runs against the local database and its write-ahead
 log. What the relay does learn is documented in
-[ADR 0014](docs/adr/0014-what-the-relay-learns.md).
+[ADR 0014](docs/decisions.md#adr-0014).
 
 For scope, reporting, and the known limitations, see
-[`SECURITY.md`](SECURITY.md). The design schedules an external audit before 1.0
-and nothing here should be relied on until then.
+[`SECURITY.md`](SECURITY.md). An external audit is planned before 1.0 and
+nothing here should be relied on until then.
 
 ## Prerequisites
 
@@ -213,7 +207,7 @@ variable:
 | `RELAY_ADDR` | `127.0.0.1:8080` | Listen address (the Docker image sets `0.0.0.0:8080`) |
 | `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
 | `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
-| `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md)) |
+| `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/decisions.md#adr-0028)) |
 | `RELAY_WRITE_BURST` | 200 MiB | Bytes one client address may write at once |
 | `RELAY_WRITE_PER_HOUR` | 200 MiB/hr | Sustained write budget per address (`off` for none) |
 | `RELAY_STORAGE_CEILING` | 16 GiB | Total live-log bytes before the relay refuses new notes (`off` for none) |
@@ -250,51 +244,12 @@ file refuses to start without both.
 
 ## Documentation
 
-- [Design document](docs/design.md) — product and architecture
-- [Launch copy](docs/launch-copy.md) — the buyer and partner voices, and the public comparison
-- [Production readiness report](docs/production-readiness-2026-09-30.md)
-- [Security policy](SECURITY.md) and [crypto review](docs/crypto-review.md)
-- [Synology deployment](deploy/synology/README.md)
+- [How EasyNotes works](docs/architecture.md) — the data model, sync, sharing and security flow
+- [Decision index](docs/decisions.md) — what each architecture decision is, with the anchors the code links to
+- [Security policy](SECURITY.md) — scope, reporting and known limitations
+- [Self-hosting a relay](deploy/synology/README.md) — the reference deployment
 - [Windows desktop](docs/windows-desktop.md), [Android release](docs/android-release.md), [iOS release](docs/ios-release.md)
-- [Decision records](docs/adr/) — see the table below
-
-### Decision records
-
-| | |
-| --- | --- |
-| [ADR 0001](docs/adr/0001-crdt.md) | CRDT: Yrs, with items in a map and fractional order keys |
-| [ADR 0002](docs/adr/0002-web-core.md) | One Rust core everywhere, including the web |
-| [ADR 0003](docs/adr/0003-relay.md) | Relay: Rust and axum, Postgres for the log |
-| [ADR 0004](docs/adr/0004-sync-engine.md) | Sync: an outbox derived from the log, acknowledged by echo |
-| [ADR 0005](docs/adr/0005-local-store.md) | Local store: SQLite with sealed values, not SQLCipher |
-| [ADR 0006](docs/adr/0006-compaction.md) | Compaction: the log keeps what the relay has not acknowledged |
-| [ADR 0007](docs/adr/0007-note-list.md) | The note list: listing notes means opening them |
-| [ADR 0008](docs/adr/0008-account-document.md) | The account document: a document like any other, made of registers |
-| [ADR 0009](docs/adr/0009-search-index.md) | Local search, over a sealed index that the note list reads too |
-| [ADR 0010](docs/adr/0010-forgetting-a-note.md) | Forgetting a note: what a delete removes, and what it cannot |
-| [ADR 0011](docs/adr/0011-the-web-store.md) | The store a browser gets: reads from memory, writes through Dart |
-| [ADR 0012](docs/adr/0012-compacting-the-account-document.md) | Compacting the account document: the snapshot goes in the log |
-| [ADR 0013](docs/adr/0013-recovery-phrase.md) | The recovery phrase: twelve words deriving one document, and not the note keys |
-| [ADR 0014](docs/adr/0014-what-the-relay-learns.md) | What the relay learns about a person: nothing new |
-| [ADR 0015](docs/adr/0015-invites.md) | Invite links: a secret that asks, and an owner who answers (*amended by 0025:* nobody approves) |
-| [ADR 0016](docs/adr/0016-batching-edits.md) | Batching edits: typing waits for a pause, and goes as one envelope |
-| [ADR 0017](docs/adr/0017-one-socket-per-device.md) | One socket per device: every note on it, and reading never waits for writing |
-| [ADR 0018](docs/adr/0018-revocation.md) | Revocation is a creator-signed key generation |
-| [ADR 0019](docs/adr/0019-reminders.md) | Reminders are account state mirrored to local schedulers |
-| [ADR 0020](docs/adr/0020-collaborator-directory.md) | *Superseded by 0023:* an encrypted collaborator directory |
-| [ADR 0021](docs/adr/0021-stateless-relay-tokens.md) | Stateless relay tokens: signed expiry and shared one-use challenges |
-| [ADR 0022](docs/adr/0022-account-wide-deletion.md) | Permanent deletion across one person's devices |
-| [ADR 0023](docs/adr/0023-access-packages.md) | Share with people: account member keys and access packages |
-| [ADR 0024](docs/adr/0024-relay-storage-quota.md) | A storage quota for an anonymous relay: members compact a note's log to a base |
-| [ADR 0025](docs/adr/0025-links-that-let-people-in.md) | A link lets its first person in, once: no approval, no safety code |
-| [ADR 0026](docs/adr/0026-deleting-an-account.md) | Deleting an account: the relay purges what the person owns and keeps a tombstone |
-| [ADR 0027](docs/adr/0027-attachments.md) | Attachments: descriptors in the note, media in sealed chunks beside it (§1–§4 accepted and built, with the first UI; §5, relay clean-up, proposed) |
-| [ADR 0028](docs/adr/0028-who-may-write-to-a-relay.md) | Who may write to a relay: a shared access key proven at the handshake, a per-address write budget, no relay for strangers yet |
-| [ADR 0029](docs/adr/0029-compatibility-across-releases.md) | Compatibility across releases: what stays readable, a refusable protocol version, migrations tested from every release's fixtures (accepted and built; the old-relay-against-new-client job follows the first tag) |
-| [ADR 0030](docs/adr/0030-a-link-lets-its-first-person-in.md) | A link lets its first person in, without the owner's phone: the invite carries a pre-sealed grant |
-| [ADR 0032](docs/adr/0031-sync-is-a-server-and-an-account.md) | Sync is a server and the account that belongs to it: one setup, no upload before the account, and what "backup" means |
-| [ADR 0032](docs/adr/0032-a-name-that-follows-the-person.md) | A name that follows the person: each member signs their own name into the note, so a rename reaches collaborators both ways |
-| [ADR 0034](docs/adr/0034-leaving-on-account-deletion.md) | A guest leaves when their account is deleted: a signed record in each joined note, a removal and a key rotation on the owner's next sync |
+- [Contributing](CONTRIBUTING.md)
 
 ## Reporting a vulnerability
 

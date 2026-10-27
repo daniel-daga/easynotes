@@ -40,7 +40,7 @@ tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"]
 x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 # Pinned: yrs 0.27.0 and later publish a manifest declaring edition 2018 while the
 # source uses `if let` guards, which are edition-2024-only. They do not compile on
-# stable Rust at all. See docs/adr/0001-crdt.md.
+# stable Rust at all. See docs/decisions.md#adr-0001.
 yrs = { version = "=0.26.0", optional = true, features = ["sync"] }
 zeroize = "1.8.2"
 
@@ -63,7 +63,7 @@ sqlite-store = ["dep:rusqlite", "file-store"]
 # the same conformance suite as the other two.
 web-store = []
 # The share blob: a note's ID and key in one string, handed across by hand. It
-# was Slice 1's way to share, and the app no longer has it — a link that *is*
+# was the initial implementation's way to share, and the app no longer has it — a link that *is*
 # the key is what invites and access packages replaced (ADR 0015, ADR 0023).
 # What is left is test scaffolding: the quickest way to put one note on two
 # devices in a test with no relay. Off by default so no shipped build carries

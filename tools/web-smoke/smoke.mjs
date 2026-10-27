@@ -24,8 +24,8 @@
 import { chromium } from 'playwright-core';
 
 const url = process.argv[2] ?? 'http://127.0.0.1:8099/';
-// `playwright-core` brings no browser of its own, on purpose: a cloud session
-// and a CI runner both already have one, and downloading a second is a hundred
+// `playwright-core` brings no browser of its own, on purpose: a CI runner or a
+// developer's machine already has one, and downloading a second is a hundred
 // megabytes to run six assertions. CHROME_EXECUTABLE names it — the same
 // variable Flutter uses for the same reason — and failing that, whatever
 // Chrome the machine has installed.

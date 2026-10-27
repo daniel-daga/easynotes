@@ -14,7 +14,7 @@
 //!   write about it again, or two online devices answer each other for ever
 //!   and the relay's log grows without anybody touching anything.
 //!
-//! [ADR 0022](../../docs/adr/0022-account-wide-deletion.md) is the design.
+//! [ADR 0022](../../docs/decisions.md#adr-0022) is the design.
 
 mod support;
 

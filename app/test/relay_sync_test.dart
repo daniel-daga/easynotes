@@ -3,7 +3,7 @@
 /// `relay/tests/engine.rs` proves the sync engine in Rust, and the widget tests
 /// prove the screen against a fake. This is the seam between them: two cores
 /// opened the way the app opens them, connected the way the app connects them,
-/// talking to a relay process over a real socket. It is what Slice 1's third gap
+/// talking to a relay process over a real socket. It is what the initial implementation's third gap
 /// asked for — the demo run from the app's side of the bridge rather than only
 /// headlessly.
 ///
@@ -585,8 +585,7 @@ void main() {
   }, skip: skip);
 
   group('relay profiles', () {
-    // `docs/plan-relay-settings.md`, step 5: every relay has a profile of its
-    // own, and moving between them moves nothing. `relay_session_test.dart`
+    // Every relay has a profile of its own, and moving between them moves nothing. `relay_session_test.dart`
     // holds the order of a switch against fakes; this runs it with real
     // stores, real keys and two real relays, opened the way the app opens
     // them.

@@ -1,7 +1,7 @@
 //! Photos and sound files on a note.
 //!
 //! An attachment is two things that travel separately
-//! ([ADR 0027](../../docs/adr/0027-attachments.md)):
+//! ([ADR 0027](../../docs/decisions.md#adr-0027)):
 //!
 //! * a **descriptor** in the note's own document — what the file is called,
 //!   what it is, how big, and the key and digests that open and check its bytes.
@@ -123,7 +123,7 @@ impl MediaFormat {
     ///
     /// It reads containers, not codecs: an M4A holding a codec this device
     /// cannot play is still an M4A, and stays attached with a player that says
-    /// so. That is the plan's rule, and it is also all a core with no decoder in
+    /// so. That is the rule, and it is also all a core with no decoder in
     /// it can honestly check.
     pub fn sniff(head: &[u8]) -> Option<Self> {
         if head.starts_with(&[0xFF, 0xD8, 0xFF]) {

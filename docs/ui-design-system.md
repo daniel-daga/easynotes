@@ -4,7 +4,7 @@ This guide keeps new screens and components consistent with the existing
 Flutter app. Use it when adding a feature, reviewing a visual change, or
 deciding whether a UI pattern belongs in a shared component.
 
-The product design lives in [design.md](./design.md). This guide describes how
+The architecture overview is in [architecture.md](./architecture.md). This guide describes how
 that design is expressed in the interface.
 
 ## Visual foundation
@@ -138,7 +138,7 @@ until it has a second real use or a clear independent role.
   three initials circles instead of the person-plus icon; a faded circle means
   their access is still arriving, and the last circle counts whoever did not
   fit. Tapping it opens the same screen. See
-  [plan-live-collaborators.md](./plan-live-collaborators.md).
+
 - Send a copy lives in the bottom-right overflow menu below Reminders. It opens
   the content preview with system sharing and copy actions.
 - Add attachment (`add_box_outlined`) is the first control at the bottom left

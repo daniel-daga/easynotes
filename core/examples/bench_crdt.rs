@@ -1,7 +1,7 @@
 //! Decision D1: Automerge or Yrs?
 //!
-//! Measures the five criteria the Slice 1 plan names, and prints a Markdown table
-//! to paste into `docs/adr/0001-crdt.md`. Run it with:
+//! Measures the five criteria the initial implementation names, and prints a Markdown table
+//! to paste into `docs/decisions.md#adr-0001`. Run it with:
 //!
 //! ```sh
 //! cargo run --release -p easynotes-core --example bench_crdt

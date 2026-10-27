@@ -1,5 +1,5 @@
 //! Purging a topic, held to one set of rules in both stores and on the socket
-//! ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)).
+//! ([ADR 0026](../../docs/decisions.md#adr-0026)).
 //!
 //! The memory store always; Postgres when `DATABASE_URL` is set. The same
 //! purge through real devices, with a guest who is told, is in `sharing.rs`.

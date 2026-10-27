@@ -89,7 +89,7 @@ id_type!(InviteId, "InviteId");
 // A label used to be nothing but the string somebody typed, and that made two
 // things impossible: renaming one, and having one that no note carries. Both
 // come back the moment a label has an identity of its own and the name is a
-// register hanging off it — see `docs/adr/0008-account-document.md`, decision 4.
+// register hanging off it — see `docs/decisions.md#adr-0008`, decision 4.
 //
 // Sixteen random bytes, the same as everything else here, and random rather
 // than derived from the name. A hash of the name would make two devices that
@@ -105,7 +105,7 @@ id_type!(ReminderId, "ReminderId");
 
 // One attached file, and it never changes: replacing a photo is a new
 // attachment with a new ID, so a descriptor is written once and read forever
-// ([ADR 0027](../../docs/adr/0027-attachments.md)).
+// ([ADR 0027](../../docs/decisions.md#adr-0027)).
 id_type!(AttachmentId, "AttachmentId");
 
 // Where one variant of an attachment's ciphertext lives — this device's media

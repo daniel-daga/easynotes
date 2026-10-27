@@ -1,6 +1,6 @@
 //! How much one note may keep, and who may shrink it.
 //!
-//! [ADR 0024](../../docs/adr/0024-relay-storage-quota.md). The relay's log for a
+//! [ADR 0024](../../docs/decisions.md#adr-0024). The relay's log for a
 //! note used to only grow. Now a member that is caught up can hand the relay a
 //! **base** — one sealed update holding the whole document — with a promise
 //! that it covers everything up to a sequence number. The relay drops what that
@@ -81,7 +81,7 @@ pub struct Topic {
     pub registered: Option<[u8; 32]>,
     /// How far the newest base reaches; 0 before the first.
     pub covers: i64,
-    /// Purged ([ADR 0026](../../docs/adr/0026-deleting-an-account.md)): nothing
+    /// Purged ([ADR 0026](../../docs/decisions.md#adr-0026)): nothing
     /// is stored and nothing will be. Kept so a device still holding the topic
     /// cannot bring it back.
     pub gone: bool,
@@ -157,7 +157,7 @@ pub struct Proposal<'a> {
     pub covers: i64,
     pub base: &'a [u8],
     /// The objects the base names: what the topic keeps of its media, the
-    /// rest being doomed (ADR 0027 §5). `None` keeps everything.
+    /// rest being doomed (ADR 0027). `None` keeps everything.
     pub media: Option<&'a [MediaObjectId]>,
     pub key: [u8; 32],
     pub signature: [u8; SIG_LEN],
@@ -225,7 +225,7 @@ pub fn authorise(topic: &Topic, note: &str, proposal: &Proposal<'_>) -> Result<b
     Ok(register)
 }
 
-/// Check a purge ([ADR 0026](../../docs/adr/0026-deleting-an-account.md) §1).
+/// Check a purge ([ADR 0026](../../docs/decisions.md#adr-0026)).
 ///
 /// The authority is the one compaction already has, except that a shared
 /// note's owner key outranks the compaction key its package names: every guest

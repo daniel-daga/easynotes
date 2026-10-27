@@ -1,6 +1,6 @@
 //! Invites, end to end: real cores asking a real relay over HTTP.
 //!
-//! The acceptance for Slice 3 item 3 at the protocol level, as ADR 0025 left
+//! The acceptance for the later milestone item 3 at the protocol level, as ADR 0025 left
 //! it. A link that carries a token rather than a key, a token that expires,
 //! and a link that one person claims and nobody after them can — and, because
 //! this is the item that opens the relay's protocol, a relay that learns

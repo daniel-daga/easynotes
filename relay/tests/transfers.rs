@@ -1,5 +1,5 @@
 //! The attachment transfer queue against a real relay, with real engines
-//! carrying the note ([ADR 0027](../../docs/adr/0027-attachments.md) §3–§4).
+//! carrying the note ([ADR 0027](../../docs/decisions.md#adr-0027)–).
 //!
 //! `attachments.rs` moves bytes by hand. This is the part the app will run: a
 //! staged import that waits for its note, goes up, is published and settled on
@@ -581,7 +581,7 @@ async fn the_same_queue_runs_over_a_tabs_store() {
     );
 }
 
-/// ADR 0027 §5 from the uploader's side. A published upload whose descriptor
+/// ADR 0027 from the uploader's side. A published upload whose descriptor
 /// the relay has not acknowledged keeps its record, and with it the bytes. If
 /// the relay let them go meanwhile, as a compaction from a device that never
 /// saw the descriptor would, the queue's next look at the record puts them

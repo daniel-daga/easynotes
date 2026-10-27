@@ -16,7 +16,7 @@
 //!   it commits.
 //!
 //! What that costs is stated in
-//! [ADR 0011](../../../docs/adr/0011-the-web-store.md) and is worth repeating
+//! [ADR 0011](../../../docs/decisions.md#adr-0011) and is worth repeating
 //! here, because it is the only promise in this file that is weaker than the
 //! native store's: an edit is in the database *shortly* after `append` returns
 //! rather than by the time it does, so a tab closed inside that window loses it.
@@ -57,8 +57,7 @@ pub const SCHEMA_VERSION: u8 = 1 + STORE_STEPS.len() as u8;
 /// The row that holds it, in both object stores.
 pub const SCHEMA_KEY: &str = "schema";
 
-/// One step of a browser store's layout ([ADR
-/// 0029](../../../docs/adr/0029-compatibility-across-releases.md) §5): every
+/// One step of a browser store's layout ([ADR 0029](../../../docs/decisions.md#adr-0029)): every
 /// row at one version in, the same store at the next version out. It may add,
 /// rewrite and remove rows; it must not fail on rows it has no business with.
 ///
@@ -449,8 +448,7 @@ impl OpStore for WebStore {
 ///
 /// A separate object store from the log, which is as far as the separation the
 /// two SQLite files have can be carried into a browser: there is one origin and
-/// anything running on it reaches both. [ADR
-/// 0011](../../../docs/adr/0011-the-web-store.md) says what that means for the
+/// anything running on it reaches both. [ADR 0011](../../../docs/decisions.md#adr-0011) says what that means for the
 /// master key on the web, which is the honest half of this.
 pub struct WebKeyring {
     seed: Option<Vec<u8>>,
