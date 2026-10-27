@@ -71,12 +71,13 @@ Future<bool> ensureSharingSetUp(
   BuildContext context,
   Accounts accounts, {
   List<int>? ask,
+  bool joining = false,
 }) async {
   if (!accounts.hasAccount) {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => const SharingSetupSheet(),
+      builder: (context) => SharingSetupSheet(joining: joining),
     );
     return false;
   }
@@ -92,8 +93,14 @@ Future<bool> ensureSharingSetUp(
 }
 
 /// The one sheet a device without sync sees before it shares or joins.
+///
+/// [joining] is the second person's way in: they did not come here to set up
+/// sync, they came to open a note. The sheet says what to do next without
+/// explaining where the note is kept.
 class SharingSetupSheet extends StatelessWidget {
-  const SharingSetupSheet({super.key});
+  const SharingSetupSheet({super.key, this.joining = false});
+
+  final bool joining;
 
   @override
   Widget build(BuildContext context) {
@@ -105,15 +112,19 @@ class SharingSetupSheet extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Set up sync first',
+              joining ? 'One step before you join' : 'Set up sync first',
               key: const Key('setup-sharing-title'),
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 12),
-            const Text(
-              'Sharing needs a sync server and the account that belongs to '
-              'it. Set both up together in Sync & devices, write down your '
-              'twelve words, then come back here.',
+            Text(
+              joining
+                  ? 'This note is kept where you can both open it. Set that '
+                        'up in Sync & devices, then open the link again. It '
+                        'takes a minute.'
+                  : 'Sharing needs a sync server and the account that belongs '
+                        'to it. Set both up together in Sync & devices, write '
+                        'down your twelve words, then come back here.',
             ),
             const SizedBox(height: 24),
             FilledButton(
@@ -323,7 +334,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     // somebody who pastes the whole message rather than tapping it still is,
     // because the core reads after the last `#`.
     final shared = await shareContent(
-      'Join my shared note in EasyNotes: ${_link(invite)}',
+      'Open the note I shared with you in EasyNotes: ${_link(invite)}',
     );
     if (!shared && mounted) _copy(invite);
     await _refresh();
@@ -912,15 +923,15 @@ class _JoinDialogState extends State<JoinDialog> {
     // checked would ask the guest to judge something they cannot read.
     final tapped = widget.initialLink != null;
     return AlertDialog(
-      title: Text(tapped ? 'Join a shared note?' : 'Join with a link'),
+      title: Text(tapped ? 'Open this shared note?' : 'Join with a link'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (tapped)
             const Text(
-              'You will be added to the note, and the person who sent the '
-              'link will see you there. The link works for one person only.',
+              'The link adds you to the note. The person who sent it will see '
+              'you there. It works once, for one person.',
               key: Key('join-explainer'),
             )
           else
@@ -929,8 +940,8 @@ class _JoinDialogState extends State<JoinDialog> {
               controller: _link,
               autofocus: true,
               decoration: const InputDecoration(
-                labelText: 'Invite link',
-                hintText: 'Paste the link you were sent',
+                labelText: 'The link you were sent',
+                hintText: 'Paste it here',
               ),
               onSubmitted: (_) => _ask(),
             ),
@@ -939,10 +950,12 @@ class _JoinDialogState extends State<JoinDialog> {
               padding: const EdgeInsets.only(top: 12),
               child: Text(
                 profile.url == null
-                    ? 'This device is not using a sync server yet. If the link '
-                          'names one, joining sets it up for you.'
-                    : 'Joining through ${profile.url}, unless the link names '
-                          'another server, which asks before switching.',
+                    ? 'This device is not set up for shared notes yet. If the '
+                          'link says where the note lives, joining sets this '
+                          'app up for you.'
+                    : 'Joining adds the note to your EasyNotes. If the note '
+                          'is kept somewhere else, this app asks before '
+                          'switching.',
                 key: const Key('join-relay'),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -1045,9 +1058,9 @@ class _WaitingDialogState extends State<WaitingDialog> {
         ),
         content: Text(
           ended.state == JoinState.declined
-              ? 'The owner\'s device could not read this request. Ask them '
-                    'for a new link.'
-              : ended.message ?? 'This invite no longer works.',
+              ? 'The person who sent the link could not open it. Ask them for '
+                    'a new link.'
+              : 'This link has expired or was already used. Ask for a new one.',
           key: const Key('join-ended'),
         ),
         actions: [
@@ -1071,8 +1084,8 @@ class _WaitingDialogState extends State<WaitingDialog> {
             )
           else
             const Text(
-              'You will be let in as soon as the person who sent the link '
-              'has EasyNotes open.',
+              'The person who sent the link needs EasyNotes open for a '
+              'moment. You can keep waiting here.',
               key: Key('join-waiting'),
             ),
           const SizedBox(height: 12),
@@ -1209,8 +1222,8 @@ class _InviteBannersState extends State<InviteBanners> {
                   'A link you opened could not be used. Ask for a new one.';
             case JoinState.gone:
               _ended[join.inviteId] =
-                  check.message ??
-                  'An invite you were waiting on stopped working.';
+                  'This link has expired or was already used. Ask for a new '
+                  'one.';
             case JoinState.waiting:
             case JoinState.opening:
               break;

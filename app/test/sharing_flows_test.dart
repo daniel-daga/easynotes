@@ -130,6 +130,78 @@ void main() {
     },
   );
 
+  testWidgets('the join setup sheet speaks to the person joining', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: SharingSetupSheet(joining: true)),
+      ),
+    );
+    expect(find.text('One step before you join'), findsOneWidget);
+    expect(find.textContaining('Sync & devices'), findsOneWidget);
+    expect(
+      find.textContaining(
+        RegExp('encrypt|server|key', caseSensitive: false),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('the join dialog stays out of the cryptography', (tester) async {
+    final library = FakeNoteLibrary()..setUpSharing('Anna');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: JoinDialog(
+            invites: library,
+            initialLink: 'easynotes://join#abc',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Open this shared note?'), findsOneWidget);
+    expect(find.textContaining('It works once'), findsOneWidget);
+    expect(
+      find.textContaining(
+        RegExp(
+          'encrypt|ciphertext|access key|relay|server',
+          caseSensitive: false,
+        ),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('the wait says who has to be there, without crypto words', (
+    tester,
+  ) async {
+    final library = FakeNoteLibrary()..setUpSharing('Anna');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: WaitingDialog(
+            invites: library,
+            join: const PendingJoin(inviteId: 'abc', name: 'Anna'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Joining'), findsOneWidget);
+    expect(find.textContaining('EasyNotes open'), findsOneWidget);
+    expect(
+      find.textContaining(
+        RegExp(
+          'encrypt|ciphertext|access key|relay|server',
+          caseSensitive: false,
+        ),
+      ),
+      findsNothing,
+    );
+  });
+
   testWidgets('Share a note: send the link, and they are in', (tester) async {
     final library = FakeNoteLibrary()..setUpSharing('Olga');
     await pumpNote(tester, library);

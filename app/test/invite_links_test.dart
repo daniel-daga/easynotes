@@ -27,7 +27,7 @@ void main() {
     // What a browser's address bar hands back: the second # encoded.
     expect(inviteLinkFrom('https://notes.example/#join%23$secret'), native);
     // A pasted message reaches the core whole, and it reads after the last #.
-    final message = 'Join my shared note in EasyNotes: $link';
+    final message = 'Open the note I shared with you in EasyNotes: $link';
     expect(message.substring(message.lastIndexOf('#') + 1), secret);
   });
 

@@ -631,7 +631,7 @@ void main() {
 
       final link = invites.invitesFor('this-note').single.link;
       // The link last, so a pasted message still reads as one.
-      expect(sent, ['Join my shared note in EasyNotes: $link']);
+      expect(sent, ['Open the note I shared with you in EasyNotes: $link']);
       expect(find.text('Link copied'), findsNothing);
     });
 
@@ -662,7 +662,7 @@ void main() {
       expect(
         message,
         startsWith(
-          'Join my shared note in EasyNotes: https://sync.example.com/#',
+          'Open the note I shared with you in EasyNotes: https://sync.example.com/#',
         ),
       );
       expect(message, endsWith('#$id'));
