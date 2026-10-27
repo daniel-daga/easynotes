@@ -86,7 +86,12 @@ jobs:
       - name: Test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/easynotes
-        run: cargo test --workspace
+        run: |
+          # The relay's media tests share one Postgres database and the sweeps
+          # are relay-wide: parallel test threads can delete each other's
+          # objects. Run the relay package serially; everything else parallel.
+          cargo test --workspace --exclude easynotes-relay
+          cargo test -p easynotes-relay -- --test-threads=1
 
       # The core must stay free of anything native, or the web build dies later
       # and further from the cause. Both backends, because D1 is reversible.
