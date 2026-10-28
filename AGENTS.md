@@ -5,6 +5,11 @@ code is the Rust core (`core/`), the relay (`relay/`), the Flutter app (`app/`)
 and the bridge in `app/rust`. The security-critical core must stay testable
 without Flutter or a device.
 
+Strategy, pricing, plans and the long-form decision records live in a private
+companion archive. A change that spans both repositories updates the public
+code/docs here and the internal record there; internal material never moves into
+this repository.
+
 Before changing anything:
 
 - Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md),
