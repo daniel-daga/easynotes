@@ -229,6 +229,65 @@ fn an_item_edit_replays_onto_a_peer_line<D: NoteDoc>() {
     assert_eq!(text, b.view(id).unwrap().items[0].text, "diverged");
 }
 
+/// The cheese/whiskey case: a blank item exists on both devices, and each types
+/// a word into it before the other's word arrives.
+fn concurrent_typing_in_one_item_keeps_both<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let ea = a.edit_item_text(id, item, "", "cheese").unwrap();
+    let eb = b.edit_item_text(id, item, "", "whiskey").unwrap();
+    a.apply_remote(id, &eb).unwrap();
+    b.apply_remote(id, &ea).unwrap();
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap(), "concurrent typing diverged");
+    let text = &va.item(item).expect("the item is still there").text;
+    assert!(
+        text.contains("cheese") && text.contains("whiskey"),
+        "a word was lost: {text:?}"
+    );
+}
+
+fn concurrent_typing_at_different_places_in_one_item_interleaves<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "milk bread").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let ea = a
+        .edit_item_text(id, item, "milk bread", "oat milk bread")
+        .unwrap();
+    let eb = b
+        .edit_item_text(id, item, "milk bread", "milk bread eggs")
+        .unwrap();
+    a.apply_remote(id, &eb).unwrap();
+    b.apply_remote(id, &ea).unwrap();
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap());
+    assert_eq!(va.item(item).unwrap().text, "oat milk bread eggs");
+}
+
+/// The two backends count text in different units; a character wider than one
+/// of them is where they would disagree, if they did.
+fn typing_outside_ascii_in_one_item_converges<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "Grüße 👋").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let ea = a
+        .edit_item_text(id, item, "Grüße 👋", "Liebe Grüße 👋")
+        .unwrap();
+    let eb = b.edit_item_text(id, item, "Grüße 👋", "Grüße 👋👋").unwrap();
+    a.apply_remote(id, &eb).unwrap();
+    b.apply_remote(id, &ea).unwrap();
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap());
+    assert_eq!(va.item(item).unwrap().text, "Liebe Grüße 👋👋");
+}
+
 fn a_concurrent_delete_and_edit_do_not_resurrect_a_ghost<D: NoteDoc>() {
     let (mut a, mut b, id) = pair::<D>();
     let (item, e) = a.add_item(id, "bread").unwrap();
@@ -249,6 +308,62 @@ fn a_concurrent_delete_and_edit_do_not_resurrect_a_ghost<D: NoteDoc>() {
             "resurrected a partial item: {it:?}"
         );
     }
+}
+
+fn a_blank_item_dropped_on_one_device_is_hidden_everywhere<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let drop = a.drop_if_blank(id, item).unwrap();
+    b.apply_remote(id, &drop).unwrap();
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap());
+    assert!(va.item(item).is_none(), "a dropped blank is still shown");
+    assert_eq!(va.dropped_items, vec![item]);
+}
+
+fn text_typed_into_a_blank_a_peer_dropped_brings_it_back<D: NoteDoc>() {
+    // A closes the note; its clean-up drops the blank. B, whose screen still
+    // shows the row, had already typed "cheese" into it. Neither has heard from
+    // the other yet.
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let drop = a.drop_if_blank(id, item).unwrap();
+    let typed = b.edit_item_text(id, item, "", "cheese").unwrap();
+    a.apply_remote(id, &typed).unwrap();
+    b.apply_remote(id, &drop).unwrap();
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap());
+    assert_eq!(va.item(item).unwrap().text, "cheese");
+    assert!(va.dropped_items.is_empty());
+}
+
+fn typing_into_an_item_already_dropped_is_not_an_error<D: NoteDoc>() {
+    // The drop arrived first; B's screen has not redrawn yet and sends a
+    // keystroke. The core must take it, and the item comes back with it.
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "").unwrap();
+    b.apply_remote(id, &e).unwrap();
+    let drop = a.drop_if_blank(id, item).unwrap();
+    b.apply_remote(id, &drop).unwrap();
+
+    let typed = b.edit_item_text(id, item, "", "c").unwrap();
+    a.apply_remote(id, &typed).unwrap();
+
+    assert_eq!(a.view(id).unwrap().item(item).unwrap().text, "c");
+    assert_eq!(a.view(id).unwrap(), b.view(id).unwrap());
+}
+
+fn dropping_an_item_that_has_text_leaves_it_shown<D: NoteDoc>() {
+    let (mut a, _, id) = pair::<D>();
+    let (item, _) = a.add_item(id, "bread").unwrap();
+    a.drop_if_blank(id, item).unwrap();
+    assert_eq!(a.view(id).unwrap().item(item).unwrap().text, "bread");
 }
 
 fn many_concurrent_edits_converge<D: NoteDoc>() {
@@ -597,8 +712,36 @@ macro_rules! backend_suite {
                 super::an_item_edit_replays_onto_a_peer_line::<$backend>()
             }
             #[test]
+            fn concurrent_typing_in_one_item_keeps_both() {
+                super::concurrent_typing_in_one_item_keeps_both::<$backend>()
+            }
+            #[test]
+            fn concurrent_typing_at_different_places_in_one_item_interleaves() {
+                super::concurrent_typing_at_different_places_in_one_item_interleaves::<$backend>()
+            }
+            #[test]
+            fn typing_outside_ascii_in_one_item_converges() {
+                super::typing_outside_ascii_in_one_item_converges::<$backend>()
+            }
+            #[test]
             fn a_concurrent_delete_and_edit_do_not_resurrect_a_ghost() {
                 super::a_concurrent_delete_and_edit_do_not_resurrect_a_ghost::<$backend>()
+            }
+            #[test]
+            fn a_blank_item_dropped_on_one_device_is_hidden_everywhere() {
+                super::a_blank_item_dropped_on_one_device_is_hidden_everywhere::<$backend>()
+            }
+            #[test]
+            fn text_typed_into_a_blank_a_peer_dropped_brings_it_back() {
+                super::text_typed_into_a_blank_a_peer_dropped_brings_it_back::<$backend>()
+            }
+            #[test]
+            fn typing_into_an_item_already_dropped_is_not_an_error() {
+                super::typing_into_an_item_already_dropped_is_not_an_error::<$backend>()
+            }
+            #[test]
+            fn dropping_an_item_that_has_text_leaves_it_shown() {
+                super::dropping_an_item_that_has_text_leaves_it_shown::<$backend>()
             }
             #[test]
             fn many_concurrent_edits_converge() {
