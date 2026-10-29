@@ -24,8 +24,8 @@ use crate::ids::ItemId;
 use std::sync::{Arc, Mutex};
 use yrs::updates::decoder::Decode;
 use yrs::{
-    Any, Doc, GetString, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Text, TextRef,
-    Transact, TransactionMut, Update,
+    Any, Doc, GetString, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Text, TextPrelim,
+    TextRef, Transact, TransactionMut, Update,
 };
 
 const ROOT: &str = "note";
@@ -36,6 +36,7 @@ const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
+const DROPPED: &str = "dropped";
 
 pub struct YrsNote {
     doc: Doc,
@@ -116,6 +117,32 @@ impl YrsNote {
         }
     }
 
+    /// An item's text, which is a `Y.Text` of its own.
+    fn item_text(txn: &impl ReadTxn, obj: &MapRef) -> String {
+        match obj.get(txn, TEXT) {
+            Some(Out::YText(t)) => t.get_string(txn),
+            _ => String::new(),
+        }
+    }
+
+    /// Splice an item's text towards `text`, so a peer's word elsewhere on the
+    /// line survives.
+    fn set_item_text(txn: &mut TransactionMut, obj: &MapRef, text: &str) {
+        let Some(Out::YText(t)) = obj.get(txn, TEXT) else {
+            obj.insert(txn, TEXT, TextPrelim::new(text));
+            return;
+        };
+        let old = t.get_string(txn);
+        if let Some((at, deleted, inserted)) = splice(&old, text) {
+            if deleted > 0 {
+                t.remove_range(txn, at as u32, deleted as u32);
+            }
+            if !inserted.is_empty() {
+                t.insert(txn, at as u32, inserted);
+            }
+        }
+    }
+
     fn item(&self, txn: &impl ReadTxn, id: ItemId) -> Option<MapRef> {
         match self.root.get(txn, &id.encode()) {
             Some(Out::YMap(m)) => Some(m),
@@ -163,13 +190,13 @@ impl NoteDoc for YrsNote {
                 }
                 Edit::AddItem { id, text, order } => {
                     let obj = items.insert(&mut txn, id.encode(), MapPrelim::default());
-                    obj.insert(&mut txn, TEXT, text.as_str());
+                    Self::set_item_text(&mut txn, &obj, text);
                     obj.insert(&mut txn, CHECKED, false);
                     obj.insert(&mut txn, ORDER, order.as_str());
                 }
                 Edit::SetItemText { id, text } => {
                     if let Some(Out::YMap(obj)) = items.get(&txn, &id.encode()) {
-                        obj.insert(&mut txn, TEXT, text.as_str());
+                        Self::set_item_text(&mut txn, &obj, text);
                     }
                 }
                 Edit::SetChecked { id, checked } => {
@@ -184,6 +211,11 @@ impl NoteDoc for YrsNote {
                 }
                 Edit::RemoveItem { id } => {
                     items.remove(&mut txn, &id.encode());
+                }
+                Edit::DropIfBlank { id } => {
+                    if let Some(Out::YMap(obj)) = items.get(&txn, &id.encode()) {
+                        obj.insert(&mut txn, DROPPED, true);
+                    }
                 }
                 Edit::SetKind(kind) => {
                     self.root.insert(&mut txn, KIND, kind.as_str());
@@ -208,7 +240,7 @@ impl NoteDoc for YrsNote {
                     self.set_body(&mut txn, "");
                     for item in new {
                         let obj = items.insert(&mut txn, item.id.encode(), MapPrelim::default());
-                        obj.insert(&mut txn, TEXT, item.text.as_str());
+                        Self::set_item_text(&mut txn, &obj, &item.text);
                         obj.insert(&mut txn, CHECKED, item.checked);
                         obj.insert(&mut txn, ORDER, item.order.as_str());
                     }
@@ -289,6 +321,7 @@ impl NoteDoc for YrsNote {
         let kind = NoteKind::parse(&any_str(self.root.get(&txn, KIND)));
         let body = self.body.get_string(&txn);
         let mut items = Vec::new();
+        let mut dropped_items = Vec::new();
         let mut attachments = Vec::new();
         let mut retired_attachments = Vec::new();
         {
@@ -318,9 +351,17 @@ impl NoteDoc for YrsNote {
                 let Some(obj) = self.item(&txn, id) else {
                     continue;
                 };
+                let text = Self::item_text(&txn, &obj);
+                // Dropped and still blank is a row a screen tidied away.
+                // Dropped with words in it is a peer who typed into it
+                // meanwhile: the words win, and it is drawn again.
+                if any_bool(obj.get(&txn, DROPPED)) && text.trim().is_empty() {
+                    dropped_items.push(id);
+                    continue;
+                }
                 items.push(ItemView {
                     id,
-                    text: any_str(obj.get(&txn, TEXT)),
+                    text,
                     checked: any_bool(obj.get(&txn, CHECKED)),
                     order: any_str(obj.get(&txn, ORDER)),
                 });
@@ -329,6 +370,7 @@ impl NoteDoc for YrsNote {
         sort_items(&mut items);
         sort_attachments(&mut attachments);
         retired_attachments.sort();
+        dropped_items.sort();
         let colour_name = any_str(self.root.get(&txn, COLOUR));
         let colour_set = self.root.get(&txn, COLOUR).is_some();
         NoteView {
@@ -340,6 +382,7 @@ impl NoteDoc for YrsNote {
             items,
             attachments,
             retired_attachments,
+            dropped_items,
         }
     }
 

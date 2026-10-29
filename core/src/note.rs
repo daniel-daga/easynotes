@@ -2787,20 +2787,23 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         Ok((item, env))
     }
 
+    /// Set an item's text, or `None` if it already says that. A screen
+    /// normally wants [`edit_item_text`](Self::edit_item_text), which sends the
+    /// splice rather than the whole line.
     pub fn set_item_text(
         &mut self,
         id: NoteId,
         item: ItemId,
         text: impl Into<String>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>> {
         self.require_item(id, item)?;
-        self.apply_local(
-            id,
-            Edit::SetItemText {
-                id: item,
-                text: text.into(),
-            },
-        )
+        let text = text.into();
+        let current = self.view(id)?.item(item).map(|shown| shown.text.clone());
+        if current.as_deref() == Some(text.as_str()) {
+            return Ok(None);
+        }
+        self.apply_local(id, Edit::SetItemText { id: item, text })
+            .map(Some)
     }
 
     /// Set an item's text from an edit that says what it changed.
@@ -2810,13 +2813,15 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// sends the text it was showing and the text it shows now instead, and
     /// that splice is replayed onto whatever the item says by the time it
     /// arrives — the same rule a body has ([`crate::text::rebase`]).
+    ///
+    /// `None` when the edit leaves the line as it is.
     pub fn edit_item_text(
         &mut self,
         id: NoteId,
         item: ItemId,
         from: &str,
         to: &str,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>> {
         self.require_item(id, item)?;
         let current = self
             .view(id)?
@@ -2826,7 +2831,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .map(|shown| shown.text)
             .unwrap_or_default();
         let text = crate::text::rebase(from, to, &current);
+        if text == current {
+            return Ok(None);
+        }
         self.apply_local(id, Edit::SetItemText { id: item, text })
+            .map(Some)
     }
 
     pub fn set_checked(&mut self, id: NoteId, item: ItemId, checked: bool) -> Result<Vec<u8>> {
@@ -2837,6 +2846,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     pub fn remove_item(&mut self, id: NoteId, item: ItemId) -> Result<Vec<u8>> {
         self.require_item(id, item)?;
         self.apply_local(id, Edit::RemoveItem { id: item })
+    }
+
+    /// What a screen does to a blank item it made and nobody wrote in. Not a
+    /// removal: the item is hidden while it is blank and comes back if text
+    /// reaches it, so this can never take a peer's words with it.
+    pub fn drop_if_blank(&mut self, id: NoteId, item: ItemId) -> Result<Vec<u8>> {
+        self.require_item(id, item)?;
+        self.apply_local(id, Edit::DropIfBlank { id: item })
     }
 
     /// Move `item` so that it lands at `to_index` in the current display order.
@@ -3019,7 +3036,10 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
 
     fn require_item(&mut self, id: NoteId, item: ItemId) -> Result<()> {
         self.ensure_open(id)?;
-        if self.view(id)?.item(item).is_none() {
+        let view = self.view(id)?;
+        // A dropped item is still one a peer's screen may be typing into: it is
+        // out of the view, not out of the note.
+        if view.item(item).is_none() && !view.dropped_items.contains(&item) {
             return Err(CoreError::UnknownItem(item.encode()));
         }
         Ok(())

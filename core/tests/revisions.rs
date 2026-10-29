@@ -57,7 +57,7 @@ fn every_local_edit_bumps<D: NoteDoc>() {
     let (item, envelope) = a.add_item(id, "milk").unwrap();
     drop(envelope);
     bump(&mut a, "an added item");
-    a.set_item_text(id, item, "milk and eggs").unwrap();
+    a.set_item_text(id, item, "milk and eggs").unwrap().unwrap();
     bump(&mut a, "an item's text");
     a.set_checked(id, item, true).unwrap();
     bump(&mut a, "a tick");
@@ -84,7 +84,9 @@ fn a_no_op_view_says_the_same<D: NoteDoc>() {
     let (item, _) = a.add_item(id, "milk").unwrap();
     let before = a.view(id).unwrap().items[0].text.clone();
 
-    a.set_item_text(id, item, "milk").unwrap();
+    // Nothing changed, so nothing is sealed and sent: a field that sends what
+    // the core already holds cannot make its own next echo look new.
+    assert!(a.set_item_text(id, item, "milk").unwrap().is_none());
     assert_eq!(a.view(id).unwrap().items[0].text, before);
 }
 
@@ -100,7 +102,7 @@ fn a_remote_edit_bumps_once<D: NoteDoc>() {
     b.apply_remote(id, &envelope).unwrap();
     assert_eq!(b.rev(id).unwrap(), after_one);
 
-    let envelope = a.set_item_text(id, item, "milk and eggs").unwrap();
+    let envelope = a.set_item_text(id, item, "milk and eggs").unwrap().unwrap();
     b.apply_remote(id, &envelope).unwrap();
     assert!(b.rev(id).unwrap() > after_one);
     assert_eq!(b.view(id).unwrap().items[0].text, "milk and eggs");
@@ -127,9 +129,9 @@ fn two_devices_converge_with_their_own_counters<D: NoteDoc>() {
     let (item, envelope) = a.add_item(id, "milk").unwrap();
     b.apply_remote(id, &envelope).unwrap();
 
-    let from_a = a.set_item_text(id, item, "milk and eggs").unwrap();
+    let from_a = a.set_item_text(id, item, "milk and eggs").unwrap().unwrap();
     // B types into the same line before hearing about A's edit.
-    let from_b = b.set_item_text(id, item, "milk, eggs").unwrap();
+    let from_b = b.set_item_text(id, item, "milk, eggs").unwrap().unwrap();
 
     a.apply_remote(id, &from_b).unwrap();
     b.apply_remote(id, &from_a).unwrap();
