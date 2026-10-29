@@ -275,6 +275,13 @@ impl TransferPeer for Peer {
         Reach::Synced
     }
 
+    /// The queue waits for this before it records an upload as done. Here the
+    /// published map stands in for the note's sync, so a descriptor that is in
+    /// it is on the relay: there is nothing left to acknowledge.
+    fn acknowledged(&self, _note: NoteId) -> bool {
+        true
+    }
+
     fn publish(&self, note: NoteId, id: AttachmentId, media: Media) -> easynotes_core::Result<()> {
         self.published.lock().unwrap().insert((note, id), media);
         Ok(())
