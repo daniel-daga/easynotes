@@ -127,6 +127,21 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
                   enabled: true,
                   onTap: _connected ? _createAccount : _connectServer,
                 ),
+                if (!_hasAccount && widget.library is AccountTransfers) ...[
+                  const SizedBox(height: 8),
+                  ListTile(
+                    key: const Key('account-transfer'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.qr_code_scanner),
+                    title: const Text('Add this device'),
+                    subtitle: const Text(
+                      'Scan the one-time QR code from a device that already '
+                      'has your account.',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openTransfer,
+                  ),
+                ],
               ],
               _SectionTitle('Sync server'),
               ListTile(
