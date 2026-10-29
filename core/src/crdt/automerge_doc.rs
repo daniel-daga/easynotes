@@ -6,7 +6,7 @@
 //! ```text
 //! root map
 //!   "title"  -> string
-//!   <item id> -> map { "text": string, "checked": bool, "order": string }
+//!   <item id> -> map { "text": text, "checked": bool, "order": string, "dropped": bool? }
 //! ```
 //!
 //! Items hang off the root directly rather than off a nested `items` container.
@@ -26,6 +26,11 @@
 //! typing into offline: each creates a body, Automerge keeps one, and the other
 //! device's text is lost. That is a real difference from Yrs, and one more reason
 //! Yrs is the default ([ADR 0001](../../../docs/decisions.md#adr-0001)).
+//!
+//! An item's `"text"` is a text object for the same reason the body is: two
+//! people typing into one line at once must both keep their words. What that
+//! costs on a real collision is that the two insertions sit next to each other —
+//! `"cheesewhiskey"` — rather than one replacing the other.
 
 use super::attachment_fields as field;
 use super::{
@@ -47,6 +52,7 @@ const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
+const DROPPED: &str = "dropped";
 
 pub struct AutomergeNote {
     doc: Automerge,
@@ -93,6 +99,28 @@ impl AutomergeNote {
         tx.update_text(&obj, text)
     }
 
+    /// An item's text, which is a text object of its own.
+    fn item_text(doc: &Automerge, obj: &ObjId) -> String {
+        match doc.get(obj, TEXT) {
+            Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// Splice an item's text towards `text`. `update_text` does the diffing, so
+    /// a peer's word elsewhere on the line survives.
+    fn set_item_text(
+        tx: &mut Transaction,
+        obj: &ObjId,
+        text: &str,
+    ) -> std::result::Result<(), AutomergeError> {
+        let text_obj = match tx.get(obj, TEXT)? {
+            Some((Value::Object(ObjType::Text), t)) => t,
+            _ => tx.put_object(obj, TEXT, ObjType::Text)?,
+        };
+        tx.update_text(&text_obj, text)
+    }
+
     fn bool_at(doc: &Automerge, obj: &ObjId, prop: &str) -> bool {
         match doc.get(obj, prop) {
             Ok(Some((Value::Scalar(s), _))) => matches!(s.as_ref(), ScalarValue::Boolean(true)),
@@ -129,13 +157,13 @@ impl NoteDoc for AutomergeNote {
                     }
                     Edit::AddItem { id, text, order } => {
                         let obj = tx.put_object(ROOT, id.encode(), ObjType::Map)?;
-                        tx.put(&obj, TEXT, text.as_str())?;
+                        Self::set_item_text(tx, &obj, text)?;
                         tx.put(&obj, CHECKED, false)?;
                         tx.put(&obj, ORDER, order.as_str())?;
                     }
                     Edit::SetItemText { id, text } => {
                         if let Some((Value::Object(_), obj)) = tx.get(ROOT, id.encode())? {
-                            tx.put(&obj, TEXT, text.as_str())?;
+                            Self::set_item_text(tx, &obj, text)?;
                         }
                     }
                     Edit::SetChecked { id, checked } => {
@@ -150,6 +178,11 @@ impl NoteDoc for AutomergeNote {
                     }
                     Edit::RemoveItem { id } => {
                         tx.delete(ROOT, id.encode())?;
+                    }
+                    Edit::DropIfBlank { id } => {
+                        if let Some((Value::Object(_), obj)) = tx.get(ROOT, id.encode())? {
+                            tx.put(&obj, DROPPED, true)?;
+                        }
                     }
                     Edit::SetKind(kind) => {
                         tx.put(ROOT, KIND, kind.as_str())?;
@@ -179,7 +212,7 @@ impl NoteDoc for AutomergeNote {
                         Self::set_body(tx, "")?;
                         for item in items {
                             let obj = tx.put_object(ROOT, item.id.encode(), ObjType::Map)?;
-                            tx.put(&obj, TEXT, item.text.as_str())?;
+                            Self::set_item_text(tx, &obj, &item.text)?;
                             tx.put(&obj, CHECKED, item.checked)?;
                             tx.put(&obj, ORDER, item.order.as_str())?;
                         }
@@ -265,6 +298,7 @@ impl NoteDoc for AutomergeNote {
             .unwrap_or_default();
 
         let mut items = Vec::new();
+        let mut dropped_items = Vec::new();
         let mut attachments = Vec::new();
         let mut retired_attachments = Vec::new();
         for key in self.doc.keys(ROOT) {
@@ -294,9 +328,17 @@ impl NoteDoc for AutomergeNote {
             let Some(obj) = Self::item_obj(&self.doc, id) else {
                 continue;
             };
+            let text = Self::item_text(&self.doc, &obj);
+            // Dropped and still blank is a row a screen tidied away. Dropped
+            // with words in it is a peer who typed into it meanwhile: the words
+            // win, and it is drawn again.
+            if Self::bool_at(&self.doc, &obj, DROPPED) && text.trim().is_empty() {
+                dropped_items.push(id);
+                continue;
+            }
             items.push(ItemView {
                 id,
-                text: Self::str_at(&self.doc, &obj, TEXT),
+                text,
                 checked: Self::bool_at(&self.doc, &obj, CHECKED),
                 order: Self::str_at(&self.doc, &obj, ORDER),
             });
@@ -304,6 +346,7 @@ impl NoteDoc for AutomergeNote {
         sort_items(&mut items);
         sort_attachments(&mut attachments);
         retired_attachments.sort();
+        dropped_items.sort();
         let colour_name = Self::str_at(&self.doc, &ROOT, COLOUR);
         // The key being there at all is the note having a colour of its own;
         // an empty name is a colour cleared for everyone.
@@ -317,6 +360,7 @@ impl NoteDoc for AutomergeNote {
             items,
             attachments,
             retired_attachments,
+            dropped_items,
         }
     }
 

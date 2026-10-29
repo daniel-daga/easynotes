@@ -36,7 +36,10 @@ Each note is its own CRDT document under a random note ID. A note has a title,
 items, a kind (text or checklist) and, when shared, a member list and a colour.
 Items are kept in a map and ordered by fractional order keys, so two people
 editing the same list converge without a central sequence
-([ADR 0001](decisions.md#adr-0001), [ADR 0007](decisions.md#adr-0007)).
+([ADR 0001](decisions.md#adr-0001), [ADR 0007](decisions.md#adr-0007)). An
+item's text and a note's body are both character-merged text, so two people
+typing into the same item or paragraph keep both sets of words
+([ADR 0036](decisions.md#adr-0036)).
 
 Personal state is not in the note. Placement, pinning, labels, the archive and
 trash live in a private account document, one per person, under a reserved ID.

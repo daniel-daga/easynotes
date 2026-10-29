@@ -4295,7 +4295,9 @@ impl Note {
                 .map_err(|e| e.to_string())?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
-        self.send(envelope, true);
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
         Ok(rev)
     }
 
@@ -4314,7 +4316,9 @@ impl Note {
                 .map_err(|e| e.to_string())?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
-        self.send(envelope, true);
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
         Ok(rev)
     }
 
@@ -4342,6 +4346,18 @@ impl Note {
         let envelope = {
             let mut core = self.shared.locked()?;
             core.remove_item(self.id, item_id(&item)?)
+                .map_err(|e| e.to_string())?
+        };
+        self.send(envelope, false);
+        Ok(())
+    }
+
+    /// A blank item a screen is tidying away as it closes. Hidden, not deleted:
+    /// text from a peer that typed into it meanwhile brings it back (ADR 0036).
+    pub fn drop_if_blank(&self, item: String) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.drop_if_blank(self.id, item_id(&item)?)
                 .map_err(|e| e.to_string())?
         };
         self.send(envelope, false);

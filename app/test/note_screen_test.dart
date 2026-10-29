@@ -25,6 +25,7 @@ Future<void> pumpScreen(
   FakeNoteLibrary? invites,
   String? relayUrl,
   String? relayAccess,
+  bool seedBlankItem = true,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -35,6 +36,7 @@ Future<void> pumpScreen(
         invites: invites ?? (FakeNoteLibrary()..setUpSharing()),
         relayUrl: relayUrl,
         relayAccess: relayAccess,
+        seedBlankItem: seedBlankItem,
       ),
     ),
   );
@@ -302,6 +304,17 @@ void main() {
     expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
   });
 
+  testWidgets('a joined note is not seeded with a blank item', (tester) async {
+    // Its items are on the relay and about to arrive; a blank made here would
+    // sync out to everyone on the list.
+    final core = FakeNoteCore();
+    await pumpScreen(tester, core, seedBlankItem: false);
+
+    expect(core.edits, isEmpty);
+    expect(visibleItems(tester), isEmpty);
+    expect(find.byKey(const Key('add-list-entry')), findsOneWidget);
+  });
+
   testWidgets(
     'deleting the last item leaves a blank list until Add is tapped',
     (tester) async {
@@ -423,7 +436,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(NoteScreen), findsNothing);
-    expect(core.edits, contains('removeItem($id)'));
+    // Dropped, not deleted: text a peer typed into it meanwhile is kept.
+    expect(core.edits, contains('dropIfBlank($id)'));
+    expect(core.edits, isNot(contains('removeItem($id)')));
     expect(core.current.items, isEmpty);
   });
 

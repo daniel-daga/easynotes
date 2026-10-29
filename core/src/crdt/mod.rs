@@ -127,6 +127,9 @@ pub struct NoteView {
     /// adding it again would write a fresh map over the tombstone and bring a
     /// removed file back for everyone — so [`crate::note::NoteCore`] refuses it.
     pub retired_attachments: Vec<AttachmentId>,
+    /// Items the document holds and this view does not draw: dropped as blank
+    /// and still blank. Sorted. An edit to one is accepted, and brings it back.
+    pub dropped_items: Vec<ItemId>,
 }
 
 impl NoteView {
@@ -181,6 +184,13 @@ pub enum Edit {
         order: String,
     },
     RemoveItem {
+        id: ItemId,
+    },
+    /// Mark an item as one a screen tidied away for being blank. It stays in
+    /// the document and is hidden only while it *is* blank: text a peer typed
+    /// into it before this arrived, or after, shows it again. A removal would
+    /// take that text with it ([ADR 0036](../../../docs/decisions.md#adr-0036)).
+    DropIfBlank {
         id: ItemId,
     },
     /// Record the kind and nothing else. What a new text note is created with.

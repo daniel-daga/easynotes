@@ -812,9 +812,10 @@ async fn every_fixture_set_still_reads() {
         "no fixture sets in compat/: run `just compat-fixtures`"
     );
     for set in sets {
-        let expect: Expect =
+        let mut expect: Expect =
             serde_json::from_str(&std::fs::read_to_string(set.join("expect.json")).unwrap())
                 .unwrap();
+        forget_item_text_written_as_a_string(&mut expect);
         let name = set.file_name().unwrap().to_string_lossy().into_owned();
         read_local_stores(&set, &expect, &name);
         read_the_tab(&set, &expect, &name);
@@ -823,6 +824,34 @@ async fn every_fixture_set_still_reads() {
         RecoveryPhrase::parse(&expect.phrase)
             .unwrap_or_else(|e| panic!("{name}: its phrase no longer parses: {e}"));
         read_the_relay(&set, &expect, &name).await;
+    }
+}
+
+/// Item text written before this release was a plain string, and this build
+/// reads only the text object that replaced it ([ADR 0036](../../docs/decisions.md#adr-0036)).
+/// The sets from before it are still opened and still compared on everything
+/// else — kind, title, body, ticks, count, colour, attachments, invite link,
+/// recovery phrase — but their item text is not there to compare.
+const ITEM_TEXT_IS_A_TEXT_OBJECT_FROM: (u64, u64, u64) = (0, 1, 8);
+
+fn forget_item_text_written_as_a_string(expect: &mut Expect) {
+    let version = expect
+        .version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let version = (
+        *version.first().unwrap_or(&0),
+        *version.get(1).unwrap_or(&0),
+        *version.get(2).unwrap_or(&0),
+    );
+    if version >= ITEM_TEXT_IS_A_TEXT_OBJECT_FROM {
+        return;
+    }
+    for note in &mut expect.notes {
+        for item in &mut note.items {
+            item.0.clear();
+        }
     }
 }
 

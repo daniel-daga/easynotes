@@ -41,6 +41,7 @@ class NoteScreen extends StatefulWidget {
     required this.noteId,
     required this.invites,
     this.autofocusBody = false,
+    this.seedBlankItem = true,
     this.library,
     this.onLabels,
     this.onReminders,
@@ -70,6 +71,11 @@ class NoteScreen extends StatefulWidget {
 
   /// Put the cursor in the body when opening a freshly created text note.
   final bool autofocusBody;
+
+  /// Whether an empty checklist gets one blank item to type into when it
+  /// opens. Off for a note that was just joined: its items are on the relay and
+  /// on their way, and a blank made here would sync out to everyone on it.
+  final bool seedBlankItem;
 
   /// The note's personal placement and appearance controls. Optional for small
   /// isolated screen previews; the app supplies it when opening a note.
@@ -163,7 +169,7 @@ class _NoteScreenState extends State<NoteScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_startEmptyChecklist());
+      if (mounted && widget.seedBlankItem) unawaited(_startEmptyChecklist());
     });
     _viewWatch = widget.core.watch().listen((note) {
       _refreshPending();
@@ -592,7 +598,7 @@ class _NoteScreenState extends State<NoteScreen> {
           .where((item) => item.id == id)
           .firstOrNull;
       if (item != null && item.text.trim().isEmpty) {
-        await widget.core.removeItem(id);
+        await widget.core.dropIfBlank(id);
         _itemRowKeys.remove(id);
       }
     }
