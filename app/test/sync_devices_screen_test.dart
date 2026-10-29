@@ -1,9 +1,11 @@
 import 'dart:convert';
 
 import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/account_screen.dart';
+import 'package:easynotes/ui/account_transfer_screen.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:easynotes/ui/relay_setup_wizard.dart';
 import 'package:easynotes/ui/setup_widgets.dart';
@@ -235,4 +237,71 @@ void main() {
     expect(find.text('Up to date'), findsOneWidget);
     expect(find.byKey(const Key('switch-server')), findsOneWidget);
   });
+
+  testWidgets('a device without an account can add itself with a QR code', (
+    tester,
+  ) async {
+    final library = _TransferLibrary();
+    await pump(tester, library, profile: local);
+
+    final add = find.byKey(const Key('account-transfer'));
+    expect(add, findsOneWidget);
+    expect(find.text('Add this device'), findsOneWidget);
+
+    await tester.tap(add);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AccountTransferScreen), findsOneWidget);
+    expect(find.text('Add this device'), findsOneWidget);
+    expect(find.byKey(const Key('scan-account-transfer')), findsOneWidget);
+    expect(find.text('Add another device'), findsNothing);
+  });
+
+  testWidgets('a device with an account is not offered "Add this device"', (
+    tester,
+  ) async {
+    final library = _TransferLibrary();
+    await library.createAccount();
+    await pump(tester, library, profile: local);
+
+    expect(find.text('Add this device'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('account-settings')),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('account-transfer')), findsOneWidget);
+    expect(find.text('Add another device'), findsOneWidget);
+  });
+}
+
+/// A library that can pair, so the settings screen has something to open on a
+/// device that does not belong to an account yet.
+class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
+  @override
+  Future<String?> accountTransferRequestCode() async => null;
+
+  @override
+  Future<void> adoptAccountTransfer() async {}
+
+  @override
+  Future<void> approveAccountTransfer() async {}
+
+  @override
+  Future<String> beginAccountTransfer(
+    String relayUrl,
+    String? relayAccess,
+  ) async => '{"version":1}';
+
+  @override
+  Future<String> beginAccountTransferFromQr(String qr) async => '123456';
+
+  @override
+  Future<void> cancelAccountTransfer() async {}
+
+  @override
+  Future<({String relayUrl, String? relayAccess})?>
+  pollAccountTransferResult() async => null;
 }
