@@ -251,3 +251,15 @@ member rewrite another's name.
 every note they joined. The owner sees the record, removes the member and
 rotates the note key on the next sync, so the deleted account does not linger
 in other people's People lists.
+
+<a id="adr-0036"></a>
+## ADR 0036 — An item's text merges like a body
+
+**Accepted.** A checklist item's text is the CRDT's own text type, as a note
+body already was, so two people typing into one item at the same moment both
+keep their words; a true collision shows them side by side rather than losing
+one. Closing a note no longer deletes a blank item it made: the item is marked
+dropped and hidden only while blank, so text a peer typed into it meanwhile
+brings it back. A note that was just joined is not seeded with a blank item,
+because its items are still arriving. Item text written by releases before
+this is not read; those releases' documents keep everything else.

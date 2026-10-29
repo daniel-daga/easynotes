@@ -215,12 +215,18 @@ fn an_item_edit_replays_onto_a_peer_line<D: NoteDoc>() {
     b.apply_remote(id, &e).unwrap();
 
     // A appends at the end of the line.
-    let from_a = a.edit_item_text(id, item, "milk", "milk and eggs").unwrap().unwrap();
+    let from_a = a
+        .edit_item_text(id, item, "milk", "milk and eggs")
+        .unwrap()
+        .unwrap();
     b.apply_remote(id, &from_a).unwrap();
 
     // B's field was still showing "milk" and appends after it, so B's splice is
     // replayed onto A's line rather than replacing it.
-    let from_b = b.edit_item_text(id, item, "milk", "milk, please").unwrap().unwrap();
+    let from_b = b
+        .edit_item_text(id, item, "milk", "milk, please")
+        .unwrap()
+        .unwrap();
     a.apply_remote(id, &from_b).unwrap();
 
     let text = a.view(id).unwrap().items[0].text.clone();
@@ -282,7 +288,10 @@ fn typing_outside_ascii_in_one_item_converges<D: NoteDoc>() {
         .edit_item_text(id, item, "Grüße 👋", "Liebe Grüße 👋")
         .unwrap()
         .unwrap();
-    let eb = b.edit_item_text(id, item, "Grüße 👋", "Grüße 👋👋").unwrap().unwrap();
+    let eb = b
+        .edit_item_text(id, item, "Grüße 👋", "Grüße 👋👋")
+        .unwrap()
+        .unwrap();
     a.apply_remote(id, &eb).unwrap();
     b.apply_remote(id, &ea).unwrap();
 
@@ -387,7 +396,11 @@ fn many_concurrent_edits_converge<D: NoteDoc>() {
     for i in 0..10usize {
         from_a.push(a.set_checked(id, ids[i], i % 2 == 0).unwrap());
         from_a.push(a.move_item(id, ids[i], (i * 3) % 10).unwrap());
-        from_b.push(b.set_item_text(id, ids[i], format!("renamed {i}")).unwrap().unwrap());
+        from_b.push(
+            b.set_item_text(id, ids[i], format!("renamed {i}"))
+                .unwrap()
+                .unwrap(),
+        );
         from_b.push(b.move_item(id, ids[9 - i], (i * 7) % 10).unwrap());
         if i % 3 == 0 {
             from_a.push(a.add_item(id, format!("extra {i}")).unwrap().1);

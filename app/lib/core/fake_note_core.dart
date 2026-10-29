@@ -178,7 +178,9 @@ class FakeNoteCore implements NoteCore {
     // What the real core does, in miniature: hidden while blank, so a peer's
     // text arriving later brings it back.
     edits.add('dropIfBlank($itemId)');
-    if (_find(itemId).text.trim().isEmpty) _items.removeWhere((i) => i.id == itemId);
+    if (_find(itemId).text.trim().isEmpty) {
+      _items.removeWhere((i) => i.id == itemId);
+    }
     _emit();
   }
 
