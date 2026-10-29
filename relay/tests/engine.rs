@@ -178,7 +178,7 @@ impl App {
             .unwrap()
             .set_item_text(self.note, item, text)
             .unwrap();
-        if let Some(handle) = &self.handle {
+        if let (Some(envelope), Some(handle)) = (envelope, &self.handle) {
             handle.publish_soon(envelope);
         }
     }

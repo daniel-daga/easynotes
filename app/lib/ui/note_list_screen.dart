@@ -363,9 +363,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// [origin] is the card the tap landed on. Notes opened from anywhere else —
   /// a share, a link, the button that makes one — pass null and get the shared
   /// fade instead of growing from a card that is not there.
+  /// [seedBlankItem] is false for a note this device has just joined: its items
+  /// are on the relay and on their way, and a blank made here would sync out to
+  /// everyone on it.
   Future<void> _openNote(
     String id, {
     bool autofocusBody = false,
+    bool seedBlankItem = true,
     Rect? origin,
   }) async {
     // A tap that arrives while an earlier one is still waiting for the core is
@@ -453,6 +457,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
           noteId: id,
           invites: widget.library,
           autofocusBody: autofocusBody,
+          seedBlankItem: seedBlankItem,
           relayUrl: widget.profile.url,
           relayAccess: widget.profile.access,
           onLabels: () async {
@@ -652,12 +657,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
     // request is still answered in the background, and a decline takes the
     // note away again.
     if (join.readable) {
-      await _openNote(join.noteId!);
+      await _openNote(join.noteId!, seedBlankItem: false);
       return;
     }
     final id = await _waitForJoin(join);
     if (id == null || !mounted) return;
-    await _openNote(id);
+    await _openNote(id, seedBlankItem: false);
   }
 
   /// Show the wait for [join], and stay out of [InviteBanners]'s way while it

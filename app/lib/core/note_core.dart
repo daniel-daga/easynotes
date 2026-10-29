@@ -76,6 +76,11 @@ abstract class NoteCore {
 
   Future<void> removeItem(String itemId);
 
+  /// Tidy away a blank item this screen made. The core hides it rather than
+  /// deleting it, so text a peer typed into it meanwhile is kept and brings the
+  /// row back.
+  Future<void> dropIfBlank(String itemId);
+
   // -- attachments ----------------------------------------------------------
 
   /// Attach a file handed over whole: a tab's picked file, or a photo in

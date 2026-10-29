@@ -4,9 +4,10 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `flush_notes`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
 
@@ -137,7 +138,7 @@ abstract class Library implements RustOpaqueInterface {
   /// another library, which is what the app's relay profiles do.
   ///
   /// `access` is the relay's access key, base64url, for a relay whose
-  /// operator lets in only the people they gave it to ([ADR 0028](../../../../../docs/decisions.md#adr-0028)); `None`
+  /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
   /// for an open relay. Connecting again with another key is how a changed
   /// key takes effect.
   Future<void> connect({required String relay, String? access});
@@ -172,12 +173,17 @@ abstract class Library implements RustOpaqueInterface {
   });
 
   /// Delete this person's account from the relay and everything from this
-  /// device ([ADR 0026](../../../../../docs/decisions.md#adr-0026)).
+  /// device ([ADR 0026](../../../../docs/decisions.md#adr-0026)).
   ///
-  /// Withdraws this device's open invites, purges from the relay every note
-  /// this person owns and then the account document, and wipes this
-  /// profile's notes, keys and device identity. Lists this person joined are
-  /// left to their owners. A profile with no relay has nothing to purge.
+  /// Withdraws this device's open invites, tells every list this person
+  /// joined that they have left
+  /// ([ADR 0034](../../../../docs/decisions.md#adr-0034)),
+  /// purges from the relay every note this person owns and then the account
+  /// document, and wipes this profile's notes, keys and device identity.
+  /// Lists this person joined are left to their owners; the leave records
+  /// let those owners remove the membership and rotate the note key on their
+  /// next sync. A profile with no relay has nothing to purge and nothing to
+  /// tell.
   ///
   /// If the relay cannot be reached, or refuses, nothing local has changed
   /// and the error says so; it is safe to try again. On success the library
@@ -547,6 +553,10 @@ abstract class Note implements RustOpaqueInterface {
     required String attachment,
     required String description,
   });
+
+  /// A blank item a screen is tidying away as it closes. Hidden, not deleted:
+  /// text from a peer that typed into it meanwhile brings it back (ADR 0036).
+  Future<void> dropIfBlank({required String item});
 
   /// Say that this person changed the body from `from` to `to`. The core
   /// replays that change onto the body as it now stands, so a peer's edit
@@ -1141,7 +1151,7 @@ class PendingJoinView {
   final String name;
 
   /// The note, when the link's pre-grant opened it and this device can read
-  /// it already ([ADR 0030](../../../../../docs/decisions.md#adr-0030)).
+  /// it already ([ADR 0030](../../../../docs/decisions.md#adr-0030)).
   /// The app opens it instead of showing the waiting dialog.
   final String? note;
 
@@ -1330,7 +1340,7 @@ class SearchHitView {
 
 /// Which object store a batch is for. The log and the keys are kept apart in a
 /// browser as they are in two SQLite files on a device — as far apart as an
-/// origin allows, which [ADR 0011](../../../../../docs/decisions.md#adr-0011) is
+/// origin allows, which [ADR 0011](../../../../docs/decisions.md#adr-0011) is
 /// honest about.
 enum StorageArea { notes, keys }
 

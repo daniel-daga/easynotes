@@ -128,6 +128,9 @@ class RustNoteCore implements NoteCore {
   Future<void> removeItem(String itemId) => _note.removeItem(item: itemId);
 
   @override
+  Future<void> dropIfBlank(String itemId) => _note.dropIfBlank(item: itemId);
+
+  @override
   Future<AttachmentView> importAttachment(
     String name,
     Uint8List bytes, {
