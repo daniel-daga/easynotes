@@ -131,6 +131,40 @@ void main() {
         await arrived;
       });
 
+      test('a heading crosses the bridge as a heading', () async {
+        final core = await openInTempDir();
+        final heading = await core.addHeading('Dairy');
+        await core.addItem('milk');
+
+        final view = core.current;
+        expect(view.items.first.heading, isTrue);
+        expect(view.items.first.text, 'Dairy');
+        expect(view.items.last.heading, isFalse);
+
+        // And it is still a row, so turning it back is one call.
+        expect(await core.setHeading(heading, false), isTrue);
+        expect(core.current.items.first.heading, isFalse);
+        expect(await core.setHeading(heading, false), isFalse);
+      });
+
+      test(
+        'a fold stays on this device and a suggestion history with it',
+        () async {
+          final core = await openInTempDir();
+          final heading = await core.addHeading('Dairy');
+          await core.addItem('milk');
+
+          await core.setCollapsed(heading, true);
+          expect(await core.collapsed(), {heading});
+
+          await core.rememberItem('Butter');
+          await core.rememberItem('Butter');
+          expect(await core.suggestions('but', limit: 4), ['Butter']);
+          await core.forgetHistory();
+          expect(await core.suggestions('but', limit: 4), isEmpty);
+        },
+      );
+
       test('items keep the order they were added in', () async {
         final core = await openInTempDir();
         for (final text in ['milk', 'bread', 'eggs']) {

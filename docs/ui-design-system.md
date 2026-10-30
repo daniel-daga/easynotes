@@ -77,6 +77,26 @@ appears.
   the owning screen responsible for navigation and confirmation when those
   actions outlive the sheet.
 
+## Sections and suggestions in a checklist
+
+- **A section heading** is a row, not a container. It is drawn bold, in the same
+  column as the items, with a chevron where the checkbox would be and a counter
+  ("2 of 7") where the row's trailing actions sit. It is editable like an item
+  and has the same overflow menu in every place it appears.
+- **Folding** changes the chevron and hides the section's unchecked rows. It is
+  a reading choice on this device, so it never says "for everyone"; the heading
+  and its counter stay drawn so a folded section can always be opened again.
+- **Crossed-off rows** keep their section's name as a small muted label above
+  them, because a tick is finished rather than forgotten and should not lose the
+  aisle it came from.
+- **Sections are made from the row under the items**, next to "Checklist item",
+  or by typing `# ` at the start of a new line. Both routes produce the same row.
+- **The suggestion strip** appears only under an empty row, directly above the
+  add rows, and never for a note with nothing to offer. It is up to four chips in
+  a single horizontal run. Tapping one fills the row rather than adding another.
+  The strip disappears as soon as something is typed, so it never sits under a
+  half-typed line.
+
 ## Text and hierarchy
 
 - Use the app bar title for the screen's identity, a title text style for

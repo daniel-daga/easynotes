@@ -261,6 +261,47 @@ void main() {
     expect(find.text('milk'), findsOneWidget);
   });
 
+  group('settings', () {
+    Future<void> openSettings(
+      WidgetTester tester,
+      FakeNoteLibrary library,
+    ) async {
+      await pumpList(tester, library);
+      await tester.tap(find.byTooltip('Open navigation menu'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('settings-entry')),
+        200,
+        scrollable: find.descendant(
+          of: find.byType(Drawer),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('settings-entry')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('suggestions can be turned off and what was learned thrown '
+        'away', (tester) async {
+      final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+      await core.rememberItem('Milk');
+      final library = FakeNoteLibrary(notes: {'groceries': core})
+        ..setUpSharing();
+      await openSettings(tester, library);
+
+      expect(find.byKey(const Key('suggestions-setting')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('suggestions-setting')));
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('setSuggestionsEnabled(false)'));
+      expect(library.suggestionsEnabled, isFalse);
+
+      await tester.tap(find.byKey(const Key('forget-suggestions')));
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('forgetSuggestions()'));
+      expect(find.text('Forgotten on 1 list.'), findsOneWidget);
+    });
+  });
+
   group('joining', () {
     Future<void> settleWhileWaiting(WidgetTester tester) async {
       for (var i = 0; i < 10; i++) {

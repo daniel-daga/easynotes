@@ -59,6 +59,18 @@ abstract class NoteCore {
   /// Append an item. Returns its ID.
   Future<String> addItem(String text);
 
+  /// Append a section heading: a row with no checkbox that owns the rows under
+  /// it until the next one. Returns its ID.
+  ///
+  /// An older build draws it as an ordinary item with the same words, so
+  /// nothing is lost in either direction.
+  Future<String> addHeading(String text);
+
+  /// Whether a row is a heading. Returns false when it already was one, which
+  /// is how a heading is turned back into an item: the row keeps its ID, its
+  /// text and its place, and the rows under it simply join the section above.
+  Future<bool> setHeading(String itemId, bool heading);
+
   /// Set an item's text. Returns the [NoteView.rev] the edit landed at, so the
   /// field that made it can tell its own echo from somebody else's change.
   Future<int> setItemText(String itemId, String text);
@@ -80,6 +92,36 @@ abstract class NoteCore {
   /// deleting it, so text a peer typed into it meanwhile is kept and brings the
   /// row back.
   Future<void> dropIfBlank(String itemId);
+
+  // -- what this person adds over and over ----------------------------------
+
+  /// Remember one line this person committed into a row of this note.
+  ///
+  /// Called when a row settles rather than on every keystroke: the core cannot
+  /// tell a finished line from a half-typed one. It is this device's own
+  /// memory — no envelope, nothing for a collaborator or the relay to see —
+  /// and it is per note, so one list's history is not a profile of a person.
+  Future<void> rememberItem(String text);
+
+  /// The lines to offer back for this note, best first, at most [limit].
+  ///
+  /// [prefix] is what has been typed so far: empty for a strip of suggestions
+  /// beside a blank row, otherwise the half-typed line being completed.
+  /// Anything the note already says is left out. Empty when this person has
+  /// turned suggestions off, which the library setting holds.
+  Future<List<String>> suggestions(String prefix, {int limit = 5});
+
+  /// Forget what this person has added to this note.
+  Future<void> forgetHistory();
+
+  /// The headings this device has folded away on this note.
+  ///
+  /// Folding is local: it is this device's reading of the list, not a fact
+  /// about the note, so a partner's phone draws the section open.
+  Future<Set<String>> collapsed();
+
+  /// Fold or unfold one section, on this device only.
+  Future<void> setCollapsed(String itemId, bool collapsed);
 
   // -- attachments ----------------------------------------------------------
 

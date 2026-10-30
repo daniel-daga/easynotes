@@ -93,7 +93,8 @@ class FakeNoteCore implements NoteCore {
           if (line.trim().isEmpty) continue;
           final task = _parseTaskLine(line);
           final item = _Item(id: _nextId(), text: task.$1, order: _appendKey())
-            ..checked = task.$2;
+            ..checked = task.$2
+            ..heading = task.$3;
           _items.add(item);
         }
         _body = '';
@@ -116,6 +117,89 @@ class FakeNoteCore implements NoteCore {
     _items.add(item);
     _emit();
     return item.id;
+  }
+
+  @override
+  Future<String> addHeading(String text) async {
+    edits.add('addHeading($text)');
+    final item = _Item(id: _nextId(), text: text, order: _appendKey())
+      ..heading = true;
+    _items.add(item);
+    _emit();
+    return item.id;
+  }
+
+  @override
+  Future<bool> setHeading(String itemId, bool heading) async {
+    final item = _find(itemId);
+    if (item.heading == heading) return false;
+    edits.add('setHeading($itemId, $heading)');
+    item.heading = heading;
+    _emit();
+    return true;
+  }
+
+  // -- what this person adds over and over ----------------------------------
+  //
+  // A miniature of the core's history: the count, the newest spelling, and
+  // nothing done to a line the list already says. Ranking beyond "most added
+  // first" is the core's, tested there.
+
+  final Map<String, int> _history = {};
+
+  /// What this fake has learned, for a test that has to tell a commit that was
+  /// remembered from one that was not.
+  Map<String, int> get history => Map.unmodifiable(_history);
+  final Map<String, int> _historyOrder = {};
+  final Set<String> _collapsed = {};
+  int _historyTicks = 0;
+
+  @override
+  Future<void> rememberItem(String text) async {
+    final line = text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (line.isEmpty) return;
+    _history[line] = (_history[line] ?? 0) + 1;
+    _historyOrder[line] = _historyTicks++;
+  }
+
+  @override
+  Future<List<String>> suggestions(String prefix, {int limit = 5}) async {
+    final wanted = prefix.trim().toLowerCase();
+    final onTheList = {for (final item in _items) item.text.toLowerCase()};
+    final ranked =
+        _history.keys
+            .where(
+              (line) =>
+                  line.toLowerCase().startsWith(wanted) &&
+                  line.toLowerCase() != wanted &&
+                  !onTheList.contains(line.toLowerCase()),
+            )
+            .toList()
+          ..sort((a, b) {
+            final byCount = (_history[b] ?? 0).compareTo(_history[a] ?? 0);
+            return byCount != 0
+                ? byCount
+                : (_historyOrder[b] ?? 0).compareTo(_historyOrder[a] ?? 0);
+          });
+    return ranked.take(limit).toList();
+  }
+
+  @override
+  Future<void> forgetHistory() async {
+    _history.clear();
+    _historyOrder.clear();
+  }
+
+  @override
+  Future<Set<String>> collapsed() async => Set.of(_collapsed);
+
+  @override
+  Future<void> setCollapsed(String itemId, bool collapsed) async {
+    if (collapsed) {
+      _collapsed.add(itemId);
+    } else {
+      _collapsed.remove(itemId);
+    }
   }
 
   @override
@@ -349,7 +433,13 @@ class FakeNoteCore implements NoteCore {
       body: _body,
       items: [
         for (final i in _items)
-          ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
+          ItemView(
+            id: i.id,
+            text: i.text,
+            checked: i.checked,
+            order: i.order,
+            heading: i.heading,
+          ),
       ],
       attachments: List.unmodifiable(_attachments),
     );
@@ -415,12 +505,20 @@ int _commonSuffix(String a, String b, int prefix) {
   return i;
 }
 
-(String, bool) _parseTaskLine(String line) {
+/// A task line or a section heading, as the core reads them on the way into a
+/// checklist: `(text, checked, heading)`.
+(String, bool, bool) _parseTaskLine(String line) {
+  final heading = RegExp(r'^\s*#+\s+(.*)$').firstMatch(line);
+  if (heading != null) return (heading.group(1)!.trim(), false, true);
   final match = RegExp(
     r'^\s*(?:[-*+]\s+)?\[([ xX])\](?:\s(.*))?$',
   ).firstMatch(line);
-  if (match == null) return (line, false);
-  return ((match.group(2) ?? '').trim(), match.group(1)!.toLowerCase() == 'x');
+  if (match == null) return (line, false, false);
+  return (
+    (match.group(2) ?? '').trim(),
+    match.group(1)!.toLowerCase() == 'x',
+    false,
+  );
 }
 
 class _Item {
@@ -430,4 +528,5 @@ class _Item {
   String text;
   bool checked = false;
   String order;
+  bool heading = false;
 }

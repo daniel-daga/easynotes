@@ -715,6 +715,31 @@ class FakeNoteLibrary implements NoteLibrary {
     _tickedShown = shown;
   }
 
+  bool _suggestionsEnabled = true;
+
+  @override
+  bool get suggestionsEnabled => _suggestionsEnabled;
+
+  @override
+  Future<void> setSuggestionsEnabled(bool enabled) async {
+    calls.add('setSuggestionsEnabled($enabled)');
+    _suggestionsEnabled = enabled;
+  }
+
+  /// How many notes this fake would have cleaned up: every note it has ever
+  /// handed out, so that a test can tell "forget everything" reached the
+  /// library rather than only the screen.
+  @override
+  Future<int> forgetSuggestions() async {
+    calls.add('forgetSuggestions()');
+    var cleared = 0;
+    for (final core in _cores.values) {
+      if (core.history.isNotEmpty) cleared++;
+      await core.forgetHistory();
+    }
+    return cleared;
+  }
+
   /// The twelve words this fake hands out, so a test can assert on what a
   /// screen showed without minting real entropy for it.
   static const phrase = [

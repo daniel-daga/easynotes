@@ -474,6 +474,23 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   Future<void> setTickedShown(bool shown);
 
+  /// Whether this device offers back the lines a person adds over and over.
+  ///
+  /// On unless it has been turned off. The setting is this person's and travels
+  /// to their own devices; the history it governs never leaves the device that
+  /// wrote it.
+  bool get suggestionsEnabled;
+
+  Future<void> setSuggestionsEnabled(bool enabled);
+
+  /// Forget what this person has added on every note, and say how many lists
+  /// there was something to forget for.
+  ///
+  /// What the settings sheet's "forget what I have added" is made of. Turning
+  /// suggestions off stops new learning and hides what is known; this deletes
+  /// it, which is the answer for somebody who wants both.
+  Future<int> forgetSuggestions();
+
   // The account — twelve words and a name — is declared on [Accounts], which
   // [Invites] implements: sharing is where a device first needs one.
 

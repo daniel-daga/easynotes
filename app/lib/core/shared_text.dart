@@ -70,14 +70,24 @@ SharedText? sharedTextFromUri(Uri uri) {
 }
 
 final _taskLine = RegExp(r'^\s*(?:[-*+]\s+)?\[[ xX]\](\s|$)');
+final _headingLine = RegExp(r'^\s*#+\s+\S');
 
 /// Whether every line with something on it is a task line — `[x] item`, with or
-/// without a Markdown bullet in front. That is what EasyNotes itself sends for
-/// a checklist, so a list shared out and back in comes back a list. One plain line among them and it stays text: a
-/// paragraph that happens to contain a checkbox is still a paragraph.
+/// without a Markdown bullet in front — or a `# Section` heading, and at least
+/// one of them is a task line.
+///
+/// That is what EasyNotes itself sends for a checklist, so a list shared out and
+/// back in comes back a list with its sections. One plain line among them and it
+/// stays text: a paragraph that happens to contain a checkbox is still a
+/// paragraph, and a document that is nothing but headings is a document rather
+/// than a list.
 bool looksLikeTaskList(String text) {
   final lines = text.split('\n').where((line) => line.trim().isNotEmpty);
-  return lines.isNotEmpty && lines.every(_taskLine.hasMatch);
+  return lines.isNotEmpty &&
+      lines.any(_taskLine.hasMatch) &&
+      lines.every(
+        (line) => _taskLine.hasMatch(line) || _headingLine.hasMatch(line),
+      );
 }
 
 /// Make the note [shared] describes, and return its ID.

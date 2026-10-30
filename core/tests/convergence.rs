@@ -459,6 +459,7 @@ fn snapshots_round_trip<D: NoteDoc>() {
             id: ItemId::random(),
             text: item.into(),
             order: order.clone(),
+            heading: false,
         })
         .unwrap();
     }
