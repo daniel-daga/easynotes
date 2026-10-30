@@ -23,8 +23,11 @@ impl TransferKeyPair {
     pub fn generate() -> Self {
         let mut secret = [0u8; 32];
         crate::crypto::random_bytes(&mut secret);
+        // Arrays are copied, not borrowed, so the bytes here are the ones that
+        // must be kept: wiping them before they reach `Self` left every
+        // keypair holding the same all-zero secret while still advertising a
+        // random public key, so two devices derived different codes.
         let private = x25519_dalek::StaticSecret::from(secret);
-        secret.zeroize();
         let public = x25519_dalek::PublicKey::from(&private).to_bytes();
         Self { secret, public }
     }
@@ -152,4 +155,90 @@ pub struct OpenedTransfer {
     pub root: AccountRoot,
     pub relay_url: String,
     pub relay_access: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account::RecoveryPhrase;
+
+    fn pair() -> (TransferKeyPair, TransferKeyPair) {
+        (TransferKeyPair::generate(), TransferKeyPair::generate())
+    }
+
+    /// The six digits are the only thing a person can check, so they must match
+    /// on both screens. They do only if each device kept the secret its public
+    /// half was derived from: a wiped secret still produced a random-looking
+    /// public key, and the two devices then hashed different shared secrets.
+    #[test]
+    fn both_devices_show_the_same_code() {
+        let (owner, guest) = pair();
+        let session = b"a transfer id";
+        let on_owner = owner
+            .verification_code(&guest.public_key(), session)
+            .expect("a fresh keypair is a valid peer");
+        let on_guest = guest
+            .verification_code(&owner.public_key(), session)
+            .expect("a fresh keypair is a valid peer");
+        assert_eq!(on_owner, on_guest);
+        assert_eq!(on_owner.len(), 6);
+        assert!(on_owner.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    /// Two keypairs must not be one keypair: the code is what separates a
+    /// pairing the person started from one somebody else slipped in.
+    #[test]
+    fn two_pairings_are_two_codes() {
+        let (owner, first) = pair();
+        let second = TransferKeyPair::generate();
+        assert_ne!(first.public_key(), second.public_key());
+        assert_ne!(
+            owner
+                .verification_code(&first.public_key(), b"a transfer id")
+                .unwrap(),
+            owner
+                .verification_code(&second.public_key(), b"a transfer id")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_sealed_account_opens_on_the_other_device() {
+        let (owner, guest) = pair();
+        let root = RecoveryPhrase::generate().root();
+        let session = b"a transfer id";
+        let sealed = owner
+            .seal(
+                &guest.public_key(),
+                session,
+                &root,
+                "https://relay.example",
+                Some("an access code"),
+            )
+            .unwrap();
+        let opened = guest.open(&owner.public_key(), session, &sealed).unwrap();
+        assert_eq!(opened.root, root);
+        assert_eq!(opened.relay_url, "https://relay.example");
+        assert_eq!(opened.relay_access.as_deref(), Some("an access code"));
+    }
+
+    /// The session IDs are the AAD, so a transfer replayed under another
+    /// pairing's ID is refused rather than opened.
+    #[test]
+    fn a_transfer_does_not_open_under_another_session() {
+        let (owner, guest) = pair();
+        let root = RecoveryPhrase::generate().root();
+        let sealed = owner
+            .seal(
+                &guest.public_key(),
+                b"a transfer id",
+                &root,
+                "https://relay.example",
+                None,
+            )
+            .unwrap();
+        assert!(guest
+            .open(&owner.public_key(), b"another transfer id", &sealed)
+            .is_err());
+    }
 }
