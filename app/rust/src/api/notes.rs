@@ -1015,6 +1015,16 @@ impl easynotes_core::sync::SyncPeer for Peer {
         Ok(self.open()?.is_deleted_note(note))
     }
 
+    /// The relay says this topic was purged. Remember it, so no later
+    /// connection asks again; keep everything local.
+    fn is_gone(&self, note: NoteId) -> easynotes_core::error::Result<bool> {
+        self.open()?.is_gone(note)
+    }
+
+    fn gone(&self, note: NoteId) -> easynotes_core::error::Result<()> {
+        self.open()?.mark_gone(note)
+    }
+
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> easynotes_core::error::Result<()> {
         let mut core = self.open()?;
         // One of these connections is not a note. The account document reaches
@@ -1048,6 +1058,18 @@ impl easynotes_core::sync::SyncPeer for Peer {
         after: Option<u64>,
     ) -> easynotes_core::error::Result<Vec<(u64, Vec<u8>)>> {
         self.open()?.unsent(note, after)
+    }
+
+    /// Fold a held burst into as few envelopes as will do, as the core's own
+    /// peer does. Without this the trait's default sends the burst exactly as
+    /// it came in, one envelope per keystroke, which is what the relay then
+    /// stores and every peer replays (ADR 0016).
+    fn squash(
+        &self,
+        note: NoteId,
+        envelopes: Vec<Vec<u8>>,
+    ) -> easynotes_core::error::Result<Vec<Vec<u8>>> {
+        self.open()?.squash(note, &envelopes)
     }
 
     /// The relay asked for a base, and the engine found this device caught up
