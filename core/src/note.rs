@@ -30,12 +30,34 @@ use tokio::sync::watch;
 mod sharing;
 pub use sharing::{Approved, Outgoing, People, Person};
 
-/// Read the deliberately small Markdown task-list form supported by paste to
-/// checklist: `[ ] item` or `[x] item`, optionally after a `-`, `*` or `+`
-/// bullet. Lines outside that form retain the existing plain-text behavior.
-fn parse_task_line(line: &str) -> (String, bool) {
+/// Read one line of the deliberately small Markdown this app understands on the
+/// way *into* a checklist, as `(text, checked, heading)`.
+///
+/// A task line is `[ ] item` or `[x] item`, optionally after a `-`, `*` or `+`
+/// bullet; a heading is one or more `#` followed by whitespace, which is a
+/// section heading rather than something to tick off. Lines outside those two
+/// forms keep their text and become an ordinary unchecked item, so pasting a
+/// paragraph into a list is never destructive.
+///
+/// The heading form is here, and in the app's own `looksLikeTaskList`, so that a
+/// note shared out with its sections comes back with them
+/// ([ADR 0037](../../docs/decisions.md#adr-0037)).
+fn parse_list_line(line: &str) -> (String, bool, bool) {
     let trimmed = line.trim_start();
     let bytes = trimmed.as_bytes();
+
+    // A heading is `#`, `##`, ... then a space. `#milk` is not one: Markdown
+    // asks for the space, and a shopping list item that starts with a hash
+    // should stay an item.
+    let hashes = bytes.iter().take_while(|byte| **byte == b'#').count();
+    if hashes > 0
+        && bytes
+            .get(hashes)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        return (trimmed[hashes..].trim().to_owned(), false, true);
+    }
+
     let mut marker = 0;
     if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1].is_ascii_whitespace()
     {
@@ -52,9 +74,9 @@ fn parse_task_line(line: &str) -> (String, bool) {
             .is_none_or(|byte| byte.is_ascii_whitespace());
     if supported {
         let checked = matches!(bytes[marker + 1], b'x' | b'X');
-        return (trimmed[marker + 3..].trim().to_owned(), checked);
+        return (trimmed[marker + 3..].trim().to_owned(), checked, false);
     }
-    (line.to_owned(), false)
+    (line.to_owned(), false, false)
 }
 
 /// Where the sync cursor is kept in the store's per-note metadata.
@@ -130,6 +152,25 @@ pub const LAYOUT: &str = "layout";
 /// folded away under their header. One for the person rather than one per
 /// note, like [`LAYOUT`]: it is how they like lists, not a fact about a list.
 pub const TICKED: &str = "ticked";
+
+/// The setting that says whether this device offers back the lines this person
+/// adds over and over. On unless it has been turned off.
+///
+/// One for the person, like [`TICKED`], and written into the account document
+/// because it is a preference — the *history* it governs never leaves this
+/// device ([`crate::suggestions`]).
+pub const SUGGESTIONS: &str = "suggestions";
+
+/// What this person has added to a note, so it can be offered back. A local
+/// metadata row, sealed like every other and never part of the note.
+pub const HISTORY: &str = "history";
+
+/// Which section headings this device has folded away on a note.
+///
+/// Local rather than a placement in the account document: folding an aisle shut
+/// on the phone should not fold it shut on the partner's, and a flat map that
+/// only grows is the wrong place for a set that has one key per heading.
+pub const COLLAPSED: &str = "collapsed";
 
 /// Where the invites this device has opened are kept, and the join requests
 /// it is waiting on: two metadata rows filed under [`ACCOUNT_DOC`].
@@ -1338,6 +1379,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 .map(|i| crate::index::IndexItem {
                     text: i.text,
                     checked: i.checked,
+                    heading: i.heading,
                 })
                 .collect(),
             cover: view
@@ -2275,6 +2317,161 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.set_setting(TICKED, if shown { "shown" } else { "hidden" })
     }
 
+    // -- what this person adds over and over --------------------------------
+    //
+    // Two local rows and no wire: see [`crate::suggestions`] for why the history
+    // is per note, why it is not a CRDT edit, and why the clock arrives from the
+    // caller. The suggestions themselves are read and written here rather than
+    // in the bridge so that the four targets share one implementation and
+    // `cargo test` can hold it to account.
+
+    /// Whether this device offers suggestions at all.
+    pub fn suggestions_enabled(&self) -> bool {
+        // Anything but an explicit "off" is on: a device that has never chosen
+        // has the feature, and a value a later build wrote is not a reason to
+        // switch it off.
+        self.setting(SUGGESTIONS) != Some("off")
+    }
+
+    pub fn set_suggestions_enabled(&mut self, on: bool) -> Result<()> {
+        self.set_setting(SUGGESTIONS, if on { "on" } else { "off" })
+    }
+
+    /// Remember one line this person committed into a row of `id`'s list.
+    ///
+    /// Called by the screen when a row settles, because the core cannot tell a
+    /// finished line from a half-typed one: an item is created blank and its
+    /// text arrives a keystroke at a time. `now` is unix seconds from the
+    /// caller's clock ([`crate::suggestions`]).
+    ///
+    /// Nothing is remembered while suggestions are off, and nothing here is an
+    /// envelope: the row is this device's own.
+    pub fn remember_item(&mut self, id: NoteId, text: &str, now: i64) -> Result<()> {
+        if !self.suggestions_enabled() {
+            return Ok(());
+        }
+        self.ensure_open(id)?;
+        let mut history = self.history(id)?;
+        history.learn(text, now);
+        self.store.put_meta(id, HISTORY, &history.to_bytes())?;
+        Ok(())
+    }
+
+    /// The lines to offer back for the note `id`, best first.
+    ///
+    /// `prefix` is what has been typed so far and `limit` the most a screen
+    /// wants; anything the note already says is left out, so a suggestion is
+    /// never a duplicate row.
+    pub fn suggestions(
+        &self,
+        id: NoteId,
+        prefix: &str,
+        limit: usize,
+        now: i64,
+    ) -> Result<Vec<String>> {
+        if !self.suggestions_enabled() {
+            return Ok(Vec::new());
+        }
+        let view = self.view(id)?;
+        let already: Vec<String> = view
+            .items
+            .iter()
+            .map(|item| item.text.to_lowercase())
+            .collect();
+        Ok(self.history(id)?.suggest(prefix, now, limit, |text| {
+            already.contains(&text.to_lowercase())
+        }))
+    }
+
+    /// Forget what this person has added to one note.
+    ///
+    /// The row stays and says nothing, rather than being deleted: the store has
+    /// no delete-a-row call, and an empty history is indistinguishable from a
+    /// note that has never been used by every reader here.
+    pub fn forget_history(&mut self, id: NoteId) -> Result<()> {
+        self.store.put_meta(
+            id,
+            HISTORY,
+            &crate::suggestions::History::default().to_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// Forget what this person has added everywhere, and return how many notes
+    /// had something to forget.
+    ///
+    /// What the settings screen's "forget what I have added" is made of. It
+    /// writes only where there is a row, so a device that has never used the
+    /// feature writes nothing at all.
+    pub fn forget_all_history(&mut self) -> Result<usize> {
+        let notes = self.store.notes()?;
+        let mut cleared = 0;
+        for note in notes {
+            // The account document shares the store and has metadata rows of its
+            // own; it is not a note and nothing is ever suggested for it. A
+            // deleted note's leftovers are swept by its own deletion, so they are
+            // not this call's business either.
+            if note == ACCOUNT_DOC || account::is_deleted(self.account.doc.entries(), note) {
+                continue;
+            }
+            if self.history(note)?.is_empty() {
+                continue;
+            }
+            self.forget_history(note)?;
+            cleared += 1;
+        }
+        Ok(cleared)
+    }
+
+    fn history(&self, id: NoteId) -> Result<crate::suggestions::History> {
+        Ok(match self.store.get_meta(id, HISTORY)? {
+            Some(raw) => crate::suggestions::History::open(&raw),
+            None => crate::suggestions::History::default(),
+        })
+    }
+
+    // -- folded sections ----------------------------------------------------
+
+    /// The headings this device has folded away on `id`.
+    ///
+    /// A heading that has since been deleted or turned back into an item is not
+    /// here, so a stale ID cannot fold something else away later.
+    pub fn collapsed(&self, id: NoteId) -> Result<Vec<ItemId>> {
+        let Some(raw) = self.store.get_meta(id, COLLAPSED)? else {
+            return Ok(Vec::new());
+        };
+        let stored: Vec<String> = serde_json::from_slice(&raw).unwrap_or_default();
+        let live: Vec<ItemId> = self
+            .view(id)?
+            .items
+            .into_iter()
+            .filter(|item| item.heading)
+            .map(|item| item.id)
+            .collect();
+        Ok(stored
+            .iter()
+            .filter_map(|raw| ItemId::decode(raw).ok())
+            .filter(|item| live.contains(item))
+            .collect())
+    }
+
+    /// Fold or unfold one section, on this device only.
+    pub fn set_collapsed(&mut self, id: NoteId, item: ItemId, collapsed: bool) -> Result<()> {
+        let mut folded = self.collapsed(id)?;
+        if collapsed {
+            if !folded.contains(&item) {
+                folded.push(item);
+            }
+        } else {
+            folded.retain(|other| *other != item);
+        }
+        let stored: Vec<String> = folded.iter().map(|item| item.encode()).collect();
+        let raw = serde_json::to_vec(&stored)
+            .map_err(|e| CoreError::Storage(format!("unwritable folded sections: {e}")))?;
+        self.store.put_meta(id, COLLAPSED, &raw)?;
+        Ok(())
+    }
+
     /// Apply one change to the account document: seal it, log it, and tell the
     /// list.
     ///
@@ -2711,9 +2908,11 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     ///
     /// To a checklist, every non-blank line of the body becomes an item after
     /// whatever items the note already had. Markdown task markers preserve their
-    /// checked state; other lines become unchecked items. To text, every
-    /// item becomes a line, checked or not, after whatever the body already said —
-    /// ticks are the one thing that does not survive the trip, as in Keep.
+    /// checked state and a `# Heading` line becomes a section heading; other
+    /// lines become unchecked items. To text, every item becomes a line, checked
+    /// or not, after whatever the body already said — ticks are the one thing
+    /// that does not survive the trip, as in Keep, and a heading arrives as the
+    /// plain line of text it is.
     /// "Already had" is not hypothetical: a merge can leave content on the side
     /// that was emptied (see [`NoteView`]), and converting is what tidies it up
     /// rather than what throws it away.
@@ -2731,7 +2930,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 let mut keys = view.order_keys();
                 let mut items = Vec::new();
                 for line in view.body.lines().filter(|l| !l.trim().is_empty()) {
-                    let (text, checked) = parse_task_line(line);
+                    let (text, checked, heading) = parse_list_line(line);
                     let order = order::key_for_index(&keys, keys.len());
                     keys.push(order.clone());
                     items.push(NewItem {
@@ -2739,6 +2938,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                         text,
                         checked,
                         order,
+                        heading,
                     });
                 }
                 Edit::ToChecklist { items }
@@ -2763,7 +2963,22 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     pub fn add_item(&mut self, id: NoteId, text: impl Into<String>) -> Result<(ItemId, Vec<u8>)> {
         self.ensure_open(id)?;
         let keys = self.view(id)?.order_keys();
-        self.insert_item_at(id, text, keys.len())
+        self.insert_item_at(id, text, keys.len(), false)
+    }
+
+    /// Append a section heading and return `(item id, envelope)`.
+    ///
+    /// A heading is an item with a flag, not a container ([ADR 0037]), so it is
+    /// added in the same edit that gives it its place: two edits would show a
+    /// peer the row flash from item to heading.
+    pub fn add_heading(
+        &mut self,
+        id: NoteId,
+        text: impl Into<String>,
+    ) -> Result<(ItemId, Vec<u8>)> {
+        self.ensure_open(id)?;
+        let keys = self.view(id)?.order_keys();
+        self.insert_item_at(id, text, keys.len(), true)
     }
 
     pub fn insert_item_at(
@@ -2771,6 +2986,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         id: NoteId,
         text: impl Into<String>,
         index: usize,
+        heading: bool,
     ) -> Result<(ItemId, Vec<u8>)> {
         self.ensure_open(id)?;
         let keys = self.view(id)?.order_keys();
@@ -2782,9 +2998,30 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 id: item,
                 text: text.into(),
                 order,
+                heading,
             },
         )?;
         Ok((item, env))
+    }
+
+    /// Whether a row is a heading, or `None` when it already is that.
+    ///
+    /// Turning a heading back into an item is the same one-field write, and it
+    /// is how a section is dissolved: the rows under it are untouched and simply
+    /// join the section above, because which section a row is in is nowhere
+    /// stored.
+    pub fn set_heading(
+        &mut self,
+        id: NoteId,
+        item: ItemId,
+        heading: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        self.require_item(id, item)?;
+        if self.view(id)?.item(item).map(|shown| shown.heading) == Some(heading) {
+            return Ok(None);
+        }
+        self.apply_local(id, Edit::SetHeading { id: item, heading })
+            .map(Some)
     }
 
     /// Set an item's text, or `None` if it already says that. A screen

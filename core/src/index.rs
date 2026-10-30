@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped when the shape below changes. An entry written by a different version
 /// is not migrated: it is ignored, the note is opened, and a current one is
 /// written over it. A cache is the one thing that never needs a migration.
-pub const ENTRY_VERSION: u8 = 7;
+pub const ENTRY_VERSION: u8 = 8;
 
 /// One checklist item as the index keeps it: its text, and whether it has been
 /// crossed off.
@@ -57,6 +57,12 @@ pub const ENTRY_VERSION: u8 = 7;
 pub struct IndexItem {
     pub text: String,
     pub checked: bool,
+    /// A section heading rather than something to tick off. It is searched like
+    /// any other line but left out of a card's preview: a card that lists
+    /// "Dairy" as an item is noise. `default` so an entry written before
+    /// sections existed still reads.
+    #[serde(default)]
+    pub heading: bool,
 }
 
 /// One note, as the list and the search read it.
@@ -130,14 +136,16 @@ impl IndexEntry {
 
     /// What a card previews: the body's lines, then the items still to do. A
     /// crossed-off item is finished rather than forgotten, so it stays in the
-    /// note — and in a search — but does not use up a line of the card. Both
-    /// body and items whatever the kind, for the reason
-    /// [`crate::crdt::NoteView`] gives.
+    /// note — and in a search — but does not use up a line of the card. A
+    /// heading is a label rather than a thing to buy, so it is left out for the
+    /// same reason and stays searchable through
+    /// [`searchable_lines`](Self::searchable_lines). Both body and items whatever
+    /// the kind, for the reason [`crate::crdt::NoteView`] gives.
     pub fn preview(&self) -> impl Iterator<Item = &String> {
         self.body.iter().chain(
             self.items
                 .iter()
-                .filter(|item| !item.checked)
+                .filter(|item| !item.checked && !item.heading)
                 .map(|item| &item.text),
         )
     }

@@ -510,6 +510,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       _library.setTickedShown(shown: shown);
 
   @override
+  bool get suggestionsEnabled => _library.suggestionsEnabled();
+
+  @override
+  Future<void> setSuggestionsEnabled(bool enabled) =>
+      _library.setSuggestionsEnabled(enabled: enabled);
+
+  @override
+  Future<int> forgetSuggestions() => _library.forgetSuggestions();
+
+  @override
   bool get hasAccount => _library.hasAccount();
 
   @override

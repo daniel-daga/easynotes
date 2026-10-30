@@ -97,6 +97,13 @@ class RustNoteCore implements NoteCore {
   Future<String> addItem(String text) => _note.addItem(text: text);
 
   @override
+  Future<String> addHeading(String text) => _note.addHeading(text: text);
+
+  @override
+  Future<bool> setHeading(String itemId, bool heading) =>
+      _note.setHeading(item: itemId, heading: heading);
+
+  @override
   Future<int> setItemText(String itemId, String text) =>
       _note.setItemText(item: itemId, text: text);
 
@@ -129,6 +136,35 @@ class RustNoteCore implements NoteCore {
 
   @override
   Future<void> dropIfBlank(String itemId) => _note.dropIfBlank(item: itemId);
+
+  // -- what this person adds over and over ----------------------------------
+
+  @override
+  Future<void> rememberItem(String text) =>
+      _note.rememberItem(text: text, now: _now());
+
+  @override
+  Future<List<String>> suggestions(String prefix, {int limit = 5}) =>
+      _note.suggestions(prefix: prefix, limit: limit, now: _now());
+
+  @override
+  Future<void> forgetHistory() => _note.forgetHistory();
+
+  @override
+  Future<Set<String>> collapsed() async => (await _note.collapsed()).toSet();
+
+  @override
+  Future<void> setCollapsed(String itemId, bool collapsed) =>
+      _note.setCollapsed(item: itemId, collapsed: collapsed);
+
+  /// Unix seconds, handed to Rust because the core also compiles for the
+  /// browser and so has no clock of its own
+  /// (`easynotes_core::suggestions`).
+  ///
+  /// `PlatformInt64Util`, not a bare `int`: the bridge takes an `i64`, which is
+  /// an `int` natively and a `BigInt` in a browser.
+  static PlatformInt64 _now() =>
+      PlatformInt64Util.from(DateTime.now().millisecondsSinceEpoch ~/ 1000);
 
   @override
   Future<AttachmentView> importAttachment(
@@ -250,7 +286,13 @@ class RustNoteCore implements NoteCore {
     colourSet: v.colourSet,
     items: [
       for (final i in v.items)
-        ItemView(id: i.id, text: i.text, checked: i.checked, order: i.order),
+        ItemView(
+          id: i.id,
+          text: i.text,
+          checked: i.checked,
+          order: i.order,
+          heading: i.heading,
+        ),
     ],
     attachments: [for (final a in v.attachments) toAttachment(a)],
   );

@@ -263,3 +263,21 @@ dropped and hidden only while blank, so text a peer typed into it meanwhile
 brings it back. A note that was just joined is not seeded with a blank item,
 because its items are still arriving. Item text written by releases before
 this is not read; those releases' documents keep everything else.
+
+<a id="adr-0037"></a>
+## ADR 0037 — A heading is a flag on an item, not a container
+
+**Accepted.** A checklist section is a heading item (`heading: true`) that owns
+the rows after it until the next heading. There is no second ordered list and no
+parent/child link, so which rows a section holds is read off their positions:
+moves, merges and deletions need no new rule, and two people editing at once can
+never produce half a section. An older build reads a heading as an ordinary item
+with the same text, so nothing is lost in either direction. A heading has no
+checkbox; a tick that a build which does not know the flag puts on it merges as
+an ordinary field and does not undo the heading. Removing a heading never removes
+its items — they join the section above. Folding a section is local to the
+device, kept in the note's sealed metadata rather than in the account document,
+because folding an aisle on one phone should not fold it on a partner's.
+
+Share and paste use the same two line forms on the way out and in — `# Heading`
+and `- [x] item` — so a list shared out with its sections comes back with them.

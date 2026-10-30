@@ -36,6 +36,9 @@ const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
+/// Written only when a row is a heading: an absent field is an ordinary item,
+/// which is what every item written before sections existed says.
+const HEADING: &str = "heading";
 const DROPPED: &str = "dropped";
 
 pub struct YrsNote {
@@ -188,11 +191,19 @@ impl NoteDoc for YrsNote {
                 Edit::SetTitle(t) => {
                     self.root.insert(&mut txn, TITLE, t.as_str());
                 }
-                Edit::AddItem { id, text, order } => {
+                Edit::AddItem {
+                    id,
+                    text,
+                    order,
+                    heading,
+                } => {
                     let obj = items.insert(&mut txn, id.encode(), MapPrelim::default());
                     Self::set_item_text(&mut txn, &obj, text);
                     obj.insert(&mut txn, CHECKED, false);
                     obj.insert(&mut txn, ORDER, order.as_str());
+                    if *heading {
+                        obj.insert(&mut txn, HEADING, true);
+                    }
                 }
                 Edit::SetItemText { id, text } => {
                     if let Some(Out::YMap(obj)) = items.get(&txn, &id.encode()) {
@@ -202,6 +213,11 @@ impl NoteDoc for YrsNote {
                 Edit::SetChecked { id, checked } => {
                     if let Some(Out::YMap(obj)) = items.get(&txn, &id.encode()) {
                         obj.insert(&mut txn, CHECKED, *checked);
+                    }
+                }
+                Edit::SetHeading { id, heading } => {
+                    if let Some(Out::YMap(obj)) = items.get(&txn, &id.encode()) {
+                        obj.insert(&mut txn, HEADING, *heading);
                     }
                 }
                 Edit::MoveItem { id, order } => {
@@ -243,6 +259,9 @@ impl NoteDoc for YrsNote {
                         Self::set_item_text(&mut txn, &obj, &item.text);
                         obj.insert(&mut txn, CHECKED, item.checked);
                         obj.insert(&mut txn, ORDER, item.order.as_str());
+                        if item.heading {
+                            obj.insert(&mut txn, HEADING, true);
+                        }
                     }
                 }
                 Edit::ToText { body, remove } => {
@@ -364,6 +383,7 @@ impl NoteDoc for YrsNote {
                     text,
                     checked: any_bool(obj.get(&txn, CHECKED)),
                     order: any_str(obj.get(&txn, ORDER)),
+                    heading: any_bool(obj.get(&txn, HEADING)),
                 });
             }
         }

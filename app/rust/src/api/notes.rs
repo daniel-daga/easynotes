@@ -66,6 +66,9 @@ pub struct ItemView {
     pub text: String,
     pub checked: bool,
     pub order: String,
+    /// A section heading rather than something to tick off. Its rows until the
+    /// next heading belong to it; see `easynotes_core::crdt::ItemView`.
+    pub heading: bool,
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
@@ -264,6 +267,7 @@ impl From<easynotes_core::note::NoteViewAt> for NoteView {
                     text: i.text,
                     checked: i.checked,
                     order: i.order,
+                    heading: i.heading,
                 })
                 .collect(),
             attachments: v
@@ -2850,6 +2854,30 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    /// Whether this device offers back the lines this person adds over and over.
+    #[frb(sync)]
+    pub fn suggestions_enabled(&self) -> Result<bool, String> {
+        Ok(self.shared.locked()?.suggestions_enabled())
+    }
+
+    pub fn set_suggestions_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_suggestions_enabled(enabled)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forget what this person has added everywhere, and say how many lists
+    /// there was something to forget for.
+    pub fn forget_suggestions(&self) -> Result<u32, String> {
+        let cleared = self
+            .shared
+            .locked()?
+            .forget_all_history()
+            .map_err(|e| e.to_string())?;
+        Ok(cleared as u32)
+    }
+
     // -- the person ---------------------------------------------------------
     //
     // Twelve words, and what they unlock. There is no server-side account here:
@@ -4304,6 +4332,89 @@ impl Note {
         };
         self.send(envelope, false);
         Ok(id.encode())
+    }
+
+    /// Add a section heading: a row with no checkbox that owns the rows under it
+    /// until the next one. One edit, so a peer never sees it flash from item to
+    /// heading.
+    pub fn add_heading(&self, text: String) -> Result<String, String> {
+        let (id, envelope) = {
+            let mut core = self.shared.locked()?;
+            core.add_heading(self.id, text).map_err(|e| e.to_string())?
+        };
+        self.send(envelope, false);
+        Ok(id.encode())
+    }
+
+    /// Whether a row is a heading. `false` back means it already was one, which
+    /// is what a screen asks for when it turns a heading back into an item.
+    pub fn set_heading(&self, item: String, heading: bool) -> Result<bool, String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.set_heading(self.id, item_id(&item)?, heading)
+                .map_err(|e| e.to_string())?
+        };
+        match envelope {
+            Some(envelope) => {
+                self.send(envelope, false);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    // -- what this person adds over and over --------------------------------
+    //
+    // Local bookkeeping: nothing here is an envelope, and nothing here is
+    // reachable from another device or from the relay. `now` is unix seconds
+    // from Dart's clock, because this crate also compiles for the browser where
+    // there is no `SystemTime` (see `easynotes_core::suggestions`).
+
+    /// Remember one line this person committed into a row. Called when a row
+    /// settles, because the core cannot tell a finished line from a half-typed
+    /// one.
+    pub fn remember_item(&self, text: String, now: i64) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .remember_item(self.id, &text, now)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The lines to offer back, best first. `prefix` is what has been typed so
+    /// far; anything already on the list is left out.
+    pub fn suggestions(&self, prefix: String, limit: u32, now: i64) -> Result<Vec<String>, String> {
+        self.shared
+            .locked()?
+            .suggestions(self.id, &prefix, limit as usize, now)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forget what this person has added to this note.
+    pub fn forget_history(&self) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .forget_history(self.id)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The headings this device has folded away on this note.
+    pub fn collapsed(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .collapsed(self.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|item| item.encode())
+            .collect())
+    }
+
+    /// Fold or unfold one section of this note, on this device only.
+    pub fn set_collapsed(&self, item: String, collapsed: bool) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_collapsed(self.id, item_id(&item)?, collapsed)
+            .map_err(|e| e.to_string())
     }
 
     /// Returns the revision the edit landed at: the field that sent it records

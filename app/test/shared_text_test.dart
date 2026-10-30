@@ -56,6 +56,32 @@ void main() {
       expect(looksLikeTaskList(''), isFalse);
     });
 
+    test('a heading is a list line, but headings alone are not a list', () {
+      expect(
+        looksLikeTaskList('# Dairy\n[ ] milk\n## Frozen\n[x] peas'),
+        isTrue,
+      );
+      expect(looksLikeTaskList('# Dairy\n[ ] milk'), isTrue);
+      expect(looksLikeTaskList('# Dairy\n## Frozen'), isFalse);
+      expect(looksLikeTaskList('# Dairy\nCall Anna'), isFalse);
+    });
+
+    test('a shared list keeps its sections', () async {
+      final library = FakeNoteLibrary();
+      final id = await createNoteFromSharedText(
+        library,
+        const SharedText(text: '# Dairy\n[ ] milk\n# Frozen\n[x] peas'),
+      );
+      final view = library.core(id).current;
+      expect(view.kind, NoteKind.checklist);
+      expect(view.items.map((i) => (i.text, i.heading, i.checked)), [
+        ('Dairy', true, false),
+        ('milk', false, false),
+        ('Frozen', true, false),
+        ('peas', false, true),
+      ]);
+    });
+
     test('a shared list comes back a list, ticks and all', () async {
       final library = FakeNoteLibrary();
       final id = await createNoteFromSharedText(

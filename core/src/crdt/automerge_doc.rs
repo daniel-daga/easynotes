@@ -52,6 +52,8 @@ const COLOUR: &str = "colour";
 const TEXT: &str = "text";
 const CHECKED: &str = "checked";
 const ORDER: &str = "order";
+/// Written only when a row is a heading; an absent field is an ordinary item.
+const HEADING: &str = "heading";
 const DROPPED: &str = "dropped";
 
 pub struct AutomergeNote {
@@ -155,11 +157,19 @@ impl NoteDoc for AutomergeNote {
                     Edit::SetTitle(t) => {
                         tx.put(ROOT, TITLE, t.as_str())?;
                     }
-                    Edit::AddItem { id, text, order } => {
+                    Edit::AddItem {
+                        id,
+                        text,
+                        order,
+                        heading,
+                    } => {
                         let obj = tx.put_object(ROOT, id.encode(), ObjType::Map)?;
                         Self::set_item_text(tx, &obj, text)?;
                         tx.put(&obj, CHECKED, false)?;
                         tx.put(&obj, ORDER, order.as_str())?;
+                        if *heading {
+                            tx.put(&obj, HEADING, true)?;
+                        }
                     }
                     Edit::SetItemText { id, text } => {
                         if let Some((Value::Object(_), obj)) = tx.get(ROOT, id.encode())? {
@@ -169,6 +179,11 @@ impl NoteDoc for AutomergeNote {
                     Edit::SetChecked { id, checked } => {
                         if let Some((Value::Object(_), obj)) = tx.get(ROOT, id.encode())? {
                             tx.put(&obj, CHECKED, *checked)?;
+                        }
+                    }
+                    Edit::SetHeading { id, heading } => {
+                        if let Some((Value::Object(_), obj)) = tx.get(ROOT, id.encode())? {
+                            tx.put(&obj, HEADING, *heading)?;
                         }
                     }
                     Edit::MoveItem { id, order } => {
@@ -215,6 +230,9 @@ impl NoteDoc for AutomergeNote {
                             Self::set_item_text(tx, &obj, &item.text)?;
                             tx.put(&obj, CHECKED, item.checked)?;
                             tx.put(&obj, ORDER, item.order.as_str())?;
+                            if item.heading {
+                                tx.put(&obj, HEADING, true)?;
+                            }
                         }
                     }
                     Edit::ToText { body, remove } => {
@@ -341,6 +359,7 @@ impl NoteDoc for AutomergeNote {
                 text,
                 checked: Self::bool_at(&self.doc, &obj, CHECKED),
                 order: Self::str_at(&self.doc, &obj, ORDER),
+                heading: Self::bool_at(&self.doc, &obj, HEADING),
             });
         }
         sort_items(&mut items);

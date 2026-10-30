@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `flush_notes`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
@@ -212,6 +211,10 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Remove one reminder without touching any other reminder on its note.
   Future<void> forgetReminder({required String reminder});
+
+  /// Forget what this person has added everywhere, and say how many lists
+  /// there was something to forget for.
+  Future<int> forgetSuggestions();
 
   /// Throw a label away: off every note that has it, and gone from the menu.
   /// The notes themselves are untouched.
@@ -443,6 +446,8 @@ abstract class Library implements RustOpaqueInterface {
     required String timezone,
   });
 
+  Future<void> setSuggestionsEnabled({required bool enabled});
+
   Future<void> setTickedShown({required bool shown});
 
   /// Throw a note away, or take it back out of the trash.
@@ -470,6 +475,9 @@ abstract class Library implements RustOpaqueInterface {
   /// stream to close — such as Dart cancelling its subscription — waits
   /// forever too.
   Future<void> stopWatching();
+
+  /// Whether this device offers back the lines this person adds over and over.
+  bool suggestionsEnabled();
 
   /// Flush held typing and wait up to 30 seconds for the library to report a
   /// caught-up state and the local acknowledgements captured at start.
@@ -545,7 +553,15 @@ abstract class Library implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Note>>
 abstract class Note implements RustOpaqueInterface {
+  /// Add a section heading: a row with no checkbox that owns the rows under it
+  /// until the next one. One edit, so a peer never sees it flash from item to
+  /// heading.
+  Future<String> addHeading({required String text});
+
   Future<String> addItem({required String text});
+
+  /// The headings this device has folded away on this note.
+  Future<List<String>> collapsed();
 
   /// Set the shared words that describe an attachment to someone who cannot
   /// see or hear it.
@@ -579,6 +595,9 @@ abstract class Note implements RustOpaqueInterface {
     required String from,
     required String to,
   });
+
+  /// Forget what this person has added to this note.
+  Future<void> forgetHistory();
 
   String id();
 
@@ -623,6 +642,11 @@ abstract class Note implements RustOpaqueInterface {
     required bool thumbnail,
   });
 
+  /// Remember one line this person committed into a row. Called when a row
+  /// settles, because the core cannot tell a finished line from a half-typed
+  /// one.
+  Future<void> rememberItem({required String text, required PlatformInt64 now});
+
   /// Remove an attachment for everyone on the note, or give up on an import
   /// of this device's that is not in it yet. The bytes on this device go
   /// too; nobody else's, and not the relay's (ADR 0027).
@@ -635,6 +659,13 @@ abstract class Note implements RustOpaqueInterface {
   void sendHeldEdits();
 
   Future<void> setChecked({required String item, required bool checked});
+
+  /// Fold or unfold one section of this note, on this device only.
+  Future<void> setCollapsed({required String item, required bool collapsed});
+
+  /// Whether a row is a heading. `false` back means it already was one, which
+  /// is what a screen asks for when it turns a heading back into an item.
+  Future<bool> setHeading({required String item, required bool heading});
 
   /// Returns the revision the edit landed at: the field that sent it records
   /// that and adopts only views newer than it, so its own echo cannot wind
@@ -650,6 +681,14 @@ abstract class Note implements RustOpaqueInterface {
   /// End this handle's watchers and let their tasks finish. The note stays
   /// open in the library, because another screen may be showing it.
   Future<void> stopWatching();
+
+  /// The lines to offer back, best first. `prefix` is what has been typed so
+  /// far; anything already on the list is left out.
+  Future<List<String>> suggestions({
+    required String prefix,
+    required int limit,
+    required PlatformInt64 now,
+  });
 
   /// Where this note stands with the relay.
   SyncStatus syncStatus();
@@ -861,16 +900,25 @@ class ItemView {
   final bool checked;
   final String order;
 
+  /// A section heading rather than something to tick off. Its rows until the
+  /// next heading belong to it; see `easynotes_core::crdt::ItemView`.
+  final bool heading;
+
   const ItemView({
     required this.id,
     required this.text,
     required this.checked,
     required this.order,
+    required this.heading,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^ text.hashCode ^ checked.hashCode ^ order.hashCode;
+      id.hashCode ^
+      text.hashCode ^
+      checked.hashCode ^
+      order.hashCode ^
+      heading.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -880,7 +928,8 @@ class ItemView {
           id == other.id &&
           text == other.text &&
           checked == other.checked &&
-          order == other.order;
+          order == other.order &&
+          heading == other.heading;
 }
 
 class JoinCheckView {

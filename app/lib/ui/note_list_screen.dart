@@ -766,6 +766,65 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (mounted) setState(() {});
   }
 
+  /// The handful of choices that are about the app rather than about a note.
+  ///
+  /// Today that is one feature: whether this device offers back the lines this
+  /// person adds over and over, and how to forget what it has learned. Both are
+  /// here, together, because a switch that stops learning is not the same as
+  /// deleting what was learned and a person looking for one will want the other.
+  Future<void> _openSettings() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => StatefulBuilder(
+        builder: (sheet, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                key: const Key('suggestions-setting'),
+                title: const Text('Suggest what I add'),
+                subtitle: const Text(
+                  'Offers back the things you add to a list. Kept on this '
+                  'device, never sent anywhere.',
+                ),
+                value: widget.library.suggestionsEnabled,
+                onChanged: (on) async {
+                  await widget.library.setSuggestionsEnabled(on);
+                  if (sheet.mounted) setSheet(() {});
+                },
+              ),
+              ListTile(
+                key: const Key('forget-suggestions'),
+                leading: const Icon(Icons.delete_sweep_outlined),
+                title: const Text('Forget what I have added'),
+                onTap: () async {
+                  // Taken before the wait: the sheet is gone by the time the
+                  // answer arrives, and this screen's context is the one that
+                  // can still show a message.
+                  final messenger = ScaffoldMessenger.maybeOf(context);
+                  final navigator = Navigator.of(sheet);
+                  final cleared = await widget.library.forgetSuggestions();
+                  if (!mounted) return;
+                  navigator.pop();
+                  messenger?.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        cleared == 1
+                            ? 'Forgotten on 1 list.'
+                            : 'Forgotten on $cleared lists.',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _openAbout() => Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (context) => AboutScreen(profile: widget.profile),
@@ -1266,6 +1325,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onSyncDevices: _openSyncDevices,
               profile: widget.profile,
               onAbout: _openAbout,
+              onSettings: _openSettings,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
               onJoin: widget.library.canJoin ? _join : null,
@@ -2554,6 +2614,7 @@ class _Shelves extends StatelessWidget {
     required this.onSyncDevices,
     required this.profile,
     required this.onAbout,
+    required this.onSettings,
     required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
@@ -2573,6 +2634,9 @@ class _Shelves extends StatelessWidget {
   final VoidCallback onSyncDevices;
   final RelayProfile profile;
   final VoidCallback onAbout;
+
+  /// What one person likes about how the app behaves, rather than about a note.
+  final VoidCallback onSettings;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
@@ -2672,6 +2736,15 @@ class _Shelves extends StatelessWidget {
               },
             ),
           const Divider(),
+          ListTile(
+            key: const Key('settings-entry'),
+            leading: const Icon(Icons.tune),
+            title: const Text('Settings'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onSettings();
+            },
+          ),
           ListTile(
             key: const Key('about-entry'),
             leading: const Icon(Icons.info_outline),

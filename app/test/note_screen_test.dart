@@ -1503,6 +1503,232 @@ void main() {
       expect(controller.selection, const TextSelection.collapsed(offset: 13));
     });
   });
+
+  group('sections', () {
+    /// A list with one section and two rows in it.
+    Future<(FakeNoteCore, String)> sections(WidgetTester tester) async {
+      final core = FakeNoteCore(items: const []);
+      final heading = await core.addHeading('Dairy');
+      await core.addItem('milk');
+      await core.addItem('cheese');
+      await pumpScreen(tester, core);
+      return (core, heading);
+    }
+
+    testWidgets('a heading is drawn without a checkbox and counts its rows', (
+      tester,
+    ) async {
+      final (_, heading) = await sections(tester);
+
+      expect(
+        find.byKey(Key('heading-text:$heading')),
+        findsOneWidget,
+        reason: 'the heading is a row like any other',
+      );
+      expect(find.byType(Checkbox), findsNWidgets(2));
+      expect(find.text('0 of 2'), findsOneWidget);
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('folding a section hides its rows on this device only', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('fold:$heading')));
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), isEmpty);
+      expect(find.byKey(Key('heading-text:$heading')), findsOneWidget);
+      // The fold reached the core, which is what keeps it across a relaunch;
+      // it is a local row, so nothing about it is an edit to the note.
+      expect(await core.collapsed(), {heading});
+      expect(
+        core.edits.where((edit) => edit.startsWith('setHeading')),
+        isEmpty,
+      );
+
+      await tester.tap(find.byKey(Key('fold:$heading')));
+      await tester.pumpAndSettle();
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('typing a hash and a space turns a row into a heading', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        '# Dairy',
+      );
+      // Leaving the row is what settles a line.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      final item = core.current.items.first;
+      expect(item.heading, isTrue);
+      expect(item.text, 'Dairy');
+      expect(core.edits, contains('setHeading(${item.id}, true)'));
+    });
+
+    testWidgets('removing a heading keeps the rows under it', (tester) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('heading-menu:$heading')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove heading'));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.map((i) => i.text), ['milk', 'cheese']);
+      expect(core.current.items.any((i) => i.heading), isFalse);
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('turning a heading into an item keeps it where it was', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('heading-menu:$heading')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Turn into item'));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.first.text, 'Dairy');
+      expect(core.current.items.first.heading, isFalse);
+      expect(visibleItems(tester), ['Dairy', 'milk', 'cheese']);
+    });
+
+    testWidgets('a row crossed off says which section it came from', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+      await tester.tap(find.byKey(Key('check:${core.current.items[1].id}')));
+      await tester.pumpAndSettle();
+      await showCrossedOff(tester);
+
+      // The section is folded open, so the crossed-off row is drawn with it.
+      expect(visibleItems(tester), ['cheese', 'milk']);
+      expect(
+        find.byKey(const ValueKey('crossed-section:Dairy')),
+        findsOneWidget,
+      );
+      expect(find.text('Crossed off items (1)'), findsOneWidget);
+      expect(find.byKey(Key('count:$heading')), findsOneWidget);
+      expect(find.text('1 of 2'), findsOneWidget);
+    });
+
+    testWidgets('the section row adds a heading, focused', (tester) async {
+      final core = FakeNoteCore(items: const ['milk']);
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('add-section')));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.last.heading, isTrue);
+      expect(focusedFieldText(tester), '');
+      expect(
+        find.byKey(Key('heading-text:${core.current.items.last.id}')),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('what this person adds over and over', () {
+    testWidgets('a blank row offers back what this list keeps needing', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await core.rememberItem('Bread');
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsOneWidget);
+      expect(find.byKey(const Key('suggestion:Milk')), findsOneWidget);
+      expect(find.byKey(const Key('suggestion:Bread')), findsOneWidget);
+    });
+
+    testWidgets('tapping a suggestion fills the row and remembers it', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('suggestion:Milk')));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.map((i) => i.text), ['Milk', '']);
+      expect(visibleItems(tester), ['Milk', '']);
+      // What is on the list is no longer offered.
+      expect(find.byKey(const Key('suggestion:Milk')), findsNothing);
+      // And the row that was filled is the one that was already there.
+      expect(core.edits, isNot(contains('addItem(Milk)')));
+    });
+
+    testWidgets('typing the first letter takes the strip away', (tester) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+      expect(find.byKey(const ValueKey('suggestions')), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        'M',
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('a list with nothing to offer draws no strip', (tester) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('a text note offers nothing', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('leaving a row remembers what was typed into it', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        'Oat milk',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(core.history['Oat milk'], 1);
+    });
+
+    testWidgets('opening a row and leaving it remembers nothing', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk']);
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(Key('text:${core.current.items.single.id}')));
+      await tester.pumpAndSettle();
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(core.history, isEmpty, reason: 'nothing was added');
+    });
+  });
 }
 
 /// The text of whichever item field has the keyboard, or null.
