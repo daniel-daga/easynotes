@@ -34,8 +34,12 @@ struct App {
 
 impl App {
     fn owner(name: &'static str) -> Self {
+        Self::owner_of(name, NoteKind::Checklist)
+    }
+
+    fn owner_of(name: &'static str, kind: NoteKind) -> Self {
         let mut core: Core = NoteCore::open(MemoryStore::new(), MemoryKeyring::new()).unwrap();
-        let note = core.create_note(NoteKind::Checklist).unwrap();
+        let note = core.create_note(kind).unwrap();
         Self::wrap(name, core, note)
     }
 
@@ -188,6 +192,53 @@ impl App {
         let start = self.text_of(item);
         for end in 1..=word.len() {
             self.type_into(item, &format!("{start}{}", &word[..end]));
+        }
+    }
+
+    /// Type into an item as the screen does: the field says what it was showing
+    /// and what it shows now, and the envelope may wait for the ones after it.
+    fn edit_into(&self, item: ItemId, from: &str, to: &str) {
+        let envelope = self
+            .core
+            .lock()
+            .unwrap()
+            .edit_item_text(self.note, item, from, to)
+            .unwrap();
+        if let (Some(envelope), Some(handle)) = (envelope, &self.handle) {
+            handle.publish_soon(envelope);
+        }
+    }
+
+    /// Type `word` into `item` a letter at a time as its field does.
+    fn edit_word(&self, item: ItemId, word: &str) {
+        let mut shown = self.text_of(item);
+        for ch in word.chars() {
+            let next = format!("{shown}{ch}");
+            self.edit_into(item, &shown, &next);
+            shown = next;
+        }
+    }
+
+    /// Type into the body as the body field does.
+    fn edit_body_into(&self, from: &str, to: &str) {
+        let envelope = self
+            .core
+            .lock()
+            .unwrap()
+            .edit_body(self.note, from, to)
+            .unwrap();
+        if let (Some(envelope), Some(handle)) = (envelope, &self.handle) {
+            handle.publish_soon(envelope);
+        }
+    }
+
+    /// Type `word` into the body a letter at a time.
+    fn edit_body_word(&self, word: &str) {
+        let mut shown = self.core.lock().unwrap().view(self.note).unwrap().body;
+        for ch in word.chars() {
+            let next = format!("{shown}{ch}");
+            self.edit_body_into(&shown, &next);
+            shown = next;
         }
     }
 
@@ -696,6 +747,51 @@ async fn a_typed_word_reaches_the_relay_as_one_envelope() {
     let mut b = App::guest("B", &a.share_blob());
     b.connect(&endpoint);
     b.wait_for_items(&["milk and honey"]).await;
+}
+
+/// The report: a line typed into a list item, sent the way the row's field
+/// sends it (`edit_item_text`), must reach the relay as one envelope after the
+/// pause rather than one per letter.
+#[tokio::test]
+async fn a_typed_line_in_a_list_item_reaches_the_relay_as_one_envelope() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner("A");
+    a.connect_paced(&endpoint, quick());
+    a.add_item("");
+    wait_for_head(&log, a.note, 1).await;
+    let item = a.item_called("");
+
+    a.edit_word(item, "milk and honey");
+    a.wait_until_synced().await;
+    wait_for_head(&log, a.note, 2).await;
+
+    assert_eq!(
+        a.log_len(),
+        2,
+        "the log should hold the fold, not the letters"
+    );
+
+    let mut b = App::guest("B", &a.share_blob());
+    b.connect(&endpoint);
+    b.wait_for_items(&["milk and honey"]).await;
+}
+
+/// The control for the test above: the same twelve letters typed into a text
+/// note's body already arrive as one envelope. If this passes and the item test
+/// does not, the bug is in the item path.
+#[tokio::test]
+async fn a_typed_line_in_a_body_reaches_the_relay_as_one_envelope() {
+    let (_relay, log, endpoint) = relay().await;
+
+    let mut a = App::owner_of("A", NoteKind::Text);
+    a.connect_paced(&endpoint, quick());
+
+    a.edit_body_word("milk and honey");
+    a.wait_until_synced().await;
+    wait_for_head(&log, a.note, 1).await;
+
+    assert_eq!(a.log_len(), 1, "the log should hold the fold");
 }
 
 /// A tick is not typing. It goes the moment it is made, and takes whatever

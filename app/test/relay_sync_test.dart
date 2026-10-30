@@ -122,6 +122,14 @@ void main() {
     return (library, core);
   }
 
+  /// Connected and with nothing of this device's left unacknowledged.
+  Future<void> synced(NoteCore core, String who) => _untilStatus(
+    core.watchSync(),
+    () => core.syncStatus,
+    (status) => status.state == SyncState.synced && status.pending == 0,
+    '$who never caught up',
+  );
+
   /// Keep checking the invite until whoever opened the link is in — which
   /// is what the invite dialog's poll, and the grid's, does. Nobody approves
   /// anything. Returns the name of the person let in.
@@ -379,6 +387,9 @@ void main() {
       () async {
         final (aLibrary, a) = await open();
         final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+        await synced(a, 'A');
+        await synced(b, 'B');
+        final before = b.syncStatus.lastSeq;
 
         // Typing is held back until it pauses (ADR 0016), so each of these
         // is logged at once and sent later, as one.
@@ -395,8 +406,87 @@ void main() {
           (view) => view.title == title,
           'B never received the title A typed',
         );
+        await synced(b, 'B');
+        expect(
+          b.syncStatus.lastSeq - before,
+          1,
+          reason:
+              'the title should be one entry on the relay, not one per letter',
+        );
       },
     );
+
+    test('a line typed into a list item is one relay entry', () async {
+      final (aLibrary, a) = await open();
+      final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+      final itemId = await a.addItem('');
+      await _until(
+        b.watch(),
+        (view) => view.items.any((i) => i.id == itemId),
+        'B never received the item',
+      );
+      await synced(a, 'A');
+      await synced(b, 'B');
+      final before = b.syncStatus.lastSeq;
+
+      const line = 'milk and honey';
+      var from = '';
+      for (final ch in line.split('')) {
+        final to = '$from$ch';
+        await a.editItemText(itemId, from, to);
+        from = to;
+      }
+      aLibrary.sendHeldEdits();
+      await _until(
+        b.watch(),
+        (view) => view.items.any((i) => i.text == line),
+        'B never received the line',
+      );
+      await synced(b, 'B');
+      expect(
+        b.syncStatus.lastSeq - before,
+        1,
+        reason:
+            'a typed line should be one entry on the relay, not one per '
+            'letter',
+      );
+    });
+
+    test('a line typed into a body is one relay entry', () async {
+      final (aLibrary, a) = await open();
+      final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+      await a.setKind(NoteKind.text);
+      await _until(
+        b.watch(),
+        (view) => view.kind == NoteKind.text,
+        'B never saw the note become a text note',
+      );
+      await synced(a, 'A');
+      await synced(b, 'B');
+      final before = b.syncStatus.lastSeq;
+
+      const line = 'milk and honey';
+      var from = '';
+      for (final ch in line.split('')) {
+        final to = '$from$ch';
+        await a.editBody(from, to);
+        from = to;
+      }
+      aLibrary.sendHeldEdits();
+      await _until(
+        b.watch(),
+        (view) => view.body == line,
+        'B never received the body A typed',
+      );
+      await synced(b, 'B');
+      expect(
+        b.syncStatus.lastSeq - before,
+        1,
+        reason:
+            'a typed body should be one entry on the relay, not one per '
+            'letter',
+      );
+    });
 
     test(
       'the app reports itself synced once the relay has everything',
