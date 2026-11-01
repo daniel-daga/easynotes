@@ -152,6 +152,43 @@ pub fn classify(topic: &Topic, note: &str, raw: &[u8]) -> Classified {
     }
 }
 
+/// Recover what a log written before ADR 0024 did not record: which rows are
+/// access packages, and the owner and current package they name.
+///
+/// Such a topic has `keep = false` on every row and no owner. Compacting it
+/// would delete the package chain, and purging it would fall back to "anyone
+/// with the note key". Replaying the log through [`classify`] before either
+/// decision restores both, without a migration pass.
+///
+/// Returns the owner, the current package, and the sequence numbers to keep.
+pub fn recover<'a>(
+    known: &Topic,
+    note: &str,
+    rows: impl IntoIterator<Item = (i64, &'a [u8])>,
+) -> (Option<[u8; 32]>, Option<Current>, Vec<i64>) {
+    // Start from what the topic already knows, so an owner pinned by an
+    // earlier append is not replaced by whichever package happens to be first.
+    let mut topic = Topic {
+        owner: known.owner,
+        current: known.current,
+        ..Topic::default()
+    };
+    let mut keep = Vec::new();
+    for (seq, raw) in rows {
+        let class = classify(&topic, note, raw);
+        if class.keep {
+            keep.push(seq);
+        }
+        if let Some(owner) = class.owner {
+            topic.owner = Some(owner);
+        }
+        if let Some(current) = class.current {
+            topic.current = Some(current);
+        }
+    }
+    (topic.owner, topic.current, keep)
+}
+
 /// A compaction as it comes off the wire, before anything is checked.
 pub struct Proposal<'a> {
     pub covers: i64,
@@ -260,4 +297,71 @@ pub fn authorise_purge(
         return Err(Refusal::BadSignature);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easynotes_core::access::{self, Body, Member, OWNER_INVITE};
+    use easynotes_core::account::RecoveryPhrase;
+    use easynotes_core::crypto::{DeviceIdentity, NoteKey};
+
+    fn make_package(owner: &DeviceIdentity, note: NoteId, key: &NoteKey) -> Vec<u8> {
+        let member = RecoveryPhrase::generate().root().member();
+        let body = Body {
+            list: vec![Member {
+                member: member.id(),
+                box_key: member.box_public(),
+                owner: true,
+                invite: OWNER_INVITE,
+                name: "Owner".into(),
+            }],
+            ..Body::default()
+        };
+        access::build(owner, note, 1, None, key, &body).unwrap()
+    }
+
+    #[test]
+    fn a_legacy_log_recovers_its_owner_and_packages() {
+        let note = NoteId::random();
+        let key = NoteKey::random();
+        let owner = DeviceIdentity::generate();
+        let package = make_package(&owner, note, &key);
+        let rows = [
+            (1_i64, package.as_slice()),
+            (2_i64, b"not an envelope".as_slice()),
+        ];
+
+        let (recovered, current, keep) = recover(&Topic::default(), &note.encode(), rows);
+        assert_eq!(recovered, Some(owner.public_key().0));
+        assert!(current.is_some());
+        assert_eq!(keep, vec![1]);
+
+        // An owner pinned by a later append must not hide an older package
+        // the legacy database recorded as loose: replaying with the known
+        // owner still marks it kept.
+        let known = Topic {
+            owner: recovered,
+            ..Topic::default()
+        };
+        let (recovered, _, keep) = recover(&known, &note.encode(), rows);
+        assert_eq!(recovered, known.owner);
+        assert_eq!(keep, vec![1]);
+
+        let topic = Topic {
+            owner: recovered,
+            current,
+            ..Topic::default()
+        };
+        let guest = purge::Request::sign(note, &easynotes_core::compaction::identity(note, &key));
+        assert_eq!(
+            authorise_purge(&topic, &note.encode(), guest.key.0, guest.signature),
+            Err(Refusal::Unauthorised)
+        );
+        let owner = purge::Request::sign(note, &owner);
+        assert_eq!(
+            authorise_purge(&topic, &note.encode(), owner.key.0, owner.signature),
+            Ok(())
+        );
+    }
 }
