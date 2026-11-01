@@ -237,7 +237,17 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   void _onForeground() {
-    if (appIsForeground.value) _loadPeople();
+    if (appIsForeground.value) {
+      _loadPeople();
+    } else {
+      // The title commits on focus loss, and the system may reclaim the app
+      // before anything here is popped. Losing focus is what saves it; any
+      // other field losing it in the same round trip is deliberate.
+      FocusManager.instance.primaryFocus?.unfocus();
+      // Now rather than next microtask, so the title is written before
+      // setForeground's flush.
+      FocusManager.instance.applyFocusChangesIfNeeded();
+    }
   }
 
   Future<void> _refreshPending() async {
