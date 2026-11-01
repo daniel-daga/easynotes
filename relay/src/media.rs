@@ -778,7 +778,7 @@ pub(crate) async fn put_chunk(
             // A purge may have deleted the row between the read above and
             // this write. Its directory sweep may already have run, so remove
             // what this request just recreated.
-            discard_if_gone(&state, &blobs, &note, &object).await?;
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.touch_media(&note, &object, now()).await?;
             Ok(StatusCode::CREATED)
         }
@@ -863,7 +863,7 @@ pub(crate) async fn commit(
         Assembled::Done => {
             // The object may have been assembled after a purge removed its
             // row and swept the directory; drop it rather than leave it.
-            discard_if_gone(&state, &blobs, &note, &object).await?;
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.commit_media(&note, &object, digest).await?;
             // Committed now: fresh for a day from now, not from its last
             // chunk, so its descriptor has the whole day to arrive.
