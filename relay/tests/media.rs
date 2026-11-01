@@ -12,7 +12,8 @@ use easynotes_core::attachment::seal::{seal_whole, verify_sealed};
 use easynotes_core::attachment::{ContentKey, MediaOpener, MediaRef, Variant};
 use easynotes_core::crypto::DeviceIdentity;
 use easynotes_core::ids::{AttachmentId, MediaObjectId, NoteId};
-use easynotes_relay::media::MediaStatus;
+use easynotes_relay::error::Result as RelayResult;
+use easynotes_relay::media::{Assembled, MediaStatus, PartPut};
 use easynotes_relay::{
     Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs, MemoryStore, PostgresStore, Relay,
     RelayConfig, RelayStore,
@@ -777,5 +778,217 @@ async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
         // A device that still had it, and was not told, can put it back.
         removed.send().await;
         assert_eq!(removed.read_back().await, removed.plain, "{name}");
+    }
+}
+
+/// Another instance's commit landing between this one's row read and its
+/// assemble: the race in #22, made to happen every time.
+struct CommitsElsewhere {
+    dir: Arc<DirBlobs>,
+    store: Arc<dyn RelayStore>,
+    landing: std::sync::Mutex<Option<Landing>>,
+}
+
+struct Landing {
+    note: String,
+    object: String,
+    chunks: u32,
+    digest: [u8; 32],
+}
+
+#[async_trait::async_trait]
+impl Blobs for CommitsElsewhere {
+    async fn put_part(
+        &self,
+        note: &str,
+        object: &str,
+        index: u32,
+        bytes: axum::body::Bytes,
+    ) -> RelayResult<PartPut> {
+        self.dir.put_part(note, object, index, bytes).await
+    }
+
+    async fn parts(&self, note: &str, object: &str) -> RelayResult<Vec<u32>> {
+        self.dir.parts(note, object).await
+    }
+
+    async fn assemble(
+        &self,
+        note: &str,
+        object: &str,
+        chunks: u32,
+        digest: [u8; 32],
+    ) -> RelayResult<Assembled> {
+        let landing = self.landing.lock().unwrap().take();
+        if let Some(other) = landing {
+            // The other instance assembles, then records its commit.
+            assert_eq!(
+                self.dir
+                    .assemble(&other.note, &other.object, other.chunks, other.digest)
+                    .await
+                    .unwrap(),
+                Assembled::Done
+            );
+            self.store
+                .commit_media(&other.note, &other.object, other.digest)
+                .await
+                .unwrap();
+        }
+        self.dir.assemble(note, object, chunks, digest).await
+    }
+
+    async fn read(
+        &self,
+        note: &str,
+        object: &str,
+        at: u64,
+        len: u64,
+    ) -> RelayResult<Option<Vec<u8>>> {
+        self.dir.read(note, object, at, len).await
+    }
+
+    async fn remove(&self, note: &str, object: &str) -> RelayResult<()> {
+        self.dir.remove(note, object).await
+    }
+
+    async fn remove_note(&self, note: &str) -> RelayResult<()> {
+        self.dir.remove_note(note).await
+    }
+}
+
+/// Issue #22: a commit on another instance deleted attachment bytes that were
+/// already committed, because `assemble` cannot see the metadata that says so.
+#[tokio::test]
+async fn a_commit_that_loses_the_race_leaves_the_committed_bytes_alone() {
+    for (name, store) in stores().await {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(DirBlobs::open(dir.path()).unwrap());
+        let racer = Arc::new(CommitsElsewhere {
+            dir: blobs.clone(),
+            store: store.clone(),
+            landing: std::sync::Mutex::new(None),
+        });
+        let relay = relay(
+            store.clone(),
+            MediaConfig {
+                blobs: Some(racer.clone()),
+                limits: MediaLimits::default(),
+            },
+        )
+        .await;
+
+        // This instance reserves, sends every chunk, and is about to commit.
+        let up = Upload::new(&relay, (1 << 20) + 4000).await;
+        assert_eq!(up.reserve().await, StatusCode::CREATED, "{name}");
+        for i in 0..up.media.chunks() {
+            assert_eq!(up.put(i, up.chunk(i)).await, StatusCode::CREATED, "{name}");
+        }
+        // Between this commit's row read and its assemble, the other instance
+        // commits the same object under the digest of the same chunks.
+        *racer.landing.lock().unwrap() = Some(Landing {
+            note: up.note.encode(),
+            object: up.media.object.encode(),
+            chunks: up.media.chunks(),
+            digest: up.media.digest,
+        });
+
+        // This commit names another digest. It must be refused and touch
+        // nothing: those bytes are the object now.
+        assert_eq!(
+            up.commit_with([7; 32]).await,
+            StatusCode::CONFLICT,
+            "{name}"
+        );
+        // The hook did fire, rather than this passing because no commit ever
+        // reached `assemble`.
+        assert_eq!(
+            store
+                .media(&up.note.encode(), &up.media.object.encode())
+                .await
+                .unwrap()
+                .unwrap()
+                .committed,
+            Some(up.media.digest),
+            "{name}"
+        );
+        assert_eq!(up.fetch(None).await.status(), StatusCode::OK, "{name}");
+        assert_eq!(up.read_back().await, up.plain, "{name}");
+        assert!(
+            dir.path()
+                .join("objects")
+                .join(up.note.encode())
+                .join(up.media.object.encode())
+                .is_file(),
+            "{name}"
+        );
+    }
+}
+
+/// The crash-between-assemble-and-commit state: an object on disk under a row
+/// that still says uncommitted. A commit naming another digest must not delete
+/// it — nothing here can prove that a commit on another instance is not
+/// recording it — and the chunks it hashed are dropped so they are sent again.
+#[tokio::test]
+async fn a_mismatch_against_an_uncommitted_object_is_left_on_disk() {
+    for (name, store) in stores().await {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(DirBlobs::open(dir.path()).unwrap());
+        let relay = relay(
+            store,
+            MediaConfig {
+                blobs: Some(blobs.clone()),
+                limits: MediaLimits::default(),
+            },
+        )
+        .await;
+        let up = Upload::new(&relay, (1 << 20) + 4000).await;
+        assert_eq!(up.reserve().await, StatusCode::CREATED, "{name}");
+        for i in 0..up.media.chunks() {
+            assert_eq!(up.put(i, up.chunk(i)).await, StatusCode::CREATED, "{name}");
+        }
+        // Assembled, and a crash before the commit was recorded: the object
+        // is on disk under a row that still says uncommitted.
+        let (note, object) = (up.note.encode(), up.media.object.encode());
+        let on_disk = dir.path().join("objects").join(&note).join(&object);
+        assert_eq!(
+            blobs
+                .assemble(&note, &object, up.media.chunks(), up.media.digest)
+                .await
+                .unwrap(),
+            Assembled::Done,
+            "{name}"
+        );
+
+        // A digest it is not. `assemble` leaves the object, and the commit
+        // deletes nothing either: the row it read says nothing about what
+        // another instance is doing this moment.
+        assert_eq!(
+            blobs
+                .assemble(&note, &object, up.media.chunks(), [7; 32])
+                .await
+                .unwrap(),
+            Assembled::Mismatch { assembled: true },
+            "{name}"
+        );
+        assert!(on_disk.is_file(), "{name}: assemble dropped bytes");
+        assert_eq!(
+            up.commit_with([7; 32]).await,
+            StatusCode::CONFLICT,
+            "{name}"
+        );
+        assert!(on_disk.is_file(), "{name}: the commit dropped bytes");
+        assert_eq!(
+            up.status().await.unwrap().received,
+            Vec::<u32>::new(),
+            "{name}"
+        );
+        assert_eq!(
+            up.fetch(None).await.status(),
+            StatusCode::NOT_FOUND,
+            "{name}"
+        );
+        // Nothing was thrown away: the digest the object does have commits it.
+        up.send().await;
+        assert_eq!(up.read_back().await, up.plain, "{name}");
     }
 }
