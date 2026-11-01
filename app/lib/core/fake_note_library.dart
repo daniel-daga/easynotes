@@ -85,6 +85,10 @@ class FakeNoteLibrary implements NoteLibrary {
   /// still opening.
   Completer<void>? openGate;
 
+  /// What every note this fake makes refuses an attachment with, as a core
+  /// over its limit would ([FakeNoteCore.refuseAttachment]).
+  Object? refuseAttachment;
+
   List<NoteSummary> _summaries = const [];
   SyncStatus _status = const SyncStatus.offline();
   DateTime? _lastSyncedAt;
@@ -158,7 +162,7 @@ class FakeNoteLibrary implements NoteLibrary {
       kind == NoteKind.checklist ? 'createNote()' : 'createNote(${kind.name})',
     );
     final id = 'note-${_counter++}';
-    _add(id, FakeNoteCore(kind: kind));
+    _add(id, FakeNoteCore(kind: kind)..refuseAttachment = refuseAttachment);
     _emit();
     return id;
   }

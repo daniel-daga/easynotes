@@ -549,6 +549,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
 
     String? createdNoteId;
+    var imported = false;
     try {
       final noteId = await widget.library.createNote(kind: NoteKind.text);
       createdNoteId = noteId;
@@ -570,12 +571,17 @@ class _NoteListScreenState extends State<NoteListScreen> {
             durationMs: recording.duration.inMilliseconds,
           );
         }
+        // Before the core is let go: a failing dispose must not make a saved
+        // recording look unsaved, and the finally below deletes it.
+        imported = true;
       } finally {
         await core.dispose();
       }
       if (mounted) await _openNote(noteId);
     } on Object catch (error) {
-      if (createdNoteId != null) {
+      // Only undo the note for a recording that is not in it: one that was
+      // imported is saved, and trashing it would contradict the message.
+      if (createdNoteId != null && !imported) {
         try {
           await widget.library.setTrashed(createdNoteId, true);
         } on Object {
@@ -583,12 +589,24 @@ class _NoteListScreenState extends State<NoteListScreen> {
         }
       }
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text('Could not save audio note: $error')),
-        );
+        // Say what happened to the recording, matching what the finally below
+        // does with it: an imported one is in the note and is deleted, a
+        // browser's goes with its blob URL, and a file on disk stays where
+        // the recorder put it.
+        final message = imported
+            ? 'Saved the audio note, but could not open it: $error'
+            : kIsWeb
+            ? 'Could not save audio note: $error. The recording was not kept.'
+            : 'Could not save audio note: $error. The recording is still on '
+                  'this device at ${recording.path}.';
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
-      await discardRecordingPath(recording.path);
+      // A browser's recording is a blob URL nothing else holds, so it is
+      // released either way; a file on disk is kept unless the note has it.
+      if (imported || kIsWeb) await discardRecordingPath(recording.path);
     }
   }
 
