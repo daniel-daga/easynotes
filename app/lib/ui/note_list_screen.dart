@@ -1037,16 +1037,29 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   /// The same, for everything in the trash at once.
-  Future<void> _emptyTrash(int count) async {
+  ///
+  /// The notes are the ones the confirmation counted, not whatever is in the
+  /// trash when the answer arrives: a note thrown away on another device and
+  /// synced while the question was open was never asked about.
+  Future<void> _emptyTrash(List<NoteSummary> notes) async {
     final confirmed = await _confirmDelete(
-      question: count == 1
+      question: notes.length == 1
           ? 'Delete 1 note permanently?'
-          : 'Delete all $count notes permanently?',
+          : 'Delete all ${notes.length} notes permanently?',
       action: 'Delete all',
     );
     if (!confirmed || !mounted) return;
     try {
-      await widget.library.emptyTrash();
+      // Confirmed and still in the trash: one taken back out on another device
+      // while the question was open is not deleted.
+      final trashed = {
+        for (final note in widget.library.notes)
+          if (note.trashed) note.id,
+      };
+      await widget.library.forgetNotes([
+        for (final note in notes)
+          if (trashed.contains(note.id)) note.id,
+      ]);
     } catch (error) {
       _deletionFailed('Could not finish emptying the trash: $error.');
     }
@@ -1326,7 +1339,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                             key: const Key('empty-trash-button'),
                             icon: const Icon(Icons.delete_sweep_outlined),
                             tooltip: 'Empty the trash',
-                            onPressed: () => _emptyTrash(notes.length),
+                            onPressed: () => _emptyTrash(notes),
                           ),
                       ],
                     ],

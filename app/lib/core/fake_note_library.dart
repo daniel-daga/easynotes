@@ -598,8 +598,8 @@ class FakeNoteLibrary implements NoteLibrary {
     _emit();
   }
 
-  /// When set, [forgetNote] and [emptyTrash] throw it, having done nothing,
-  /// as a store that refused the deletion's first write would.
+  /// When set, [forgetNote], [forgetNotes] and [emptyTrash] throw it, having
+  /// done nothing, as a store that refused the deletion's first write would.
   Object? refuseDeletion;
 
   @override

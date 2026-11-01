@@ -435,6 +435,9 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   Future<void> forgetNote(String noteId);
 
   /// Delete every note in the trash for good. Returns how many there were.
+  ///
+  /// The trash is read when this is called, so it cannot match a count anyone
+  /// saw: the UI deletes the set a confirmation named with [forgetNotes].
   Future<int> emptyTrash();
 
   // A selection of notes. Each of these is one change however many notes it

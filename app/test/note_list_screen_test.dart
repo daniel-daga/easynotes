@@ -1469,12 +1469,78 @@ void main() {
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
 
-    expect(library.calls, contains('emptyTrash()'));
+    expect(library.calls, contains('forgetNotes(old, hardware)'));
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
     await openShelf(tester, 'notes');
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsNothing);
     expect(find.byKey(const Key('note:old')), findsNothing);
+  });
+
+  testWidgets('a note that reaches the trash while the confirmation is open '
+      'survives emptying', (tester) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
+    await holdAndTap(tester, 'old', 'bulk-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete all 2 notes permanently?'), findsOneWidget);
+
+    // Another device throws a note away, and sync delivers it, while the
+    // question is still on screen.
+    final arriving = await library.createNote();
+    await library.setTrashed(arriving, true);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    // The two that were counted, and only those.
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    expect(find.byKey(const Key('note:old')), findsNothing);
+    expect(find.byKey(Key('note:$arriving')), findsOneWidget);
+    expect(library.calls, contains('forgetNotes(old, hardware)'));
+  });
+
+  testWidgets('a note restored while the confirmation is open survives '
+      'emptying', (tester) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
+    await holdAndTap(tester, 'old', 'bulk-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete all 2 notes permanently?'), findsOneWidget);
+
+    // Another device takes a note back out of the trash while the question is
+    // still on screen. It was counted, but it is not in the trash any more.
+    await library.setTrashed('hardware', false);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note:old')), findsNothing);
+    await openShelf(tester, 'notes');
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(library.calls, contains('forgetNotes(old)'));
   });
 
   testWidgets('a deletion that fails says so and leaves the trash', (
@@ -1496,7 +1562,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
-    expect(library.calls, contains('emptyTrash()'));
+    expect(library.calls, contains('forgetNotes(hardware)'));
     expect(find.byKey(const Key('deletion-failed')), findsOneWidget);
     expect(find.textContaining('out of space'), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
