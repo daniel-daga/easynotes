@@ -775,12 +775,35 @@ pub(crate) async fn put_chunk(
     }
     match blobs.put_part(&note, &object, index, body).await? {
         PartPut::Stored => {
+            // A purge may have deleted the row between the read above and
+            // this write. Its directory sweep may already have run, so remove
+            // what this request just recreated.
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.touch_media(&note, &object, now()).await?;
             Ok(StatusCode::CREATED)
         }
         PartPut::Same => Ok(StatusCode::OK),
         PartPut::Differs => Err(RelayError::Conflict("different bytes for that chunk")),
     }
+}
+
+/// After writing bytes, drop them again if the topic was purged meanwhile.
+///
+/// Purge deletes the row before it removes the directory, so either this sees
+/// a live row and the purge's later sweep takes the bytes, or it sees none and
+/// cleans up after itself. Without this, a write racing a purge recreates a
+/// path the purge has already passed.
+async fn discard_if_gone(
+    state: &Arc<AppState>,
+    blobs: &Arc<dyn Blobs>,
+    note: &str,
+    object: &str,
+) -> Result<()> {
+    if state.store.media(note, object).await?.is_none() {
+        blobs.remove(note, object).await?;
+        return Err(RelayError::NotFound);
+    }
+    Ok(())
 }
 
 pub(crate) async fn status(
@@ -838,6 +861,9 @@ pub(crate) async fn commit(
         .await?
     {
         Assembled::Done => {
+            // The object may have been assembled after a purge removed its
+            // row and swept the directory; drop it rather than leave it.
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.commit_media(&note, &object, digest).await?;
             // Committed now: fresh for a day from now, not from its last
             // chunk, so its descriptor has the whole day to arrive.
@@ -976,5 +1002,22 @@ mod tests {
         assert_eq!(range(&with("bytes=10-"), 10), None);
         assert_eq!(range(&with("bytes=5-2"), 10), None);
         assert_eq!(range(&with("bytes=-5"), 10), None);
+    }
+
+    #[tokio::test]
+    async fn a_write_after_purge_removes_its_bytes() {
+        let mut config = crate::app::RelayConfig::default();
+        let state = AppState::configured(Arc::new(crate::store::MemoryStore::new()), &mut config);
+        let blobs: Arc<dyn Blobs> = Arc::new(MemoryBlobs::default());
+        blobs
+            .put_part("note", "object", 0, Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            discard_if_gone(&state, &blobs, "note", "object").await,
+            Err(RelayError::NotFound)
+        ));
+        assert!(blobs.parts("note", "object").await.unwrap().is_empty());
     }
 }

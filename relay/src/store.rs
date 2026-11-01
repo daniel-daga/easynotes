@@ -307,6 +307,27 @@ fn swept(expires_at: i64, now: i64) -> bool {
     expires_at + crate::protocol::INVITE_GRACE_SECS < now
 }
 
+/// Recover access metadata for a log written before ADR 0024, when neither
+/// store recorded it. After this, a compaction keeps the package chain and a
+/// purge knows whose key outranks a guest's.
+fn recover_memory_access(log: &mut Log, note: &str) {
+    if log.topic.gone {
+        return;
+    }
+    let (owner, current, keep) = quota::recover(
+        &log.topic,
+        note,
+        log.rows
+            .iter()
+            .map(|row| (row.stored.seq, row.stored.envelope.as_slice())),
+    );
+    for row in &mut log.rows {
+        row.keep = keep.binary_search(&row.stored.seq).is_ok();
+    }
+    log.topic.owner = owner;
+    log.topic.current = current;
+}
+
 // ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
@@ -448,6 +469,7 @@ impl RelayStore for MemoryStore {
         let Some(log) = notes.get_mut(note) else {
             return Ok(Err(Refusal::Stale));
         };
+        recover_memory_access(log, note);
         let register = match quota::authorise(&log.topic, note, proposal) {
             Ok(register) => register,
             Err(refusal) => return Ok(Err(refusal)),
@@ -504,6 +526,7 @@ impl RelayStore for MemoryStore {
     ) -> Result<std::result::Result<(), Refusal>> {
         let mut notes = self.notes.lock().unwrap();
         let log = notes.entry(note.to_string()).or_default();
+        recover_memory_access(log, note);
         if let Err(refusal) = quota::authorise_purge(&log.topic, note, key, signature) {
             return Ok(Err(refusal));
         }
@@ -1066,6 +1089,7 @@ impl RelayStore for PostgresStore {
         let Some(mut topic) = lock_topic(&mut tx, note).await? else {
             return Ok(Err(Refusal::Stale));
         };
+        recover_postgres_access(&mut tx, note, &mut topic).await?;
         let register = match quota::authorise(&topic, note, proposal) {
             Ok(register) => register,
             Err(refusal) => return Ok(Err(refusal)),
@@ -1153,9 +1177,10 @@ impl RelayStore for PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(pg)?;
-        let topic = lock_topic(&mut tx, note)
+        let mut topic = lock_topic(&mut tx, note)
             .await?
             .ok_or_else(|| RelayError::Storage("topic row vanished".into()))?;
+        recover_postgres_access(&mut tx, note, &mut topic).await?;
         if let Err(refusal) = quota::authorise_purge(&topic, note, key, signature) {
             return Ok(Err(refusal));
         }
@@ -1744,6 +1769,63 @@ async fn read_topic(
         covers,
         gone,
     }))
+}
+
+/// See [`recover_memory_access`] for the memory store: replay a pre-0024 log so its
+/// packages stay kept and its owner is known before a compaction or purge.
+async fn recover_postgres_access(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note: &str,
+    topic: &mut Topic,
+) -> Result<()> {
+    if topic.gone {
+        return Ok(());
+    }
+    let rows: Vec<(i64, Vec<u8>, bool)> =
+        sqlx::query_as("SELECT seq, envelope, keep FROM note_log WHERE note_id = $1 ORDER BY seq")
+            .bind(note)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(pg)?;
+    let (owner, current, keep) = quota::recover(
+        topic,
+        note,
+        rows.iter()
+            .map(|(seq, envelope, _)| (*seq, envelope.as_slice())),
+    );
+    topic.owner = owner;
+    topic.current = current;
+    // Only rewrite rows whose flag actually changes; a normal note has every
+    // package already kept, so a compaction writes nothing here.
+    let mut kept = Vec::new();
+    let mut loose = Vec::new();
+    for (seq, _, was_kept) in &rows {
+        let should_keep = keep.binary_search(seq).is_ok();
+        if should_keep != *was_kept {
+            if should_keep {
+                kept.push(*seq);
+            } else {
+                loose.push(*seq);
+            }
+        }
+    }
+    if !kept.is_empty() {
+        sqlx::query("UPDATE note_log SET keep = TRUE WHERE note_id = $1 AND seq = ANY($2)")
+            .bind(note)
+            .bind(&kept)
+            .execute(&mut **tx)
+            .await
+            .map_err(pg)?;
+    }
+    if !loose.is_empty() {
+        sqlx::query("UPDATE note_log SET keep = FALSE WHERE note_id = $1 AND seq = ANY($2)")
+            .bind(note)
+            .bind(&loose)
+            .execute(&mut **tx)
+            .await
+            .map_err(pg)?;
+    }
+    Ok(())
 }
 
 async fn save_topic(
