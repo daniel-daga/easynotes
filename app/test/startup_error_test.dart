@@ -40,6 +40,17 @@ void main() {
       find.byKey(const Key('startup-error')),
     );
     expect(shown.data, contains('newer version of EasyNotes'));
+    // One way out that works on a phone and one that names the browser's own
+    // action, in the order a person should try them.
+    final advice = tester
+        .widget<Text>(find.byKey(const Key('startup-advice')))
+        .data!;
+    expect(advice, contains('open it again'));
+    expect(advice, contains('update'));
+    expect(advice, contains('support'));
+    expect(advice, contains('reinstalling'));
+    expect(advice, contains('clearing'));
+    expect(advice, contains('browser'));
   }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   // The real `main` reaches this failure through the keychain and the native

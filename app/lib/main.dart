@@ -227,9 +227,12 @@ class _StartupErrorScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 12),
                       const Text(
-                        'Update EasyNotes to the latest version. If that does '
-                        'not help, ask for support before reinstalling: notes '
-                        'kept only on this device may not survive it.',
+                        'Close EasyNotes and open it again. If that does not '
+                        'help, update it. If it still will not start, ask for '
+                        "support before reinstalling or clearing this site's "
+                        'data in the browser: either can throw away the notes '
+                        'stored here.',
+                        key: Key('startup-advice'),
                       ),
                       if (supportContact.isNotEmpty) ...[
                         const SizedBox(height: 12),
