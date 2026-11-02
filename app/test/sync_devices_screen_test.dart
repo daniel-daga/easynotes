@@ -262,7 +262,7 @@ void main() {
   ) async {
     final library = _TransferLibrary();
     await library.createAccount();
-    await pump(tester, library, profile: local);
+    await pump(tester, library);
 
     expect(find.text('Add this device'), findsNothing);
 
@@ -274,6 +274,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('account-transfer')), findsOneWidget);
     expect(find.text('Add another device'), findsOneWidget);
+  });
+
+  testWidgets('an account with no server is not offered a transfer it cannot '
+      'finish', (tester) async {
+    final library = _TransferLibrary();
+    await library.createAccount();
+    await pump(tester, library, profile: local);
+
+    // The account was adopted, but the notes have not reached a relay, so a
+    // QR code would have nowhere to take them and no scan would be offered.
+    expect(find.text('Add this device'), findsNothing);
+    expect(find.byKey(const Key('sync-setup-step')), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('how-sync-works')),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Add another device'), findsNothing);
+    expect(find.byKey(const Key('account-transfer')), findsNothing);
   });
 }
 

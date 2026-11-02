@@ -36,6 +36,22 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
+  /// Whether this device belongs to an account.
+  bool get _hasAccount {
+    try {
+      return widget.library is Accounts &&
+          (widget.library as Accounts).hasAccount;
+    } on Object {
+      return false;
+    }
+  }
+
+  /// The side of the pairing this screen was opened on. Only a device that
+  /// arrived with an account and a relay can act as the owner. A guest stays
+  /// on the guest's side after adopting, because it is still finishing its own
+  /// transfer, and [widget.profile] is a snapshot a move here does not update.
+  late final bool _owner = widget.profile.url != null && _hasAccount;
+
   @override
   void dispose() {
     _poller?.cancel();
@@ -146,18 +162,40 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       }
       final current = widget.profile.url;
       final address = transfer.relayUrl;
-      if (current == null) {
-        await widget.onMoveLocalToRelay(address, access: transfer.relayAccess);
-      } else if (current == address) {
-        await widget.onSetAccess(transfer.relayAccess);
-      } else {
+      if (current != null && current != address) {
         throw StateError(
           'Choose the same sync server as the original device in Sync server '
           'settings, then scan again.',
         );
       }
-      await widget.library.adoptAccountTransfer();
+      // The account goes on before the collection moves. A device with no
+      // account that moves first is asked to create one, and adopting the
+      // transferred account is then refused: the transfer cannot finish.
+      // An account already on this device is the same account paired again
+      // after a failure, and adopting it a second time is refused just the
+      // same, so only a device without one adopts.
+      if (!_hasAccount) await widget.library.adoptAccountTransfer();
       _poller?.cancel();
+      // Paired: no longer waiting for approval, whether or not the move follows.
+      if (mounted) setState(() => _code = null);
+      try {
+        if (current == null) {
+          await widget.onMoveLocalToRelay(
+            address,
+            access: transfer.relayAccess,
+          );
+        } else {
+          await widget.onSetAccess(transfer.relayAccess);
+        }
+      } on Object catch (e) {
+        // The account is on this device; what is left is the move or the
+        // connection. True whether it stopped before the profile moved or
+        // after it, when the notes are already on the relay.
+        throw StateError(
+          'This device has your account, but the transfer to $address did not '
+          'finish: $e Open Sync server settings to finish.',
+        );
+      }
       if (mounted) {
         setState(() {
           _busy = false;
@@ -186,8 +224,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final owner =
-        widget.library is Accounts && (widget.library as Accounts).hasAccount;
+    final owner = _owner;
     return Scaffold(
       appBar: AppBar(
         title: Text(owner ? 'Add another device' : 'Add this device'),
