@@ -193,7 +193,7 @@ try {
 
     if (refused) {
       check(
-        !!(await find(d, n => n.text.includes('This browser would not keep an edit'), { timeout: 5000 })),
+        !!(await find(d, n => n.text.includes('This tab is not keeping what you type'), { timeout: 5000 })),
         'the refusal is on the screen',
       );
       check(

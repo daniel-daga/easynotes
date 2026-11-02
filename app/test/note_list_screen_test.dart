@@ -2378,6 +2378,25 @@ void main() {
     expect(find.text('Groceries'), findsOneWidget);
   });
 
+  testWidgets('a tab with no store does not claim an edit was refused', (
+    tester,
+  ) async {
+    // What the fallback library hands the banner when IndexedDB never opened:
+    // no write was refused, because there was never a store to refuse one.
+    final library = twoLists();
+    await pumpList(tester, library);
+    library.pushStorageError('Unsupported operation: no database here');
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('not keeping what you type'), findsOneWidget);
+    expect(find.textContaining('it is gone'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('storage-error')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('refused to store an edit'), findsNothing);
+    expect(find.textContaining('will not survive a reload'), findsOneWidget);
+  });
+
   testWidgets('reading the detail is not the same as it being fixed', (
     tester,
   ) async {
