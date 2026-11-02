@@ -36,6 +36,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
+  /// Whether this device's library moved to the relay, so the screen it was
+  /// opened from holds a collection that has since closed.
+  bool _moved = false;
+
   /// Whether this device belongs to an account.
   bool get _hasAccount {
     try {
@@ -200,6 +204,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         setState(() {
           _busy = false;
           _approved = true;
+          _moved = current == null;
           _message =
               'Account added. This device is connected to ${transfer.relayUrl}.';
         });
@@ -316,6 +321,13 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (!_approved) ...[
             const SizedBox(height: 20),
             TextButton(onPressed: _cancel, child: const Text('Cancel')),
+          ] else ...[
+            const SizedBox(height: 20),
+            FilledButton(
+              key: const Key('account-transfer-done'),
+              onPressed: () => Navigator.of(context).pop(_moved),
+              child: const Text('Done'),
+            ),
           ],
         ],
       ),
