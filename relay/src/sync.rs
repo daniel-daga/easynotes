@@ -93,8 +93,9 @@ struct Subscription {
     /// Whether `caught` has been said. Once: a replay after a lag is the
     /// relay's business and not a new backlog.
     caught: bool,
-    /// The one refresh barrier currently outstanding for this subscription.
-    refresh: Option<(String, i64)>,
+    /// The refresh barriers still outstanding for this subscription, one per
+    /// id the client has asked for.
+    refresh: Vec<(String, i64)>,
     /// Forwards the note's fan-out into the session. Aborted on unsubscribe.
     forwarder: JoinHandle<()>,
     metrics: Arc<crate::metrics::Metrics>,
@@ -306,20 +307,30 @@ async fn send_chunk(
                 seq: sub.last_sent,
             });
         }
-        if let Some((id, head)) = sub.refresh.take() {
-            if sub.last_sent >= head {
-                let permit = permits.next().expect("a permit for refresh completion");
-                permit.send(SyncServerMessage::RefreshComplete {
-                    id,
-                    note: note.to_string(),
-                    seq: head,
-                });
-                state.metrics.refresh_completed();
-            } else {
-                sub.refresh = Some((id, head));
-                sub.catching_up = true;
-                return Ok(true);
+        // Answer every barrier the send reached, not just one: the client has
+        // a counter of its own per action and may have two ids waiting.
+        let reached = sub.last_sent;
+        let pending = std::mem::take(&mut sub.refresh);
+        for (id, head) in pending {
+            if reached < head {
+                sub.refresh.push((id, head));
+                continue;
             }
+            // No permit left this chunk: answer it on the next one.
+            let Some(permit) = permits.next() else {
+                sub.refresh.push((id, head));
+                continue;
+            };
+            permit.send(SyncServerMessage::RefreshComplete {
+                id,
+                note: note.to_string(),
+                seq: head,
+            });
+            state.metrics.refresh_completed();
+        }
+        if !sub.refresh.is_empty() {
+            sub.catching_up = true;
+            return Ok(true);
         }
     }
     Ok(more)
@@ -398,7 +409,7 @@ async fn handle(
                     last_sent: since,
                     catching_up: true,
                     caught: false,
-                    refresh: None,
+                    refresh: Vec::new(),
                     forwarder,
                     metrics: state.metrics.clone(),
                 },
@@ -415,11 +426,7 @@ async fn handle(
         SyncClientMessage::Refresh { id } => {
             state.metrics.refresh_requested();
             for (note, sub) in &mut subs.0 {
-                if sub
-                    .refresh
-                    .as_ref()
-                    .is_some_and(|(pending, _)| pending == &id)
-                {
+                if sub.refresh.iter().any(|(pending, _)| pending == &id) {
                     continue;
                 }
                 let head = match state.store.head(note).await {
@@ -429,8 +436,8 @@ async fn handle(
                         continue;
                     }
                 };
-                sub.refresh = Some((id.clone(), head));
                 if sub.last_sent < head || sub.catching_up {
+                    sub.refresh.push((id.clone(), head));
                     if !sub.catching_up {
                         sub.catching_up = true;
                         backlog.push_back(note.clone());
@@ -444,7 +451,6 @@ async fn handle(
                         })
                         .await;
                     state.metrics.refresh_completed();
-                    sub.refresh = None;
                 }
             }
         }
