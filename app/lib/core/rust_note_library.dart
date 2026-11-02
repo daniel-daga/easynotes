@@ -140,16 +140,21 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// can be switched off outright. Everything above the store is the same Rust
   /// the native build runs.
   ///
+  /// [storageError] is why there is no store. The tab is not keeping anything,
+  /// and the "Not saved" banner has to say so from the first edit rather than
+  /// let a reload be the thing that tells someone.
+  ///
   /// [canJoin] is false here and nowhere else: a tab like this can reach a
   /// relay perfectly well, but a list joined into it would be gone on the next
   /// reload, and a share that evaporates is worse than a button that is not
   /// there.
-  static Future<RustNoteLibrary> openEphemeral() async {
+  static Future<RustNoteLibrary> openEphemeral({String? storageError}) async {
     await RustNoteCore.ensureInitialized();
-    return RustNoteLibrary._(
+    final library = RustNoteLibrary._(
       rust.Library.openEphemeral(),
       canJoin: false,
-    )._loaded();
+    ).._storageError = storageError;
+    return library._loaded();
   }
 
   /// Read in every note the core has not read yet, so that [notes] has the
@@ -442,14 +447,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<void> forgetNote(String noteId) async {
     await _library.forgetNote(id: noteId);
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    // A tab with no store has no write to lose: this is memory, and the deletion
+    // is as good as its notes. Only a store that refused one is worth throwing.
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
   }
 
   @override
   Future<int> emptyTrash() async {
     final count = await _library.emptyTrash();
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
     return count;
   }
 
@@ -481,7 +488,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<int> forgetNotes(List<String> noteIds) async {
     final count = await _library.forgetNotes(ids: noteIds);
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
     return count;
   }
 

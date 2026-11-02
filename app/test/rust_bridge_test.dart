@@ -10,15 +10,18 @@
 /// both set it.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:easynotes/core/browser_store.dart';
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
+import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:easynotes/core/sync_status.dart';
+import 'package:easynotes/main.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:easynotes/src/rust/api/notes.dart'
     show Library, NoteKindView, StorageArea, StorageBatch, StorageRow;
@@ -1172,6 +1175,42 @@ void main() {
           RustNoteLibrary.openInBrowser(db, MasterKeyStore.newKey()),
           throwsA(anything),
         );
+      });
+
+      test('only a browser with no database falls back to memory', () async {
+        // The store opens; the key the keychain hands back is not the one the
+        // rows were sealed with. That is not a browser refusing to keep notes:
+        // the notes are there and cannot be read, and an empty tab over them is
+        // how what is typed next is lost.
+        final db = MemoryBrowserStore();
+        final stored = await openTab(db, MasterKeyStore.newKey());
+        await stored.createNote();
+        await stored.dispose();
+
+        FlutterSecureStorage.setMockInitialValues({
+          'easynotes.master-key': base64Encode(MasterKeyStore.newKey()),
+        });
+        addTearDown(() => FlutterSecureStorage.setMockInitialValues({}));
+
+        const profile = RelayProfile(id: 'default', url: null);
+        await expectLater(
+          openInBrowser(profile, openStore: (_) async => db),
+          throwsA(anything),
+        );
+
+        // A browser that will not give the app a database still runs, with its
+        // notes in memory — and the banner has something to say about it.
+        final memory = await openInBrowser(
+          profile,
+          openStore: (_) async => throw UnsupportedError('no database here'),
+        );
+        addTearDown(memory.dispose);
+        expect(memory.canJoin, isFalse);
+        expect(memory.storageError, contains('no database here'));
+        // A tab keeping nothing can still throw a note away: the banner is
+        // about the store being missing, not about this delete being lost.
+        await memory.forgetNote(await memory.createNote());
+        expect(memory.notes, isEmpty);
       });
     },
     skip: libPath == null
