@@ -964,6 +964,9 @@ class FakeNoteLibrary implements NoteLibrary {
     for (final watcher in _watchers.values) {
       await watcher.cancel();
     }
+    for (final core in _cores.values) {
+      await core.closeStreams();
+    }
     await _notes.close();
     await _sync.close();
     await _lastSynced.close();
