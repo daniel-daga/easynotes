@@ -12,7 +12,7 @@ use easynotes_core::attachment::seal::{seal_whole, verify_sealed};
 use easynotes_core::attachment::{ContentKey, MediaOpener, MediaRef, Variant};
 use easynotes_core::crypto::DeviceIdentity;
 use easynotes_core::ids::{AttachmentId, MediaObjectId, NoteId};
-use easynotes_relay::error::Result as RelayResult;
+use easynotes_relay::error::{RelayError, Result as RelayResult};
 use easynotes_relay::media::{Assembled, MediaStatus, PartPut};
 use easynotes_relay::{
     Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs, MemoryStore, PostgresStore, Relay,
@@ -778,6 +778,136 @@ async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
         // A device that still had it, and was not told, can put it back.
         removed.send().await;
         assert_eq!(removed.read_back().await, removed.plain, "{name}");
+    }
+}
+
+/// A `Blobs` whose volume will not unlink one object, as a full or misbehaving
+/// disk does.
+struct FailsOneRemove {
+    dir: Arc<DirBlobs>,
+    failing: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl Blobs for FailsOneRemove {
+    async fn put_part(
+        &self,
+        note: &str,
+        object: &str,
+        index: u32,
+        bytes: axum::body::Bytes,
+    ) -> RelayResult<PartPut> {
+        self.dir.put_part(note, object, index, bytes).await
+    }
+
+    async fn parts(&self, note: &str, object: &str) -> RelayResult<Vec<u32>> {
+        self.dir.parts(note, object).await
+    }
+
+    async fn assemble(
+        &self,
+        note: &str,
+        object: &str,
+        chunks: u32,
+        digest: [u8; 32],
+    ) -> RelayResult<Assembled> {
+        self.dir.assemble(note, object, chunks, digest).await
+    }
+
+    async fn read(
+        &self,
+        note: &str,
+        object: &str,
+        at: u64,
+        len: u64,
+    ) -> RelayResult<Option<Vec<u8>>> {
+        self.dir.read(note, object, at, len).await
+    }
+
+    async fn remove(&self, note: &str, object: &str) -> RelayResult<()> {
+        if self.failing.lock().unwrap().as_deref() == Some(object) {
+            return Err(RelayError::Storage("this volume will not unlink".into()));
+        }
+        self.dir.remove(note, object).await
+    }
+
+    async fn remove_note(&self, note: &str) -> RelayResult<()> {
+        self.dir.remove_note(note).await
+    }
+}
+
+/// Issue #17: the sweep drops rows before it removes bytes, so a removal that
+/// aborted the batch orphaned every later object with nothing left to name it.
+#[tokio::test]
+async fn a_sweep_that_cannot_unlink_one_object_still_finishes_the_rest() {
+    // Memory only: a Postgres store is shared between tests, and another
+    // test's sweep would remove the abandoned object before this one runs.
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(FailsOneRemove {
+        dir: Arc::new(DirBlobs::open(dir.path()).unwrap()),
+        failing: std::sync::Mutex::new(None),
+    });
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let limits = MediaLimits {
+        staging_ttl_secs: -60,
+        fresh_secs: -60,
+        doomed_ttl_secs: -60,
+        ..MediaLimits::default()
+    };
+    let relay = relay(
+        store.clone(),
+        MediaConfig {
+            blobs: Some(blobs.clone()),
+            limits,
+        },
+    )
+    .await;
+
+    // Committed, and the compaction below lists nothing, so it is doomed.
+    let note = Upload::new(&relay, 1000).await;
+    let doomed = note.sibling(1000);
+    doomed.send().await;
+    // Reserved after the last sweep, so it is still here when the next runs.
+    let abandoned = note.sibling(1000);
+    abandoned.reserve().await;
+    abandoned.put(0, abandoned.chunk(0)).await;
+
+    // The volume refuses the abandoned object, which the sweep reaches first.
+    *blobs.failing.lock().unwrap() = Some(abandoned.media.object.encode());
+    compact_listing(&store, &note, vec![], &limits).await;
+    // A reservation runs the sweep: the abandoned object and the doomed one.
+    assert_eq!(
+        note.sibling(1000).reserve().await,
+        StatusCode::CREATED,
+        "a failed unlink must not refuse the reservation"
+    );
+
+    let held = |u: &Upload| {
+        let (note, object) = (u.note.encode(), u.media.object.encode());
+        dir.path()
+            .join("objects")
+            .join(&note)
+            .join(&object)
+            .exists()
+            || dir.path().join("parts").join(&note).join(&object).exists()
+    };
+    assert!(
+        !held(&doomed),
+        "the sweep stopped at the first failed unlink"
+    );
+    assert!(
+        held(&abandoned),
+        "at most the object that would not unlink may leak"
+    );
+    for u in [&doomed, &abandoned] {
+        assert!(
+            store
+                .media(&u.note.encode(), &u.media.object.encode())
+                .await
+                .unwrap()
+                .is_none(),
+            "a swept object's row is gone"
+        );
     }
 }
 

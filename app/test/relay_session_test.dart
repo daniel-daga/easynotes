@@ -233,14 +233,31 @@ void main() {
     },
   );
 
-  test('a second tap while switching does not start a second switch', () async {
+  test(
+    'a second tap for the same relay waits for the switch under way',
+    () async {
+      final s = session(_Library('local'));
+      final first = s.switchTo('https://a.example');
+      final second = s.switchTo('wss://A.example:443/');
+      expect(s.switching, isTrue);
+      await Future.wait([first, second]);
+      expect(s.switching, isFalse);
+      expect(s.profile.url, 'https://a.example');
+      expect(events.where((e) => e.startsWith('open')), hasLength(1));
+    },
+  );
+
+  test('a second tap for another relay is refused, not answered with the '
+      'first one', () async {
     final s = session(_Library('local'));
     final first = s.switchTo('https://a.example');
     final second = s.switchTo('https://b.example');
     expect(s.switching, isTrue);
-    await Future.wait([first, second]);
+    await expectLater(second, throwsStateError);
+    await first;
     expect(s.switching, isFalse);
     expect(s.profile.url, 'https://a.example');
+    expect(opened, hasLength(1));
     expect(events.where((e) => e.startsWith('open')), hasLength(1));
   });
 

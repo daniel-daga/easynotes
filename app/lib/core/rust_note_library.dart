@@ -614,18 +614,19 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   );
 
   @override
-  Future<void> connect(String url, {String? access}) {
+  Future<void> connect(String url, {String? access}) async {
     // Sync is a server and an account, one decision (ADR 0031). Nothing is
     // uploaded before the account exists, because a relay copy whose note keys
     // never left this device is not a copy anyone can use.
     if (!hasAccount) {
-      return Future.error(
-        StateError('Sync needs an account. Set up sync first.'),
-      );
+      throw StateError('Sync needs an account. Set up sync first.');
     }
+    // Remembered only once the bridge has taken it: the resume path reconnects
+    // with these, and a relay that refused this device must not be retried
+    // forever by a device that has forgotten how to reach the one that worked.
+    await _library.connect(relay: url, access: access);
     _relay = url;
     _access = access;
-    return _library.connect(relay: url, access: access);
   }
 
   @override
@@ -658,11 +659,17 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
         }
       }
       if (generation != _lifecycleGeneration || !_foreground) return;
-      if (_suspended && _relay != null) {
+      if (_suspended) {
+        // A local-only profile has no relay, but it was still paused by the
+        // hide, and nothing else will clear that: the Rust core has no sync
+        // device to report from. Clear it here in every case, and reconnect
+        // only when there is somewhere to reconnect to.
         _suspended = false;
         _paused = false;
         _sync.add(RustNoteCore.toStatus(_library.syncStatus()));
-        await _library.connect(relay: _relay!, access: _access);
+        if (_relay != null) {
+          await _library.connect(relay: _relay!, access: _access);
+        }
       }
       return;
     }

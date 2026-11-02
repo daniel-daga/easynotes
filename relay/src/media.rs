@@ -705,7 +705,11 @@ pub(crate) async fn expire(state: &Arc<AppState>, blobs: &Arc<dyn Blobs>) -> Res
         // Under the object's lock, after its row is gone: a chunk being
         // written as it expired lands first and is removed with the rest.
         let _object = state.append_lock(&lock_key(&note, &object)).await;
-        blobs.remove(&note, &object).await?;
+        if let Err(e) = blobs.remove(&note, &object).await {
+            // The row is gone, so nothing can name these bytes again: say
+            // which, and take the rest rather than strand every later one.
+            tracing::warn!(%note, %object, %e, "could not remove expired media");
+        }
     }
     Ok(())
 }

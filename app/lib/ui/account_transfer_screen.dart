@@ -196,14 +196,26 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           'finish: $e Open Sync server settings to finish.',
         );
       }
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _approved = true;
-          _message =
-              'Account added. This device is connected to ${transfer.relayUrl}.';
-        });
+      if (!mounted) return;
+      if (current == null) {
+        // The library moved, so the screen that opened this one holds a
+        // collection that has since closed. Report the move on the way out.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Account added. This device is connected to ${transfer.relayUrl}.',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(true);
+        return;
       }
+      setState(() {
+        _busy = false;
+        _approved = true;
+        _message =
+            'Account added. This device is connected to ${transfer.relayUrl}.';
+      });
     } catch (e) {
       if (mounted) {
         setState(() {

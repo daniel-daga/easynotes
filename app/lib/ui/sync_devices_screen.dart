@@ -369,8 +369,8 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
     final library = widget.library;
     if (library is! AccountTransfers) return;
     final transfers = library as AccountTransfers;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
+    final moved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
         builder: (_) => AccountTransferScreen(
           library: transfers,
           profile: _profile,
@@ -382,6 +382,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
         ),
       ),
     );
+    _leaveIfChanged(moved);
     if (mounted) setState(() {});
   }
 

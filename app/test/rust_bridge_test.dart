@@ -100,6 +100,48 @@ void main() {
           await library.dispose();
         },
       );
+      test(
+        'a local-only device comes back from being hidden unpaused',
+        () async {
+          // Nothing here has a relay or an account, so the core has no sync
+          // device of its own to report a status from. The hide still pauses
+          // it, and the resume has to clear that without waiting for one.
+          final library = await openLibraryInTempDir();
+          await library.setForeground(false);
+          // The pause is after the grace a briefly hidden tab never reaches.
+          await Future<void>.delayed(const Duration(seconds: 16));
+          expect(library.syncStatus.state, SyncState.paused);
+
+          final resumed = library
+              .watchSync()
+              .firstWhere((status) => status.state != SyncState.paused);
+          await library.setForeground(true);
+          await resumed.timeout(
+            const Duration(seconds: 10),
+            onTimeout: () => fail('the status stayed paused after resume'),
+          );
+          expect(library.syncStatus.state, isNot(SyncState.paused));
+        },
+      );
+      test(
+        'a connect the bridge refused is not the relay resume reconnects to',
+        () async {
+          // Resume after the suspension grace period reconnects to whatever the
+          // last connect remembered. A refusal recorded on the way out would be
+          // retried there forever, so what this asserts is that the resume does
+          // not try the address the bridge already threw out.
+          final library = await openLibraryInTempDir();
+          await library.createAccount();
+          await expectLater(
+            library.connect('this is not a relay address'),
+            throwsA(anything),
+          );
+
+          await library.setForeground(false);
+          await Future<void>.delayed(const Duration(seconds: 16));
+          await expectLater(library.setForeground(true), completes);
+        },
+      );
       test('an empty note starts empty', () async {
         final core = await openInTempDir();
         expect(core.current.title, isEmpty);

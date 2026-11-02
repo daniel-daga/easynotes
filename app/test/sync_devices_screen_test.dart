@@ -276,6 +276,52 @@ void main() {
     expect(find.text('Add another device'), findsOneWidget);
   });
 
+  testWidgets('a transfer that moved the library leaves the closed screen', (
+    tester,
+  ) async {
+    final library = _TransferLibrary()..offerTransfer = true;
+    final moved = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                key: const Key('open-sync'),
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => SyncDevicesScreen(
+                      library: library,
+                      profile: local,
+                      profiles: const [local, relay],
+                      onMoveLocalToRelay: (url, {access}) async =>
+                          moved.add(url),
+                      onSwitchRelay: (url, {access}) async {},
+                    ),
+                  ),
+                ),
+                child: const Text('Open sync'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open-sync')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('account-transfer')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('scan-account-transfer')));
+    tester.state<NavigatorState>(find.byType(Navigator)).pop('{"version":1}');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+
+    expect(moved, [relay.url]);
+    expect(find.textContaining('Account added'), findsOneWidget);
+    expect(find.byType(SyncDevicesScreen, skipOffstage: false), findsNothing);
+  });
+
   testWidgets('an account with no server is not offered a transfer it cannot '
       'finish', (tester) async {
     final library = _TransferLibrary();
@@ -300,11 +346,14 @@ void main() {
 /// A library that can pair, so the settings screen has something to open on a
 /// device that does not belong to an account yet.
 class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
+  /// Whether the other device has approved a transfer to offer.
+  bool offerTransfer = false;
+
   @override
   Future<String?> accountTransferRequestCode() async => null;
 
   @override
-  Future<void> adoptAccountTransfer() async {}
+  Future<void> adoptAccountTransfer() async => setUpSharing();
 
   @override
   Future<void> approveAccountTransfer() async {}
@@ -323,5 +372,6 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
 
   @override
   Future<({String relayUrl, String? relayAccess})?>
-  pollAccountTransferResult() async => null;
+  pollAccountTransferResult() async =>
+      offerTransfer ? (relayUrl: relay.url!, relayAccess: null) : null;
 }

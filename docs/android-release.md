@@ -81,9 +81,14 @@ say so. The build F-Droid needs is the unsigned release this Gradle file makes
 when no key is configured:
 
 ```sh
-flutter build apk --release --build-name 1.2.3 --build-number 1002003 \
-    --dart-define=EASYNOTES_VERSION=1.2.3 …
+cd app/android
+./gradlew assembleRelease
 ```
+
+Back at the repository root, the APK is
+`app/build/app/outputs/apk/release/app-release-unsigned.apk`. Flutter's own
+builder wants a signed `app-release.apk` and fails on this one, which is why the
+command is Gradle's `assembleRelease` and not `flutter build apk --release`.
 
 ## Store text
 

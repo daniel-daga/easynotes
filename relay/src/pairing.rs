@@ -218,19 +218,12 @@ pub async fn poll_response(
 ) -> Result<Json<ResponseStatus>> {
     validate_id(&id)?;
     guest(&s, &id, &r.token)?;
-    let mut map = s.pairings.lock().unwrap();
-    let p = map.get_mut(&id).ok_or(RelayError::NotFound)?;
-    if !has(&r.token, &p.guest_hash) {
-        return Err(RelayError::NotFound);
-    }
-    let response = ResponseStatus {
-        ciphertext: p.ciphertext.take().map(|v| URL_SAFE_NO_PAD.encode(v)),
+    let map = s.pairings.lock().unwrap();
+    let p = map.get(&id).ok_or(RelayError::NotFound)?;
+    Ok(Json(ResponseStatus {
+        ciphertext: p.ciphertext.as_ref().map(|v| URL_SAFE_NO_PAD.encode(v)),
         expires_in: (p.expires - now()).max(0) as u64,
-    };
-    if response.ciphertext.is_some() {
-        map.remove(&id);
-    }
-    Ok(Json(response))
+    }))
 }
 pub async fn close(
     State(s): State<Arc<AppState>>,
