@@ -25,7 +25,7 @@ import 'core/relay_session.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
 import 'ui/account_screen.dart';
-import 'ui/about_screen.dart' show registerBundledLicenses;
+import 'ui/about_screen.dart' show registerBundledLicenses, supportContact;
 import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
 import 'ui/onboarding_screen.dart';
@@ -112,52 +112,128 @@ bool get _hasNativeShares =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  registerBundledLicenses();
-  final initialInvite = kIsWeb
-      ? inviteLinkFrom(Uri.base.toString())
-      : _hasNativeDeepLinks
-      ? await DeepLinks.initialInvite()
-      : null;
-  final initialShare = kIsWeb
-      ? sharedTextFromUri(Uri.base)
-      : _hasNativeShares
-      ? await SharedTexts.initial()
-      : null;
-  // Read, so gone from the address: a reload must not make the note twice.
-  if (kIsWeb) address_bar.dropQuery();
-  final profiles = RelayProfiles();
-  await profiles.load();
-  if (profiles.shouldShowOnboarding &&
-      (initialInvite != null || initialShare != null)) {
-    await profiles.completeOnboarding();
-  }
-  if (kIsWeb) {
-    runApp(
-      const MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: Text(
-              'Opening your notes…\nIf EasyNotes is open in another tab, close it to continue here.',
-              textAlign: TextAlign.center,
+  try {
+    registerBundledLicenses();
+    final initialInvite = kIsWeb
+        ? inviteLinkFrom(Uri.base.toString())
+        : _hasNativeDeepLinks
+        ? await DeepLinks.initialInvite()
+        : null;
+    final initialShare = kIsWeb
+        ? sharedTextFromUri(Uri.base)
+        : _hasNativeShares
+        ? await SharedTexts.initial()
+        : null;
+    // Read, so gone from the address: a reload must not make the note twice.
+    if (kIsWeb) address_bar.dropQuery();
+    final profiles = RelayProfiles();
+    await profiles.load();
+    if (profiles.shouldShowOnboarding &&
+        (initialInvite != null || initialShare != null)) {
+      await profiles.completeOnboarding();
+    }
+    if (kIsWeb) {
+      runApp(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Text(
+                'Opening your notes…\nIf EasyNotes is open in another tab, close it to continue here.',
+                textAlign: TextAlign.center,
+              ),
             ),
           ),
         ),
+      );
+    }
+    runApp(
+      EasyNotesApp(
+        session: RelaySession(
+          profiles: profiles,
+          library: await openLibrary(profiles.selected),
+          profile: profiles.selected,
+          open: openLibrary,
+        ),
+        initialInviteLink: initialInvite,
+        initialSharedText: initialShare,
+        showOnboarding: profiles.shouldShowOnboarding,
+      ),
+    );
+  } on Object catch (error) {
+    // Nothing has drawn yet on a device, and a browser is still on the
+    // placeholder above. Either would be a dead end without these words.
+    runApp(_StartupErrorScreen(error: '$error'));
+  }
+}
+
+/// What a launch that could not finish shows instead of a blank screen.
+///
+/// It names the error, because the alternative is a person reinstalling over
+/// notes that are still there. There is one way forward, and it is not a
+/// button: a repair here would be code resetting the settings that hold the
+/// only key to the store.
+class _StartupErrorScreen extends StatelessWidget {
+  const _StartupErrorScreen({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'EasyNotes',
+      debugShowCheckedModeBanner: false,
+      theme: _easyNotesTheme(Brightness.light),
+      darkTheme: _easyNotesTheme(Brightness.dark),
+      home: Builder(
+        builder: (context) {
+          final theme = Theme.of(context);
+          return Scaffold(
+            body: SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'EasyNotes could not start',
+                        style: theme.textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Something this app had saved could not be read, so it '
+                        'stopped before opening your notes.',
+                      ),
+                      const SizedBox(height: 12),
+                      SelectableText(
+                        error,
+                        key: const Key('startup-error'),
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Update EasyNotes to the latest version. If that does '
+                        'not help, ask for support before reinstalling: notes '
+                        'kept only on this device may not survive it.',
+                      ),
+                      if (supportContact.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        SelectableText(
+                          'Support: $supportContact',
+                          key: const Key('startup-support'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
-  runApp(
-    EasyNotesApp(
-      session: RelaySession(
-        profiles: profiles,
-        library: await openLibrary(profiles.selected),
-        profile: profiles.selected,
-        open: openLibrary,
-      ),
-      initialInviteLink: initialInvite,
-      initialSharedText: initialShare,
-      showOnboarding: profiles.shouldShowOnboarding,
-    ),
-  );
 }
 
 /// Open this device's notes, and start syncing them.
