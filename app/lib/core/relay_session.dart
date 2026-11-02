@@ -76,7 +76,9 @@ class RelaySession extends ChangeNotifier {
   ///
   /// The same relay again, however it is spelled, is no switch at all, and a
   /// second call while one is under way waits for that one rather than
-  /// starting another. Refused, with this profile still open and untouched,
+  /// starting another. Asking for a different relay then is refused once that
+  /// one finishes, rather than quietly handing back its result. Refused, with
+  /// this profile still open and untouched,
   /// if its notes cannot be kept: a tab with no storage, or a store that has
   /// refused a write. Once this profile's library is closed, a failure
   /// reopens it, so a switch either completes or leaves the app where it was.
@@ -93,9 +95,18 @@ class RelaySession extends ChangeNotifier {
     String? access,
     bool connect = true,
   }) {
-    final running = _switching;
-    if (running != null) return running;
     final url = address == null ? null : canonicalRelayUrl(address);
+    final running = _switching;
+    if (running != null) {
+      return running.then((_) {
+        if (_profile.url != url) {
+          throw StateError(
+            'Another server is being selected. Wait for that to finish, then '
+            'switch again.',
+          );
+        }
+      });
+    }
     if (url == _profile.url) {
       if (access != null && url != null && access != _profile.access) {
         return setAccess(access);
