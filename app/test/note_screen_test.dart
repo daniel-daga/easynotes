@@ -1454,6 +1454,41 @@ void main() {
     expect(visibleItems(tester), ['three', 'one', 'two']);
   });
 
+  testWidgets('dragging beside a folded section never lands inside it', (
+    tester,
+  ) async {
+    // Rows this device folded away are not drawn, so they are not places a
+    // drop can land: counting them as targets is how a dragged row used to
+    // vanish into the fold instead of appearing where it was dropped.
+    final core = FakeNoteCore(items: const ['bread']);
+    final dairy = await core.addHeading('Dairy');
+    await core.addItem('milk');
+    await core.addItem('cheese');
+    await core.addHeading('Produce');
+    await core.addItem('apples');
+    await core.setCollapsed(dairy, true);
+    await pumpScreen(tester, core);
+    expect(visibleItems(tester), ['bread', 'apples']);
+
+    final list = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    // The drawn rows are bread, Dairy, Produce, apples; below apples is the
+    // third slot in the list without bread.
+    list.onReorderItem!(0, 3);
+    await tester.pumpAndSettle();
+
+    expect(visibleItems(tester), ['apples', 'bread']);
+    expect(core.current.items.map((item) => item.text), [
+      'Dairy',
+      'milk',
+      'cheese',
+      'Produce',
+      'apples',
+      'bread',
+    ], reason: 'bread is after the folded run, not inside it');
+  });
+
   testWidgets('says so when an edit could not be kept', (tester) async {
     // The screen a person is typing into is the one that has to say it: a
     // warning only the note list draws is a warning they see after the edit
