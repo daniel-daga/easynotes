@@ -153,6 +153,45 @@ async fn refresh_marker_follows_the_captured_subscription_head() {
     }
 }
 
+/// The app has two independent id counters, so two refreshes can be in flight
+/// at once; both must be answered, each at the head it captured.
+#[tokio::test]
+async fn every_refresh_id_in_flight_is_answered() {
+    let (relay, log) = relay().await;
+    let (note, envelope) = an_envelope(32);
+    let history = (BACKLOG_CHUNK * 4) as i64;
+    for _ in 0..history {
+        log.append(&note.encode(), &envelope).await.unwrap();
+    }
+
+    let mut sync = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
+        .await
+        .unwrap();
+    sync.subscribe(note, 0).await.unwrap();
+    // Both go out before the backlog has drained, so both are pending at once.
+    sync.refresh("refresh-1").await.unwrap();
+    sync.refresh("refresh-2").await.unwrap();
+
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        match tokio::time::timeout(PATIENCE, sync.next())
+            .await
+            .expect("the relay went quiet with a refresh unanswered")
+            .unwrap()
+            .expect("the relay closed the socket")
+        {
+            Routed::Refresh { id, note: n, seq } if n == note => {
+                assert_eq!(seq, history);
+                answered.push(id);
+            }
+            Routed::Note(_, _) => {}
+            _ => panic!("unexpected message while catching up"),
+        }
+    }
+    answered.sort();
+    assert_eq!(answered, ["refresh-1", "refresh-2"]);
+}
+
 /// The point of the change: twenty notes, one socket, one token.
 #[tokio::test]
 async fn twenty_notes_are_one_socket_and_one_handshake() {

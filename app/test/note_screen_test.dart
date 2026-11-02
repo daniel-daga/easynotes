@@ -600,6 +600,56 @@ void main() {
     expect(core.current.items, isEmpty);
   });
 
+  testWidgets('a note deleted while it is open leaves the screen', (
+    tester,
+  ) async {
+    // The real core answers UnknownNote once the library has forgotten the
+    // note, and this screen still has the blank row an empty checklist opens
+    // with. Back in that window must not leave the screen stuck.
+    final core = _GoneCore();
+    final library = FakeNoteLibrary(notes: {'this-note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            key: const Key('open'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NoteScreen(
+                  core: core,
+                  storage: FakeStorageHealth(),
+                  noteId: 'this-note',
+                  invites: library,
+                  library: library,
+                ),
+              ),
+            ),
+            child: const Text('notes'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open')));
+    await tester.pumpAndSettle();
+    expect(core.current.items, hasLength(1));
+
+    // Removed from the account, and Back arrives before the list's answer
+    // has rebuilt this screen.
+    core.gone = true;
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(NoteScreen), findsNothing);
+    expect(find.text('notes'), findsOneWidget);
+
+    // The list's answer arrives after this screen has left, and does not take
+    // the list away with it.
+    await library.forgetNote('this-note');
+    await tester.pumpAndSettle();
+    expect(find.text('notes'), findsOneWidget);
+  });
+
   testWidgets('checking an item sends an edit and strikes the text through', (
     tester,
   ) async {
@@ -1454,6 +1504,41 @@ void main() {
     expect(visibleItems(tester), ['three', 'one', 'two']);
   });
 
+  testWidgets('dragging beside a folded section never lands inside it', (
+    tester,
+  ) async {
+    // Rows this device folded away are not drawn, so they are not places a
+    // drop can land: counting them as targets is how a dragged row used to
+    // vanish into the fold instead of appearing where it was dropped.
+    final core = FakeNoteCore(items: const ['bread']);
+    final dairy = await core.addHeading('Dairy');
+    await core.addItem('milk');
+    await core.addItem('cheese');
+    await core.addHeading('Produce');
+    await core.addItem('apples');
+    await core.setCollapsed(dairy, true);
+    await pumpScreen(tester, core);
+    expect(visibleItems(tester), ['bread', 'apples']);
+
+    final list = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    // The drawn rows are bread, Dairy, Produce, apples; below apples is the
+    // third slot in the list without bread.
+    list.onReorderItem!(0, 3);
+    await tester.pumpAndSettle();
+
+    expect(visibleItems(tester), ['apples', 'bread']);
+    expect(core.current.items.map((item) => item.text), [
+      'Dairy',
+      'milk',
+      'cheese',
+      'Produce',
+      'apples',
+      'bread',
+    ], reason: 'bread is after the folded run, not inside it');
+  });
+
   testWidgets('says so when an edit could not be kept', (tester) async {
     // The screen a person is typing into is the one that has to say it: a
     // warning only the note list draws is a warning they see after the edit
@@ -1907,6 +1992,18 @@ class _SlowTitleCore extends FakeNoteCore {
   Future<void> setTitle(String title) async {
     await gate?.future;
     await super.setTitle(title);
+  }
+}
+
+/// A core whose note has left the device, as the real one answers once the
+/// library has forgotten it.
+class _GoneCore extends FakeNoteCore {
+  bool gone = false;
+
+  @override
+  NoteView get current {
+    if (gone) throw StateError('unknown note');
+    return super.current;
   }
 }
 

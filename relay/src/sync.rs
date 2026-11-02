@@ -93,8 +93,9 @@ struct Subscription {
     /// Whether `caught` has been said. Once: a replay after a lag is the
     /// relay's business and not a new backlog.
     caught: bool,
-    /// The one refresh barrier currently outstanding for this subscription.
-    refresh: Option<(String, i64)>,
+    /// The refresh barriers still outstanding for this subscription, one per
+    /// id the client has asked for.
+    refresh: Vec<(String, i64)>,
     /// Forwards the note's fan-out into the session. Aborted on unsubscribe.
     forwarder: JoinHandle<()>,
     metrics: Arc<crate::metrics::Metrics>,
@@ -306,20 +307,30 @@ async fn send_chunk(
                 seq: sub.last_sent,
             });
         }
-        if let Some((id, head)) = sub.refresh.take() {
-            if sub.last_sent >= head {
-                let permit = permits.next().expect("a permit for refresh completion");
-                permit.send(SyncServerMessage::RefreshComplete {
-                    id,
-                    note: note.to_string(),
-                    seq: head,
-                });
-                state.metrics.refresh_completed();
-            } else {
-                sub.refresh = Some((id, head));
-                sub.catching_up = true;
-                return Ok(true);
+        // Answer every barrier the send reached, not just one: the client has
+        // a counter of its own per action and may have two ids waiting.
+        let reached = sub.last_sent;
+        let pending = std::mem::take(&mut sub.refresh);
+        for (id, head) in pending {
+            if reached < head {
+                sub.refresh.push((id, head));
+                continue;
             }
+            // No permit left this chunk: answer it on the next one.
+            let Some(permit) = permits.next() else {
+                sub.refresh.push((id, head));
+                continue;
+            };
+            permit.send(SyncServerMessage::RefreshComplete {
+                id,
+                note: note.to_string(),
+                seq: head,
+            });
+            state.metrics.refresh_completed();
+        }
+        if !sub.refresh.is_empty() {
+            sub.catching_up = true;
+            return Ok(true);
         }
     }
     Ok(more)
@@ -375,22 +386,38 @@ async fn handle(
                 return refused(out, Some(note), "too many notes on one socket");
             }
             let since = since.max(0);
-            let head = match state.store.topic(&note).await {
-                Ok(topic) if topic.gone => return refused(out, Some(note), GONE),
-                Ok(topic) => topic.head,
-                Err(e) => return refused(out, Some(note), &e.to_string()),
+            // Subscribed before the topic is read: a purge landing between the
+            // two reaches the forwarder as `Gone`, and one before it is in the
+            // read. The other way round, the subscriber of a note purged in
+            // between was never told and got an empty `caught` for it.
+            let forwarder = forward(state, note.clone(), fanned.clone());
+            let topic = match state.store.topic(&note).await {
+                Ok(topic) => topic,
+                Err(e) => {
+                    forwarder.abort();
+                    return refused(out, Some(note), &e.to_string());
+                }
             };
-            if since > head {
-                // Do not install a subscription: appends queued behind this
+            if topic.gone {
+                forwarder.abort();
+                return refused(out, Some(note), GONE);
+            }
+            if since > topic.head {
+                // Do not keep a subscription: appends queued behind this
                 // subscribe belong to the recovery connection, after its client
                 // has rebuilt the cursor and outbox. `caught` cannot carry this
                 // signal, because an append can advance a restored log before
                 // the backlog is sent.
-                tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
+                tracing::warn!(
+                    note = %note,
+                    since,
+                    head = topic.head,
+                    "client cursor is beyond relay head"
+                );
+                forwarder.abort();
                 let _ = out.send(SyncServerMessage::Reset { note }).await;
                 return Handled::Continue;
             }
-            let forwarder = forward(state, note.clone(), fanned.clone());
             state.metrics.subscription_started();
             subs.0.insert(
                 note.clone(),
@@ -398,7 +425,7 @@ async fn handle(
                     last_sent: since,
                     catching_up: true,
                     caught: false,
-                    refresh: None,
+                    refresh: Vec::new(),
                     forwarder,
                     metrics: state.metrics.clone(),
                 },
@@ -415,11 +442,7 @@ async fn handle(
         SyncClientMessage::Refresh { id } => {
             state.metrics.refresh_requested();
             for (note, sub) in &mut subs.0 {
-                if sub
-                    .refresh
-                    .as_ref()
-                    .is_some_and(|(pending, _)| pending == &id)
-                {
+                if sub.refresh.iter().any(|(pending, _)| pending == &id) {
                     continue;
                 }
                 let head = match state.store.head(note).await {
@@ -429,8 +452,8 @@ async fn handle(
                         continue;
                     }
                 };
-                sub.refresh = Some((id.clone(), head));
                 if sub.last_sent < head || sub.catching_up {
+                    sub.refresh.push((id.clone(), head));
                     if !sub.catching_up {
                         sub.catching_up = true;
                         backlog.push_back(note.clone());
@@ -444,7 +467,6 @@ async fn handle(
                         })
                         .await;
                     state.metrics.refresh_completed();
-                    sub.refresh = None;
                 }
             }
         }
@@ -523,10 +545,11 @@ fn refuse(out: &mpsc::Sender<SyncServerMessage>, note: Option<String>, message: 
 /// Subscribe to a note's fan-out now, and forward it into the session from a
 /// task of its own.
 ///
-/// The subscription is taken here, before the caller queues the backlog, which
-/// is the ordering the stream relies on: an append landing between
-/// the two is in the store by the time the backlog is read, and anything seen
-/// both ways is dropped by `seq`.
+/// The subscription is taken here, before the caller reads the topic and
+/// queues the backlog, which is the ordering the stream relies on: an append
+/// landing between them is in the store by the time the backlog is read, and
+/// anything seen both ways is dropped by `seq`; and a purge landing between them
+/// is seen, here or in the topic read.
 fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) -> JoinHandle<()> {
     let mut live = state.subscribe(&note);
     tokio::spawn(async move {

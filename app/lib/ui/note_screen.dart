@@ -740,14 +740,19 @@ class _NoteScreenState extends State<NoteScreen> {
       await _itemWritesDone?.future;
     }
     if (!mounted) return;
-    for (final id in _newBlankItems.toList()) {
-      final item = widget.core.current.items
-          .where((item) => item.id == id)
-          .firstOrNull;
-      if (item != null && item.text.trim().isEmpty) {
-        await widget.core.dropIfBlank(id);
-        _itemRowKeys.remove(id);
+    try {
+      for (final id in _newBlankItems.toList()) {
+        final item = widget.core.current.items
+            .where((item) => item.id == id)
+            .firstOrNull;
+        if (item != null && item.text.trim().isEmpty) {
+          await widget.core.dropIfBlank(id);
+          _itemRowKeys.remove(id);
+        }
       }
+    } catch (_) {
+      // The note left while this screen was being closed: there is nothing
+      // left to tidy, and the pop still has to happen.
     }
     _newBlankItems.clear();
     setState(() => _allowPop = true);
@@ -1218,8 +1223,8 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   /// A drag landed. `newIndex` counts slots in the list without the row that is
-  /// moving, so the target is the number of draggable rows before it — heading
-  /// rows and folded runs are not places an item can be dropped between.
+  /// moving, so the drop is placed beside the row drawn at that slot. A folded
+  /// run is not drawn, so no drop can land between its rows.
   void _reordered(
     NoteView note,
     List<_ListRow> rows,
@@ -1235,22 +1240,23 @@ class _NoteScreenState extends State<NoteScreen> {
       for (var i = 0; i < rows.length; i++)
         if (i != oldIndex) rows[i],
     ];
-    final target = without
-        .take(newIndex.clamp(0, without.length))
-        .where((row) => row.kind == _ListRowKind.item)
-        .length;
+    // A drop lands beside a drawn row: before the first item or heading at the
+    // slot, or after the last one when the slot is past them all. Rows folded
+    // away are not drawn, so they are not places a drop can land between.
+    bool place(_ListRow row) =>
+        row.item != null &&
+        (row.kind == _ListRowKind.item || row.kind == _ListRowKind.heading);
+    final below = without
+        .skip(newIndex.clamp(0, without.length))
+        .where(place)
+        .firstOrNull;
+    final anchor = below?.item ?? without.where(place).lastOrNull?.item;
+    if (anchor == null) return;
 
     final remaining = note.items.where((item) => item.id != moving.id).toList();
-    final remainingActive = remaining
-        .where((item) => !item.checked && !item.heading)
-        .toList();
-    if (remainingActive.isEmpty) return;
-    final at = target.clamp(0, remainingActive.length);
-    final coreIndex = at < remainingActive.length
-        ? remaining.indexWhere((item) => item.id == remainingActive[at].id)
-        : remaining.indexWhere((item) => item.id == remainingActive.last.id) +
-              1;
-    widget.core.moveItem(moving.id, coreIndex);
+    final at = remaining.indexWhere((item) => item.id == anchor.id);
+    if (at < 0) return;
+    widget.core.moveItem(moving.id, below == null ? at + 1 : at);
   }
 
   /// The lines this note offers back, beside the blank row about to be typed
@@ -1327,11 +1333,22 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
+  /// The view to draw before the stream answers. The note can leave the device
+  /// between the list card and this screen, and a core that has forgotten it
+  /// has nothing to answer with.
+  NoteView get _initialView {
+    try {
+      return widget.core.current;
+    } catch (_) {
+      return const NoteView.empty();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
       stream: widget.core.watch(),
-      initialData: widget.core.current,
+      initialData: _initialView,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
         final library = widget.library;
@@ -1353,7 +1370,8 @@ class _NoteScreenState extends State<NoteScreen> {
                       content: Text('This note was deleted from your account.'),
                     ),
                   );
-                  Navigator.of(context).maybePop();
+                  // Nothing is left to tidy: the note is gone.
+                  Navigator.of(context).pop();
                 });
               }
               return const Scaffold(

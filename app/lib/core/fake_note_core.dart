@@ -418,7 +418,13 @@ class FakeNoteCore implements NoteCore {
 
   @override
   Future<void> dispose() async {
+    // A handle shares this note with every later open, so the library closes
+    // the streams, not whichever handle happens to be let go of.
     disposals++;
+  }
+
+  /// Closes what [FakeNoteLibrary] shares with every handle to this note.
+  Future<void> closeStreams() async {
     await _controller.close();
     await _sync.close();
   }

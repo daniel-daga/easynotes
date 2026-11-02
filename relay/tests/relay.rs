@@ -818,9 +818,12 @@ async fn ready_reports_the_version_while_the_store_answers() {
 /// the one state monitoring has to tell apart from a healthy relay.
 #[tokio::test]
 async fn ready_fails_when_the_store_does_not_answer() {
-    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
+    let relay = Relay::serve(
+        Arc::new(Unreachable::default()),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
     let ready = reqwest::get(format!("{}/v1/ready", relay.http_base()))
         .await
         .unwrap();
@@ -836,8 +839,37 @@ async fn ready_fails_when_the_store_does_not_answer() {
     assert!(health.status().is_success());
 }
 
+/// A burst of probes costs the store one check, not one each: `/v1/ready` is
+/// public and unlimited, so a per-request `SELECT 1` lets an anonymous loop
+/// hold the pool and fail the relay's own probe.
+#[tokio::test]
+async fn a_burst_of_readiness_probes_asks_the_store_once() {
+    let store = Arc::new(Unreachable::default());
+    let relay = Relay::serve(store.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    for _ in 0..50 {
+        let r = http
+            .get(format!("{}/v1/ready", relay.http_base()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let checks = store.checks.load(std::sync::atomic::Ordering::SeqCst);
+    // Fifty local requests are well inside the one-second cache; two leaves
+    // room for a slow CI box crossing the boundary once.
+    assert!(checks <= 2, "50 probes asked the store {checks} times");
+}
+
 /// A store whose database has gone away: every call fails.
-struct Unreachable;
+#[derive(Default)]
+struct Unreachable {
+    /// How many times `/v1/ready` asked it, so a test can tell a burst from a
+    /// per-request check.
+    checks: std::sync::atomic::AtomicUsize,
+}
 
 /// The value of one series in an exposition, named with its labels exactly as
 /// the relay prints them.
@@ -994,9 +1026,12 @@ async fn metrics_count_what_the_relay_does() {
 /// failed scrape that looks the same as a relay that is down.
 #[tokio::test]
 async fn metrics_say_when_the_store_does_not_answer() {
-    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
+    let relay = Relay::serve(
+        Arc::new(Unreachable::default()),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
     let text = easynotes_relay::metrics::render(&relay.state).await;
     assert_eq!(metric(&text, "easynotes_relay_store_up"), Some(0));
     assert_eq!(metric(&text, "easynotes_relay_notes"), None);
@@ -1243,6 +1278,8 @@ impl RelayStore for Unreachable {
         gone()
     }
     async fn check(&self) -> easynotes_relay::error::Result<()> {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         gone()
     }
 }

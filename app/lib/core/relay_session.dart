@@ -38,6 +38,18 @@ class SyncSetupCancelled implements Exception {
   String toString() => 'Sync setup was cancelled.';
 }
 
+/// Thrown when the notes have already moved to the relay but sync could not
+/// start. The move is durable and cannot be repeated, so the setup screen
+/// reports it and closes instead of offering the move again.
+class SyncNotStartedAfterMove implements Exception {
+  const SyncNotStartedAfterMove(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class RelaySession extends ChangeNotifier {
   RelaySession({
     required this.profiles,
@@ -340,7 +352,7 @@ class RelaySession extends ChangeNotifier {
     try {
       await _library.connect(_profile.url!, access: _profile.access);
     } on Object catch (error) {
-      throw StateError(
+      throw SyncNotStartedAfterMove(
         'Your collection has moved to ${_profile.url} and is '
         'available offline. Sync could not start: $error',
       );

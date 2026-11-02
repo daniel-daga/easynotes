@@ -33,7 +33,7 @@ use easynotes_core::ids::{MediaObjectId, NoteId};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, OwnedMutexGuard};
 
 /// How many pending fan-out messages a slow subscriber may fall behind by before
@@ -100,6 +100,10 @@ pub struct AppState {
     /// Bytes written per client address, appends and attachment chunks
     /// together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
+    /// When `/v1/ready` last asked the store, and what it said. Async because
+    /// it is held across the check, so a burst arriving on a cold cache waits
+    /// for that one check instead of each starting its own.
+    ready: tokio::sync::Mutex<Option<(Instant, bool)>>,
 }
 
 impl AppState {
@@ -170,6 +174,7 @@ impl AppState {
             metrics: Arc::default(),
             access,
             writes,
+            ready: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -505,20 +510,41 @@ pub fn router_with(state: Arc<AppState>, config: RelayConfig) -> Router {
         .with_state(state)
 }
 
+/// How long `/v1/ready` may answer from its last check. A public, unlimited
+/// endpoint asking the store on every request lets an anonymous loop hold the
+/// database pool and make the relay's own readiness probe fail.
+const READY_TTL: Duration = Duration::from_secs(1);
+
 /// `200` with the relay's version when the store answers, `503` when it does
 /// not. The reason is logged rather than returned: the endpoint is public, and
-/// a database error can name hosts and users.
+/// a database error can name hosts and users. The answer is cached for
+/// [`READY_TTL`], so a burst costs one `SELECT 1`.
 async fn ready(State(state): State<Arc<AppState>>) -> Response {
     let version = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": ProtocolRange::SPOKEN,
     });
-    match state.store.check().await {
-        Ok(()) => Json(version).into_response(),
-        Err(error) => {
-            tracing::warn!(%error, "readiness check failed: the store did not answer");
-            (StatusCode::SERVICE_UNAVAILABLE, Json(version)).into_response()
+    let ok = {
+        let mut cached = state.ready.lock().await;
+        match *cached {
+            Some((at, ok)) if at.elapsed() < READY_TTL => ok,
+            _ => {
+                let ok = match state.store.check().await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, "readiness check failed: the store did not answer");
+                        false
+                    }
+                };
+                *cached = Some((Instant::now(), ok));
+                ok
+            }
         }
+    };
+    if ok {
+        Json(version).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(version)).into_response()
     }
 }
 

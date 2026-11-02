@@ -10,7 +10,8 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
-import '../core/relay_session.dart' show SyncSetupCancelled;
+import '../core/relay_session.dart'
+    show SyncNotStartedAfterMove, SyncSetupCancelled;
 import 'relay_address.dart';
 
 /// What the wizard was opened to do.
@@ -296,11 +297,14 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
         _error = null;
       });
       return;
+    } on SyncNotStartedAfterMove catch (error) {
+      // The move is already written: retrying it cannot work, so this is
+      // reported and closed, not offered again.
+      _fail(error, moved: true);
+      return;
     } on Object catch (error) {
-      // A move may already be durable when starting sync fails. Retrying the
-      // same move cannot work — this collection is no longer local — so this
-      // is reported and closed, not offered again.
-      _fail(error, moved: move);
+      // Nothing was written, so the move can be tried again.
+      _fail(error);
       return;
     }
     if (!mounted) return;

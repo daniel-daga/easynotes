@@ -570,4 +570,19 @@ void main() {
       expect(find.byType(NoteScreen), findsOneWidget);
     });
   });
+
+  test('a note can be opened again after its handle is disposed', () async {
+    final library = twoLists();
+    final first = await library.openNote('groceries');
+    await first.dispose();
+    expect(library.core('groceries').disposals, 1);
+
+    final again = await library.openNote('groceries');
+    final added = again.watch().firstWhere(
+      (view) => view.items.any((item) => item.text == 'eggs'),
+    );
+    await again.addItem('eggs');
+    await added.timeout(const Duration(seconds: 1));
+    expect(again.current.items.map((item) => item.text), contains('eggs'));
+  });
 }
