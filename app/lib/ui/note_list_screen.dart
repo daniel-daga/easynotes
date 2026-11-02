@@ -933,18 +933,28 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// Move the selection between shelves: into or out of the archive, into or
   /// out of the trash.
   ///
+  /// Only the notes this actually moves are counted and undone: a search can
+  /// select notes already on the target shelf, and undoing those would pull
+  /// them out of the archive or the trash they were never in.
+  ///
   /// Going into either unpins, in the core, so the pins are written down here
   /// first: undoing has to put back what the person had, not what the core
   /// left.
   Future<void> _shelveSelected(
     List<NoteSummary> notes, {
+    required bool Function(NoteSummary note) current,
     required Future<void> Function(List<String> ids, bool on) move,
     required bool on,
     required String done,
   }) async {
-    final ids = [for (final note in notes) note.id];
-    final pinned = [
+    final changed = [
       for (final note in notes)
+        if (current(note) != on) note,
+    ];
+    if (changed.isEmpty) return;
+    final ids = [for (final note in changed) note.id];
+    final pinned = [
+      for (final note in changed)
         if (note.pinned) note.id,
     ];
     _clearSelection();
@@ -958,6 +968,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _archiveSelected(List<NoteSummary> notes, bool archived) =>
       _shelveSelected(
         notes,
+        current: (note) => note.archived,
         move: widget.library.setArchivedMany,
         on: archived,
         done: archived ? 'archived' : 'unarchived',
@@ -966,6 +977,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _trashSelected(List<NoteSummary> notes, bool trashed) =>
       _shelveSelected(
         notes,
+        current: (note) => note.trashed,
         move: widget.library.setTrashedMany,
         on: trashed,
         done: trashed ? 'moved to trash' : 'restored',

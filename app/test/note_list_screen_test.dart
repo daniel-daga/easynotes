@@ -1320,6 +1320,53 @@ void main() {
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
   });
 
+  testWidgets('undo moves back only the notes the action changed', (
+    tester,
+  ) async {
+    final library = twoLists();
+    // Already archived before anything is selected: a search can show it next
+    // to a note on the grid.
+    await library.setArchived('groceries', true);
+    await library.setPinned('groceries', true);
+    await library.setPinned('hardware', true);
+    await pumpList(tester, library);
+    await tester.tap(find.byKey(const Key('search-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('search-field')), 'e');
+    await tester.pumpAndSettle();
+
+    await select(tester, 'groceries');
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    library.calls.clear();
+
+    await act(tester, 'bulk-archive');
+
+    // The already-archived note is not archived again, and is not counted.
+    expect(library.calls.where((call) => call.startsWith('setArchivedMany')), [
+      'setArchivedMany(hardware; true)',
+    ]);
+    expect(find.text('Note archived'), findsOneWidget);
+
+    library.calls.clear();
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(library.calls.where((call) => call.startsWith('set')), [
+      'setArchivedMany(hardware; false)',
+      'setPinnedMany(hardware; true)',
+    ]);
+    expect(
+      library.notes.firstWhere((note) => note.id == 'groceries').archived,
+      isTrue,
+      reason: 'undo must leave a note that was already archived alone',
+    );
+    expect(
+      library.notes.firstWhere((note) => note.id == 'hardware').archived,
+      isFalse,
+    );
+  });
+
   // -- deleting for good ----------------------------------------------------
 
   Future<void> openShelf(WidgetTester tester, String shelf) async {
