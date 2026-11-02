@@ -8,9 +8,10 @@
 //! * `RELAY_ALLOWED_ORIGINS` — a comma-separated list of the origins allowed to
 //!   drive the handshake from a browser. Unset means any, which is what a
 //!   development relay and the browser smoke tests need.
-//! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked. Unset means
-//!   the defaults in [`RelayConfig::public`], because a process listening on a
-//!   socket should not need an environment variable set to refuse a flood.
+//! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked; the storage
+//!   and media ceilings still apply. Unset means the rate limits in
+//!   [`RelayConfig::public`], because a process listening on a socket should
+//!   not need an environment variable set to refuse a flood.
 //! * `RELAY_TOKEN_SIGNING_KEY` — a stable base64url Ed25519 seed for tokens
 //!   shared across restarts and instances. Unset generates a temporary key.
 //! * `RELAY_STORAGE_CEILING` — how many bytes every note's live log may hold
@@ -110,13 +111,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut config = match std::env::var("RELAY_RATE_LIMIT").as_deref() {
-        Ok("off") => {
-            tracing::warn!("RELAY_RATE_LIMIT=off: answering every caller as fast as it asks");
-            RelayConfig::default()
-        }
-        _ => RelayConfig::public(),
-    };
+    let mut config = base_config(std::env::var("RELAY_RATE_LIMIT").ok().as_deref());
     match std::env::var("RELAY_TOKEN_SIGNING_KEY") {
         Ok(raw) => {
             let bytes = URL_SAFE_NO_PAD
@@ -298,6 +293,25 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The config before the other environment knobs are applied. `off` removes the
+/// rate limits and leaves every other limit — above all the storage and media
+/// ceilings — in force.
+fn base_config(rate_limit: Option<&str>) -> RelayConfig {
+    let mut config = RelayConfig::public();
+    if rate_limit != Some("off") {
+        return config;
+    }
+    tracing::warn!(
+        "RELAY_RATE_LIMIT=off: answering every caller as fast as it asks; the storage and media ceilings still apply"
+    );
+    config.handshake = RateLimit::unlimited();
+    config.sockets = RateLimit::unlimited();
+    config.invites = RateLimit::unlimited();
+    config.media_rate = RateLimit::unlimited();
+    config.writes = RateLimit::unlimited();
+    config
+}
+
 /// Ask the relay listening on `addr` whether it is ready. By hand over one
 /// socket, because an HTTP client is a lot of dependency for one request to
 /// localhost. The relay speaks HTTP/1.1 and closes when asked to, so reading to
@@ -361,5 +375,79 @@ fn bytes_or_off(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u
                 if off_allowed { ", or off" } else { "" }
             )
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easynotes_relay::app::DEFAULT_CEILING;
+    use easynotes_relay::media::DEFAULT_MEDIA_CEILING;
+
+    /// The allowances `off` removes, listed in one place.
+    fn rate_limits(config: &RelayConfig) -> [&RateLimit; 5] {
+        [
+            &config.handshake,
+            &config.sockets,
+            &config.invites,
+            &config.media_rate,
+            &config.writes,
+        ]
+    }
+
+    /// Everything `public()` decides except the random token key: both
+    /// ceilings, the rest of the limits, and the five rate limits.
+    fn assert_public(config: &RelayConfig) {
+        let public = RelayConfig::public();
+        assert_eq!(config.storage, public.storage);
+        assert_eq!(config.media.limits, public.media.limits);
+        for (i, (limit, expected)) in rate_limits(config)
+            .into_iter()
+            .zip(rate_limits(&public))
+            .enumerate()
+        {
+            assert!(limit == expected, "rate limit {i} changed");
+        }
+    }
+
+    #[test]
+    fn rate_limit_off_keeps_the_storage_and_media_ceilings() {
+        let off = base_config(Some("off"));
+        let public = RelayConfig::public();
+        let RelayConfig {
+            handshake,
+            sockets,
+            invites,
+            storage,
+            media_rate,
+            media,
+            writes,
+            // Every field is named, so a new one fails to compile until `off`
+            // says whether it keeps it.
+            origins: _,
+            token_signing_key: _,
+            trusted_proxies: _,
+            access: _,
+        } = &off;
+        assert_eq!(storage.ceiling, Some(DEFAULT_CEILING));
+        assert_eq!(media.limits.ceiling, Some(DEFAULT_MEDIA_CEILING));
+        assert_eq!(*storage, public.storage);
+        assert_eq!(media.limits, public.media.limits);
+        for limit in [handshake, sockets, invites, media_rate, writes] {
+            assert!(limit.retry_after().is_zero(), "off left a rate limit on");
+        }
+    }
+
+    #[test]
+    fn anything_but_off_leaves_the_public_limits_alone() {
+        for value in [None, Some(""), Some("on")] {
+            assert_public(&base_config(value));
+        }
+        // Without this the comparisons above would pass if `public()` itself
+        // were unlimited, and a limiter that never refuses anything is not a
+        // limit the test can hold `off` against.
+        for limit in rate_limits(&RelayConfig::public()) {
+            assert!(!limit.retry_after().is_zero(), "public() is unlimited");
+        }
     }
 }

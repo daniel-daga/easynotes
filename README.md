@@ -215,7 +215,7 @@ variable:
 | `RELAY_MEDIA_PER_NOTE` | 1 GiB | Attachment bytes one note may hold |
 | `RELAY_MEDIA_CEILING` | 64 GiB | Attachment bytes all notes may hold together (`off` for none) |
 | `RELAY_TRUSTED_PROXIES` | unset | Addresses/CIDRs to trust `X-Forwarded-For` from, so clients behind a proxy aren't one rate-limit bucket |
-| `RELAY_RATE_LIMIT` | on | `off` answers as fast as asked (development only) |
+| `RELAY_RATE_LIMIT` | on | `off` removes the rate limits, not the storage and media ceilings (development only) |
 | `RELAY_DRAIN_SECONDS` | 8 | Graceful-shutdown drain before exiting on `SIGTERM` |
 | `RELAY_METRICS_ADDR` | unset | Serves Prometheus `/metrics` on a separate listener (e.g. `0.0.0.0:9090`) |
 
