@@ -740,14 +740,19 @@ class _NoteScreenState extends State<NoteScreen> {
       await _itemWritesDone?.future;
     }
     if (!mounted) return;
-    for (final id in _newBlankItems.toList()) {
-      final item = widget.core.current.items
-          .where((item) => item.id == id)
-          .firstOrNull;
-      if (item != null && item.text.trim().isEmpty) {
-        await widget.core.dropIfBlank(id);
-        _itemRowKeys.remove(id);
+    try {
+      for (final id in _newBlankItems.toList()) {
+        final item = widget.core.current.items
+            .where((item) => item.id == id)
+            .firstOrNull;
+        if (item != null && item.text.trim().isEmpty) {
+          await widget.core.dropIfBlank(id);
+          _itemRowKeys.remove(id);
+        }
       }
+    } catch (_) {
+      // The note left while this screen was being closed: there is nothing
+      // left to tidy, and the pop still has to happen.
     }
     _newBlankItems.clear();
     setState(() => _allowPop = true);
@@ -1328,11 +1333,22 @@ class _NoteScreenState extends State<NoteScreen> {
     }
   }
 
+  /// The view to draw before the stream answers. The note can leave the device
+  /// between the list card and this screen, and a core that has forgotten it
+  /// has nothing to answer with.
+  NoteView get _initialView {
+    try {
+      return widget.core.current;
+    } catch (_) {
+      return const NoteView.empty();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
       stream: widget.core.watch(),
-      initialData: widget.core.current,
+      initialData: _initialView,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
         final library = widget.library;
@@ -1354,7 +1370,8 @@ class _NoteScreenState extends State<NoteScreen> {
                       content: Text('This note was deleted from your account.'),
                     ),
                   );
-                  Navigator.of(context).maybePop();
+                  // Nothing is left to tidy: the note is gone.
+                  Navigator.of(context).pop();
                 });
               }
               return const Scaffold(

@@ -600,6 +600,56 @@ void main() {
     expect(core.current.items, isEmpty);
   });
 
+  testWidgets('a note deleted while it is open leaves the screen', (
+    tester,
+  ) async {
+    // The real core answers UnknownNote once the library has forgotten the
+    // note, and this screen still has the blank row an empty checklist opens
+    // with. Back in that window must not leave the screen stuck.
+    final core = _GoneCore();
+    final library = FakeNoteLibrary(notes: {'this-note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            key: const Key('open'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NoteScreen(
+                  core: core,
+                  storage: FakeStorageHealth(),
+                  noteId: 'this-note',
+                  invites: library,
+                  library: library,
+                ),
+              ),
+            ),
+            child: const Text('notes'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open')));
+    await tester.pumpAndSettle();
+    expect(core.current.items, hasLength(1));
+
+    // Removed from the account, and Back arrives before the list's answer
+    // has rebuilt this screen.
+    core.gone = true;
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(NoteScreen), findsNothing);
+    expect(find.text('notes'), findsOneWidget);
+
+    // The list's answer arrives after this screen has left, and does not take
+    // the list away with it.
+    await library.forgetNote('this-note');
+    await tester.pumpAndSettle();
+    expect(find.text('notes'), findsOneWidget);
+  });
+
   testWidgets('checking an item sends an edit and strikes the text through', (
     tester,
   ) async {
@@ -1942,6 +1992,18 @@ class _SlowTitleCore extends FakeNoteCore {
   Future<void> setTitle(String title) async {
     await gate?.future;
     await super.setTitle(title);
+  }
+}
+
+/// A core whose note has left the device, as the real one answers once the
+/// library has forgotten it.
+class _GoneCore extends FakeNoteCore {
+  bool gone = false;
+
+  @override
+  NoteView get current {
+    if (gone) throw StateError('unknown note');
+    return super.current;
   }
 }
 
