@@ -781,6 +781,59 @@ async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
     }
 }
 
+/// #34: expiring removes the rows *and* the bytes behind them. A committed
+/// object no compaction lists and an abandoned upload both leave the disk.
+#[tokio::test]
+async fn an_expired_object_leaves_no_bytes_behind() {
+    // Memory only: a Postgres store is shared between tests, and these TTLs
+    // would sweep another test's media.
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let limits = MediaLimits {
+        staging_ttl_secs: -60,
+        fresh_secs: -60,
+        doomed_ttl_secs: -60,
+        ..MediaLimits::default()
+    };
+    let relay = relay(
+        store.clone(),
+        MediaConfig {
+            blobs: Some(Arc::new(DirBlobs::open(dir.path()).unwrap())),
+            limits,
+        },
+    )
+    .await;
+
+    let doomed = Upload::new(&relay, 1000).await;
+    doomed.send().await;
+    let abandoned = doomed.sibling(1000);
+    abandoned.reserve().await;
+    abandoned.put(0, abandoned.chunk(0)).await;
+
+    let object = || {
+        dir.path()
+            .join("objects")
+            .join(doomed.note.encode())
+            .join(doomed.media.object.encode())
+    };
+    let part = || {
+        dir.path()
+            .join("parts")
+            .join(abandoned.note.encode())
+            .join(abandoned.media.object.encode())
+    };
+
+    // Nothing live lists it, so the compaction dooms it. Both are on disk.
+    compact_listing(&store, &doomed, vec![], &limits).await;
+    assert!(object().exists(), "the committed object was never written");
+    assert!(part().exists(), "the abandoned chunk was never written");
+
+    // A reservation sweeps the abandoned upload and the doomed object.
+    assert_eq!(doomed.sibling(1000).reserve().await, StatusCode::CREATED);
+    assert!(!object().exists(), "the doomed bytes stayed");
+    assert!(!part().exists(), "the abandoned bytes stayed");
+}
+
 /// A `Blobs` whose volume will not unlink one object, as a full or misbehaving
 /// disk does.
 struct FailsOneRemove {
