@@ -319,11 +319,6 @@ void main() {
 
     expect(moved, [relay.url]);
     expect(find.textContaining('Account added'), findsOneWidget);
-    // The success is readable before the screen closes.
-    expect(find.byKey(const Key('account-transfer-done')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('account-transfer-done')));
-    await tester.pumpAndSettle();
     expect(find.byType(SyncDevicesScreen, skipOffstage: false), findsNothing);
   });
 

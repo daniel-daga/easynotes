@@ -36,10 +36,6 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
-  /// Whether this device's library moved to the relay, so the screen it was
-  /// opened from holds a collection that has since closed.
-  bool _moved = false;
-
   /// Whether this device belongs to an account.
   bool get _hasAccount {
     try {
@@ -200,15 +196,26 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           'finish: $e Open Sync server settings to finish.',
         );
       }
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _approved = true;
-          _moved = current == null;
-          _message =
-              'Account added. This device is connected to ${transfer.relayUrl}.';
-        });
+      if (!mounted) return;
+      if (current == null) {
+        // The library moved, so the screen that opened this one holds a
+        // collection that has since closed. Report the move on the way out.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Account added. This device is connected to ${transfer.relayUrl}.',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(true);
+        return;
       }
+      setState(() {
+        _busy = false;
+        _approved = true;
+        _message =
+            'Account added. This device is connected to ${transfer.relayUrl}.';
+      });
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -321,13 +328,6 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (!_approved) ...[
             const SizedBox(height: 20),
             TextButton(onPressed: _cancel, child: const Text('Cancel')),
-          ] else ...[
-            const SizedBox(height: 20),
-            FilledButton(
-              key: const Key('account-transfer-done'),
-              onPressed: () => Navigator.of(context).pop(_moved),
-              child: const Text('Done'),
-            ),
           ],
         ],
       ),

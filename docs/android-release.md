@@ -85,7 +85,8 @@ cd app/android
 ./gradlew assembleRelease
 ```
 
-It writes `app/build/outputs/apk/release/app-release-unsigned.apk`. Flutter's own
+Back at the repository root, the APK is
+`app/build/app/outputs/apk/release/app-release-unsigned.apk`. Flutter's own
 builder wants a signed `app-release.apk` and fails on this one, which is why the
 command is Gradle's `assembleRelease` and not `flutter build apk --release`.
 
