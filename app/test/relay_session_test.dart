@@ -210,7 +210,7 @@ void main() {
       final id = await local.createNote();
       await expectLater(
         s.moveLocalToRelay('https://relay.example'),
-        throwsStateError,
+        throwsA(isA<SyncNotStartedAfterMove>()),
       );
       expect(s.profile.url, 'https://relay.example');
       expect(local.notes.single.id, id);

@@ -469,8 +469,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       try {
         await _session.connectCurrent();
       } on Object {
-        // The status card says why sync is not running; the setup itself is
-        // complete and stays that way.
+        // Sync did not start, so the setup is not complete and must not be
+        // marked as such.
+        return;
       }
       if (!mounted) return;
       setState(() {

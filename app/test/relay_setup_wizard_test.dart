@@ -8,6 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:easynotes/core/relay_profiles.dart';
+import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/ui/relay_setup_wizard.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -383,10 +384,28 @@ void main() {
       expect(result, isTrue);
     });
 
-    testWidgets('a move that fails after it was written is not retried', (
+    testWidgets('a move that fails before it is written can be retried', (
       tester,
     ) async {
       moveFails = StateError(
+        'Some changes could not be saved. Your notes have not moved.',
+      );
+      await pump(tester, offerMove: true);
+      await enterUrl(tester, 'https://relay.example');
+      await enterAccess(tester);
+      await tapKey(tester, 'move-local-notes');
+
+      expect(find.byKey(const Key('relay-setup-failed')), findsOneWidget);
+      expect(find.textContaining('have not moved'), findsOneWidget);
+      expect(find.byKey(const Key('relay-setup-retry')), findsOneWidget);
+      expect(find.byKey(const Key('relay-setup-close')), findsNothing);
+      expect(result, isNull);
+    });
+
+    testWidgets('a move that fails after it was written is not retried', (
+      tester,
+    ) async {
+      moveFails = const SyncNotStartedAfterMove(
         'Your collection has moved to https://relay.example and is available '
         'offline. Sync could not start: no network',
       );
