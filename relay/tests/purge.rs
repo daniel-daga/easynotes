@@ -101,15 +101,53 @@ async fn is_gone(store: &Arc<dyn RelayStore>, topic: &str) -> bool {
 #[tokio::test]
 async fn a_never_shared_note_is_purged_and_stays_gone() {
     for (name, store) in stores().await {
+        // The relay-wide ceiling is checked against the memory store only:
+        // on Postgres every test shares the table, so its usage moves under us.
+        let memory = name == "memory";
         let mut note = Note::new();
         let topic = note.topic();
+        let mut bytes = 0;
         for _ in 0..3 {
-            store.append(&topic, &note.update()).await.unwrap();
+            let update = note.update();
+            bytes += update.len() as u64;
+            store.append(&topic, &update).await.unwrap();
+        }
+        // A purge must hand the note's bytes back: the ceiling is measured
+        // against what the relay holds, and a deleted note is not held.
+        let before = store.usage().await.unwrap().log_bytes;
+        let limits = Limits {
+            ceiling: memory.then_some(before),
+            ..Limits::default()
+        };
+        let mut other = Note::new();
+        if memory {
+            assert_eq!(
+                store
+                    .append_within(&other.topic(), &other.update(), &limits)
+                    .await
+                    .unwrap(),
+                Appended::RelayFull,
+                "{name}: a note was taken at the ceiling"
+            );
         }
         purge(&store, &topic, &note.by_compaction_key())
             .await
             .unwrap_or_else(|r| panic!("{name}: refused: {r:?}"));
         assert!(is_gone(&store, &topic).await, "{name}");
+        if memory {
+            let after = store.usage().await.unwrap().log_bytes;
+            assert_eq!(after, before - bytes, "{name}: a purge kept its bytes");
+            assert!(
+                matches!(
+                    store
+                        .append_within(&other.topic(), &other.update(), &limits)
+                        .await
+                        .unwrap(),
+                    Appended::Stored { .. }
+                ),
+                "{name}: the ceiling was not released"
+            );
+        }
 
         // An offline device's outbox cannot bring it back.
         let appended = store
