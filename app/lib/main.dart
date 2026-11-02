@@ -112,58 +112,73 @@ bool get _hasNativeShares =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await runStartup(_startUp);
+}
+
+/// Run [start], and draw the screen that says why if it throws.
+///
+/// Separate from [main] so a test can hand it a startup that fails the way the
+/// real one can — with a corrupt keychain value, say — without a device or a
+/// native library. The web placeholder is [start]'s, so a failure after it is
+/// still caught and replaces it.
+Future<void> runStartup(Future<void> Function() start) async {
   try {
-    registerBundledLicenses();
-    final initialInvite = kIsWeb
-        ? inviteLinkFrom(Uri.base.toString())
-        : _hasNativeDeepLinks
-        ? await DeepLinks.initialInvite()
-        : null;
-    final initialShare = kIsWeb
-        ? sharedTextFromUri(Uri.base)
-        : _hasNativeShares
-        ? await SharedTexts.initial()
-        : null;
-    // Read, so gone from the address: a reload must not make the note twice.
-    if (kIsWeb) address_bar.dropQuery();
-    final profiles = RelayProfiles();
-    await profiles.load();
-    if (profiles.shouldShowOnboarding &&
-        (initialInvite != null || initialShare != null)) {
-      await profiles.completeOnboarding();
-    }
-    if (kIsWeb) {
-      runApp(
-        const MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: Text(
-                'Opening your notes…\nIf EasyNotes is open in another tab, close it to continue here.',
-                textAlign: TextAlign.center,
-              ),
+    await start();
+  } on Object catch (error, stack) {
+    // Nothing has drawn yet on a device, and a browser is still on the
+    // placeholder. Either would be a dead end without these words.
+    debugPrint('could not start: $error\n$stack');
+    runApp(_StartupErrorScreen(error: '$error'));
+  }
+}
+
+Future<void> _startUp() async {
+  registerBundledLicenses();
+  final initialInvite = kIsWeb
+      ? inviteLinkFrom(Uri.base.toString())
+      : _hasNativeDeepLinks
+      ? await DeepLinks.initialInvite()
+      : null;
+  final initialShare = kIsWeb
+      ? sharedTextFromUri(Uri.base)
+      : _hasNativeShares
+      ? await SharedTexts.initial()
+      : null;
+  // Read, so gone from the address: a reload must not make the note twice.
+  if (kIsWeb) address_bar.dropQuery();
+  final profiles = RelayProfiles();
+  await profiles.load();
+  if (profiles.shouldShowOnboarding &&
+      (initialInvite != null || initialShare != null)) {
+    await profiles.completeOnboarding();
+  }
+  if (kIsWeb) {
+    runApp(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Text(
+              'Opening your notes…\nIf EasyNotes is open in another tab, close it to continue here.',
+              textAlign: TextAlign.center,
             ),
           ),
         ),
-      );
-    }
-    runApp(
-      EasyNotesApp(
-        session: RelaySession(
-          profiles: profiles,
-          library: await openLibrary(profiles.selected),
-          profile: profiles.selected,
-          open: openLibrary,
-        ),
-        initialInviteLink: initialInvite,
-        initialSharedText: initialShare,
-        showOnboarding: profiles.shouldShowOnboarding,
       ),
     );
-  } on Object catch (error) {
-    // Nothing has drawn yet on a device, and a browser is still on the
-    // placeholder above. Either would be a dead end without these words.
-    runApp(_StartupErrorScreen(error: '$error'));
   }
+  runApp(
+    EasyNotesApp(
+      session: RelaySession(
+        profiles: profiles,
+        library: await openLibrary(profiles.selected),
+        profile: profiles.selected,
+        open: openLibrary,
+      ),
+      initialInviteLink: initialInvite,
+      initialSharedText: initialShare,
+      showOnboarding: profiles.shouldShowOnboarding,
+    ),
+  );
 }
 
 /// What a launch that could not finish shows instead of a blank screen.
@@ -202,8 +217,7 @@ class _StartupErrorScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 12),
                       const Text(
-                        'Something this app had saved could not be read, so it '
-                        'stopped before opening your notes.',
+                        'EasyNotes stopped before opening your notes.',
                       ),
                       const SizedBox(height: 12),
                       SelectableText(
