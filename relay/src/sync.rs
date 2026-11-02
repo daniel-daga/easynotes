@@ -386,22 +386,38 @@ async fn handle(
                 return refused(out, Some(note), "too many notes on one socket");
             }
             let since = since.max(0);
-            let head = match state.store.topic(&note).await {
-                Ok(topic) if topic.gone => return refused(out, Some(note), GONE),
-                Ok(topic) => topic.head,
-                Err(e) => return refused(out, Some(note), &e.to_string()),
+            // Subscribed before the topic is read: a purge landing between the
+            // two reaches the forwarder as `Gone`, and one before it is in the
+            // read. The other way round, the subscriber of a note purged in
+            // between was never told and got an empty `caught` for it.
+            let forwarder = forward(state, note.clone(), fanned.clone());
+            let topic = match state.store.topic(&note).await {
+                Ok(topic) => topic,
+                Err(e) => {
+                    forwarder.abort();
+                    return refused(out, Some(note), &e.to_string());
+                }
             };
-            if since > head {
-                // Do not install a subscription: appends queued behind this
+            if topic.gone {
+                forwarder.abort();
+                return refused(out, Some(note), GONE);
+            }
+            if since > topic.head {
+                // Do not keep a subscription: appends queued behind this
                 // subscribe belong to the recovery connection, after its client
                 // has rebuilt the cursor and outbox. `caught` cannot carry this
                 // signal, because an append can advance a restored log before
                 // the backlog is sent.
-                tracing::warn!(note = %note, since, head, "client cursor is beyond relay head");
+                tracing::warn!(
+                    note = %note,
+                    since,
+                    head = topic.head,
+                    "client cursor is beyond relay head"
+                );
+                forwarder.abort();
                 let _ = out.send(SyncServerMessage::Reset { note }).await;
                 return Handled::Continue;
             }
-            let forwarder = forward(state, note.clone(), fanned.clone());
             state.metrics.subscription_started();
             subs.0.insert(
                 note.clone(),
@@ -529,10 +545,11 @@ fn refuse(out: &mpsc::Sender<SyncServerMessage>, note: Option<String>, message: 
 /// Subscribe to a note's fan-out now, and forward it into the session from a
 /// task of its own.
 ///
-/// The subscription is taken here, before the caller queues the backlog, which
-/// is the ordering the stream relies on: an append landing between
-/// the two is in the store by the time the backlog is read, and anything seen
-/// both ways is dropped by `seq`.
+/// The subscription is taken here, before the caller reads the topic and
+/// queues the backlog, which is the ordering the stream relies on: an append
+/// landing between them is in the store by the time the backlog is read, and
+/// anything seen both ways is dropped by `seq`; and a purge landing between them
+/// is seen, here or in the topic read.
 fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) -> JoinHandle<()> {
     let mut live = state.subscribe(&note);
     tokio::spawn(async move {
