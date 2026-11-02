@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 // Drive reconciliation explicitly so the test controls the interleaving.
 class QuietLibrary extends FakeNoteLibrary {
@@ -45,6 +46,94 @@ void main() {
     await starting;
 
     expect(library.reminderWatchCount, 0);
+  });
+
+  Map<int, Map<dynamic, dynamic>> mockNotifications() {
+    final pending = <int, Map<dynamic, dynamic>>{};
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('dexterous.com/flutter/local_notifications'),
+          (call) async {
+            switch (call.method) {
+              case 'initialize':
+                return true;
+              case 'pendingNotificationRequests':
+                return <Map<String, Object?>>[];
+              case 'zonedSchedule':
+                final args = call.arguments as Map;
+                pending[args['id'] as int] = args;
+                return null;
+              case 'cancel':
+                pending.remove((call.arguments as Map)['id']);
+                return null;
+            }
+            return null;
+          },
+        );
+    return pending;
+  }
+
+  test('a fixed-offset device zone still schedules its reminders', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final pending = mockNotifications();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('flutter_timezone'),
+      (_) async => 'GMT+02:00',
+    );
+    final library = QuietLibrary();
+    final scheduler = ReminderScheduler(library);
+    addTearDown(scheduler.dispose);
+    final note = await library.createNote();
+    await library.createReminder(
+      noteId: note,
+      fireAt: DateTime.utc(2090, 1, 1, 10),
+      repeat: ReminderRepeat.never,
+      timezone: 'GMT+02:00',
+    );
+
+    await scheduler.start();
+
+    expect(pending, hasLength(1));
+    expect(
+      pending.values.single['scheduledDateTime'],
+      startsWith('2090-01-01T10:00:00'),
+    );
+  });
+
+  test('a daily fixed-offset reminder keeps 12:00 local', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final pending = mockNotifications();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('flutter_timezone'),
+      (_) async => 'GMT+02:00',
+    );
+    final library = QuietLibrary();
+    final scheduler = ReminderScheduler(library);
+    addTearDown(scheduler.dispose);
+    final note = await library.createNote();
+    // 12:00 on the +02:00 device is 10:00Z; a past instant makes the repeat
+    // roll forward to its next daily occurrence.
+    await library.createReminder(
+      noteId: note,
+      fireAt: DateTime.utc(2020, 1, 1, 10),
+      repeat: ReminderRepeat.daily,
+      timezone: 'GMT+02:00',
+    );
+
+    await scheduler.start();
+
+    final scheduled = pending.values.single;
+    // The fallback is UTC, so the OS is handed 10:00Z — the requested 12:00
+    // on a +02:00 device. The zone name keeps that fallback explicit.
+    expect(scheduled['timeZoneName'], tz.UTC.name);
+    expect(scheduled['scheduledDateTimeISO8601'], endsWith('T10:00:00.000Z'));
+    expect(scheduled['matchDateTimeComponents'], DateTimeComponents.time.index);
   });
 
   for (final delete in [true, false]) {
