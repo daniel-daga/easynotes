@@ -132,3 +132,75 @@ pub(crate) fn unix_now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::MemoryStore;
+
+    /// Mint a token through the real challenge/redeem path.
+    async fn mint(auth: &Auth, store: &MemoryStore, device: &SigningKey, ttl: Duration) -> String {
+        let device_b64 = URL_SAFE_NO_PAD.encode(device.verifying_key().to_bytes());
+        let (nonce_b64, device_bytes) = auth.issue_challenge(&device_b64).unwrap();
+        let nonce: [u8; easynotes_core::crypto::RELAY_AUTH_NONCE_LEN] = URL_SAFE_NO_PAD
+            .decode(&nonce_b64)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        store
+            .save_auth_challenge(&nonce, &device_bytes, unix_now() as i64 + 60)
+            .await
+            .unwrap();
+        let signature = device.sign(&easynotes_core::crypto::relay_auth_transcript(&nonce));
+        auth.redeem(
+            store,
+            &device_b64,
+            &nonce_b64,
+            &URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+            ttl,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_is_rejected() {
+        let auth = Auth::new([1; 32]);
+        let store = MemoryStore::new();
+        let device = SigningKey::from_bytes(&[2; 32]);
+
+        let token = mint(&auth, &store, &device, Duration::ZERO).await;
+
+        assert_eq!(auth.device_for(&token), None);
+    }
+
+    #[tokio::test]
+    async fn a_token_with_a_flipped_payload_byte_is_rejected() {
+        let auth = Auth::new([1; 32]);
+        let store = MemoryStore::new();
+        let device = SigningKey::from_bytes(&[2; 32]);
+        let token = mint(&auth, &store, &device, Duration::from_secs(900)).await;
+        assert_eq!(
+            auth.device_for(&token),
+            Some(device.verifying_key().to_bytes())
+        );
+
+        let mut bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
+        bytes[1] ^= 1;
+        let forged = URL_SAFE_NO_PAD.encode(bytes);
+
+        assert_eq!(auth.device_for(&forged), None);
+    }
+
+    #[tokio::test]
+    async fn a_token_from_another_signing_key_is_rejected() {
+        let auth = Auth::new([1; 32]);
+        let elsewhere = Auth::new([3; 32]);
+        let store = MemoryStore::new();
+        let device = SigningKey::from_bytes(&[2; 32]);
+
+        let token = mint(&elsewhere, &store, &device, Duration::from_secs(900)).await;
+
+        assert_eq!(auth.device_for(&token), None);
+    }
+}
