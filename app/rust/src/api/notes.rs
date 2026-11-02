@@ -1820,7 +1820,7 @@ impl From<&PendingJoin> for PendingJoinView {
         Self {
             invite: join.secret.id().encode(),
             name: join.name.clone(),
-            note: None,
+            note: join.note.map(|id| id.encode()),
         }
     }
 }
@@ -3526,7 +3526,7 @@ impl Library {
                 .map_err(|e| e.to_string())
         })
         .await?;
-        let join = PendingJoin {
+        let mut join = PendingJoin {
             secret,
             request,
             name,
@@ -3542,18 +3542,15 @@ impl Library {
             None => None,
         };
         if let Some(note) = note {
+            join.note = Some(note);
             // The row stays: the request is still answered later, and a
             // decline has to be able to take the note away again.
-            let mut opened = join.clone();
-            opened.note = Some(note);
             self.shared
                 .locked()?
-                .remember_join(&opened)
+                .remember_join(&join)
                 .map_err(|e| e.to_string())?;
         }
-        let mut view = PendingJoinView::from(&join);
-        view.note = note.map(|id| id.encode());
-        Ok(view)
+        Ok(PendingJoinView::from(&join))
     }
 
     /// The join requests this device is waiting on.
@@ -4836,6 +4833,22 @@ mod tests {
                 .join();
             assert!(poisoned.is_err(), "the connection lock must be poisoned");
         });
+    }
+
+    #[test]
+    fn a_pending_join_reports_the_note_its_pre_grant_opened() {
+        let note = NoteId::random();
+        let join = PendingJoin {
+            secret: InviteSecret::random(),
+            request: "req".into(),
+            name: "Olga".into(),
+            note: Some(note),
+        };
+        assert_eq!(
+            PendingJoinView::from(&join).note,
+            Some(note.encode()),
+            "a pre-granted join must name the note it opened"
+        );
     }
 
     #[test]
