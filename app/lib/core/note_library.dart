@@ -274,6 +274,8 @@ class SearchHit {
 /// batches for Dart to apply ([ADR 0011](../../../docs/decisions.md#adr-0011)), the core hands each batch
 /// over exactly once and keeps no copy, and so a batch the browser refuses —
 /// out of quota, or a database cleared under the tab — is an edit that is gone.
+/// A tab the browser gave no database at all has nowhere to hand a write: it
+/// reports that from the start, because nothing typed there is kept either.
 abstract interface class StorageHealth {
   /// What this device could not keep, in the browser's own words, or null while
   /// everything has been kept.
@@ -281,8 +283,10 @@ abstract interface class StorageHealth {
   /// It latches: once a write has failed it stays failed, because nothing can
   /// undo it. The edit is not in the queue — it was handed over and dropped —
   /// so there is no retry to offer and no later success that would make the
-  /// first one true again. Telling someone their notes are safe after telling
-  /// them they were not is worse than not telling them at all.
+  /// first one true again. A tab with no store says so from its first edit, and
+  /// for the same reason: nothing typed there is being kept, and that will not
+  /// change while it is open. Telling someone their notes are safe after
+  /// telling them they were not is worse than not telling them at all.
   String? get storageError;
 
   /// [storageError] now, and every version of it after that. Emits immediately.

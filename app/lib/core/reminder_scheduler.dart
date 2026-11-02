@@ -44,7 +44,11 @@ class ReminderScheduler {
     if (!_isCurrent(generation)) return;
     try {
       tz.setLocalLocation(tz.getLocation(zone));
-    } on ArgumentError {
+    } on tz.LocationNotFoundException {
+      // Some devices spell a fixed offset "GMT+02:00"; the database holds
+      // offset zones but not that spelling. UTC keeps each reminder's stored
+      // instant, so it still fires when requested; only a later offset change
+      // shifts a repeat.
       tz.setLocalLocation(tz.UTC);
     }
     await initializeLocalNotifications();
@@ -274,7 +278,10 @@ class ReminderScheduler {
   tz.Location _location(String name) {
     try {
       return tz.getLocation(name);
-    } on ArgumentError {
+    } on tz.LocationNotFoundException {
+      // Keeps the reminder's instant, but a repeat is pinned to this device's
+      // wall-clock hour of it, not the author's, and drifts when DST changes
+      // here. Better than aborting the whole pass.
       return tz.local;
     }
   }

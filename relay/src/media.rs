@@ -65,7 +65,7 @@ pub const MAX_PART_BYTES: usize = MAX_CHUNK_SIZE as usize + CHUNK_OVERHEAD;
 
 /// How much one topic's objects, and all of them together, may hold, and how
 /// long an upload may sit unfinished.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MediaLimits {
     /// Reserved and committed bytes in one topic, doomed ones left out. Above
     /// the 200 MB a note may have live at once, with room for the uploads in

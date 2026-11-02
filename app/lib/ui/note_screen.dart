@@ -982,9 +982,9 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   _BodyField _bodyField(NoteView note, {bool expands = false}) => _BodyField(
-    // Not keyed on the text, unlike the title: the field keeps its own
-    // controller across remote edits so the caret stays where the person left
-    // it. See [_BodyFieldState.didUpdateWidget].
+    // Keyed on the field, not on the text: the field keeps its own controller
+    // across remote edits so the caret stays where the person left it. See
+    // [_BodyFieldState.didUpdateWidget].
     key: const Key('body-field'),
     body: note.body,
     rev: note.rev,
@@ -1414,9 +1414,11 @@ class _NoteScreenState extends State<NoteScreen> {
                 ),
               ),
             Padding(
+              // Keyed on the field, not on the title, so the field and its
+              // caret survive both a rename and the rows that appear above it.
+              key: const ValueKey('title-area'),
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
               child: _TitleField(
-                key: ValueKey('title:${note.title}'),
                 title: note.title,
                 hint: isText ? 'Title' : 'Untitled checklist',
                 onChanged: widget.core.setTitle,
@@ -1786,9 +1788,15 @@ class _ColourChoice extends StatelessWidget {
 /// The note title. Commits on submit or on losing focus rather than per
 /// keystroke, so typing a title does not put one update per character on the
 /// relay.
+///
+/// The field keeps its own controller across rebuilds rather than being keyed
+/// on the title, so a peer's rename cannot take the text someone is typing out
+/// from under them. A rename is shown while nobody is typing here, and a title
+/// typed here is committed on losing focus; while the field has the keyboard an
+/// arriving title waits, because the caret is in the way and the commit at the
+/// end is this person's answer to it.
 class _TitleField extends StatefulWidget {
   const _TitleField({
-    super.key,
     required this.title,
     required this.hint,
     required this.onChanged,
@@ -1806,12 +1814,60 @@ class _TitleFieldState extends State<_TitleField> {
   late final _controller = TextEditingController(text: widget.title);
   late final _focus = FocusNode()..addListener(_onFocusChange);
 
+  /// The title this field's text came from: what it last showed, or what was
+  /// last sent. Text that differs from it is this person's, unsent. Set here
+  /// rather than lazily, which would read whatever title the widget had by the
+  /// time it was first used.
+  late String _shown;
+
+  @override
+  void initState() {
+    super.initState();
+    _shown = widget.title;
+  }
+
+  /// A title that arrived while the field had the keyboard, to show when it
+  /// leaves rather than under the caret.
+  bool _deferred = false;
+
   void _onFocusChange() {
     if (!_focus.hasFocus) _commit();
   }
 
   void _commit() {
-    if (_controller.text != widget.title) widget.onChanged(_controller.text);
+    if (_controller.text != _shown) {
+      _shown = _controller.text;
+      // This person's text is the answer to any title that arrived.
+      _deferred = false;
+      widget.onChanged(_controller.text);
+    } else if (!_focus.hasFocus && _deferred) {
+      _deferred = false;
+      _show(widget.title);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_TitleField old) {
+    super.didUpdateWidget(old);
+    // Only a title that actually changed is news. A rebuild with the title this
+    // field opened with — a peer's edit to an item, a status change — must not
+    // undo a title on its way to the core, which has not come back yet.
+    if (old.title == widget.title) return;
+    if (_focus.hasFocus) {
+      // Arrives now, shown when the caret leaves: adopting it here would move
+      // the text being typed. See [_commit].
+      _deferred = true;
+    } else {
+      _deferred = false;
+      _show(widget.title);
+    }
+  }
+
+  /// Show [title], keeping the caret where it was relative to the text around
+  /// it.
+  void _show(String title) {
+    _shown = title;
+    adoptText(_controller, title);
   }
 
   @override

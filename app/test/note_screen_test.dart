@@ -312,6 +312,139 @@ void main() {
     expect(visibleItems(tester), ['milk']);
   });
 
+  testWidgets('a remote rename leaves a title being typed alone', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller;
+
+    // The other person renames the note while this title is still being typed.
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+
+    // The typed title is still there, under the same caret: the peer's rename
+    // replaced neither the text nor the field under it.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Weekly shop');
+    expect(focusedFieldText(tester), 'Weekly shop');
+
+    // And it is what this person's title becomes once they are done.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(core.edits, ['setTitle(Weekly shop)']);
+    expect(core.current.title, 'Weekly shop');
+  });
+
+  testWidgets('tapping away from an untouched title shows a remote rename', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+    // The caret is in the field, so the rename waits rather than moving the
+    // text under it.
+    expect(tester.widget<TextField>(field).controller!.text, 'Groceries');
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+
+    // Nothing was typed here, so nothing is sent and the peer's title stands
+    // rather than being reverted to the one this field opened with.
+    expect(tester.widget<TextField>(field).controller!.text, 'Shopping');
+    expect(core.edits, isEmpty);
+  });
+
+  testWidgets('a title that is still being written is not reverted', (
+    tester,
+  ) async {
+    final core = _SlowTitleCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    core.gate = Completer<void>();
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+
+    // Submitted: the write is on its way and nothing has come back yet.
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(core.current.title, 'Groceries');
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+
+    // A peer's change to an item rebuilds the screen with the title this field
+    // opened with. That is not a rename and must not undo what was sent.
+    core.pushRemote(NoteView(title: 'Groceries', items: core.current.items));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+
+    // And the write coming back says what is already shown.
+    core.gate!.complete();
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+    expect(core.current.title, 'Weekly shop');
+  });
+
+  testWidgets('an attachment arriving leaves a title being typed alone', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller;
+
+    // A picture lands, drawing a row above the title.
+    await core.importAttachment(
+      'kitchen.png',
+      Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4]),
+    );
+    await tester.pumpAndSettle();
+    expect(core.current.attachments, hasLength(1));
+
+    // The title is the same field, still holding what is being typed there.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Weekly shop');
+    expect(focusedFieldText(tester), 'Weekly shop');
+  });
+
+  testWidgets('a remote rename is shown when the title is not being typed in', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    final controller = tester.widget<TextField>(field).controller;
+
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+
+    // The same field now showing what the note says: no stale title, and no
+    // new controller for the person's next tap to land in.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Shopping');
+    expect(find.text('Groceries'), findsNothing);
+    expect(
+      core.edits,
+      isEmpty,
+      reason: 'showing a remote rename must not echo an edit back',
+    );
+  });
+
   testWidgets('an empty checklist starts with one focused blank item', (
     tester,
   ) async {
@@ -1762,6 +1895,20 @@ String? focusedFieldText(WidgetTester tester) => tester
     .where((field) => field.focusNode?.hasFocus ?? false)
     .map((field) => field.controller?.text)
     .firstOrNull;
+
+/// A core whose title write comes back later, so a test can look at the field
+/// while its own edit is still on its way.
+class _SlowTitleCore extends FakeNoteCore {
+  _SlowTitleCore({super.title, super.items});
+
+  Completer<void>? gate;
+
+  @override
+  Future<void> setTitle(String title) async {
+    await gate?.future;
+    await super.setTitle(title);
+  }
+}
 
 /// A core that makes items only when told to, so a test can type into the
 /// time it takes.

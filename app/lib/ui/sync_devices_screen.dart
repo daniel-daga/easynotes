@@ -195,7 +195,11 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openAccount,
                 ),
-                if (widget.library is AccountTransfers)
+                // Only a device that has a relay to send the account through
+                // can add another one. An account with no server yet is a
+                // transfer that has not finished, and a QR code could not
+                // move it anywhere.
+                if (widget.library is AccountTransfers && _connected)
                   ListTile(
                     key: const Key('account-transfer'),
                     contentPadding: EdgeInsets.zero,

@@ -69,6 +69,14 @@ pub struct RateLimit {
     buckets: Mutex<HashMap<IpAddr, Bucket>>,
 }
 
+impl PartialEq for RateLimit {
+    /// The same allowance: the same rate and the same burst. The buckets hold
+    /// what has already been spent, not what the limit allows.
+    fn eq(&self, other: &Self) -> bool {
+        self.per_minute == other.per_minute && self.burst == other.burst
+    }
+}
+
 impl RateLimit {
     /// `per_minute` requests sustained, with `burst` available at once. A
     /// `per_minute` of zero means no limit at all, which is what a test and a

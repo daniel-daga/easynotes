@@ -123,7 +123,17 @@ class MasterKeyStore {
   }
 
   Uint8List _decode(String stored) {
-    final key = base64Decode(stored);
+    final Uint8List key;
+    try {
+      key = base64Decode(stored);
+    } on FormatException {
+      // The decoder's own message quotes the value it could not read, and the
+      // value is the master key. This one reaches a person, and a screenshot
+      // of it to support, so it names the problem and takes no part of the key.
+      throw const FormatException(
+        'the master key in the keychain is not valid base64',
+      );
+    }
     if (key.length != masterKeyBytes) {
       // Rather than hand the core something that cannot work and let it report
       // a database it cannot read.
