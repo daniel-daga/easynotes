@@ -549,6 +549,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
 
     String? createdNoteId;
+    var imported = false;
     try {
       final noteId = await widget.library.createNote(kind: NoteKind.text);
       createdNoteId = noteId;
@@ -570,12 +571,17 @@ class _NoteListScreenState extends State<NoteListScreen> {
             durationMs: recording.duration.inMilliseconds,
           );
         }
+        // Before the core is let go: a failing dispose must not make a saved
+        // recording look unsaved, and the finally below deletes it.
+        imported = true;
       } finally {
         await core.dispose();
       }
       if (mounted) await _openNote(noteId);
     } on Object catch (error) {
-      if (createdNoteId != null) {
+      // Only undo the note for a recording that is not in it: one that was
+      // imported is saved, and trashing it would contradict the message.
+      if (createdNoteId != null && !imported) {
         try {
           await widget.library.setTrashed(createdNoteId, true);
         } on Object {
@@ -583,12 +589,24 @@ class _NoteListScreenState extends State<NoteListScreen> {
         }
       }
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text('Could not save audio note: $error')),
-        );
+        // Say what happened to the recording, matching what the finally below
+        // does with it: an imported one is in the note and is deleted, a
+        // browser's goes with its blob URL, and a file on disk stays where
+        // the recorder put it.
+        final message = imported
+            ? 'Saved the audio note, but could not open it: $error'
+            : kIsWeb
+            ? 'Could not save audio note: $error. The recording was not kept.'
+            : 'Could not save audio note: $error. The recording is still on '
+                  'this device at ${recording.path}.';
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
-      await discardRecordingPath(recording.path);
+      // A browser's recording is a blob URL nothing else holds, so it is
+      // released either way; a file on disk is kept unless the note has it.
+      if (imported || kIsWeb) await discardRecordingPath(recording.path);
     }
   }
 
@@ -1019,16 +1037,29 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   /// The same, for everything in the trash at once.
-  Future<void> _emptyTrash(int count) async {
+  ///
+  /// The notes are the ones the confirmation counted, not whatever is in the
+  /// trash when the answer arrives: a note thrown away on another device and
+  /// synced while the question was open was never asked about.
+  Future<void> _emptyTrash(List<NoteSummary> notes) async {
     final confirmed = await _confirmDelete(
-      question: count == 1
+      question: notes.length == 1
           ? 'Delete 1 note permanently?'
-          : 'Delete all $count notes permanently?',
+          : 'Delete all ${notes.length} notes permanently?',
       action: 'Delete all',
     );
     if (!confirmed || !mounted) return;
     try {
-      await widget.library.emptyTrash();
+      // Confirmed and still in the trash: one taken back out on another device
+      // while the question was open is not deleted.
+      final trashed = {
+        for (final note in widget.library.notes)
+          if (note.trashed) note.id,
+      };
+      await widget.library.forgetNotes([
+        for (final note in notes)
+          if (trashed.contains(note.id)) note.id,
+      ]);
     } catch (error) {
       _deletionFailed('Could not finish emptying the trash: $error.');
     }
@@ -1308,7 +1339,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                             key: const Key('empty-trash-button'),
                             icon: const Icon(Icons.delete_sweep_outlined),
                             tooltip: 'Empty the trash',
-                            onPressed: () => _emptyTrash(notes.length),
+                            onPressed: () => _emptyTrash(notes),
                           ),
                       ],
                     ],

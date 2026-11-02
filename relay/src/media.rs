@@ -31,9 +31,11 @@
 //!
 //! Writes to one object are serialised under a per-process lock. Several
 //! instances over one directory stay correct where it matters — the metadata
-//! is transactional, files are renamed into place, and a commit that misses a
-//! chunk racing it on another instance says so and is retried — but can leave
-//! a stray chunk behind an assembled object.
+//! is transactional, files are renamed into place, an assemble deletes only
+//! the chunks it hashed and never an assembled object, and a commit that
+//! misses a chunk racing it on another instance says so and is retried — but
+//! the lock narrows the races between instances rather than closing them, and
+//! one can leave a stray chunk behind an assembled object.
 
 use crate::app::AppState;
 use crate::error::{RelayError, Result};
@@ -205,9 +207,14 @@ pub enum Assembled {
     Done,
     /// These chunks have not arrived.
     Missing(Vec<u32>),
-    /// Every chunk was there and together they are not the digest. They have
-    /// been dropped, so the upload can be sent again.
-    Mismatch,
+    /// Every chunk was there and together they are not the digest, and any
+    /// chunks have been dropped so they are sent again. `assembled` is whether
+    /// an object was already on disk: that one is not this upload's to delete,
+    /// because a commit on another instance may be recording it as this answer
+    /// is read, and no lock spans the instances (#22).
+    Mismatch {
+        assembled: bool,
+    },
 }
 
 /// Where an object's bytes are kept.
@@ -324,8 +331,9 @@ impl Blobs for MemoryBlobs {
             if <[u8; 32]>::from(Sha256::digest(whole)) == digest {
                 return Ok(Assembled::Done);
             }
-            held.whole = None;
-            return Ok(Assembled::Mismatch);
+            // Left alone, as on disk: nothing here can tell whether a commit
+            // on another instance is recording it (see `Assembled::Mismatch`).
+            return Ok(Assembled::Mismatch { assembled: true });
         }
         let missing: Vec<u32> = (0..chunks)
             .filter(|i| !held.parts.contains_key(i))
@@ -338,7 +346,7 @@ impl Blobs for MemoryBlobs {
             .collect();
         held.parts.clear();
         if <[u8; 32]>::from(Sha256::digest(&whole)) != digest {
-            return Ok(Assembled::Mismatch);
+            return Ok(Assembled::Mismatch { assembled: false });
         }
         held.whole = Some(whole);
         Ok(Assembled::Done)
@@ -458,10 +466,11 @@ impl DirBlobs {
             if <[u8; 32]>::from(Sha256::digest(&whole)) == digest {
                 return Ok(Assembled::Done);
             }
-            // Assembled for a commit that never recorded, and not what this
-            // one names: drop it, as unassembled chunks would be.
-            not_found_ok(std::fs::remove_file(&to))?;
-            return Ok(Assembled::Mismatch);
+            // Assembled for a commit that never recorded, or for one this
+            // process has not heard of. Leave it: dropping it is not this
+            // upload's to do, and no lock over the other instances could make
+            // the check safe (#22).
+            return Ok(Assembled::Mismatch { assembled: true });
         }
         let missing: Vec<u32> = (0..chunks)
             .filter(|i| !parts.join(i.to_string()).exists())
@@ -487,7 +496,7 @@ impl DirBlobs {
         if <[u8; 32]>::from(hash.finalize()) != digest {
             let _ = std::fs::remove_file(&tmp);
             not_found_ok(std::fs::remove_dir_all(&parts))?;
-            return Ok(Assembled::Mismatch);
+            return Ok(Assembled::Mismatch { assembled: false });
         }
         std::fs::create_dir_all(to.parent().expect("an object has a directory")).map_err(io)?;
         std::fs::rename(&tmp, &to).map_err(io)?;
@@ -871,7 +880,14 @@ pub(crate) async fn commit(
             Ok(StatusCode::OK)
         }
         Assembled::Missing(_) => Err(RelayError::Conflict("chunks are missing")),
-        Assembled::Mismatch => Err(RelayError::Conflict(
+        // Nothing is deleted here, whatever the row says now: the bytes may be
+        // the object a commit on another instance is recording as this answer
+        // is read, and re-reading the row only narrows that race (#22). The
+        // chunks are dropped by `assemble`, which needs no metadata.
+        Assembled::Mismatch { assembled: true } => Err(RelayError::Conflict(
+            "that object is already assembled under another digest",
+        )),
+        Assembled::Mismatch { assembled: false } => Err(RelayError::Conflict(
             "the chunks are not that digest; send them again",
         )),
     }

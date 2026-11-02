@@ -7,6 +7,7 @@ library;
 
 import 'dart:async';
 
+import 'package:easynotes/core/app_visibility.dart';
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
@@ -285,6 +286,30 @@ void main() {
     expect(visibleItems(tester), ['milk', 'bread', 'eggs']);
     expect(core.edits, isEmpty);
     expect(focusedFieldText(tester), isNull);
+  });
+
+  testWidgets('a title typed before the app is hidden is still saved', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    addTearDown(() => appIsForeground.value = true);
+
+    await tester.enterText(find.byKey(const Key('title-field')), 'Groceries');
+    await tester.pumpAndSettle();
+    // The title waits for submit or focus loss, so nothing has gone yet.
+    expect(core.edits, isEmpty);
+
+    // What main.dart's AppLifecycleListener.onHide does before the system may
+    // reclaim the app. A screen test installs no lifecycle listener, so the
+    // notifier the screen listens to is the seam here.
+    appIsForeground.value = false;
+    await tester.pumpAndSettle();
+
+    expect(core.edits, ['setTitle(Groceries)']);
+    expect(core.current.title, 'Groceries');
+    // The hide commits the title only: the list is where it was.
+    expect(visibleItems(tester), ['milk']);
   });
 
   testWidgets('an empty checklist starts with one focused blank item', (

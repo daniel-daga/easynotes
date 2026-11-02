@@ -279,6 +279,10 @@ class FakeNoteCore implements NoteCore {
   bool holdImports = false;
   final List<AttachmentView> _pending = [];
 
+  /// What an import throws, for a test of a save the core refuses — a sound
+  /// file over its 50 MB, say. Null imports as this fake otherwise does.
+  Object? refuseAttachment;
+
   @override
   Future<AttachmentView> importAttachment(
     String name,
@@ -286,6 +290,7 @@ class FakeNoteCore implements NoteCore {
     Uint8List? thumbnail,
     int? durationMs,
   }) async {
+    if (refuseAttachment case final refusal?) throw refusal;
     edits.add('importAttachment($name)');
     final image =
         bytes.length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 ||
@@ -321,13 +326,20 @@ class FakeNoteCore implements NoteCore {
     _emit();
   }
 
+  /// A file lands as an empty attachment: the fake has no disk to read one
+  /// from, but a save that succeeds is still a save a screen can finish.
   @override
   Future<AttachmentView> importAttachmentFile(
     String path,
     String name, {
     Uint8List? thumbnail,
     int? durationMs,
-  }) => throw UnsupportedError('the fake has no disk');
+  }) => importAttachment(
+    name,
+    Uint8List(0),
+    thumbnail: thumbnail,
+    durationMs: durationMs,
+  );
 
   @override
   Future<List<AttachmentView>> pendingAttachments() async =>

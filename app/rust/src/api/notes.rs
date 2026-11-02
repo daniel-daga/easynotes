@@ -2910,7 +2910,9 @@ impl Library {
                 .map_err(|e| e.to_string())?
                 .word_list()
         };
-        self.shared.connect_new_documents()?;
+        // Not fatal: the phrase is unrecoverable if this call fails, and
+        // Library::connect retries. A storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         Ok(words)
     }
 
@@ -2953,7 +2955,9 @@ impl Library {
             .locked()?
             .adopt_account(&phrase)
             .map_err(|e| e.to_string())?;
-        self.shared.connect_new_documents()?;
+        // Not fatal: the account is adopted and Library::connect retries. A
+        // storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         Ok(())
     }
 
@@ -3196,7 +3200,9 @@ impl Library {
             .locked()?
             .adopt_account_root(transfer.root)
             .map_err(|e| e.to_string())?;
-        self.shared.connect_new_documents()?;
+        // Not fatal: the account is adopted and Library::connect retries. A
+        // storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         *self
             .transfer_guest
             .lock()
@@ -4810,4 +4816,73 @@ fn spawn_watch_status(
             let _ = error_sink.add_error(error);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easynotes_core::account::RecoveryPhrase;
+
+    /// Make the next connect fail the way it does when the sync lock is
+    /// poisoned. The account is minted or adopted either side of this, so
+    /// whatever it locks is untouched.
+    fn break_sync(library: &Library) {
+        std::thread::scope(|scope| {
+            let poisoned = scope
+                .spawn(|| {
+                    let _held = crate::lock::lock(&library.shared.connections).unwrap();
+                    panic!("poison the sync connection lock");
+                })
+                .join();
+            assert!(poisoned.is_err(), "the connection lock must be poisoned");
+        });
+    }
+
+    #[test]
+    fn create_account_returns_the_phrase_when_connect_fails() {
+        let library = Library::open_ephemeral().unwrap();
+        break_sync(&library);
+        let words = library
+            .create_account()
+            .expect("a failed connect must not lose the phrase");
+        assert_eq!(words.len(), 12);
+        let phrase = RecoveryPhrase::parse(&words.join(" ")).unwrap();
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
+
+    #[test]
+    fn adopt_account_succeeds_when_connect_fails() {
+        let phrase = RecoveryPhrase::generate();
+        let library = Library::open_ephemeral().unwrap();
+        break_sync(&library);
+        library
+            .adopt_account(phrase.words())
+            .expect("a failed connect must not report adoption as failed");
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
+
+    #[test]
+    fn adopt_account_transfer_succeeds_when_connect_fails() {
+        let phrase = RecoveryPhrase::generate();
+        let library = Library::open_ephemeral().unwrap();
+        *library.transfer_result.lock().unwrap() = Some(OpenedTransfer {
+            root: phrase.root(),
+            relay_url: "wss://relay.example".into(),
+            relay_access: None,
+        });
+        break_sync(&library);
+        library
+            .adopt_account_transfer()
+            .expect("a failed connect must not report the transfer as failed");
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
 }

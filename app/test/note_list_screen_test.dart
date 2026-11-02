@@ -6,6 +6,8 @@
 /// the note it is on rather than the note the screen thinks it is on.
 library;
 
+import 'dart:io';
+
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
@@ -37,6 +39,84 @@ FakeNoteLibrary twoLists() => FakeNoteLibrary(
     'hardware': FakeNoteCore(title: 'Hardware', items: const ['screws']),
   },
 );
+
+/// Record a note through the real recorder sheet and keep it, over a platform
+/// with no microphone: the recorder plugin answers with the path it was given,
+/// with a file at it, which is what a recording leaves on the device. Its
+/// event channel is named for a recorder ID the plugin mints, so it is
+/// answered once that ID arrives. Returns the recording's path.
+Future<String> recordAndKeep(
+  WidgetTester tester,
+  FakeNoteLibrary library,
+) async {
+  final directory = Directory.systemTemp.createTempSync('easynotes-voice-');
+  addTearDown(() => directory.deleteSync(recursive: true));
+  final channels =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  String? path;
+  EventChannel? states;
+  channels.setMockMethodCallHandler(
+    const MethodChannel('plugins.flutter.io/path_provider'),
+    (call) async => directory.path,
+  );
+  channels.setMockMethodCallHandler(
+    const MethodChannel('com.llfbandit.record/messages'),
+    (call) async {
+      switch (call.method) {
+        case 'create':
+          final id = (call.arguments as Map)['recorderId'];
+          states = EventChannel('com.llfbandit.record/events/$id');
+          channels.setMockStreamHandler(
+            states!,
+            MockStreamHandler.inline(onListen: (arguments, events) {}),
+          );
+        case 'hasPermission':
+          return true;
+        case 'start':
+          path = (call.arguments as Map)['path'] as String;
+          File(path!).writeAsBytesSync(List.filled(16, 0));
+        case 'stop':
+          return path;
+      }
+      return null;
+    },
+  );
+  addTearDown(() {
+    channels.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      null,
+    );
+    channels.setMockMethodCallHandler(
+      const MethodChannel('com.llfbandit.record/messages'),
+      null,
+    );
+    if (states != null) channels.setMockStreamHandler(states!, null);
+  });
+
+  await pumpList(tester, library);
+  await tester.tap(find.byKey(const Key('new-note-button')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('new-audio-note-button')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Start recording'));
+  await tester.pump();
+  await tester.pump();
+  await tester.tap(find.text('Stop recording'));
+  await tester.pump();
+  await tester.pump();
+  await tester.tap(find.text('Keep recording'));
+  await tester.pumpAndSettle();
+  return path!;
+}
+
+/// Let the real disk work — keeping or discarding a recording is a file write,
+/// which the test's fake clock does not run.
+Future<void> settleDisk(WidgetTester tester) async {
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 50)),
+  );
+  await tester.pump();
+}
 
 void main() {
   testWidgets('People filters are one per person and update after a removal', (
@@ -228,6 +308,36 @@ void main() {
 
     expect(library.calls, contains('createNote()'));
     expect(find.byKey(const Key('add-list-entry')), findsOneWidget);
+  });
+
+  testWidgets('a recording whose import is refused is kept, and the message '
+      'says where', (tester) async {
+    // The core refuses the recording as it refuses one over 50 MB.
+    final library = FakeNoteLibrary()
+      ..refuseAttachment = 'sound files can be up to 50 MB';
+    final path = await recordAndKeep(tester, library);
+    await settleDisk(tester);
+
+    expect(File(path).existsSync(), isTrue);
+    expect(
+      find.textContaining('sound files can be up to 50 MB'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('The recording is still on this device at $path'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a recording whose import was saved is deleted from the temp '
+      'folder', (tester) async {
+    final path = await recordAndKeep(tester, FakeNoteLibrary());
+    // The file is only let go once the note it went into is left.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await settleDisk(tester);
+
+    expect(File(path).existsSync(), isFalse);
   });
 
   testWidgets('a text note\'s card shows its lines, and no tally', (
@@ -1359,12 +1469,78 @@ void main() {
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
 
-    expect(library.calls, contains('emptyTrash()'));
+    expect(library.calls, contains('forgetNotes(old, hardware)'));
     expect(find.byKey(const Key('no-notes')), findsOneWidget);
     await openShelf(tester, 'notes');
     expect(find.byKey(const Key('note:groceries')), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsNothing);
     expect(find.byKey(const Key('note:old')), findsNothing);
+  });
+
+  testWidgets('a note that reaches the trash while the confirmation is open '
+      'survives emptying', (tester) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
+    await holdAndTap(tester, 'old', 'bulk-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete all 2 notes permanently?'), findsOneWidget);
+
+    // Another device throws a note away, and sync delivers it, while the
+    // question is still on screen.
+    final arriving = await library.createNote();
+    await library.setTrashed(arriving, true);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    // The two that were counted, and only those.
+    expect(find.byKey(const Key('note:hardware')), findsNothing);
+    expect(find.byKey(const Key('note:old')), findsNothing);
+    expect(find.byKey(Key('note:$arriving')), findsOneWidget);
+    expect(library.calls, contains('forgetNotes(old, hardware)'));
+  });
+
+  testWidgets('a note restored while the confirmation is open survives '
+      'emptying', (tester) async {
+    final library = FakeNoteLibrary(
+      notes: {
+        'groceries': FakeNoteCore(title: 'Groceries'),
+        'hardware': FakeNoteCore(title: 'Hardware'),
+        'old': FakeNoteCore(title: 'Old'),
+      },
+    );
+    await pumpList(tester, library);
+    await holdAndTap(tester, 'hardware', 'bulk-trash');
+    await holdAndTap(tester, 'old', 'bulk-trash');
+    await openShelf(tester, 'trash');
+
+    await tester.tap(find.byKey(const Key('empty-trash-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete all 2 notes permanently?'), findsOneWidget);
+
+    // Another device takes a note back out of the trash while the question is
+    // still on screen. It was counted, but it is not in the trash any more.
+    await library.setTrashed('hardware', false);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('confirm-delete-forever')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note:old')), findsNothing);
+    await openShelf(tester, 'notes');
+    expect(find.byKey(const Key('note:hardware')), findsOneWidget);
+    expect(library.calls, contains('forgetNotes(old)'));
   });
 
   testWidgets('a deletion that fails says so and leaves the trash', (
@@ -1386,7 +1562,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-delete-forever')));
     await tester.pumpAndSettle();
-    expect(library.calls, contains('emptyTrash()'));
+    expect(library.calls, contains('forgetNotes(hardware)'));
     expect(find.byKey(const Key('deletion-failed')), findsOneWidget);
     expect(find.textContaining('out of space'), findsOneWidget);
     expect(find.byKey(const Key('note:hardware')), findsOneWidget);
