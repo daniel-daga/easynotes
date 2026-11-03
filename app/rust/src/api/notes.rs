@@ -3071,10 +3071,11 @@ impl Library {
         let result = easynotes_core::sync::pairing::send_response(http, id, owner, encrypted);
         on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
         // The approval is spent: the tokens, keypair and relay access must not
-        // outlive it. Only after the send, so a failure stays retryable.
-        if let Ok(mut state) = self.transfer_owner.lock() {
-            let _ = state.take();
-        }
+        // outlive it. Only after the send, so a failure stays retryable. A
+        // poisoned lock still holds the state, and dropping it is the point.
+        let mut state = crate::lock::lock(&self.transfer_owner)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = state.take();
         Ok(())
     }
 

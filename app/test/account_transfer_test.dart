@@ -84,7 +84,9 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
   }
 
   @override
-  Future<void> cancelAccountTransfer() async {}
+  Future<void> cancelAccountTransfer() async {
+    calls.add('cancelAccountTransfer()');
+  }
 }
 
 /// Profiles whose move can be made to fail, as a keychain does.
@@ -297,6 +299,12 @@ void main() {
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.byType(AccountTransferScreen), findsNothing);
+    // Cancel closed the pairing, and the dispose that followed did not close
+    // it again.
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      hasLength(1),
+    );
 
     // The screen opened again — after Cancel or after a restart — and pairs
     // with the same account. It is already on this device, so adopting it
@@ -363,5 +371,27 @@ void main() {
     expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
     expect(find.textContaining('The QR code is the account'), findsNothing);
     expect(find.textContaining('Transfer sent securely'), findsOneWidget);
+
+    // Approval leaves nothing to cancel when the screen goes away.
+    await tester.pumpWidget(const SizedBox());
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('leaving the screen before approval cancels the pairing', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+    library.calls.clear();
+
+    // The screen was left without Cancel — by a system back, say: the
+    // pairing must not stay live for its full five minutes.
+    await tester.pumpWidget(const SizedBox());
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      hasLength(1),
+    );
   });
 }

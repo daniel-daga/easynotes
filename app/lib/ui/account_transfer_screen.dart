@@ -36,6 +36,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
+  /// Whether the pairing has already been cancelled, so [dispose] does not
+  /// cancel it a second time after [cancel].
+  bool _cancelled = false;
+
   /// Whether this device belongs to an account.
   bool get _hasAccount {
     try {
@@ -56,7 +60,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   void dispose() {
     _poller?.cancel();
     // Backing out must not leave the pairing open for its full five minutes.
-    if (!_approved) {
+    if (!_approved && !_cancelled) {
       unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));
     }
     super.dispose();
@@ -235,6 +239,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
 
   Future<void> _cancel() async {
     _poller?.cancel();
+    _cancelled = true;
     try {
       await widget.library.cancelAccountTransfer();
     } catch (_) {}
