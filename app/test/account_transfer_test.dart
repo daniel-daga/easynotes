@@ -12,6 +12,7 @@ import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/ui/account_transfer_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -72,14 +73,21 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
     String? relayAccess,
   ) async => '{"version":1}';
 
-  @override
-  Future<String?> accountTransferRequestCode() async => null;
+  /// The code a paired device shows once its owner's request arrives.
+  String? requestCode;
 
   @override
-  Future<void> approveAccountTransfer() async {}
+  Future<String?> accountTransferRequestCode() async => requestCode;
 
   @override
-  Future<void> cancelAccountTransfer() async {}
+  Future<void> approveAccountTransfer() async {
+    calls.add('approveAccountTransfer()');
+  }
+
+  @override
+  Future<void> cancelAccountTransfer() async {
+    calls.add('cancelAccountTransfer()');
+  }
 }
 
 /// Profiles whose move can be made to fail, as a keychain does.
@@ -125,7 +133,8 @@ void main() {
 
   /// Open the transfer screen the way the settings screen does — pushed over
   /// something, so Cancel has somewhere to go back to.
-  Future<void> pumpScreen(WidgetTester tester) async {
+  Future<void> pumpScreen(WidgetTester tester, {RelayProfile? profile}) async {
+    final shown = profile ?? session.profile;
     await tester.pumpWidget(
       MaterialApp(
         home: Builder(
@@ -137,7 +146,7 @@ void main() {
                   MaterialPageRoute<void>(
                     builder: (_) => AccountTransferScreen(
                       library: library,
-                      profile: session.profile,
+                      profile: shown,
                       onMoveLocalToRelay: (url, {access}) =>
                           session.connectNewServer(
                             url,
@@ -172,6 +181,31 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('the transfer screen flags the window while it is open', (
+    tester,
+  ) async {
+    const channel = MethodChannel('eu.fraisl.easynotes/secure_screen');
+    final calls = <Object?>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.arguments);
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+
+    await pumpScreen(tester);
+    expect(calls, [
+      {'secure': true},
+    ]);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(calls.last, {'secure': false});
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('a new device adopts the account before moving its notes', (
     tester,
@@ -291,6 +325,12 @@ void main() {
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
     expect(find.byType(AccountTransferScreen), findsNothing);
+    // Cancel closed the pairing, and the dispose that followed did not close
+    // it again.
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      hasLength(1),
+    );
 
     // The screen opened again — after Cancel or after a restart — and pairs
     // with the same account. It is already on this device, so adopting it
@@ -308,5 +348,76 @@ void main() {
     );
     expect(find.textContaining('Account added'), findsOneWidget);
     expect(find.textContaining('already has an account'), findsNothing);
+  });
+
+  testWidgets('the owner approves a request it started, then the QR closes', (
+    tester,
+  ) async {
+    library.setUpSharing();
+    library.requestCode = '246810';
+    await pumpScreen(
+      tester,
+      profile: const RelayProfile(id: 'owner', url: server),
+    );
+
+    // The QR is the account, so the only request to approve is one started
+    // here, a moment ago, on a device in front of the owner.
+    expect(find.textContaining('The QR code is the account'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'never one from a code someone read to you or sent you',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('begin-account-transfer')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+
+    expect(find.byKey(const Key('account-transfer-qr')), findsOneWidget);
+    expect(find.text('246810'), findsOneWidget);
+    expect(find.byKey(const Key('approve-account-transfer')), findsOneWidget);
+
+    await tester.ensureVisible(
+      find.byKey(const Key('approve-account-transfer')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('approve-account-transfer')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('account-transfer-qr')), findsNothing);
+    expect(find.text('246810'), findsNothing);
+    expect(find.byKey(const Key('approve-account-transfer')), findsNothing);
+    expect(library.calls, contains('approveAccountTransfer()'));
+    // Nothing of the pairing is rendered after approval — not the QR, not the
+    // code, not the intro that asked for them: the completion message is what
+    // is left. (The secret itself is dropped in Rust; this holds the screen.)
+    expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
+    expect(find.textContaining('The QR code is the account'), findsNothing);
+    expect(find.textContaining('Transfer sent securely'), findsOneWidget);
+
+    // Approval leaves nothing to cancel when the screen goes away.
+    await tester.pumpWidget(const SizedBox());
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('leaving the screen before approval cancels the pairing', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+    library.calls.clear();
+
+    // The screen was left without Cancel — by a system back, say: the
+    // pairing must not stay live for its full five minutes.
+    await tester.pumpWidget(const SizedBox());
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      hasLength(1),
+    );
   });
 }

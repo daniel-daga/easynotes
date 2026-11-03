@@ -1,6 +1,7 @@
 package eu.fraisl.easynotes
 
 import android.content.Intent
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -71,6 +72,31 @@ class MainActivity : FlutterActivity() {
             if (call.method == "getInitialText") {
                 result.success(pendingText)
                 pendingText = null
+            } else {
+                result.notImplemented()
+            }
+        }
+        // Screenshots and the Recents thumbnail of a screen showing the
+        // recovery phrase or the transfer QR. iOS has no equivalent, so there
+        // the same screen can still be captured; that gap is not covered here.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "eu.fraisl.easynotes/secure_screen",
+        ).setMethodCallHandler { call, result ->
+            if (call.method == "setSecure") {
+                val secure = call.argument<Boolean>("secure")
+                if (secure == null) {
+                    result.error("invalid_argument", "Missing secure flag", null)
+                    return@setMethodCallHandler
+                }
+                runOnUiThread {
+                    if (secure) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    }
+                    result.success(null)
+                }
             } else {
                 result.notImplemented()
             }
