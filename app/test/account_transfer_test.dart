@@ -354,6 +354,10 @@ void main() {
     expect(find.byKey(const Key('account-transfer-qr')), findsNothing);
     expect(find.text('246810'), findsNothing);
     expect(find.byKey(const Key('approve-account-transfer')), findsNothing);
+    // The QR and its code are gone from state, and the intro that asked for
+    // them is gone with them: the completion message is what is left.
+    expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
+    expect(find.textContaining('The QR code is the account'), findsNothing);
     expect(find.textContaining('Transfer sent securely'), findsOneWidget);
   });
 }

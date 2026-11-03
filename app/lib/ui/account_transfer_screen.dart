@@ -111,6 +111,9 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       setState(() {
         _busy = false;
         _approved = true;
+        // The QR is the account: it does not outlive the approval.
+        _qr = null;
+        _code = null;
         _message =
             'Transfer sent securely. The new device can now finish setup.';
       });
@@ -244,13 +247,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text(
-            owner
-                ? 'Scan this QR code with your new device. The QR code is the account, so anyone who sees it can ask for it. Keep this screen open, and approve only a request you started a moment ago on a device in front of you — never one from a code someone read to you or sent you.'
-                : 'Scan the QR code shown by your original device. Both screens show the same code: it is not a check on which device is which.',
-          ),
+          if (!_approved)
+            Text(
+              owner
+                  ? 'Scan this QR code with your new device. The QR code is the account, so anyone who sees it can ask for it. Keep this screen open, and approve only a request you started a moment ago on a device in front of you — never one from a code someone read to you or sent you.'
+                  : 'Scan the QR code shown by your original device. Both screens show the same code: it is not a check on which device is which.',
+            ),
           const SizedBox(height: 20),
-          if (owner && _qr == null)
+          if (owner && _qr == null && !_approved)
             FilledButton.icon(
               key: const Key('begin-account-transfer'),
               onPressed: _busy || widget.profile.url == null
