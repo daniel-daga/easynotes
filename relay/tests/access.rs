@@ -13,7 +13,7 @@ use easynotes_core::error::CoreError;
 use easynotes_core::ids::{AttachmentId, NoteId};
 use easynotes_core::invite::InviteSecret;
 use easynotes_core::relay_access::RelayAccess;
-use easynotes_core::sync::{authenticate, invite, Incoming};
+use easynotes_core::sync::{authenticate, invite, DeviceSync, Incoming, Routed};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
 use reqwest::StatusCode;
@@ -294,6 +294,58 @@ async fn a_flood_of_appends_is_told_to_back_off_and_disconnected() {
         (1..20).contains(&stored),
         "some appends are taken before the budget runs out, not all: {stored}"
     );
+}
+
+#[tokio::test]
+async fn a_refresh_is_charged_for_every_note_it_reads() {
+    let relay = budgeted(8 << 10).await;
+    let token = authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+        .await
+        .unwrap();
+    let mut sync = DeviceSync::connect(&relay.ws_base(), &token).await.unwrap();
+    // Four notes: the fixed subscribe cost leaves room for one refresh of
+    // four, and not for a second.
+    let notes: Vec<NoteId> = (0..4).map(|_| NoteId::random()).collect();
+    for note in &notes {
+        sync.subscribe(*note, 0).await.unwrap();
+    }
+    let mut caught = 0;
+    while caught < notes.len() {
+        match sync.next().await.unwrap() {
+            Some(Routed::Note(_, Incoming::Caught { .. })) => caught += 1,
+            Some(_) => {}
+            None => panic!("the relay closed a socket that only subscribed"),
+        }
+    }
+
+    sync.refresh("first").await.unwrap();
+    let mut answered = 0;
+    while answered < notes.len() {
+        match sync.next().await.unwrap() {
+            Some(Routed::Refresh { .. }) => answered += 1,
+            Some(_) => {}
+            None => panic!("the relay closed inside a refresh the budget covers"),
+        }
+    }
+
+    // The second refresh is over the budget. Charged before it reads a head,
+    // so it is answered before any of the four notes is, and the socket closes.
+    sync.refresh("second").await.unwrap();
+    match sync.next().await.unwrap() {
+        Some(Routed::Note(_, Incoming::RateLimited { .. })) => {}
+        Some(_) => panic!("the over-budget refresh did its work first"),
+        None => panic!("closed without saying why"),
+    }
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match sync.next().await {
+                Ok(None) | Err(_) => return,
+                Ok(Some(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the relay kept the socket open");
 }
 
 #[tokio::test]

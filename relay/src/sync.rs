@@ -463,6 +463,14 @@ enum Handled {
     Close,
 }
 
+/// What one message costs the write budget when it is not an append: a
+/// subscribe, an unsubscribe, a compaction, or one this relay does not know.
+const MESSAGE_BYTES: usize = 256;
+
+/// What one `Refresh` costs per subscription, and at least once: each one reads
+/// that note's head, so the message's cost is the work it asks for.
+const REFRESH_BYTES: usize = 1024;
+
 async fn handle(
     session: &Session<'_>,
     subs: &mut Subscriptions,
@@ -475,7 +483,27 @@ async fn handle(
         out,
         fanned,
     } = *session;
-    let message = match serde_json::from_str::<SyncClientMessage>(text) {
+    let parsed = serde_json::from_str::<SyncClientMessage>(text);
+    // Everything the relay does for a message costs its write budget, charged
+    // before the work rather than after: a flood of refreshes or subscribes is
+    // a flood of store reads. A malformed message is charged like any other,
+    // at the fixed cost, so text that parses as nothing is not free.
+    let cost = match &parsed {
+        Ok(SyncClientMessage::Append { envelope, .. }) => envelope.len(),
+        Ok(SyncClientMessage::Refresh { .. }) => REFRESH_BYTES * subs.0.len().max(1),
+        _ => MESSAGE_BYTES,
+    };
+    if let Err(retry_after) = state.spend_writes(client, cost) {
+        // Pinned on a subscription where there is one: a client throttles on a
+        // `rate_limited` it can route to a note, and drops one it cannot.
+        refuse(
+            out,
+            subs.0.keys().next().cloned(),
+            &format!("{RATE_LIMITED}:{retry_after}"),
+        );
+        return Handled::Close;
+    }
+    let message = match parsed {
         Ok(message) => message,
         Err(e) => {
             refuse(out, None, &format!("malformed message: {e}"));
@@ -586,12 +614,6 @@ async fn handle(
             if !subs.0.contains_key(&note) {
                 refuse(out, Some(note), "not subscribed to that note");
                 return Handled::Continue;
-            }
-            // Charged what was sent, stored or not: a flood of refused appends
-            // costs the relay the same work as a flood of accepted ones.
-            if let Err(retry_after) = state.spend_writes(client, envelope.len()) {
-                refuse(out, Some(note), &format!("{RATE_LIMITED}:{retry_after}"));
-                return Handled::Close;
             }
             // The sender gets its own append back through the fan-out, like
             // everyone else.
