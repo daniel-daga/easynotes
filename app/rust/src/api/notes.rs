@@ -3414,14 +3414,25 @@ impl Library {
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        on_network(async move {
-            invite::decline(&http, access.as_ref(), &secret, &owner, &request)
-                .await
-                .map_err(|e| e.to_string())
+        let declined = on_network(async move {
+            Ok(
+                invite::decline(&http, access.as_ref(), &secret, &owner, &request)
+                    .await
+                    .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())),
+            )
         })
         .await?;
-        self.rotate_if_pre_granted(outgoing);
-        self.shared.forget_invite(outgoing)
+        match declined {
+            // An invite the relay no longer has, or has closed, cannot take
+            // the decline — but it is already answered, and a claim on it can
+            // never be let in. Rotate and forget either way, or the invite
+            // stays here and fails on every poll.
+            Ok(()) | Err((true, _)) => {
+                self.rotate_if_pre_granted(outgoing);
+                self.shared.forget_invite(outgoing)
+            }
+            Err((false, message)) => Err(message),
+        }
     }
 
     /// Change the note's key when this invite handed it out before it was
