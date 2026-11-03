@@ -4,4 +4,6 @@ Future<String> newRecordingPath() async => throw UnsupportedError(
 
 Future<void> discardRecordingPath(String? path) async {}
 
+Future<String> keepRecordingPath(String path) async => path;
+
 Future<void> sweepStaleRecordings() async {}

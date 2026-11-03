@@ -9,6 +9,9 @@ const _staleRecordingAge = Duration(hours: 1);
 
 const _recordingPrefix = 'easynotes-voice-';
 
+/// Recordings the app kept for the person, which the sweep must never delete.
+const _keptRecordingPrefix = 'easynotes-recording-';
+
 Future<String> newRecordingPath() async {
   final directory = await getTemporaryDirectory();
   return '${directory.path}${Platform.pathSeparator}'
@@ -19,6 +22,28 @@ Future<void> discardRecordingPath(String? path) async {
   if (path == null || path.isEmpty) return;
   final file = File(path);
   if (await file.exists()) await file.delete();
+}
+
+/// Rename a recording the app could not import, so that it leaves the temp
+/// namespace the startup sweep deletes, and return where it now is.
+///
+/// The person is told this path and told it stays, so it must outlive the
+/// launch that told them.
+Future<String> keepRecordingPath(String path) async {
+  final file = File(path);
+  final name = file.uri.pathSegments.last;
+  if (!name.startsWith(_recordingPrefix)) return path;
+  final kept = File(
+    '${file.parent.path}${Platform.pathSeparator}'
+    '$_keptRecordingPrefix${name.substring(_recordingPrefix.length)}',
+  );
+  try {
+    return (await file.rename(kept.path)).path;
+  } on Object catch (error) {
+    // Say where it actually is, even though the sweep may take it later.
+    debugPrint('could not keep the recording out of the temp sweep: $error');
+    return path;
+  }
 }
 
 /// Delete recordings that a run which died between starting and importing left

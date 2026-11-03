@@ -50,6 +50,26 @@ void main() {
     expect(other.existsSync(), isTrue);
   });
 
+  test('a recording kept after a failed import leaves the swept name, so the '
+      'next launch keeps it', () async {
+    final temp = file('easynotes-voice-3.wav', age: const Duration(minutes: 5));
+
+    final kept = await keepRecordingPath(temp.path);
+
+    expect(temp.existsSync(), isFalse);
+    expect(File(kept).existsSync(), isTrue);
+    expect(
+      kept.split(Platform.pathSeparator).last,
+      startsWith('easynotes-recording-'),
+    );
+    // As old as anything the sweep would take, and still not taken.
+    File(
+      kept,
+    ).setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 2)));
+    await sweepStaleRecordingsIn(directory);
+    expect(File(kept).existsSync(), isTrue);
+  });
+
   test('a folder that is not there does not throw', () async {
     final gone = Directory(
       '${directory.path}${Platform.pathSeparator}not-here',
