@@ -3308,12 +3308,17 @@ impl Library {
                 Ok(listing) => listing,
                 Err((gone, message)) => {
                     if gone {
+                        // The relay cannot say whether anybody claimed the
+                        // link, so treat it as if one had: a rotation on a
+                        // dead invite costs a key change and nothing else.
+                        self.rotate_if_pre_granted(&outgoing);
                         self.shared.forget_invite(&outgoing)?;
                     }
                     return Err(message);
                 }
             };
             expires_in = listing.expires_in;
+            let said = !listing.requests.is_empty();
             // A claim stays worth answering after the link closes: the person
             // may have read the note already, and a member the owner can see
             // and remove is better than one nobody knows about.
@@ -3323,6 +3328,12 @@ impl Library {
                 .find(|r| r.state == RequestState::Pending);
             let Some(claimed) = claimed else {
                 if !listing.open {
+                    // A request already answered — a decline applied just
+                    // before this device stopped, say — still handed the key
+                    // out, and a key nobody rotates here is one nobody can.
+                    if said {
+                        self.rotate_if_pre_granted(&outgoing);
+                    }
                     self.shared.forget_invite(&outgoing)?;
                 }
                 return Ok(InviteStatusView {
@@ -3408,9 +3419,9 @@ impl Library {
     /// Answer a request with nothing, and forget its invite.
     ///
     /// When the invite carried a pre-grant, the note's key is changed as well
-    /// ([`Library::rotate_if_pre_granted`]). It is deliberately after the
-    /// decline: the link is spent either way, and the rotation must not be
-    /// lost because the relay call failed.
+    /// ([`Library::rotate_if_pre_granted`]), after the decline. A terminal
+    /// relay answer still rotates and forgets; a failure that is not an answer
+    /// keeps the invite, and the rotation, for the next poll.
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
@@ -3443,7 +3454,9 @@ impl Library {
     /// ([ADR 0030](../../../../docs/decisions.md#adr-0030)). Best effort on
     /// purpose: the invite is spent either way, and a device that cannot read
     /// its own invite row must not turn a decline or a withdrawal into a
-    /// failure the person is told about.
+    /// failure the person is told about. The grant is sealed when the link is
+    /// made, so an invite nobody opened may rotate too — a key change and
+    /// nothing else.
     fn rotate_if_pre_granted(&self, outgoing: &OutgoingInvite) {
         let pre_granted = self
             .shared
