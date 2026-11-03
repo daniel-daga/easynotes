@@ -588,17 +588,22 @@ class _NoteListScreenState extends State<NoteListScreen> {
           // Keep the original save error for the person.
         }
       }
+      // A kept file leaves the temp namespace the startup sweep deletes, before
+      // the message says it is still here.
+      final keptPath = mounted && !imported && !kIsWeb
+          ? await keepRecordingPath(recording.path)
+          : recording.path;
       if (mounted) {
         // Say what happened to the recording, matching what the finally below
         // does with it: an imported one is in the note and is deleted, a
-        // browser's goes with its blob URL, and a file on disk stays where
-        // the recorder put it.
+        // browser's goes with its blob URL, and a file on disk is kept at the
+        // path named here.
         final message = imported
             ? 'Saved the audio note, but could not open it: $error'
             : kIsWeb
             ? 'Could not save audio note: $error. The recording was not kept.'
             : 'Could not save audio note: $error. The recording is still on '
-                  'this device at ${recording.path}.';
+                  'this device at $keptPath.';
         ScaffoldMessenger.maybeOf(
           context,
         )?.showSnackBar(SnackBar(content: Text(message)));

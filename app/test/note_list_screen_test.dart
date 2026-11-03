@@ -310,21 +310,29 @@ void main() {
     expect(find.byKey(const Key('add-list-entry')), findsOneWidget);
   });
 
-  testWidgets('a recording whose import is refused is kept, and the message '
-      'says where', (tester) async {
+  testWidgets('a recording whose import is refused is kept out of the swept '
+      'name, and the message says where', (tester) async {
     // The core refuses the recording as it refuses one over 50 MB.
     final library = FakeNoteLibrary()
       ..refuseAttachment = 'sound files can be up to 50 MB';
     final path = await recordAndKeep(tester, library);
+    // One turn for the kept-file rename, one for the message that follows it.
+    await settleDisk(tester);
     await settleDisk(tester);
 
-    expect(File(path).existsSync(), isTrue);
+    // Kept for the person, so no longer a name the startup sweep deletes.
+    final kept = File(path).parent.listSync().whereType<File>().firstWhere(
+      (file) => file.path.contains('easynotes-recording-'),
+    );
+    expect(File(path).existsSync(), isFalse);
     expect(
       find.textContaining('sound files can be up to 50 MB'),
       findsOneWidget,
     );
     expect(
-      find.textContaining('The recording is still on this device at $path'),
+      find.textContaining(
+        'The recording is still on this device at ${kept.path}',
+      ),
       findsOneWidget,
     );
   });
