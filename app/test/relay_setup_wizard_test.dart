@@ -236,6 +236,59 @@ void main() {
     expect(result, isTrue);
   });
 
+  /// What the access-key field holds right now.
+  String? accessFieldText(WidgetTester tester) => tester
+      .widget<TextFormField>(find.byKey(const Key('relay-setup-access')))
+      .controller
+      ?.text;
+
+  testWidgets('a key does not follow the address to another server', (
+    tester,
+  ) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://a.example/#access=$key');
+    expect(accessFieldText(tester), key);
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'https://b.example');
+
+    expect(accessFieldText(tester), isEmpty);
+    await enterAccess(tester);
+    expect(verified, ['https://b.example']);
+    expect(result, isTrue);
+  });
+
+  testWidgets('a new link replaces the key already in the field', (
+    tester,
+  ) async {
+    final other = base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '');
+    await pump(tester);
+    await enterUrl(tester, 'https://relay.example/#access=$key');
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'https://relay.example/#access=$other');
+
+    expect(accessFieldText(tester), other);
+    await enterAccess(tester);
+    expect(verified, ['https://relay.example with $other']);
+  });
+
+  testWidgets('the key is obscured while it is typed', (tester) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://relay.example');
+
+    final field = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const Key('relay-setup-access')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(field.obscureText, isTrue);
+    expect(field.enableSuggestions, isFalse);
+  });
+
   testWidgets('a relay that cannot be reached says so and can be retried', (
     tester,
   ) async {

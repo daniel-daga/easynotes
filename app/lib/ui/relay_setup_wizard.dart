@@ -207,8 +207,13 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     if (_busy) return;
     if (!(_form.currentState?.validate() ?? false)) return;
     final link = parseRelayLink(_url.text);
+    // A key belongs to one address: one pasted for another relay must not be
+    // offered to this one.
+    if (_canonical != null && link.url != _canonical) {
+      _access.clear();
+    }
     _canonical = link.url;
-    if (link.access != null && _access.text.trim().isEmpty) {
+    if (link.access != null) {
       _access.text = link.access!;
     }
     setState(() => _step = _Step.access);
@@ -458,6 +463,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           controller: _access,
           autofocus: true,
           autocorrect: false,
+          obscureText: true,
+          enableSuggestions: false,
           decoration: const InputDecoration(
             labelText: 'Access key (optional)',
             helperText:
