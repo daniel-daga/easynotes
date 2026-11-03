@@ -420,9 +420,9 @@ async fn a_socket_that_stops_reading_loses_nothing() {
     a_socket_that_stops_reading_loses_nothing_sending(4096, 2_000).await;
 }
 
-/// The same, with envelopes large enough that the session's byte budget, not
-/// its message count, is what stops the live updates being queued: the rest is
-/// left in the store and has to come back as backlog.
+/// The same, with envelopes large enough to reach the session's byte budget as
+/// well as its message count, so the refusal and the chunked replay are driven
+/// end to end. What the budget counts is pinned by the unit tests in `sync.rs`.
 #[tokio::test]
 async fn a_socket_that_stops_reading_is_bounded_by_envelope_bytes() {
     a_socket_that_stops_reading_loses_nothing_sending(128 * 1024, 200).await;

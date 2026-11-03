@@ -135,10 +135,12 @@ const MAX_QUEUED_ENVELOPE: usize = (MAX_ENVELOPE_BYTES / 3 + 1) * 4;
 
 // A chunk of ordinary envelopes must fit whole, and so must one envelope at
 // the cap, or a replay could never start. The cap must also still be a cut
-// below what counting messages alone allowed.
+// below what counting messages alone allowed, and still hold five envelopes
+// at the cap as the comment above says.
 const _: () = assert!(OUTGOING_BYTES > BACKLOG_CHUNK * 64 * 1024);
 const _: () = assert!(OUTGOING_BYTES > MAX_QUEUED_ENVELOPE);
 const _: () = assert!(OUTGOING_BYTES < OUTGOING * MAX_QUEUED_ENVELOPE);
+const _: () = assert!(OUTGOING_BYTES >= 5 * MAX_QUEUED_ENVELOPE);
 
 async fn run(
     socket: WebSocket,
@@ -187,9 +189,10 @@ async fn write<S>(
             freed.notify_one();
         }
         if !sent {
-            // No more bytes will ever be freed. Wake a session waiting for
-            // some: its closed queue ends it at once instead of at the next
-            // read from a socket that is already gone.
+            // No more bytes will ever be freed. Close the queue before the
+            // wake, so a session waiting for room sees `is_closed` rather than
+            // waiting for a byte that is not coming.
+            drop(outgoing);
             freed.notify_one();
             return;
         }
@@ -322,11 +325,17 @@ async fn serve(
                 Some(Err(e)) => return Err(e.into()),
             },
 
-            // The writer freed bytes, so a chunk that did not fit is retried.
-            // Without this a backlog whose next envelope is larger than the
-            // room freed so far would only be looked at again on the next
-            // unrelated event.
-            () = freed.notified(), if awaiting_bytes => awaiting_bytes = false,
+            // The writer freed bytes. Retry a chunk only when a worst-case
+            // envelope would fit: a wake for one small message is not worth a
+            // whole page read. A dead writer closes the queue, which ends the
+            // session rather than waiting for a byte that will never free.
+            () = freed.notified(), if awaiting_bytes => {
+                if out.is_closed() {
+                    return Ok(());
+                }
+                awaiting_bytes =
+                    queued.load(Ordering::Acquire) + MAX_QUEUED_ENVELOPE > OUTGOING_BYTES;
+            },
 
             // Ready whenever something is catching up and a whole chunk, and
             // its `caught`, fits in what is waiting for the socket. `select!`
@@ -739,6 +748,32 @@ mod queue_tests {
             .expect("the writer did not free the bytes");
         assert_eq!(queued.load(Ordering::Acquire), 0);
         drop(out);
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dead_writer_closes_the_queue_and_wakes_the_session() {
+        let (out, outgoing) = mpsc::channel(1);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let freed = Arc::new(Notify::new());
+        // A marker counts no bytes, so only the writer's own exit can wake.
+        out.send(SyncServerMessage::Caught {
+            note: "note".into(),
+            seq: 1,
+        })
+        .await
+        .unwrap();
+        let gone = || async { Err::<(), std::io::Error>(std::io::Error::other("gone")) };
+        let writer = tokio::spawn(write(
+            Box::pin(futures_util::sink::unfold((), move |(), _: Message| gone())),
+            outgoing,
+            queued,
+            freed.clone(),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), freed.notified())
+            .await
+            .expect("a dead writer did not wake a waiting session");
+        assert!(out.is_closed(), "the queue must be closed before the wake");
         writer.await.unwrap();
     }
 
