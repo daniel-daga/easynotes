@@ -43,8 +43,6 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Notify};
 use tokio::task::JoinHandle;
 
-type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
-
 pub(crate) async fn sync_ws(
     State(state): State<Arc<AppState>>,
     Query(q): Query<app::WsQuery>,
@@ -125,11 +123,11 @@ impl Drop for Subscriptions {
 const OUTGOING: usize = 4 * BACKLOG_CHUNK;
 
 /// How many envelope bytes may wait for the socket. A stalled reader would
-/// otherwise hold up to [`OUTGOING`] × [`MAX_ENVELOPE_BYTES`] (256 MiB) of
-/// base64 per socket, whatever the size of the envelopes actually flowing.
-/// Eight MiB is dozens of ordinary backlog chunks ([`BACKLOG_CHUNK`] envelopes
-/// of a few KiB each), and still fits five envelopes at the 1 MiB cap, so a
-/// replay moves even when every envelope is as large as one may be.
+/// otherwise hold up to [`OUTGOING`] × [`MAX_QUEUED_ENVELOPE`] of base64 —
+/// about 341 MiB — per socket, whatever the size of the envelopes actually
+/// flowing. Eight MiB is dozens of ordinary backlog chunks ([`BACKLOG_CHUNK`]
+/// envelopes of a few KiB each), and still fits five envelopes at the 1 MiB
+/// cap, so a replay moves even when every envelope is as large as one may be.
 const OUTGOING_BYTES: usize = 8 << 20;
 
 /// The most one queued envelope can take: base64 of a capped raw one.
@@ -169,12 +167,14 @@ async fn run(
     result
 }
 
-async fn write(
-    mut tx: Sink,
+async fn write<S>(
+    mut tx: S,
     mut outgoing: mpsc::Receiver<SyncServerMessage>,
     queued: Arc<AtomicUsize>,
     freed: Arc<Notify>,
-) {
+) where
+    S: futures_util::Sink<Message> + Send + Unpin,
+{
     while let Some(message) = outgoing.recv().await {
         let bytes = queued_bytes(&message);
         let sent = match serde_json::to_string(&message) {
@@ -187,6 +187,10 @@ async fn write(
             freed.notify_one();
         }
         if !sent {
+            // No more bytes will ever be freed. Wake a session waiting for
+            // some: its closed queue ends it at once instead of at the next
+            // read from a socket that is already gone.
+            freed.notify_one();
             return;
         }
     }
@@ -714,6 +718,28 @@ mod queue_tests {
         let sent = outgoing.recv().await.unwrap();
         queued.fetch_sub(queued_bytes(&sent), Ordering::AcqRel);
         assert_eq!(queued.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn the_writer_releases_bytes_and_wakes_the_session() {
+        let (out, outgoing) = mpsc::channel(1);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let freed = Arc::new(Notify::new());
+        assert!(try_queue(&out, &queued, update(64)).is_ok());
+        assert_eq!(queued.load(Ordering::Acquire), 64);
+
+        let writer = tokio::spawn(write(
+            futures_util::sink::drain::<Message>(),
+            outgoing,
+            queued.clone(),
+            freed.clone(),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), freed.notified())
+            .await
+            .expect("the writer did not free the bytes");
+        assert_eq!(queued.load(Ordering::Acquire), 0);
+        drop(out);
+        writer.await.unwrap();
     }
 
     #[test]

@@ -194,12 +194,14 @@ impl AppState {
 
     /// Tell every socket subscribed to `note` that it is gone.
     fn broadcast_gone(&self, note: &str) {
-        self.broadcast(note, GONE_SEQ, Vec::new().into());
+        self.broadcast(note, GONE_SEQ, Vec::new());
     }
 
-    fn broadcast(&self, note: &str, seq: i64, envelope: Arc<[u8]>) {
+    fn broadcast(&self, note: &str, seq: i64, envelope: Vec<u8>) {
         if let Some(channel) = self.channels.lock().unwrap().get(note) {
-            let _ = channel.send((seq, envelope));
+            // Share one allocation with every subscriber; skipped when nobody
+            // is listening.
+            let _ = channel.send((seq, envelope.into()));
         }
     }
 
@@ -781,7 +783,7 @@ pub(crate) async fn append(
     match state.store.append_within(note, &raw, &state.limits).await? {
         Appended::Stored { seq, crowded } => {
             // `send` fails only when nobody is listening, which is not an error.
-            state.broadcast(note, seq, raw.into());
+            state.broadcast(note, seq, raw);
             Ok(Accepted { crowded })
         }
         Appended::NoteFull => {
@@ -907,7 +909,7 @@ pub(crate) async fn compact(
         .await
     {
         Ok(Ok(seq)) => {
-            state.broadcast(note, seq, base.into());
+            state.broadcast(note, seq, base);
             // A compaction is what dooms objects, so it is also when the
             // ones doomed long enough ago go. A failure here is the next
             // sweep's to finish, not a reason to refuse a base already kept.
@@ -940,7 +942,7 @@ mod lifetime_tests {
             drop(listener);
             assert_eq!(state.channels.lock().unwrap().len(), 1);
         }
-        state.broadcast("kept", 1, vec![1].into());
+        state.broadcast("kept", 1, vec![1]);
         let (seq, envelope) = keeper.recv().await.unwrap();
         assert_eq!(seq, 1);
         assert_eq!(&*envelope, &[1]);
@@ -954,11 +956,11 @@ mod lifetime_tests {
         let first = state.subscribe("note");
         let mut second = state.subscribe("note");
         drop(first);
-        state.broadcast("note", 1, vec![1].into());
+        state.broadcast("note", 1, vec![1]);
         assert_eq!(second.recv().await.unwrap().0, 1);
         drop(second);
         let mut third = state.subscribe("note");
-        state.broadcast("note", 2, vec![2].into());
+        state.broadcast("note", 2, vec![2]);
         assert_eq!(third.recv().await.unwrap().0, 2);
     }
 
