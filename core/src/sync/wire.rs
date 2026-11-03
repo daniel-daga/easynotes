@@ -103,7 +103,8 @@ pub enum Incoming {
 /// What the relay refuses a purged topic with, and tells its subscribers.
 pub(crate) const GONE: &str = "gone";
 
-/// What the relay refuses an append with past its write budget.
+/// What the relay refuses any sync-socket message with past the address's
+/// write budget.
 pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
 /// What a person is told about a refusal the relay names with a code.
