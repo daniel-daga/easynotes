@@ -46,12 +46,13 @@ pub(crate) const FANOUT_BUFFER: usize = 256;
 pub(crate) const GONE_SEQ: i64 = -1;
 
 /// `(seq, envelope)` — what one note's subscribers receive, or [`GONE_SEQ`].
-type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
+/// The envelope is shared: one allocation serves every subscriber and hop.
+type Fanout = broadcast::Sender<(i64, Arc<[u8]>)>;
 
 /// Removes the channel when its last subscriber goes away, including when a
 /// forwarder is aborted before its first poll.
 pub(crate) struct Listener {
-    receiver: Option<broadcast::Receiver<(i64, Vec<u8>)>>,
+    receiver: Option<broadcast::Receiver<(i64, Arc<[u8]>)>>,
     state: Arc<AppState>,
     note: String,
 }
@@ -59,7 +60,7 @@ pub(crate) struct Listener {
 impl Listener {
     pub(crate) async fn recv(
         &mut self,
-    ) -> std::result::Result<(i64, Vec<u8>), broadcast::error::RecvError> {
+    ) -> std::result::Result<(i64, Arc<[u8]>), broadcast::error::RecvError> {
         self.receiver.as_mut().expect("live listener").recv().await
     }
 }
@@ -97,8 +98,8 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
     /// Who may get a token or use an invite ([`crate::access`]).
     pub access: Access,
-    /// Bytes written per client address, appends and attachment chunks
-    /// together ([ADR 0028](../../docs/decisions.md#adr-0028)).
+    /// Bytes written per client address, every socket message and attachment
+    /// chunk together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
     /// When `/v1/ready` last asked the store, and what it said. Async because
     /// it is held across the check, so a burst arriving on a cold cache waits
@@ -198,7 +199,9 @@ impl AppState {
 
     fn broadcast(&self, note: &str, seq: i64, envelope: Vec<u8>) {
         if let Some(channel) = self.channels.lock().unwrap().get(note) {
-            let _ = channel.send((seq, envelope));
+            // Share one allocation with every subscriber; skipped when nobody
+            // is listening.
+            let _ = channel.send((seq, envelope.into()));
         }
     }
 
@@ -323,7 +326,8 @@ pub struct RelayConfig {
     /// Who may get a token or use an invite
     /// ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub access: Access,
-    /// Bytes written per address, appends and attachment chunks together.
+    /// Bytes written per address, every socket message and attachment chunk
+    /// together.
     pub writes: RateLimit,
 }
 
@@ -940,7 +944,9 @@ mod lifetime_tests {
             assert_eq!(state.channels.lock().unwrap().len(), 1);
         }
         state.broadcast("kept", 1, vec![1]);
-        assert_eq!(keeper.recv().await.unwrap(), (1, vec![1]));
+        let (seq, envelope) = keeper.recv().await.unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(&*envelope, &[1]);
         drop(keeper);
         assert!(state.channels.lock().unwrap().is_empty());
     }

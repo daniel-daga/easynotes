@@ -417,8 +417,20 @@ async fn a_long_backlog_does_not_hold_up_another_note() {
 /// fan-out. When it reads again it gets everything, once each, in order.
 #[tokio::test]
 async fn a_socket_that_stops_reading_loses_nothing() {
+    a_socket_that_stops_reading_loses_nothing_sending(4096, 2_000).await;
+}
+
+/// The same, with envelopes large enough to reach the session's byte budget as
+/// well as its message count, so the refusal and the chunked replay are driven
+/// end to end. What the budget counts is pinned by the unit tests in `sync.rs`.
+#[tokio::test]
+async fn a_socket_that_stops_reading_is_bounded_by_envelope_bytes() {
+    a_socket_that_stops_reading_loses_nothing_sending(128 * 1024, 200).await;
+}
+
+async fn a_socket_that_stops_reading_loses_nothing_sending(padding: usize, busy: usize) {
     let (relay, _log) = relay().await;
-    let (note, envelope) = an_envelope(4096);
+    let (note, envelope) = an_envelope(padding);
 
     let mut slow = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
         .await
@@ -431,7 +443,6 @@ async fn a_socket_that_stops_reading_loses_nothing() {
 
     // Far past the fan-out's buffer and the socket's, while `slow` reads
     // nothing: several megabytes, so it cannot all sit in the kernel.
-    let busy = 2_000;
     let mut writer = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
         .await
         .unwrap();
