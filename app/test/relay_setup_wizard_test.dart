@@ -259,6 +259,21 @@ void main() {
     expect(result, isTrue);
   });
 
+  testWidgets('another spelling of the same server keeps the key', (
+    tester,
+  ) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://a.example/#access=$key');
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'wss://A.Example/');
+
+    expect(accessFieldText(tester), key);
+    await enterAccess(tester);
+    expect(verified, ['https://a.example with $key']);
+  });
+
   testWidgets('a new link replaces the key already in the field', (
     tester,
   ) async {
