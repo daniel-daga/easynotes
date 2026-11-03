@@ -1352,11 +1352,19 @@ void main() {
       },
     );
 
-    test('a withdrawn link is gone for the guest waiting on it', () async {
-      final (owner, _, noteId) = await owned();
+    test('a withdrawn link is gone, and stops reaching the note', () async {
+      final (owner, a, noteId) = await owned();
+      await a.setTitle('Groceries');
       final invite = await owner.createInvite(noteId);
       final guest = await person('Anna');
       final waiting = await guest.requestJoin(invite.link);
+      final b = await guest.openNote(noteId);
+      addTearDown(b.dispose);
+      await _until(
+        b.watch(),
+        (view) => view.title == 'Groceries',
+        'the guest could not read the note through the link',
+      );
 
       await owner.withdrawInvite(invite.id);
 
@@ -1364,6 +1372,18 @@ void main() {
       expect(check.state, JoinState.gone);
       expect(check.message, contains('does not exist'));
       expect(guest.pendingJoins, isEmpty);
+
+      // The link handed the note's key over before anybody was let in, so
+      // withdrawing it has to change that key: otherwise whoever opened it
+      // goes on reading every later edit.
+      await a.setTitle('Groceries, just us');
+      await owner.syncNow();
+      await guest.syncNow();
+      expect(
+        b.current.title,
+        'Groceries',
+        reason: 'a withdrawn link must not keep reading the note',
+      );
     });
 
     test('sharing asks for a name once sync is set up', () async {
