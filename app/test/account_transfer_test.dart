@@ -12,6 +12,7 @@ import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/ui/account_transfer_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -180,6 +181,31 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('the transfer screen flags the window while it is open', (
+    tester,
+  ) async {
+    const channel = MethodChannel('eu.fraisl.easynotes/secure_screen');
+    final calls = <Object?>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.arguments);
+      return null;
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+
+    await pumpScreen(tester);
+    expect(calls, [
+      {'secure': true},
+    ]);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(calls.last, {'secure': false});
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('a new device adopts the account before moving its notes', (
     tester,

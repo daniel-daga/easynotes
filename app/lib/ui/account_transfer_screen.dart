@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../core/invites.dart';
 import '../core/app_visibility.dart';
 import '../core/relay_profiles.dart';
+import '../core/secure_screen.dart';
 
 /// One-time pairing from an existing device or QR scan on a new one.
 class AccountTransferScreen extends StatefulWidget {
@@ -57,7 +58,16 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   late final bool _owner = widget.profile.url != null && _hasAccount;
 
   @override
+  void initState() {
+    super.initState();
+    // The QR carries the account. Android keeps it out of screenshots and the
+    // Recents list for as long as this screen is up; no-op elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     _poller?.cancel();
     // Backing out must not leave the pairing open for its full five minutes.
     if (!_approved && !_cancelled) {
