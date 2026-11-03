@@ -245,6 +245,9 @@ class ReminderScheduler {
           importance: Importance.high,
           priority: Priority.high,
           visibility: NotificationVisibility.private,
+          // Existing installs already have this channel as public; only an
+          // update rewrites its lock-screen visibility.
+          channelAction: AndroidNotificationChannelAction.update,
         ),
         iOS: DarwinNotificationDetails(),
       ),

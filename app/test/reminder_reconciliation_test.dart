@@ -166,9 +166,13 @@ void main() {
     final scheduled = pending.values.single;
     expect(scheduled['title'], 'EasyNotes reminder');
     expect(scheduled['body'], 'Reminder');
+    final android = scheduled['platformSpecifics'] as Map;
+    expect(android['visibility'], NotificationVisibility.private.index);
+    // An install that already has the channel keeps its old settings unless
+    // the schedule updates it; the default is createIfNotExists.
     expect(
-      (scheduled['platformSpecifics'] as Map)['visibility'],
-      NotificationVisibility.private.index,
+      android['channelAction'],
+      AndroidNotificationChannelAction.update.index,
     );
   });
 
