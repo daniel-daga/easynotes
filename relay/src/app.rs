@@ -46,12 +46,13 @@ pub(crate) const FANOUT_BUFFER: usize = 256;
 pub(crate) const GONE_SEQ: i64 = -1;
 
 /// `(seq, envelope)` — what one note's subscribers receive, or [`GONE_SEQ`].
-type Fanout = broadcast::Sender<(i64, Vec<u8>)>;
+/// The envelope is shared: one allocation serves every subscriber and hop.
+type Fanout = broadcast::Sender<(i64, Arc<[u8]>)>;
 
 /// Removes the channel when its last subscriber goes away, including when a
 /// forwarder is aborted before its first poll.
 pub(crate) struct Listener {
-    receiver: Option<broadcast::Receiver<(i64, Vec<u8>)>>,
+    receiver: Option<broadcast::Receiver<(i64, Arc<[u8]>)>>,
     state: Arc<AppState>,
     note: String,
 }
@@ -59,7 +60,7 @@ pub(crate) struct Listener {
 impl Listener {
     pub(crate) async fn recv(
         &mut self,
-    ) -> std::result::Result<(i64, Vec<u8>), broadcast::error::RecvError> {
+    ) -> std::result::Result<(i64, Arc<[u8]>), broadcast::error::RecvError> {
         self.receiver.as_mut().expect("live listener").recv().await
     }
 }
@@ -193,10 +194,10 @@ impl AppState {
 
     /// Tell every socket subscribed to `note` that it is gone.
     fn broadcast_gone(&self, note: &str) {
-        self.broadcast(note, GONE_SEQ, Vec::new());
+        self.broadcast(note, GONE_SEQ, Vec::new().into());
     }
 
-    fn broadcast(&self, note: &str, seq: i64, envelope: Vec<u8>) {
+    fn broadcast(&self, note: &str, seq: i64, envelope: Arc<[u8]>) {
         if let Some(channel) = self.channels.lock().unwrap().get(note) {
             let _ = channel.send((seq, envelope));
         }
@@ -780,7 +781,7 @@ pub(crate) async fn append(
     match state.store.append_within(note, &raw, &state.limits).await? {
         Appended::Stored { seq, crowded } => {
             // `send` fails only when nobody is listening, which is not an error.
-            state.broadcast(note, seq, raw);
+            state.broadcast(note, seq, raw.into());
             Ok(Accepted { crowded })
         }
         Appended::NoteFull => {
@@ -906,7 +907,7 @@ pub(crate) async fn compact(
         .await
     {
         Ok(Ok(seq)) => {
-            state.broadcast(note, seq, base);
+            state.broadcast(note, seq, base.into());
             // A compaction is what dooms objects, so it is also when the
             // ones doomed long enough ago go. A failure here is the next
             // sweep's to finish, not a reason to refuse a base already kept.
@@ -939,8 +940,10 @@ mod lifetime_tests {
             drop(listener);
             assert_eq!(state.channels.lock().unwrap().len(), 1);
         }
-        state.broadcast("kept", 1, vec![1]);
-        assert_eq!(keeper.recv().await.unwrap(), (1, vec![1]));
+        state.broadcast("kept", 1, vec![1].into());
+        let (seq, envelope) = keeper.recv().await.unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(&*envelope, &[1]);
         drop(keeper);
         assert!(state.channels.lock().unwrap().is_empty());
     }
@@ -951,11 +954,11 @@ mod lifetime_tests {
         let first = state.subscribe("note");
         let mut second = state.subscribe("note");
         drop(first);
-        state.broadcast("note", 1, vec![1]);
+        state.broadcast("note", 1, vec![1].into());
         assert_eq!(second.recv().await.unwrap().0, 1);
         drop(second);
         let mut third = state.subscribe("note");
-        state.broadcast("note", 2, vec![2]);
+        state.broadcast("note", 2, vec![2].into());
         assert_eq!(third.recv().await.unwrap().0, 2);
     }
 

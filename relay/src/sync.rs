@@ -16,8 +16,9 @@
 //! subscriptions — taken between chunks.
 //!
 //! And reading never waits for writing. Messages to the client go through a
-//! bounded queue drained by a task of its own; when it is full, a live update is
-//! left in the store and sent later as backlog, and a chunk waits for room. So
+//! queue bounded by message count and envelope bytes, drained by a task of its
+//! own; when it is full, a live update is left in the store and sent later as
+//! backlog, and a chunk waits for room. So
 //! a client that is slow to read slows only what it is sent, never what it
 //! sends — which matters because a device subscribing its notes on connecting
 //! writes a great deal before it reads.
@@ -37,8 +38,9 @@ use base64::Engine;
 use easynotes_core::ids::NoteId;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Notify};
 use tokio::task::JoinHandle;
 
 type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
@@ -72,7 +74,7 @@ enum Fanned {
     Update {
         note: String,
         seq: i64,
-        envelope: Vec<u8>,
+        envelope: Arc<[u8]>,
     },
     /// The note's fan-out dropped messages for this subscriber; read them back
     /// out of the store.
@@ -119,9 +121,26 @@ impl Drop for Subscriptions {
 }
 
 /// How many messages may wait for the socket. Past this, live updates are left
-/// in the store and replayed, and backlog chunks wait, so a device that stops
-/// reading costs the relay this much memory and no more.
+/// in the store and replayed, and backlog chunks wait.
 const OUTGOING: usize = 4 * BACKLOG_CHUNK;
+
+/// How many envelope bytes may wait for the socket. A stalled reader would
+/// otherwise hold up to [`OUTGOING`] × [`MAX_ENVELOPE_BYTES`] (256 MiB) of
+/// base64 per socket, whatever the size of the envelopes actually flowing.
+/// Eight MiB is dozens of ordinary backlog chunks ([`BACKLOG_CHUNK`] envelopes
+/// of a few KiB each), and still fits five envelopes at the 1 MiB cap, so a
+/// replay moves even when every envelope is as large as one may be.
+const OUTGOING_BYTES: usize = 8 << 20;
+
+/// The most one queued envelope can take: base64 of a capped raw one.
+const MAX_QUEUED_ENVELOPE: usize = (MAX_ENVELOPE_BYTES / 3 + 1) * 4;
+
+// A chunk of ordinary envelopes must fit whole, and so must one envelope at
+// the cap, or a replay could never start. The cap must also still be a cut
+// below what counting messages alone allowed.
+const _: () = assert!(OUTGOING_BYTES > BACKLOG_CHUNK * 64 * 1024);
+const _: () = assert!(OUTGOING_BYTES > MAX_QUEUED_ENVELOPE);
+const _: () = assert!(OUTGOING_BYTES < OUTGOING * MAX_QUEUED_ENVELOPE);
 
 async fn run(
     socket: WebSocket,
@@ -138,8 +157,10 @@ async fn run(
     // while the first note's backlog comes back — would wait on the relay
     // while the relay waited on it.
     let (out, outgoing) = mpsc::channel::<SyncServerMessage>(OUTGOING);
-    let writer = tokio::spawn(write(tx, outgoing));
-    let result = serve(&state, client, &mut rx, out, &mut stopping).await;
+    let queued = Arc::new(AtomicUsize::new(0));
+    let freed = Arc::new(Notify::new());
+    let writer = tokio::spawn(write(tx, outgoing, queued.clone(), freed.clone()));
+    let result = serve(&state, client, &mut rx, out, &mut stopping, &queued, &freed).await;
     // The sender went with `serve`, so the writer sends what is queued and
     // finishes, closing the socket. `stopping` is held until then: the relay
     // has not drained while a queue is still being written.
@@ -148,16 +169,67 @@ async fn run(
     result
 }
 
-async fn write(mut tx: Sink, mut outgoing: mpsc::Receiver<SyncServerMessage>) {
+async fn write(
+    mut tx: Sink,
+    mut outgoing: mpsc::Receiver<SyncServerMessage>,
+    queued: Arc<AtomicUsize>,
+    freed: Arc<Notify>,
+) {
     while let Some(message) = outgoing.recv().await {
-        let Ok(text) = serde_json::to_string(&message) else {
-            continue;
+        let bytes = queued_bytes(&message);
+        let sent = match serde_json::to_string(&message) {
+            Ok(text) => tx.send(Message::Text(text.into())).await.is_ok(),
+            Err(_) => true,
         };
-        if tx.send(Message::Text(text.into())).await.is_err() {
+        // Out of the queue either way, so its bytes are free for the next one.
+        if bytes > 0 {
+            queued.fetch_sub(bytes, Ordering::AcqRel);
+            freed.notify_one();
+        }
+        if !sent {
             return;
         }
     }
     let _ = tx.close().await;
+}
+
+/// Hold `bytes` of the session's outgoing budget. False when that would pass
+/// [`OUTGOING_BYTES`]; the claim is not made then.
+fn reserve(queued: &AtomicUsize, bytes: usize) -> bool {
+    // Only the session adds and only the writer subtracts, so undoing a failed
+    // claim cannot eat a release that landed in between.
+    if queued.fetch_add(bytes, Ordering::AcqRel) + bytes > OUTGOING_BYTES {
+        queued.fetch_sub(bytes, Ordering::AcqRel);
+        return false;
+    }
+    true
+}
+
+/// Queue one message, holding an update's envelope against the byte budget.
+/// `Full` means it did not fit and was not queued.
+fn try_queue(
+    out: &mpsc::Sender<SyncServerMessage>,
+    queued: &AtomicUsize,
+    message: SyncServerMessage,
+) -> std::result::Result<(), mpsc::error::TrySendError<SyncServerMessage>> {
+    let bytes = queued_bytes(&message);
+    if !reserve(queued, bytes) {
+        return Err(mpsc::error::TrySendError::Full(message));
+    }
+    if let Err(error) = out.try_send(message) {
+        queued.fetch_sub(bytes, Ordering::AcqRel);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// What one queued message holds of the session's byte budget. Only envelopes
+/// are large; the markers are a few bytes each and bounded by [`OUTGOING`].
+fn queued_bytes(message: &SyncServerMessage) -> usize {
+    match message {
+        SyncServerMessage::Update { envelope, .. } => envelope.len(),
+        _ => 0,
+    }
 }
 
 async fn serve(
@@ -166,6 +238,8 @@ async fn serve(
     rx: &mut futures_util::stream::SplitStream<WebSocket>,
     out: mpsc::Sender<SyncServerMessage>,
     stopping: &mut crate::shutdown::Watch,
+    queued: &AtomicUsize,
+    freed: &Notify,
 ) -> anyhow::Result<()> {
     // Bounded, so that a session that cannot keep up backs up into the note's
     // broadcast buffer, which lags, which is replayed from the store.
@@ -173,6 +247,9 @@ async fn serve(
     let mut subs = Subscriptions(HashMap::new());
     // Notes with a backlog still to send, taken in turn one chunk at a time.
     let mut backlog: VecDeque<String> = VecDeque::new();
+    // Set when a chunk did not fit in the byte budget: wait for the writer
+    // rather than retrying a chunk that still cannot fit.
+    let mut awaiting_bytes = false;
 
     loop {
         tokio::select! {
@@ -195,7 +272,7 @@ async fn serve(
                         seq,
                         envelope: URL_SAFE_NO_PAD.encode(&envelope),
                     };
-                    match out.try_send(update) {
+                    match try_queue(&out, queued, update) {
                         Ok(()) => {
                             state.metrics.delivered_update(envelope.len());
                             sub.last_sent = seq;
@@ -241,16 +318,29 @@ async fn serve(
                 Some(Err(e)) => return Err(e.into()),
             },
 
+            // The writer freed bytes, so a chunk that did not fit is retried.
+            // Without this a backlog whose next envelope is larger than the
+            // room freed so far would only be looked at again on the next
+            // unrelated event.
+            () = freed.notified(), if awaiting_bytes => awaiting_bytes = false,
+
             // Ready whenever something is catching up and a whole chunk, and
             // its `caught`, fits in what is waiting for the socket. `select!`
             // takes it in turn with whatever else is ready, so one chunk goes
             // and then the rest of the socket gets a look.
-            permits = out.reserve_many(BACKLOG_CHUNK + 2), if !backlog.is_empty() => {
+            permits = out.reserve_many(BACKLOG_CHUNK + 2), if !backlog.is_empty() && !awaiting_bytes => {
                 let Ok(permits) = permits else { return Ok(()) };
                 let Some(note) = backlog.pop_front() else { continue };
                 if let Some(sub) = subs.0.get_mut(&note) {
-                    if sub.catching_up && send_chunk(state, permits, &note, sub).await? {
-                        backlog.push_back(note);
+                    if sub.catching_up {
+                        let more = send_chunk(state, permits, queued, &note, sub).await?;
+                        if more {
+                            backlog.push_back(note);
+                            // The next envelope may not fit in what is left;
+                            // wait for the writer rather than spinning on it.
+                            awaiting_bytes =
+                                queued.load(Ordering::Acquire) + MAX_QUEUED_ENVELOPE > OUTGOING_BYTES;
+                        }
                     }
                 }
             },
@@ -282,17 +372,25 @@ const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 async fn send_chunk(
     state: &Arc<AppState>,
     mut permits: mpsc::PermitIterator<'_, SyncServerMessage>,
+    queued: &AtomicUsize,
     note: &str,
     sub: &mut Subscription,
 ) -> anyhow::Result<bool> {
     let page = state.store.page(note, sub.last_sent, BACKLOG_CHUNK).await?;
-    let more = page.len() == BACKLOG_CHUNK;
+    let mut more = page.len() == BACKLOG_CHUNK;
     for stored in page {
         let permit = permits.next().expect("a permit per envelope in a chunk");
+        let encoded = URL_SAFE_NO_PAD.encode(&stored.envelope);
+        // No room for this one yet: leave it, and the rest of the page, in the
+        // store and come back once the writer has sent something.
+        if !reserve(queued, encoded.len()) {
+            more = true;
+            break;
+        }
         permit.send(SyncServerMessage::Update {
             note: note.to_string(),
             seq: stored.seq,
-            envelope: URL_SAFE_NO_PAD.encode(&stored.envelope),
+            envelope: encoded,
         });
         state.metrics.delivered_update(stored.envelope.len());
         sub.last_sent = sub.last_sent.max(stored.seq);
@@ -571,4 +669,61 @@ fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) ->
             }
         }
     })
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn update(len: usize) -> SyncServerMessage {
+        SyncServerMessage::Update {
+            note: "note".into(),
+            seq: 1,
+            envelope: "x".repeat(len),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_byte_budget_refuses_what_would_pass_the_cap() {
+        let (out, _outgoing) = mpsc::channel(OUTGOING);
+        let queued = AtomicUsize::new(0);
+        let half = OUTGOING_BYTES / 2;
+        assert!(try_queue(&out, &queued, update(half)).is_ok());
+        assert!(try_queue(&out, &queued, update(OUTGOING_BYTES - half)).is_ok());
+        assert_eq!(queued.load(Ordering::Acquire), OUTGOING_BYTES);
+        assert!(matches!(
+            try_queue(&out, &queued, update(1)),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+        assert_eq!(queued.load(Ordering::Acquire), OUTGOING_BYTES);
+    }
+
+    #[tokio::test]
+    async fn a_message_that_cannot_be_queued_gives_its_bytes_back() {
+        let (out, mut outgoing) = mpsc::channel(1);
+        let queued = AtomicUsize::new(0);
+        // The one slot is taken, so the next is refused for want of a slot
+        // rather than of bytes, and must not keep its claim.
+        assert!(try_queue(&out, &queued, update(64)).is_ok());
+        assert!(matches!(
+            try_queue(&out, &queued, update(128)),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+        assert_eq!(queued.load(Ordering::Acquire), 64);
+        // What the writer does: once sent, the bytes are free again.
+        let sent = outgoing.recv().await.unwrap();
+        queued.fetch_sub(queued_bytes(&sent), Ordering::AcqRel);
+        assert_eq!(queued.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn markers_are_not_counted() {
+        assert_eq!(
+            queued_bytes(&SyncServerMessage::Caught {
+                note: "note".into(),
+                seq: 1
+            }),
+            0
+        );
+    }
 }
