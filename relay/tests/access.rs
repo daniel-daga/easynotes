@@ -414,26 +414,65 @@ async fn a_flood_of_malformed_messages_is_charged_to_the_budget() {
 }
 
 #[tokio::test]
-async fn a_compact_is_charged_by_the_size_of_its_base() {
-    let relay = budgeted(8 << 10).await;
+async fn a_subscribe_is_charged_as_a_store_read() {
+    let relay = budgeted(4 << 10).await;
     let mut socket = raw_socket(&relay).await;
-    // Spend a little, then offer a base the size of the whole burst: charged
-    // what it writes, it no longer fits; at the fixed cost it would.
+    // Four subscribes, one store read each: the whole burst, to the byte.
+    // Priced at the fixed cost they would leave room for what follows.
+    for _ in 0..4 {
+        let subscribe = serde_json::json!({
+            "type": "subscribe",
+            "note": NoteId::random().encode(),
+            "since": 0,
+        });
+        socket
+            .send(Message::text(subscribe.to_string()))
+            .await
+            .unwrap();
+    }
     socket.send(Message::text("not json")).await.unwrap();
-    let compact = serde_json::json!({
-        "type": "compact",
-        "note": NoteId::random().encode(),
-        "covers": 0,
-        "base": URL_SAFE_NO_PAD.encode(vec![0u8; 8 << 10]),
-        "key": URL_SAFE_NO_PAD.encode([0u8; 32]),
-        "signature": URL_SAFE_NO_PAD.encode([0u8; 64]),
-    });
-    socket
-        .send(Message::text(compact.to_string()))
-        .await
-        .unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let reply = text(&mut socket).await;
+            if reply.contains("rate_limited") || reply.contains("malformed message") {
+                return reply;
+            }
+        }
+    })
+    .await
+    .expect("the malformed frame was never answered");
+    assert!(
+        reply.contains("rate_limited"),
+        "a subscribe was priced at the fixed cost: {reply}"
+    );
+    closed(&mut socket).await;
+}
+
+#[tokio::test]
+async fn a_compact_is_charged_by_the_size_of_its_base() {
+    let relay = budgeted(6 << 10).await;
+    let mut socket = raw_socket(&relay).await;
+    let compact = |bytes: usize| {
+        serde_json::json!({
+            "type": "compact",
+            "note": NoteId::random().encode(),
+            "covers": 0,
+            "base": URL_SAFE_NO_PAD.encode(vec![0u8; bytes]),
+            "key": URL_SAFE_NO_PAD.encode([0u8; 32]),
+            "signature": URL_SAFE_NO_PAD.encode([0u8; 64]),
+        })
+        .to_string()
+    };
+    // A 2 KiB base fits. A 4 KiB one does not, though the burst covers it
+    // whole and bytes remain: the charge follows the base. At the fixed cost
+    // both would fit.
+    socket.send(Message::text(compact(2 << 10))).await.unwrap();
     let first = text(&mut socket).await;
-    assert!(first.contains("malformed message"), "got: {first}");
+    assert!(
+        first.contains("not subscribed to that note"),
+        "got: {first}"
+    );
+    socket.send(Message::text(compact(4 << 10))).await.unwrap();
     let second = text(&mut socket).await;
     assert!(
         second.contains("rate_limited"),
