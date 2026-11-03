@@ -10,3 +10,5 @@ Future<String> newRecordingPath() => platform.newRecordingPath();
 
 Future<void> discardRecordingPath(String? path) =>
     platform.discardRecordingPath(path);
+
+Future<void> sweepStaleRecordings() => platform.sweepStaleRecordings();
