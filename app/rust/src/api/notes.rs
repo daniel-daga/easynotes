@@ -3314,11 +3314,13 @@ impl Library {
                 }
             };
             expires_in = listing.expires_in;
+            // A claim stays worth answering after the link closes: the person
+            // may have read the note already, and a member the owner can see
+            // and remove is better than one nobody knows about.
             let claimed = listing
                 .requests
                 .into_iter()
-                .find(|r| r.state == RequestState::Pending)
-                .filter(|_| listing.open);
+                .find(|r| r.state == RequestState::Pending);
             let Some(claimed) = claimed else {
                 if !listing.open {
                     self.shared.forget_invite(&outgoing)?;
@@ -3405,17 +3407,33 @@ impl Library {
 
     /// Answer a request with nothing, and forget its invite.
     ///
-    /// When the invite carried a pre-grant, the note's key is changed as well:
-    /// whoever held the link may have read the note already, and a rotation is
-    /// the only thing that stops them reading it any further (ADR 0030). It is
-    /// deliberately after the decline: the link is spent either way, and the
-    /// rotation must not be lost because the relay call failed.
+    /// When the invite carried a pre-grant, the note's key is changed as well
+    /// ([`Library::rotate_if_pre_granted`]). It is deliberately after the
+    /// decline: the link is spent either way, and the rotation must not be
+    /// lost because the relay call failed.
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        // Both of the checks below are best effort: the link is spent either
-        // way, and a device that cannot read its own invite row must not turn a
-        // decline into a failure the guest is told about.
+        on_network(async move {
+            invite::decline(&http, access.as_ref(), &secret, &owner, &request)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        self.rotate_if_pre_granted(outgoing);
+        self.shared.forget_invite(outgoing)
+    }
+
+    /// Change the note's key when this invite handed it out before it was
+    /// answered, and send the change the way an edit goes out.
+    ///
+    /// Whoever held the link may have read the note already, and a rotation is
+    /// the only thing that stops them reading it any further
+    /// ([ADR 0030](../../../../docs/decisions.md#adr-0030)). Best effort on
+    /// purpose: the invite is spent either way, and a device that cannot read
+    /// its own invite row must not turn a decline or a withdrawal into a
+    /// failure the person is told about.
+    fn rotate_if_pre_granted(&self, outgoing: &OutgoingInvite) {
         let pre_granted = self
             .shared
             .locked()
@@ -3423,27 +3441,21 @@ impl Library {
             .and_then(|core| core.pre_grant(outgoing.secret.id()).ok())
             .flatten()
             .is_some();
-        on_network(async move {
-            invite::decline(&http, access.as_ref(), &secret, &owner, &request)
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await?;
-        if pre_granted {
-            let note = outgoing.note;
-            let rotated = self
-                .shared
-                .locked()
-                .ok()
-                .and_then(|mut core| core.rotate_key(note).ok())
-                .flatten();
-            if let Some(rotated) = rotated {
-                for envelope in rotated.envelopes {
-                    self.shared.send_edit(note, envelope, false);
-                }
+        if !pre_granted {
+            return;
+        }
+        let note = outgoing.note;
+        let rotated = self
+            .shared
+            .locked()
+            .ok()
+            .and_then(|mut core| core.rotate_key(note).ok())
+            .flatten();
+        if let Some(rotated) = rotated {
+            for envelope in rotated.envelopes {
+                self.shared.send_edit(note, envelope, false);
             }
         }
-        self.shared.forget_invite(outgoing)
     }
 
     /// Answer a request that has been let in, once the package letting them
@@ -3489,6 +3501,11 @@ impl Library {
 
     /// Take an invite down, on the relay and here. Anyone holding the link is
     /// told it does not exist.
+    ///
+    /// When the invite carried a pre-grant, the note's key is changed as well:
+    /// the person holding the link may have read the note, and a rotation is
+    /// what stops them reading later edits ([ADR
+    /// 0030](../../../../docs/decisions.md#adr-0030)).
     pub async fn withdraw_invite(&self, invite: String) -> Result<(), String> {
         let outgoing = self.shared.outgoing(&invite)?;
         let (http, access) = self.shared.http_base()?;
@@ -3501,7 +3518,10 @@ impl Library {
         .await?;
         match withdrawn {
             // Already gone from the relay is as good as withdrawn.
-            Ok(()) | Err((true, _)) => self.shared.forget_invite(&outgoing),
+            Ok(()) | Err((true, _)) => {
+                self.rotate_if_pre_granted(&outgoing);
+                self.shared.forget_invite(&outgoing)
+            }
             Err((false, message)) => Err(message),
         }
     }
