@@ -246,8 +246,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         children: [
           Text(
             owner
-                ? 'Scan this QR code with your new device. The account key and server access key are encrypted for that device. Keep this screen open until you approve the request.'
-                : 'Scan the QR code shown by your original device. Both devices will show a matching code; compare them before approving on the original device.',
+                ? 'Scan this QR code with your new device. The QR code is the account, so anyone who sees it can ask for it. Keep this screen open, and approve only a request you started a moment ago on a device in front of you — never one from a code someone read to you or sent you.'
+                : 'Scan the QR code shown by your original device. Both screens show the same code: it is not a check on which device is which.',
           ),
           const SizedBox(height: 20),
           if (owner && _qr == null)
@@ -259,9 +259,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
               icon: const Icon(Icons.qr_code_2),
               label: const Text('Show one-time QR code'),
             ),
-          if (owner && _qr != null) ...[
+          if (owner && _qr != null && !_approved) ...[
             Center(
               child: Container(
+                key: const Key('account-transfer-qr'),
                 color: Colors.white,
                 padding: const EdgeInsets.all(12),
                 child: QrImageView(
@@ -275,7 +276,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
             if (_code == null)
               const Center(child: CircularProgressIndicator())
             else ...[
-              const Text('Check that the new device shows this same code:'),
+              const Text('The new device shows this code:'),
               const SizedBox(height: 8),
               Center(
                 child: Text(
@@ -304,7 +305,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (_code != null && !owner && !_approved) ...[
             const SizedBox(height: 24),
             const Text(
-              'Compare this code with the original device. Approve there only if they match.',
+              'Compare this code with the original device, which approves the transfer.',
             ),
             const SizedBox(height: 8),
             Center(
