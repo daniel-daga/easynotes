@@ -9,4 +9,6 @@ import 'secure_screen_stub.dart'
 
 /// Marks the app's window as not capturable while a secret is on screen, and
 /// unmarks it when the screen is gone.
+// shortcut: one window flag, no count — a secret screen opened from another
+// secret screen would clear it early; add a count when that flow exists.
 Future<void> setSecureScreen(bool secure) => platform.setSecureScreen(secure);

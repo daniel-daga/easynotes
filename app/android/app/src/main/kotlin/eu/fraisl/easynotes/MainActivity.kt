@@ -95,8 +95,8 @@ class MainActivity : FlutterActivity() {
                     } else {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
                     }
+                    result.success(null)
                 }
-                result.success(null)
             } else {
                 result.notImplemented()
             }

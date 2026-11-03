@@ -68,6 +68,8 @@ Known and documented, so not a vulnerability on its own:
 - Removed attachment bytes stay on the relay until a compaction stops listing
   them, and are then reclaimed about a week later
   ([ADR 0027](docs/decisions.md#adr-0027)).
+- On iOS there is no screenshot or Recents block, so the recovery phrase and the
+  transfer QR can be captured there; Android blocks both with `FLAG_SECURE`.
 
 A report that shows one of these is worse than documented is in scope.
 
