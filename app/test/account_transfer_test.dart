@@ -79,7 +79,9 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
   Future<String?> accountTransferRequestCode() async => requestCode;
 
   @override
-  Future<void> approveAccountTransfer() async {}
+  Future<void> approveAccountTransfer() async {
+    calls.add('approveAccountTransfer()');
+  }
 
   @override
   Future<void> cancelAccountTransfer() async {}
@@ -354,8 +356,10 @@ void main() {
     expect(find.byKey(const Key('account-transfer-qr')), findsNothing);
     expect(find.text('246810'), findsNothing);
     expect(find.byKey(const Key('approve-account-transfer')), findsNothing);
-    // The QR and its code are gone from state, and the intro that asked for
-    // them is gone with them: the completion message is what is left.
+    expect(library.calls, contains('approveAccountTransfer()'));
+    // Nothing of the pairing is rendered after approval — not the QR, not the
+    // code, not the intro that asked for them: the completion message is what
+    // is left. (The secret itself is dropped in Rust; this holds the screen.)
     expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
     expect(find.textContaining('The QR code is the account'), findsNothing);
     expect(find.textContaining('Transfer sent securely'), findsOneWidget);

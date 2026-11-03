@@ -55,6 +55,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   @override
   void dispose() {
     _poller?.cancel();
+    // Backing out must not leave the pairing open for its full five minutes.
+    if (!_approved) {
+      unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));
+    }
     super.dispose();
   }
 
@@ -88,7 +92,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
     if (_busy || _code != null || _approved || !appIsForeground.value) return;
     try {
       final code = await widget.library.accountTransferRequestCode();
-      if (code != null && mounted) {
+      if (code != null && mounted && !_approved) {
         _poller?.cancel();
         setState(() => _code = code);
       }
@@ -309,7 +313,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (_code != null && !owner && !_approved) ...[
             const SizedBox(height: 24),
             const Text(
-              'Compare this code with the original device, which approves the transfer.',
+              'Approve the transfer on the original device. This code is on '
+              'both screens; it is not a check on which device is which.',
             ),
             const SizedBox(height: 8),
             Center(

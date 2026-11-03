@@ -3069,7 +3069,13 @@ impl Library {
             .seal(&public, id.as_bytes(), &root, &relay, access.as_deref())
             .map_err(|e| e.to_string())?;
         let result = easynotes_core::sync::pairing::send_response(http, id, owner, encrypted);
-        on_network(async move { result.await.map_err(|e| e.to_string()) }).await
+        on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        // The approval is spent: the tokens, keypair and relay access must not
+        // outlive it. Only after the send, so a failure stays retryable.
+        if let Ok(mut state) = self.transfer_owner.lock() {
+            let _ = state.take();
+        }
+        Ok(())
     }
 
     pub async fn cancel_account_transfer(&self) -> Result<(), String> {
