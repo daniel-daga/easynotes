@@ -6,6 +6,8 @@
 /// move and the connection happen at all.
 library;
 
+import 'dart:async';
+
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/relay_profiles.dart';
@@ -75,8 +77,24 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
   /// The code a paired device shows once its owner's request arrives.
   String? requestCode;
 
+  /// Holds the first request-code poll open, as a slow relay does, so a poll
+  /// can still be in flight when the owner approves.
+  Completer<void>? holdFirstPoll;
+
+  /// Makes a poll that resumes later come back with an error.
+  bool failRequestCode = false;
+
+  int _pollCount = 0;
+
   @override
-  Future<String?> accountTransferRequestCode() async => requestCode;
+  Future<String?> accountTransferRequestCode() async {
+    calls.add('accountTransferRequestCode()');
+    if (holdFirstPoll != null && _pollCount++ == 0) {
+      await holdFirstPoll!.future;
+    }
+    if (failRequestCode) throw 'the relay is unreachable now';
+    return requestCode;
+  }
 
   @override
   Future<void> approveAccountTransfer() async {
@@ -208,6 +226,11 @@ void main() {
     expect(find.text('Add another device'), findsNothing);
     expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
     expect(find.byKey(const Key('scan-account-transfer')), findsNothing);
+    // The transfer finished, so the screen going away did not cancel it.
+    expect(
+      library.calls.where((c) => c == 'cancelAccountTransfer()'),
+      isEmpty,
+    );
   });
 
   testWidgets('a move that fails after adopting says what state it is in', (
@@ -329,6 +352,9 @@ void main() {
   ) async {
     library.setUpSharing();
     library.requestCode = '246810';
+    // One poll is still waiting on the relay when the code arrives from a
+    // later one, and comes back with an error after the approval.
+    library.holdFirstPoll = Completer<void>();
     await pumpScreen(
       tester,
       profile: const RelayProfile(id: 'owner', url: server),
@@ -346,6 +372,13 @@ void main() {
 
     await tester.tap(find.byKey(const Key('begin-account-transfer')));
     await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+
+    // The first poll is still out, so the QR is up but no code yet. The
+    // second poll answers while the first is in flight.
+    expect(find.byKey(const Key('account-transfer-qr')), findsOneWidget);
+    expect(find.text('246810'), findsNothing);
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
 
@@ -371,6 +404,15 @@ void main() {
     expect(find.byKey(const Key('begin-account-transfer')), findsNothing);
     expect(find.textContaining('The QR code is the account'), findsNothing);
     expect(find.textContaining('Transfer sent securely'), findsOneWidget);
+
+    // The slow poll comes back with an error after the approval: it must not
+    // replace the approval message.
+    library.failRequestCode = true;
+    library.holdFirstPoll!.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('Transfer sent securely'), findsOneWidget);
+    expect(find.textContaining('relay is unreachable'), findsNothing);
 
     // Approval leaves nothing to cancel when the screen goes away.
     await tester.pumpWidget(const SizedBox());
