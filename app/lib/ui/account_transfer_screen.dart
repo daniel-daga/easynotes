@@ -111,7 +111,9 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         setState(() => _code = code);
       }
     } catch (e) {
-      if (mounted) {
+      // A poll that was in flight when the owner approved cannot overwrite
+      // the approval message with the error it came back with.
+      if (mounted && !_approved) {
         _poller?.cancel();
         setState(() => _message = '$e');
       }
@@ -221,6 +223,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       if (current == null) {
         // The library moved, so the screen that opened this one holds a
         // collection that has since closed. Report the move on the way out.
+        // Finished, so the dispose on the way out must not cancel it.
+        _approved = true;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
