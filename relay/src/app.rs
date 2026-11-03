@@ -98,8 +98,8 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
     /// Who may get a token or use an invite ([`crate::access`]).
     pub access: Access,
-    /// Bytes written per client address, appends and attachment chunks
-    /// together ([ADR 0028](../../docs/decisions.md#adr-0028)).
+    /// Bytes written per client address, every socket message and attachment
+    /// chunk together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
     /// When `/v1/ready` last asked the store, and what it said. Async because
     /// it is held across the check, so a burst arriving on a cold cache waits
@@ -326,7 +326,8 @@ pub struct RelayConfig {
     /// Who may get a token or use an invite
     /// ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub access: Access,
-    /// Bytes written per address, appends and attachment chunks together.
+    /// Bytes written per address, every socket message and attachment chunk
+    /// together.
     pub writes: RateLimit,
 }
 

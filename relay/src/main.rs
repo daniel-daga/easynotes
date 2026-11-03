@@ -34,8 +34,8 @@
 //!   More than one so a rotation can overlap. Unset is `open`, with a warning.
 //!   `easynotes-relay access-key` prints a new key.
 //! * `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR` — the write budget: bytes
-//!   one client address may write at once, and sustained, appends and
-//!   attachments together. Unset means 200 MiB and 200 MiB an hour
+//!   one client address may write at once, and sustained, every socket
+//!   message and attachment together. Unset means 200 MiB and 200 MiB an hour
 //!   ([`easynotes_relay::app::WRITES_BURST`]); `RELAY_WRITE_PER_HOUR=off`
 //!   turns it off.
 //!

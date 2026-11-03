@@ -16,9 +16,11 @@ use easynotes_core::relay_access::RelayAccess;
 use easynotes_core::sync::{authenticate, invite, DeviceSync, Incoming, Routed};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use std::sync::Arc;
 use support::NoteSocket;
+use tokio_tungstenite::tungstenite::Message;
 
 mod support;
 
@@ -303,7 +305,7 @@ async fn a_refresh_is_charged_for_every_note_it_reads() {
         .await
         .unwrap();
     let mut sync = DeviceSync::connect(&relay.ws_base(), &token).await.unwrap();
-    // Four notes: the fixed subscribe cost leaves room for one refresh of
+    // Four notes, one store read each: that leaves room for one refresh of
     // four, and not for a second.
     let notes: Vec<NoteId> = (0..4).map(|_| NoteId::random()).collect();
     for note in &notes {
@@ -333,7 +335,12 @@ async fn a_refresh_is_charged_for_every_note_it_reads() {
     sync.refresh("second").await.unwrap();
     match sync.next().await.unwrap() {
         Some(Routed::Note(_, Incoming::RateLimited { .. })) => {}
-        Some(_) => panic!("the over-budget refresh did its work first"),
+        // A refresh answers per note: any answer means the heads were read.
+        Some(Routed::Refresh { .. }) => panic!("the over-budget refresh did its work first"),
+        Some(Routed::Unrouted(message)) => {
+            panic!("the refusal was not routed to a note: {message}")
+        }
+        Some(_) => panic!("something else came back before the refusal"),
         None => panic!("closed without saying why"),
     }
     let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -346,6 +353,93 @@ async fn a_refresh_is_charged_for_every_note_it_reads() {
     })
     .await;
     assert!(closed.is_ok(), "the relay kept the socket open");
+}
+
+/// A raw socket, for the frames a `DeviceSync` will not send.
+type RawSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn raw_socket(relay: &Relay) -> RawSocket {
+    let token = authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    tokio_tungstenite::connect_async(&url).await.unwrap().0
+}
+
+/// The next text the relay sends on `socket`.
+async fn text(socket: &mut RawSocket) -> String {
+    loop {
+        if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+            return text.to_string();
+        }
+    }
+}
+
+/// Waits for the relay to close `socket`.
+async fn closed(socket: &mut RawSocket) {
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(Ok(_)) = socket.next().await {}
+    })
+    .await;
+    assert!(closed.is_ok(), "the relay kept the socket open");
+}
+
+#[tokio::test]
+async fn a_flood_of_malformed_messages_is_charged_to_the_budget() {
+    let relay = budgeted(8 << 10).await;
+    let mut socket = raw_socket(&relay).await;
+    // Nothing is done for text that does not parse, but it is charged all the
+    // same: the burst covers a few dozen frames and no more.
+    for _ in 0..100 {
+        if socket.send(Message::text("not json")).await.is_err() {
+            break; // closed under us, which is the point
+        }
+    }
+    let mut refused = 0;
+    let limited = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let reply = text(&mut socket).await;
+            if reply.contains("rate_limited") {
+                return refused;
+            }
+            assert!(reply.contains("malformed message"), "got: {reply}");
+            refused += 1;
+        }
+    })
+    .await
+    .expect("a flood of malformed frames was never charged");
+    assert!(limited > 0, "the budget ran out before one was answered");
+    closed(&mut socket).await;
+}
+
+#[tokio::test]
+async fn a_compact_is_charged_by_the_size_of_its_base() {
+    let relay = budgeted(8 << 10).await;
+    let mut socket = raw_socket(&relay).await;
+    // Spend a little, then offer a base the size of the whole burst: charged
+    // what it writes, it no longer fits; at the fixed cost it would.
+    socket.send(Message::text("not json")).await.unwrap();
+    let compact = serde_json::json!({
+        "type": "compact",
+        "note": NoteId::random().encode(),
+        "covers": 0,
+        "base": URL_SAFE_NO_PAD.encode(vec![0u8; 8 << 10]),
+        "key": URL_SAFE_NO_PAD.encode([0u8; 32]),
+        "signature": URL_SAFE_NO_PAD.encode([0u8; 64]),
+    });
+    socket
+        .send(Message::text(compact.to_string()))
+        .await
+        .unwrap();
+    let first = text(&mut socket).await;
+    assert!(first.contains("malformed message"), "got: {first}");
+    let second = text(&mut socket).await;
+    assert!(
+        second.contains("rate_limited"),
+        "a base was not charged by its size: {second}"
+    );
+    closed(&mut socket).await;
 }
 
 #[tokio::test]

@@ -9,8 +9,9 @@
 //!
 //! So the limit is on the two unauthenticated doors — `/v1/challenge` and
 //! `/v1/token` — and on opening a socket. Publishing has a budget of its own,
-//! in bytes rather than requests: appends and attachment chunks together, per
-//! address ([ADR 0028](../../docs/decisions.md#adr-0028)).
+//! in bytes rather than requests: every message on the sync socket and
+//! attachment chunks together, per address
+//! ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //! Device keys are free, so a budget per key would be a budget per nothing.
 //!
 //! ## Why a token bucket, and why it is keyed on the socket's peer

@@ -463,12 +463,12 @@ enum Handled {
     Close,
 }
 
-/// What one message costs the write budget when it is not an append: a
-/// subscribe, an unsubscribe, a compaction, or one this relay does not know.
+/// What a message costs the write budget when it asks for no store read and
+/// writes nothing: an unsubscribe, or a type this relay does not know.
 const MESSAGE_BYTES: usize = 256;
 
-/// What one `Refresh` costs per subscription, and at least once: each one reads
-/// that note's head, so the message's cost is the work it asks for.
+/// What one store read costs the write budget: a subscribe's topic read, or
+/// one note's head for a `Refresh`.
 const REFRESH_BYTES: usize = 1024;
 
 async fn handle(
@@ -485,17 +485,26 @@ async fn handle(
     } = *session;
     let parsed = serde_json::from_str::<SyncClientMessage>(text);
     // Everything the relay does for a message costs its write budget, charged
-    // before the work rather than after: a flood of refreshes or subscribes is
-    // a flood of store reads. A malformed message is charged like any other,
-    // at the fixed cost, so text that parses as nothing is not free.
+    // before the work rather than after: an append or a compaction writes what
+    // it sends, a subscribe reads a topic and a refresh reads a head per note,
+    // so a flood of any of them is a flood of store work. A malformed message
+    // is charged the fixed cost, so text that parses as nothing is not free.
     let cost = match &parsed {
         Ok(SyncClientMessage::Append { envelope, .. }) => envelope.len(),
+        Ok(SyncClientMessage::Compact { base, media, .. }) => {
+            base.len()
+                + media
+                    .as_ref()
+                    .map_or(0, |objects| objects.iter().map(String::len).sum())
+        }
+        Ok(SyncClientMessage::Subscribe { .. }) => REFRESH_BYTES,
         Ok(SyncClientMessage::Refresh { .. }) => REFRESH_BYTES * subs.0.len().max(1),
         _ => MESSAGE_BYTES,
     };
     if let Err(retry_after) = state.spend_writes(client, cost) {
-        // Pinned on a subscription where there is one: a client throttles on a
-        // `rate_limited` it can route to a note, and drops one it cannot.
+        // Pinned on a subscription where there is one, because the client can
+        // only throttle on a `rate_limited` routed to a note: an unrouted one
+        // reaches every note and slows none of them.
         refuse(
             out,
             subs.0.keys().next().cloned(),
