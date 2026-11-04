@@ -825,6 +825,22 @@ impl Statuses {
         .unwrap_or(false)
     }
 
+    /// One note's status now, for an error that has to say which note is stuck.
+    fn snapshot(&self, note: NoteId) -> Option<SyncStatus> {
+        self.existing(note, |status| status.tx.get())
+    }
+
+    /// Nothing of this device's is left to send for the note, or the note is
+    /// gone. A leave record can make the owner remove this device before the
+    /// echo lands; the note and its status are forgotten then, and there is
+    /// nothing left for a flush to wait on.
+    fn flushed(&self, note: NoteId) -> bool {
+        match self.snapshot(note) {
+            Some(status) => status.state == SyncState::Synced && status.pending == 0,
+            None => true,
+        }
+    }
+
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
         let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
@@ -3970,10 +3986,7 @@ impl Library {
         let mut status = self.shared.statuses.overall.subscribe();
         let wait = async {
             loop {
-                if notes
-                    .iter()
-                    .all(|note| self.shared.statuses.acknowledged(*note))
-                {
+                if notes.iter().all(|note| self.shared.statuses.flushed(*note)) {
                     return Ok(());
                 }
                 status
@@ -3985,8 +3998,21 @@ impl Library {
         tokio::time::timeout(std::time::Duration::from_secs(30), wait)
             .await
             .map_err(|_| {
-                "The sync server did not acknowledge the last changes within 30 seconds."
-                    .to_string()
+                let stuck: Vec<String> = notes
+                    .iter()
+                    .filter_map(|note| {
+                        let status = self.shared.statuses.snapshot(*note)?;
+                        Some(format!(
+                            "{note}: {:?}, pending {}",
+                            status.state, status.pending
+                        ))
+                    })
+                    .collect();
+                format!(
+                    "The sync server did not acknowledge the last changes within 30 seconds \
+                     ({}).",
+                    stuck.join("; ")
+                )
             })?
     }
 
