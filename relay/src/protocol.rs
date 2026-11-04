@@ -101,8 +101,10 @@ pub const RELAY_FULL: &str = "relay_full";
 /// ([ADR 0026](../../docs/decisions.md#adr-0026)).
 pub const GONE: &str = "gone";
 
-/// What an append is refused with past the address's write budget ([ADR 0028](../../docs/decisions.md#adr-0028)). The relay closes
-/// the socket after saying so, and the client backs off before it reconnects.
+/// What any message on the sync socket is refused with past the address's
+/// write budget ([ADR 0028](../../docs/decisions.md#adr-0028)). The relay
+/// closes the socket after saying so, and the client backs off before it
+/// reconnects.
 pub const RATE_LIMITED: &str = "rate_limited";
 
 /// How many notes one socket may be subscribed to at once. A device's notes,

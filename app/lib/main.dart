@@ -19,6 +19,7 @@ import 'core/local_notifications.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/profile_library.dart';
+import 'core/recording_output.dart';
 import 'core/reminder_scheduler.dart';
 import 'core/relay_profiles.dart';
 import 'core/relay_session.dart';
@@ -134,6 +135,9 @@ Future<void> runStartup(Future<void> Function() start) async {
 
 Future<void> _startUp() async {
   registerBundledLicenses();
+  // A run killed mid-recording leaves a plain WAV behind, so the first frame
+  // does not wait on the sweep that removes it.
+  unawaited(sweepStaleRecordings());
   final initialInvite = kIsWeb
       ? inviteLinkFrom(Uri.base.toString())
       : _hasNativeDeepLinks

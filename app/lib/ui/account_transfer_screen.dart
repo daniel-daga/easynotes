@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../core/invites.dart';
 import '../core/app_visibility.dart';
 import '../core/relay_profiles.dart';
+import '../core/secure_screen.dart';
 
 /// One-time pairing from an existing device or QR scan on a new one.
 class AccountTransferScreen extends StatefulWidget {
@@ -36,6 +37,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
+  /// Whether the pairing has already been cancelled, so [dispose] does not
+  /// cancel it a second time after [cancel].
+  bool _cancelled = false;
+
   /// Whether this device belongs to an account.
   bool get _hasAccount {
     try {
@@ -53,8 +58,21 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   late final bool _owner = widget.profile.url != null && _hasAccount;
 
   @override
+  void initState() {
+    super.initState();
+    // The QR carries the account. Android keeps it out of screenshots and the
+    // Recents list for as long as this screen is up; no-op elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     _poller?.cancel();
+    // Backing out must not leave the pairing open for its full five minutes.
+    if (!_approved && !_cancelled) {
+      unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));
+    }
     super.dispose();
   }
 
@@ -88,12 +106,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
     if (_busy || _code != null || _approved || !appIsForeground.value) return;
     try {
       final code = await widget.library.accountTransferRequestCode();
-      if (code != null && mounted) {
+      if (code != null && mounted && !_approved) {
         _poller?.cancel();
         setState(() => _code = code);
       }
     } catch (e) {
-      if (mounted) {
+      // A poll that was in flight when the owner approved cannot overwrite
+      // the approval message with the error it came back with.
+      if (mounted && !_approved) {
         _poller?.cancel();
         setState(() => _message = '$e');
       }
@@ -111,6 +131,9 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       setState(() {
         _busy = false;
         _approved = true;
+        // The QR is the account: it does not outlive the approval.
+        _qr = null;
+        _code = null;
         _message =
             'Transfer sent securely. The new device can now finish setup.';
       });
@@ -200,6 +223,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       if (current == null) {
         // The library moved, so the screen that opened this one holds a
         // collection that has since closed. Report the move on the way out.
+        // Finished, so the dispose on the way out must not cancel it.
+        _approved = true;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -228,6 +253,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
 
   Future<void> _cancel() async {
     _poller?.cancel();
+    _cancelled = true;
     try {
       await widget.library.cancelAccountTransfer();
     } catch (_) {}
@@ -244,13 +270,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text(
-            owner
-                ? 'Scan this QR code with your new device. The account key and server access key are encrypted for that device. Keep this screen open until you approve the request.'
-                : 'Scan the QR code shown by your original device. Both devices will show a matching code; compare them before approving on the original device.',
-          ),
+          if (!_approved)
+            Text(
+              owner
+                  ? 'Scan this QR code with your new device. The QR code is the account, so anyone who sees it can ask for it. Keep this screen open, and approve only a request you started a moment ago on a device in front of you — never one from a code someone read to you or sent you.'
+                  : 'Scan the QR code shown by your original device. Both screens show the same code: it is not a check on which device is which.',
+            ),
           const SizedBox(height: 20),
-          if (owner && _qr == null)
+          if (owner && _qr == null && !_approved)
             FilledButton.icon(
               key: const Key('begin-account-transfer'),
               onPressed: _busy || widget.profile.url == null
@@ -259,9 +286,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
               icon: const Icon(Icons.qr_code_2),
               label: const Text('Show one-time QR code'),
             ),
-          if (owner && _qr != null) ...[
+          if (owner && _qr != null && !_approved) ...[
             Center(
               child: Container(
+                key: const Key('account-transfer-qr'),
                 color: Colors.white,
                 padding: const EdgeInsets.all(12),
                 child: QrImageView(
@@ -275,7 +303,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
             if (_code == null)
               const Center(child: CircularProgressIndicator())
             else ...[
-              const Text('Check that the new device shows this same code:'),
+              const Text('The new device shows this code:'),
               const SizedBox(height: 8),
               Center(
                 child: Text(
@@ -304,7 +332,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (_code != null && !owner && !_approved) ...[
             const SizedBox(height: 24),
             const Text(
-              'Compare this code with the original device. Approve there only if they match.',
+              'Approve the transfer on the original device. This code is on '
+              'both screens; it is not a check on which device is which.',
             ),
             const SizedBox(height: 8),
             Center(

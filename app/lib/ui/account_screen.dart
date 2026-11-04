@@ -12,12 +12,14 @@
 /// one state this design cannot recover from.
 library;
 
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import '../core/invites.dart';
 import '../core/relay_profiles.dart';
+import '../core/secure_screen.dart';
 
 /// How many words the backup check asks for.
 ///
@@ -395,7 +397,16 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // These words are the account. Android keeps them out of screenshots and
+    // the Recents list for as long as this screen is up; no-op elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     for (final field in _fields) {
       field.dispose();
     }
@@ -644,7 +655,17 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
   bool _busy = false;
 
   @override
+  void initState() {
+    super.initState();
+    // The words typed here are the account. Android keeps them out of
+    // screenshots and the Recents list while they are on screen; no-op
+    // elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     _controller.dispose();
     super.dispose();
   }

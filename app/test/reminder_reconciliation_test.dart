@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/reminder_scheduler.dart';
@@ -11,6 +12,8 @@ import 'package:timezone/timezone.dart' as tz;
 
 // Drive reconciliation explicitly so the test controls the interleaving.
 class QuietLibrary extends FakeNoteLibrary {
+  QuietLibrary({super.notes});
+
   int reminderWatchCount = 0;
 
   @override
@@ -134,6 +137,43 @@ void main() {
     expect(scheduled['timeZoneName'], tz.UTC.name);
     expect(scheduled['scheduledDateTimeISO8601'], endsWith('T10:00:00.000Z'));
     expect(scheduled['matchDateTimeComponents'], DateTimeComponents.time.index);
+  });
+
+  test('a reminder keeps the note title off the lock screen', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final pending = mockNotifications();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('flutter_timezone'),
+      (_) async => 'UTC',
+    );
+    final library = QuietLibrary(
+      notes: {'note-1': FakeNoteCore(title: 'Divorce lawyer')},
+    );
+    final scheduler = ReminderScheduler(library);
+    addTearDown(scheduler.dispose);
+    await library.createReminder(
+      noteId: 'note-1',
+      fireAt: DateTime.utc(2090, 1, 1, 10),
+      repeat: ReminderRepeat.never,
+      timezone: 'UTC',
+    );
+
+    await scheduler.start();
+
+    final scheduled = pending.values.single;
+    expect(scheduled['title'], 'EasyNotes reminder');
+    expect(scheduled['body'], 'Reminder');
+    final android = scheduled['platformSpecifics'] as Map;
+    expect(android['visibility'], NotificationVisibility.private.index);
+    // An install that already has the channel keeps its old settings unless
+    // the schedule updates it; the default is createIfNotExists.
+    expect(
+      android['channelAction'],
+      AndroidNotificationChannelAction.update.index,
+    );
   });
 
   for (final delete in [true, false]) {

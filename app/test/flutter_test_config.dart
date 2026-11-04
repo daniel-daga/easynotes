@@ -10,6 +10,8 @@ import 'package:flutter_test/flutter_test.dart';
 Future<void> testExecutable(FutureOr<void> Function() testMain) async {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(noShareSheet);
+  // The screenshot flag has no window to take it in a test.
+  setUp(noSecureScreen);
   await testMain();
 }
 
@@ -19,4 +21,12 @@ void noShareSheet() => TestDefaultBinaryMessengerBinding
     .setMockMethodCallHandler(
       const MethodChannel('eu.fraisl.easynotes/content_sharing'),
       (call) async => false,
+    );
+
+void noSecureScreen() => TestDefaultBinaryMessengerBinding
+    .instance
+    .defaultBinaryMessenger
+    .setMockMethodCallHandler(
+      const MethodChannel('eu.fraisl.easynotes/secure_screen'),
+      (call) async => null,
     );

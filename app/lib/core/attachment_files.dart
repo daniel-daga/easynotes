@@ -50,7 +50,9 @@ class DeviceAttachmentFiles implements AttachmentFiles {
   @override
   Future<List<PickedFile>> pickImages() async => [
     for (final file in await FilePicker.pickFiles(type: FileType.image))
-      PickedFile(name: file.name, bytes: await file.readAsBytes()),
+      // The core refuses an image over 20 MB, so do not read one first.
+      if ((file.lengthSync() ?? await file.length() ?? 0) <= _maxImageBytes)
+        PickedFile(name: file.name, bytes: await file.readAsBytes()),
   ];
 
   @override
@@ -73,6 +75,11 @@ class DeviceAttachmentFiles implements AttachmentFiles {
 /// The longest side of a thumbnail, as the core holds it.
 const thumbnailEdge = 512;
 
+/// The core refuses an image over this many bytes or pixels
+/// (`MAX_IMAGE_BYTES` and `MAX_IMAGE_PIXELS` in `core/src/attachment.rs`).
+const _maxImageBytes = 20 << 20;
+const _maxImagePixels = 40_000_000;
+
 /// The largest thumbnail the core accepts.
 const _thumbnailBytes = 256 << 10;
 
@@ -86,6 +93,12 @@ Future<Uint8List?> makeThumbnail(Uint8List image) => compute(_thumbnail, image);
 
 Uint8List? _thumbnail(Uint8List bytes) {
   try {
+    // The size is in the header; a decoder would allocate `width * height * 4`
+    // bytes, which a small file can make huge.
+    final header = img.findDecoderForData(bytes)?.startDecode(bytes);
+    if (header == null || header.width * header.height > _maxImagePixels) {
+      return null;
+    }
     final decoded = img.decodeImage(bytes);
     if (decoded == null) return null;
     final upright = img.bakeOrientation(decoded);
