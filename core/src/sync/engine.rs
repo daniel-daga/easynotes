@@ -1787,7 +1787,7 @@ impl Live {
                 // not the device key used for the relay handshake. Byte equality
                 // still proves this is the envelope queued above; only the
                 // per-device `sent_upto` watermark must remain untouched.
-                self.outbox.retain(|queued| queued != envelope);
+                self.acknowledge_echo(envelope);
             }
         }
         self.advance(peer, note, seq);
@@ -1823,15 +1823,23 @@ impl Live {
     /// The relay has our envelope: drop it from the outbox and remember how far
     /// the acknowledgement reaches.
     fn acknowledge(&mut self, counter: u64, envelope: &[u8]) {
+        self.acknowledge_echo(envelope);
+        self.cursor.sent_upto = Some(match self.cursor.sent_upto {
+            Some(sent) => sent.max(counter),
+            None => counter,
+        });
+    }
+
+    /// An echo of ours counts as acknowledged even when another key signed it —
+    /// the rotation snapshot case — so it never leaves `sync_now` waiting on a
+    /// target that echo could not move. Counting only an envelope actually in
+    /// the outbox keeps a second echo from counting twice.
+    fn acknowledge_echo(&mut self, envelope: &[u8]) {
         let before = self.outbox.len();
         self.outbox.retain(|queued| queued != envelope);
         if self.outbox.len() != before {
             self.current.acknowledged = self.current.acknowledged.saturating_add(1);
         }
-        self.cursor.sent_upto = Some(match self.cursor.sent_upto {
-            Some(sent) => sent.max(counter),
-            None => counter,
-        });
     }
 
     /// The relay explicitly says its log is older than this device's cursor.
@@ -1913,6 +1921,22 @@ mod tests {
         live.acknowledge(1, &envelope);
         assert_eq!(live.current.acknowledged, 1);
         live.acknowledge(1, &envelope);
+        assert_eq!(live.current.acknowledged, 1);
+    }
+
+    #[test]
+    fn a_rotation_snapshot_echo_is_acknowledged_without_moving_the_sent_watermark() {
+        let (status, _watcher) = watch::channel(SyncStatus::default());
+        let mut live = Live::new(1, status, Pacing::default());
+        let envelope = vec![9, 9, 9];
+        live.outbox.push(envelope.clone());
+
+        live.acknowledge_echo(&envelope);
+        assert!(live.outbox.is_empty());
+        assert_eq!(live.current.acknowledged, 1);
+        assert!(live.cursor.sent_upto.is_none());
+
+        live.acknowledge_echo(&envelope);
         assert_eq!(live.current.acknowledged, 1);
     }
 
