@@ -1,0 +1,7 @@
+Updates since v0.1.9:
+
+- Import from Google Keep: choose your Takeout .zip, or an extracted Keep .json file, and text and checklist notes arrive with their ticks, labels, colours and archive state; anything skipped is listed
+- Emptying the trash deletes only the notes the confirmation counted, and a connect that fails no longer loses the recovery phrase
+- A recording whose import was refused is kept, and a title being typed survives a rename from another device
+- Reminder titles stay off the lock screen, and account screens block screenshots and the Recents preview on Android
+- A note you deleted while it was open stays deleted, a dropped item lands beside a folded section rather than inside it, and a web tab that cannot read its stored key says so instead of starting empty
