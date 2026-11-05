@@ -39,6 +39,12 @@ const INVITE_DOMAIN: &[u8] = b"easynotes/relay-access/v1/invite\0";
 /// server, and never lands in an access log.
 pub const LINK_FRAGMENT: &str = "access=";
 
+/// A relay link: the relay's address with an encoded key or token in its
+/// fragment.
+fn relay_link(address: &str, access: &str) -> String {
+    format!("{}/#{LINK_FRAGMENT}{access}", address.trim_end_matches('/'))
+}
+
 /// A relay's access key. Never printed: `Debug` says only that there is one.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RelayAccess([u8; ACCESS_KEY_LEN]);
@@ -122,11 +128,7 @@ impl RelayAccess {
 
     /// A relay link: the relay's address with this key in its fragment.
     pub fn link(&self, address: &str) -> String {
-        format!(
-            "{}/#{LINK_FRAGMENT}{}",
-            address.trim_end_matches('/'),
-            self.encode()
-        )
+        relay_link(address, &self.encode())
     }
 }
 
@@ -173,6 +175,7 @@ impl RelayToken {
     /// Read a token back. A string with no dot is a legacy operator key.
     pub fn decode(raw: &str) -> Result<Self> {
         let bad = || CoreError::Storage("that is not a device access token".into());
+        let raw = raw.trim();
         let Some((id, secret)) = raw.split_once('.') else {
             return Ok(Self {
                 id: None,
@@ -184,7 +187,7 @@ impl RelayToken {
         }
         Ok(Self {
             id: Some(id.to_owned()),
-            secret: RelayAccess::decode(secret)?,
+            secret: RelayAccess::decode(secret).map_err(|_| bad())?,
         })
     }
 
@@ -200,11 +203,7 @@ impl RelayToken {
 
     /// A relay link: the relay's address with this token in its fragment.
     pub fn link(&self, address: &str) -> String {
-        format!(
-            "{}/#{LINK_FRAGMENT}{}",
-            address.trim_end_matches('/'),
-            self.encode()
-        )
+        relay_link(address, &self.encode())
     }
 }
 
@@ -270,6 +269,10 @@ mod tests {
     fn a_token_is_an_id_and_a_secret() {
         let token = RelayToken::random();
         assert_eq!(RelayToken::decode(&token.encode()).unwrap(), token);
+        assert_eq!(
+            RelayToken::decode(&format!(" {} ", token.encode())).unwrap(),
+            token
+        );
         assert_eq!(token.encode().matches('.').count(), 1);
     }
 
