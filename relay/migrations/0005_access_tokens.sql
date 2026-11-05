@@ -11,5 +11,6 @@ CREATE TABLE access_tokens (
     revoked_at  BIGINT
 );
 
+-- The 30-day revoked-token purge will read by `revoked_at`; nothing else does.
 CREATE INDEX access_tokens_revoked ON access_tokens (revoked_at)
     WHERE revoked_at IS NOT NULL;

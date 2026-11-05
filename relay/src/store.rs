@@ -165,29 +165,37 @@ pub trait RelayStore: Send + Sync + 'static {
     // atomic; it does not decide who may mint, verify or revoke one. Times are
     // Unix seconds, passed in as for invites.
 
-    /// Store a token, unbound. A duplicate ID is an error: the admin layer
-    /// decides whether retrying a mint is safe.
+    /// Store a token, unbound. `false` if the ID is taken, and then the row is
+    /// left as it was: the admin layer decides whether retrying a mint is safe.
     async fn create_access_token(
         &self,
         id: &str,
         secret: &[u8; 32],
         expires_at: Option<i64>,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     /// A token, revoked or not. `None` if there is no such token.
     async fn access_token(&self, id: &str) -> Result<Option<AccessToken>>;
 
     /// Bind an unbound token to `device`, atomically. `false` if the token does
     /// not exist or is bound already, so two devices cannot both claim it.
+    ///
+    /// The caller checks expiry and revocation before binding: binding a
+    /// just-revoked token is harmless, but it leaves a device key on a dead
+    /// token.
     async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool>;
 
+    /// A missing token is a no-op.
     async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()>;
 
-    /// Drop the binding, so the token can be claimed by a device again.
+    /// Drop the binding, so the token can be claimed by a device again. A
+    /// missing token is a no-op.
     async fn unbind_access_token(&self, id: &str) -> Result<()>;
 
-    /// Revoke at `now`. Revoking a revoked token leaves the first time alone.
-    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()>;
+    /// Revoke at `now`. `true` if the token exists, even if it was revoked
+    /// already, and then the first time is kept. `false` if there is no such
+    /// token.
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool>;
 
     /// Delete every envelope of a topic and leave it gone, if `key` and
     /// `signature` are what [`quota::authorise_purge`] accepts. A topic the
@@ -892,7 +900,7 @@ impl RelayStore for MemoryStore {
         id: &str,
         secret: &[u8; 32],
         expires_at: Option<i64>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let token = AccessToken {
             id: id.to_string(),
             secret: *secret,
@@ -903,12 +911,10 @@ impl RelayStore for MemoryStore {
         };
         let mut tokens = self.access_tokens.lock().unwrap();
         if tokens.contains_key(id) {
-            // The same as the Postgres unique violation: an admin retrying a
-            // mint must not quietly replace the token it already handed out.
-            return Err(RelayError::Storage("access token already exists".into()));
+            return Ok(false);
         }
         tokens.insert(id.to_string(), token);
-        Ok(())
+        Ok(true)
     }
 
     async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
@@ -941,11 +947,13 @@ impl RelayStore for MemoryStore {
         Ok(())
     }
 
-    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()> {
-        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
-            token.revoked_at.get_or_insert(now);
-        }
-        Ok(())
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let Some(token) = tokens.get_mut(id) else {
+            return Ok(false);
+        };
+        token.revoked_at.get_or_insert(now);
+        Ok(true)
     }
 }
 
@@ -1829,15 +1837,18 @@ impl RelayStore for PostgresStore {
         id: &str,
         secret: &[u8; 32],
         expires_at: Option<i64>,
-    ) -> Result<()> {
-        sqlx::query("INSERT INTO access_tokens (id, secret, expires_at) VALUES ($1, $2, $3)")
-            .bind(id)
-            .bind(secret.as_slice())
-            .bind(expires_at)
-            .execute(&self.pool)
-            .await
-            .map_err(pg)?;
-        Ok(())
+    ) -> Result<bool> {
+        let inserted: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO access_tokens (id, secret, expires_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING RETURNING id",
+        )
+        .bind(id)
+        .bind(secret.as_slice())
+        .bind(expires_at)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(inserted.is_some())
     }
 
     async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
@@ -1903,16 +1914,18 @@ impl RelayStore for PostgresStore {
         Ok(())
     }
 
-    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE access_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL",
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool> {
+        // COALESCE keeps the first revocation time when this is a repeat.
+        let revoked: Option<(String,)> = sqlx::query_as(
+            "UPDATE access_tokens SET revoked_at = COALESCE(revoked_at, $2) \
+             WHERE id = $1 RETURNING id",
         )
         .bind(id)
         .bind(now)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(pg)?;
-        Ok(())
+        Ok(revoked.is_some())
     }
 }
 
@@ -2192,8 +2205,8 @@ mod access_token_tests {
             "an unbound token could not be claimed"
         );
 
-        store.revoke_access_token(id, 1_700_000_100).await.unwrap();
-        store.revoke_access_token(id, 1_700_000_200).await.unwrap();
+        assert!(store.revoke_access_token(id, 1_700_000_100).await.unwrap());
+        assert!(store.revoke_access_token(id, 1_700_000_200).await.unwrap());
         assert_eq!(
             store.access_token(id).await.unwrap().unwrap().revoked_at,
             Some(1_700_000_100)
@@ -2204,12 +2217,13 @@ mod access_token_tests {
             .bind_access_token("missing", &[0u8; 32])
             .await
             .unwrap());
+        assert!(!store.revoke_access_token("missing", 1).await.unwrap());
         assert!(
-            store
+            !store
                 .create_access_token(id, &[6u8; 32], None)
                 .await
-                .is_err(),
-            "a duplicate token ID replaced the token already handed out"
+                .unwrap(),
+            "a duplicate mint reported success"
         );
         assert_eq!(
             store.access_token(id).await.unwrap().unwrap().secret,

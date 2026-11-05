@@ -28,13 +28,9 @@ macro_rules! store_or_skip {
     };
 }
 
+/// Opaque and random, so reruns against the shared database never collide on a
+/// primary key — notes and access tokens alike.
 fn note() -> String {
-    easynotes_core::ids::NoteId::random().encode()
-}
-
-/// Opaque like a note ID, and random so that reruns against the shared
-/// database do not collide on the token table's primary key.
-fn token_id() -> String {
     easynotes_core::ids::NoteId::random().encode()
 }
 
@@ -207,13 +203,13 @@ async fn records_every_migration_it_applies() {
 #[tokio::test]
 async fn a_token_is_created_bound_and_revoked() {
     let store = store_or_skip!();
-    let id = token_id();
+    let id = note();
     let secret = [7u8; 32];
     let expires = 1_700_000_000;
-    store
+    assert!(store
         .create_access_token(&id, &secret, Some(expires))
         .await
-        .unwrap();
+        .unwrap());
 
     let created = store.access_token(&id).await.unwrap().unwrap();
     assert_eq!(created.secret, secret);
@@ -221,6 +217,19 @@ async fn a_token_is_created_bound_and_revoked() {
     assert_eq!(created.expires_at, Some(expires));
     assert!(!created.read_only);
     assert_eq!(created.revoked_at, None);
+
+    assert!(
+        !store
+            .create_access_token(&id, &[6u8; 32], None)
+            .await
+            .unwrap(),
+        "a duplicate mint reported success"
+    );
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().secret,
+        secret,
+        "a duplicate mint replaced the token already handed out"
+    );
 
     assert!(store.bind_access_token(&id, &[8u8; 32]).await.unwrap());
     assert!(
@@ -238,18 +247,66 @@ async fn a_token_is_created_bound_and_revoked() {
         store.access_token(&id).await.unwrap().unwrap().device_key,
         None
     );
+    assert!(
+        store.bind_access_token(&id, &[10u8; 32]).await.unwrap(),
+        "an unbound token could not be claimed"
+    );
 
-    store.revoke_access_token(&id, 1_700_000_100).await.unwrap();
-    store.revoke_access_token(&id, 1_700_000_200).await.unwrap();
+    assert!(store.revoke_access_token(&id, 1_700_000_100).await.unwrap());
+    assert!(
+        store.revoke_access_token(&id, 1_700_000_200).await.unwrap(),
+        "a repeat revocation reported the token missing"
+    );
     assert_eq!(
         store.access_token(&id).await.unwrap().unwrap().revoked_at,
         Some(1_700_000_100),
         "revoking twice moved the revocation time"
     );
 
-    let missing = token_id();
+    let missing = note();
     assert!(store.access_token(&missing).await.unwrap().is_none());
     assert!(!store.bind_access_token(&missing, &[0u8; 32]).await.unwrap());
+    assert!(!store.revoke_access_token(&missing, 1).await.unwrap());
+}
+
+/// The bind is one conditional `UPDATE`, so eight devices racing for one fresh
+/// token must leave exactly one of them holding it (ADR 0038).
+#[tokio::test]
+async fn concurrent_binds_to_one_token_leave_one_device() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let store = std::sync::Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let id = note();
+    store
+        .create_access_token(&id, &[7u8; 32], None)
+        .await
+        .unwrap();
+
+    let mut tasks = Vec::new();
+    let mut devices = Vec::new();
+    for i in 0..8u8 {
+        let device = [i + 1; 32];
+        devices.push(device);
+        let store = store.clone();
+        let id = id.clone();
+        tasks.push(tokio::spawn(async move {
+            store.bind_access_token(&id, &device).await.unwrap()
+        }));
+    }
+    let mut winners = Vec::new();
+    for (task, device) in tasks.into_iter().zip(devices) {
+        if task.await.unwrap() {
+            winners.push(device);
+        }
+    }
+    assert_eq!(winners.len(), 1, "more than one device claimed the token");
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().device_key,
+        Some(winners[0]),
+        "the stored device key is not the one that won the bind"
+    );
 }
 
 /// Instances start together on a deploy, and each runs the migrations. They
