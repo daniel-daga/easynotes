@@ -720,6 +720,9 @@ async fn token(
     // Set when a fresh token must be bound, but only after `redeem` proves the
     // device's signature.
     let mut bind: Option<(&str, [u8; 32])> = None;
+    // Carried into the token a device gets: a lapsed household may read but
+    // not write (ADR 0038). A static key or an open relay is writable.
+    let mut read_only = false;
     if state.access.gated() || state.device_tokens {
         // Before the challenge is spent, so a device that is asked for the key
         // and is given it can try again without starting over; a nonce is good
@@ -760,6 +763,7 @@ async fn token(
                 {
                     return Err(refused());
                 }
+                read_only = row.read_only;
                 // One device claims a token: the first handshake binds it, a
                 // later one must be from that same key.
                 match row.device_key {
@@ -787,6 +791,7 @@ async fn token(
             &req.nonce,
             &req.signature,
             Duration::from_secs(TOKEN_TTL_SECS),
+            read_only,
         )
         .await?;
     // Only a device that signed the challenge may claim a fresh token. A loss

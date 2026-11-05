@@ -120,6 +120,7 @@ fn said(message: String) -> String {
         "relay_full" => "The sync server is not accepting new notes right now. \
                          This one is safe on this device."
             .into(),
+        "read_only" => "This relay is read-only until the plan is renewed.".into(),
         _ => message,
     }
 }
@@ -929,6 +930,18 @@ mod tests {
         }
         // An update for a note that cannot exist is the relay talking nonsense.
         assert!(routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
+    }
+
+    #[test]
+    fn a_read_only_relay_is_said_in_words() {
+        match routed(r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"read_only"}"#)
+            .unwrap()
+        {
+            Routed::Note(_, Incoming::Rejected(words)) => {
+                assert!(words.contains("read-only"), "{words}")
+            }
+            _ => panic!("expected a rejection"),
+        }
     }
 
     #[test]

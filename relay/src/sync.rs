@@ -49,10 +49,13 @@ pub(crate) async fn sync_ws(
     client: Option<axum::Extension<app::Client>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response> {
-    let client = client.map(|c| c.0);
-    if state.auth.device_for(&q.token).is_none() {
+    let Some(device) = state.auth.device_for(&q.token) else {
         return Err(RelayError::Unauthorized);
-    }
+    };
+    let connection = Connection {
+        client: client.map(|c| c.0),
+        read_only: device.read_only,
+    };
     // Taken before the upgrade, so that a stop that begins in between still
     // waits for this session, which will see it and close at once.
     let stopping = state.shutdown.watch();
@@ -66,10 +69,18 @@ pub(crate) async fn sync_ws(
         .max_frame_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _open = state.metrics.socket();
-            if let Err(e) = run(socket, state.clone(), client, stopping).await {
+            if let Err(e) = run(socket, state.clone(), connection, stopping).await {
                 tracing::debug!(error = %e, "device session ended");
             }
         }))
+}
+
+/// Who one socket belongs to: the address its write budget is keyed on, and
+/// whether its token allows writing (ADR 0038).
+#[derive(Clone, Copy)]
+struct Connection {
+    client: Option<app::Client>,
+    read_only: bool,
 }
 
 /// What a note's fan-out hands the session, tagged with the note.
@@ -151,7 +162,7 @@ const _: () = assert!(MAX_QUEUED_ENVELOPE < MAX_MESSAGE_BYTES);
 async fn run(
     socket: WebSocket,
     state: Arc<AppState>,
-    client: Option<app::Client>,
+    connection: Connection,
     mut stopping: crate::shutdown::Watch,
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = socket.split();
@@ -166,7 +177,16 @@ async fn run(
     let queued = Arc::new(AtomicUsize::new(0));
     let freed = Arc::new(Notify::new());
     let writer = tokio::spawn(write(tx, outgoing, queued.clone(), freed.clone()));
-    let result = serve(&state, client, &mut rx, out, &mut stopping, &queued, &freed).await;
+    let result = serve(
+        &state,
+        connection,
+        &mut rx,
+        out,
+        &mut stopping,
+        &queued,
+        &freed,
+    )
+    .await;
     // The sender went with `serve`, so the writer sends what is queued and
     // finishes, closing the socket. `stopping` is held until then: the relay
     // has not drained while a queue is still being written.
@@ -247,7 +267,7 @@ fn queued_bytes(message: &SyncServerMessage) -> usize {
 
 async fn serve(
     state: &Arc<AppState>,
-    client: Option<app::Client>,
+    connection: Connection,
     rx: &mut futures_util::stream::SplitStream<WebSocket>,
     out: mpsc::Sender<SyncServerMessage>,
     stopping: &mut crate::shutdown::Watch,
@@ -321,7 +341,13 @@ async fn serve(
 
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Text(t))) => {
-                    let session = Session { state, client, out: &out, fanned: &fanned_tx };
+                    let session = Session {
+                        state,
+                        client: connection.client,
+                        read_only: connection.read_only,
+                        out: &out,
+                        fanned: &fanned_tx,
+                    };
                     if let Handled::Close = handle(&session, &mut subs, &mut backlog, &t).await {
                         break;
                     }
@@ -457,6 +483,8 @@ async fn send_chunk(
 struct Session<'a> {
     state: &'a Arc<AppState>,
     client: Option<app::Client>,
+    /// A lapsed household may read but not write (ADR 0038).
+    read_only: bool,
     out: &'a mpsc::Sender<SyncServerMessage>,
     fanned: &'a mpsc::Sender<Fanned>,
 }
@@ -486,6 +514,7 @@ async fn handle(
     let Session {
         state,
         client,
+        read_only,
         out,
         fanned,
     } = *session;
@@ -625,6 +654,10 @@ async fn handle(
             }
         }
         SyncClientMessage::Append { note, envelope } => {
+            if read_only {
+                refuse(out, Some(note), &RelayError::ReadOnly.client_message());
+                return Handled::Continue;
+            }
             // A socket writes only to notes it has subscribed to.
             if !subs.0.contains_key(&note) {
                 refuse(out, Some(note), "not subscribed to that note");

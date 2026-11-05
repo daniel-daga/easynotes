@@ -750,6 +750,197 @@ async fn a_compact_is_charged_by_the_size_of_its_base() {
     closed(&mut socket).await;
 }
 
+/// Read until the relay says the backlog is drained, collecting its envelopes.
+async fn history(socket: &mut NoteSocket) -> Vec<Vec<u8>> {
+    let mut envelopes = Vec::new();
+    loop {
+        match socket.next().await.unwrap() {
+            Some(Incoming::Envelope { envelope, .. }) => envelopes.push(envelope),
+            Some(Incoming::Caught { .. }) => return envelopes,
+            Some(Incoming::Rejected(m)) => panic!("refused while reading: {m}"),
+            Some(_) => {}
+            None => panic!("closed while reading"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_read_only_token_reads_history_and_cannot_append() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let (note, key) = (NoteId::random(), NoteKey::random());
+
+    // A writable device puts one envelope in the note.
+    let writer = DeviceIdentity::generate();
+    let token = mint(&*store, [17; 16], [18; 32], None).await;
+    let token = authenticate(&http, Some(&token), &writer).await.unwrap();
+    let mut socket = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let written = Envelope::seal(&writer, note, &key, 0, b"before")
+        .unwrap()
+        .encode();
+    socket.append(&written).await.unwrap();
+    // `caught` and the append's echo can arrive in either order.
+    let mut seen = Vec::new();
+    let mut caught = false;
+    while !caught || seen.is_empty() {
+        match socket.next().await.unwrap() {
+            Some(Incoming::Envelope { envelope, .. }) => seen.push(envelope),
+            Some(Incoming::Caught { .. }) => caught = true,
+            Some(_) => {}
+            None => panic!("closed before the append settled"),
+        }
+    }
+    assert_eq!(seen, vec![written.clone()]);
+
+    // A read-only row yields a version-2 token whose flag is set.
+    let token = mint(&*store, [19; 16], [20; 32], None).await;
+    let id = token.id.as_deref().unwrap();
+    store.set_access_token_read_only(id, true).await.unwrap();
+    let reader = DeviceIdentity::generate();
+    let token = authenticate(&http, Some(&token), &reader).await.unwrap();
+    let payload = URL_SAFE_NO_PAD.decode(&token).unwrap();
+    assert_eq!(payload[0], 2);
+    // Version, expiry, device key, nonce, then the flag.
+    assert_eq!(payload[1 + 8 + 32 + 16], 1);
+
+    // It reads the note's history...
+    let mut socket = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    assert_eq!(history(&mut socket).await, vec![written]);
+
+    // ...and an append is refused, in words, and not stored.
+    let refused = Envelope::seal(&reader, note, &key, 1, b"after")
+        .unwrap()
+        .encode();
+    socket.append(&refused).await.unwrap();
+    match socket.next().await.unwrap() {
+        Some(Incoming::Rejected(words)) => assert!(words.contains("read-only"), "{words}"),
+        Some(_) => panic!("expected the append to be refused"),
+        None => panic!("closed instead of refusing the append"),
+    }
+    assert_eq!(store.head(&note.encode()).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_read_only_device_can_read_attachments_but_not_upload() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let (note, id, key) = (
+        NoteId::random(),
+        AttachmentId::random(),
+        ContentKey::random(),
+    );
+    let chunk = 64 << 10;
+    let plain = vec![5u8; 100 << 10];
+    let (media, sealed) = seal_whole(&key, note, id, Variant::Original, &plain, chunk).unwrap();
+    let client = reqwest::Client::new();
+    let url = |rest: &str| {
+        format!(
+            "{http}/v1/media/{}/{}{rest}?p=2",
+            note.encode(),
+            media.object.encode()
+        )
+    };
+
+    // A writable device uploads and commits the object.
+    let token = mint(&*store, [21; 16], [22; 32], None).await;
+    let token = authenticate(&http, Some(&token), &DeviceIdentity::generate())
+        .await
+        .unwrap();
+    let reserved = client
+        .post(url(""))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "sealed_len": media.sealed_len(),
+            "chunk_size": media.chunk_size,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(reserved.status().is_success(), "{}", reserved.status());
+    let part = chunk as usize + 40;
+    for index in 0..media.chunks() as usize {
+        let body = sealed[index * part..((index + 1) * part).min(sealed.len())].to_vec();
+        let put = client
+            .put(url(&format!("/{index}")))
+            .bearer_auth(&token)
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert!(put.status().is_success(), "{}", put.status());
+    }
+    let committed = client
+        .post(url("/commit"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "digest": URL_SAFE_NO_PAD.encode(media.digest) }))
+        .send()
+        .await
+        .unwrap();
+    assert!(committed.status().is_success(), "{}", committed.status());
+
+    // A read-only device reads it.
+    let token = mint(&*store, [23; 16], [24; 32], None).await;
+    let id = token.id.as_deref().unwrap();
+    store.set_access_token_read_only(id, true).await.unwrap();
+    let token = authenticate(&http, Some(&token), &DeviceIdentity::generate())
+        .await
+        .unwrap();
+    let status = client
+        .get(url("/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert!(status.status().is_success(), "{}", status.status());
+    let fetched = client
+        .get(url(""))
+        .bearer_auth(&token)
+        .header("range", format!("bytes=0-{}", media.sealed_len() - 1))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(fetched.bytes().await.unwrap().as_ref(), sealed);
+
+    // But its uploads are refused, with the code.
+    for response in [
+        client
+            .post(url(""))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({
+                "sealed_len": media.sealed_len(),
+                "chunk_size": media.chunk_size,
+            }))
+            .send()
+            .await
+            .unwrap(),
+        client
+            .put(url("/0"))
+            .bearer_auth(&token)
+            .body(sealed[..part].to_vec())
+            .send()
+            .await
+            .unwrap(),
+        client
+            .post(url("/commit"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "digest": URL_SAFE_NO_PAD.encode(media.digest) }))
+            .send()
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let code: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(code["code"], "read_only");
+    }
+}
+
 #[tokio::test]
 async fn attachment_chunks_spend_the_same_budget() {
     let relay = budgeted(100 << 10).await;
