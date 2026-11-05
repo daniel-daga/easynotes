@@ -227,6 +227,11 @@ The relay answers `/v1/health` (process up), `/v1/ready` (process up and
 database answering), and `/metrics`. `easynotes-relay check` asks `/v1/ready`
 and exits 0 or 1 — the container health check.
 
+Account transfers are process-local: open pairings live in the relay's memory,
+not its database. One relay process must serve a transfer, and it must not be
+restarted mid-transfer. A restart or a second instance loses the pairing, and
+both devices need a new code.
+
 ## Deployment
 
 For a small private deployment on a Synology NAS — building the relay container,

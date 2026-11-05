@@ -1,9 +1,6 @@
 //! One-time account transfer relay calls. The relay sees only capability
 //! hashes, a temporary public key and the encrypted transfer response.
-use super::{
-    transport::post,
-    wire::{self, invite_status},
-};
+use super::{transport::post, wire};
 use crate::{
     error::{CoreError, Result},
     relay_access::RelayAccess,
@@ -54,13 +51,13 @@ struct ResponseStatus {
 async fn call<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;
     let (status, text, _) = post(url, body).await?;
-    invite_status(status, &text)?;
+    wire::transfer_status(status, &text)?;
     serde_json::from_str(&text).map_err(|e| wire::net(format!("sync server sent nonsense: {e}")))
 }
 async fn post_empty<Q: Serialize>(url: &str, body: &Q) -> Result<()> {
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;
     let (status, text, _) = post(url, body).await?;
-    invite_status(status, &text)
+    wire::transfer_status(status, &text)
 }
 fn endpoint(base: &str, id: &str, step: &str) -> String {
     wire::api(base, &format!("/pairings/{id}/{step}"))
