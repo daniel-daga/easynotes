@@ -79,6 +79,10 @@ pub struct TokenRequest {
     /// gated relay, ignored on an open one.
     #[serde(default)]
     pub access: Option<String>,
+    /// The ID of a billed device token ([ADR 0038](../../docs/decisions.md#adr-0038)),
+    /// when the device holds one. Absent for a legacy operator key.
+    #[serde(default)]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

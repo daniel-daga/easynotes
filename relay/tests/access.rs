@@ -110,6 +110,138 @@ async fn either_key_works_while_a_rotation_overlaps() {
     }
 }
 
+/// A relay that takes per-device tokens (ADR 0038), and the store those are
+/// minted in.
+async fn token_relay(store: Arc<dyn RelayStore>) -> Relay {
+    Relay::serve_with(
+        store,
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            tokens: true,
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// One token as billing would mint it: in the store, unbound, with a known
+/// secret so the test can prove it.
+async fn mint(
+    store: &dyn RelayStore,
+    id: [u8; 16],
+    secret: [u8; 32],
+    expires_at: Option<i64>,
+) -> RelayToken {
+    let id = URL_SAFE_NO_PAD.encode(id);
+    assert!(store
+        .create_access_token(&id, &secret, expires_at)
+        .await
+        .unwrap());
+    RelayToken {
+        id: Some(id),
+        secret: RelayAccess::from_bytes(secret),
+    }
+}
+
+fn with_secret(token: &RelayToken, secret: RelayAccess) -> RelayToken {
+    RelayToken {
+        id: token.id.clone(),
+        secret,
+    }
+}
+
+#[tokio::test]
+async fn a_minted_token_opens_the_relay_and_nothing_else_does() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let token = mint(&*store, [1; 16], [2; 32], None).await;
+    let device = DeviceIdentity::generate();
+
+    let issued = authenticate(&http, Some(&token), &device).await.unwrap();
+    let mut socket = NoteSocket::connect(&relay.ws_base(), &issued, NoteId::random(), 0)
+        .await
+        .unwrap();
+    assert!(matches!(
+        socket.next().await.unwrap(),
+        Some(Incoming::Caught { .. })
+    ));
+
+    // The right ID with the wrong secret, an ID nobody minted, and a legacy
+    // key with no ID at all: a token relay does not fall open.
+    refused(
+        authenticate(
+            &http,
+            Some(&with_secret(&token, RelayAccess::random())),
+            &device,
+        )
+        .await,
+    );
+    refused(authenticate(&http, Some(&RelayToken::random()), &device).await);
+    refused(
+        authenticate(
+            &http,
+            Some(&RelayToken::from(RelayAccess::random())),
+            &device,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn a_revoked_expired_or_twice_claimed_token_is_refused() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+
+    let expired = mint(&*store, [3; 16], [4; 32], Some(0)).await;
+    refused(authenticate(&http, Some(&expired), &DeviceIdentity::generate()).await);
+
+    let revoked = mint(&*store, [5; 16], [6; 32], None).await;
+    let revoked_id = revoked.id.as_deref().unwrap();
+    assert!(store.revoke_access_token(revoked_id, 1).await.unwrap());
+    refused(authenticate(&http, Some(&revoked), &DeviceIdentity::generate()).await);
+
+    // One token, one device: the first handshake binds it, and the device
+    // that won keeps it.
+    let bound = mint(&*store, [7; 16], [8; 32], None).await;
+    let first = DeviceIdentity::generate();
+    authenticate(&http, Some(&bound), &first).await.unwrap();
+    refused(authenticate(&http, Some(&bound), &DeviceIdentity::generate()).await);
+    authenticate(&http, Some(&bound), &first).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_relay_with_keys_and_tokens_accepts_either() {
+    let key = RelayAccess::random();
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = Relay::serve_with(
+        store.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            access: Access::Keys(vec![key.clone()]),
+            tokens: true,
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let http = relay.http_base();
+
+    authenticate(
+        &http,
+        Some(&RelayToken::from(key)),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let token = mint(&*store, [9; 16], [10; 32], None).await;
+    authenticate(&http, Some(&token), &DeviceIdentity::generate())
+        .await
+        .unwrap();
+}
+
 /// A token request by hand: `device` signs `nonce` properly, and presents
 /// whatever `proof` it is given.
 async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusCode {

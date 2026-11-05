@@ -33,6 +33,11 @@
 //!   one or more base64url access keys, comma separated, or `open` for anyone.
 //!   More than one so a rotation can overlap. Unset is `open`, with a warning.
 //!   `easynotes-relay access-key` prints a new key.
+//! * `RELAY_TOKENS` — `on` to accept a per-device access token
+//!   ([ADR 0038](../../docs/decisions.md#adr-0038)) at the handshake, minted by
+//!   billing and checked against this relay's store. Unset or empty is off, and
+//!   anything else is an error. Refuses to start with `RELAY_ACCESS_KEYS=open`;
+//!   with a key configured too, either a static key or a token is enough.
 //! * `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR` — the write budget: bytes
 //!   one client address may write at once, and sustained, every socket
 //!   message and attachment together. Unset means 200 MiB and 200 MiB an hour
@@ -179,6 +184,17 @@ async fn main() -> anyhow::Result<()> {
         ),
     }
 
+    // Before the keys, so the refusal below can see both.
+    config.tokens = match std::env::var("RELAY_TOKENS").as_deref().map(str::trim) {
+        Ok("") | Err(_) => false,
+        Ok("on") => {
+            tracing::info!("per-device access tokens are accepted");
+            true
+        }
+        // A typo must not quietly switch off a gate an operator believes in.
+        Ok(_) => anyhow::bail!("RELAY_TOKENS must be `on`, or unset for off"),
+    };
+
     match std::env::var("RELAY_ACCESS_KEYS").as_deref().map(str::trim) {
         Ok(raw) if !raw.is_empty() => {
             // A list that cannot be read fails to start rather than falling
@@ -186,6 +202,13 @@ async fn main() -> anyhow::Result<()> {
             // closed to strangers.
             config.access = Access::parse(raw)
                 .map_err(|e| anyhow::anyhow!("RELAY_ACCESS_KEYS could not be understood: {e}"))?;
+            // A token relay with `open` would take anyone who omits the token
+            // ID, which is the whole gate gone.
+            if config.tokens && !config.access.gated() {
+                anyhow::bail!(
+                    "RELAY_TOKENS=on and RELAY_ACCESS_KEYS=open: a relay with tokens must not accept anyone without one. Set a key too, or leave RELAY_ACCESS_KEYS unset for a token-only relay"
+                );
+            }
             match &config.access {
                 Access::Keys(keys) => tracing::info!(
                     keys = keys.len(),
@@ -195,6 +218,9 @@ async fn main() -> anyhow::Result<()> {
                     "RELAY_ACCESS_KEYS=open: anyone who can reach this relay may write to it"
                 ),
             }
+        }
+        _ if config.tokens => {
+            tracing::info!("RELAY_ACCESS_KEYS is unset: only a per-device token is accepted")
         }
         _ => tracing::warn!(
             "RELAY_ACCESS_KEYS is unset: anyone who can reach this relay may write to it. \
@@ -490,6 +516,7 @@ mod tests {
             token_signing_key: _,
             trusted_proxies: _,
             access: _,
+            tokens: _,
         } = &off;
         assert_eq!(storage.ceiling, Some(DEFAULT_CEILING));
         assert_eq!(media.limits.ceiling, Some(DEFAULT_MEDIA_CEILING));

@@ -98,6 +98,9 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
     /// Who may get a token or use an invite ([`crate::access`]).
     pub access: Access,
+    /// Whether a per-device access token ([ADR 0038](../../docs/decisions.md#adr-0038))
+    /// is accepted as well as a static key.
+    pub(crate) tokens: bool,
     /// Bytes written per client address, every socket message and attachment
     /// chunk together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
@@ -138,6 +141,7 @@ impl AppState {
             media,
             Access::Open,
             RateLimit::unlimited(),
+            false,
         )
     }
 
@@ -152,6 +156,7 @@ impl AppState {
             config.media.clone(),
             config.access.clone(),
             std::mem::replace(&mut config.writes, RateLimit::unlimited()),
+            config.tokens,
         )
     }
 
@@ -162,6 +167,7 @@ impl AppState {
         media: crate::media::MediaConfig,
         access: Access,
         writes: RateLimit,
+        tokens: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -174,6 +180,7 @@ impl AppState {
             shutdown: crate::shutdown::Shutdown::default(),
             metrics: Arc::default(),
             access,
+            tokens,
             writes,
             ready: tokio::sync::Mutex::new(None),
         })
@@ -326,6 +333,9 @@ pub struct RelayConfig {
     /// Who may get a token or use an invite
     /// ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub access: Access,
+    /// Accept a per-device access token ([ADR 0038](../../docs/decisions.md#adr-0038))
+    /// as well as a static key. Set from `RELAY_TOKENS`.
+    pub tokens: bool,
     /// Bytes written per address, every socket message and attachment chunk
     /// together.
     pub writes: RateLimit,
@@ -348,6 +358,7 @@ impl Default for RelayConfig {
             media: crate::media::MediaConfig::default(),
             trusted_proxies: TrustedProxies::default(),
             access: Access::Open,
+            tokens: false,
             writes: RateLimit::unlimited(),
         }
     }
@@ -394,6 +405,8 @@ impl RelayConfig {
             // `main` sets this from `RELAY_ACCESS_KEYS`. Unset stays open, with
             // a warning; the Synology Compose file will not start without it.
             access: Access::Open,
+            // `main` sets this from `RELAY_TOKENS`.
+            tokens: false,
             // A household's evening of holiday photos from behind one router
             // goes through at once; a flood slows to 200 MiB an hour.
             writes: RateLimit::new(WRITES_PER_HOUR / 60, WRITES_BURST),
@@ -704,7 +717,7 @@ async fn token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<TokenResponse>> {
-    if state.access.gated() {
+    if state.access.gated() || state.tokens {
         // Before the challenge is spent, so a device that is asked for the key
         // and is given it can try again without starting over; a nonce is good
         // for a minute and for one token either way.
@@ -717,12 +730,57 @@ async fn token(
         let device: [u8; 32] = device
             .try_into()
             .map_err(|_| RelayError::BadRequest("device key is not 32 bytes".into()))?;
-        if let Err(refused) = state
-            .access
-            .check_token(&nonce, &device, req.access.as_deref())
-        {
+        let refused = || {
             state.metrics.access_refused();
-            return Err(refused);
+            RelayError::AccessRequired
+        };
+        match req.access_id.as_deref() {
+            Some(id) => {
+                if !state.tokens {
+                    return Err(refused());
+                }
+                let Some(row) = state.store.access_token(id).await? else {
+                    return Err(refused());
+                };
+                let now = crate::auth::unix_now() as i64;
+                if row.revoked_at.is_some() || row.expires_at.is_some_and(|at| at <= now) {
+                    return Err(refused());
+                }
+                if crate::access::check_access_token(&row, &nonce, &device, req.access.as_deref())
+                    .is_err()
+                {
+                    return Err(refused());
+                }
+                // One device claims a token: the first handshake binds it, a
+                // later one must be from that same key.
+                match row.device_key {
+                    Some(bound) if bound != device => return Err(refused()),
+                    Some(_) => {}
+                    None => {
+                        // A bind that lost a race to another device is only
+                        // fine if that device was this one.
+                        if !state.store.bind_access_token(id, &device).await? {
+                            let winner = state.store.access_token(id).await?;
+                            if winner.and_then(|row| row.device_key) != Some(device) {
+                                return Err(refused());
+                            }
+                        }
+                    }
+                }
+            }
+            // A relay with tokens and no static key takes only tokens: with no
+            // ID there is nothing to check, and it must not fall open.
+            None if state.tokens && !state.access.gated() => return Err(refused()),
+            None => {
+                if let Err(refused) =
+                    state
+                        .access
+                        .check_token(&nonce, &device, req.access.as_deref())
+                {
+                    state.metrics.access_refused();
+                    return Err(refused);
+                }
+            }
         }
     }
     let token = state
