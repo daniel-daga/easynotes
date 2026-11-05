@@ -159,6 +159,36 @@ pub trait RelayStore: Send + Sync + 'static {
     /// Remove an invite and everything on it. Not an error if it is not there.
     async fn withdraw_invite(&self, id: &str) -> Result<()>;
 
+    // -- access tokens (ADR 0038) -------------------------------------------
+    //
+    // One random token per device. The store keeps them and makes the bind
+    // atomic; it does not decide who may mint, verify or revoke one. Times are
+    // Unix seconds, passed in as for invites.
+
+    /// Store a token, unbound. A duplicate ID is an error: the admin layer
+    /// decides whether retrying a mint is safe.
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<()>;
+
+    /// A token, revoked or not. `None` if there is no such token.
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>>;
+
+    /// Bind an unbound token to `device`, atomically. `false` if the token does
+    /// not exist or is bound already, so two devices cannot both claim it.
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool>;
+
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()>;
+
+    /// Drop the binding, so the token can be claimed by a device again.
+    async fn unbind_access_token(&self, id: &str) -> Result<()>;
+
+    /// Revoke at `now`. Revoking a revoked token leaves the first time alone.
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()>;
+
     /// Delete every envelope of a topic and leave it gone, if `key` and
     /// `signature` are what [`quota::authorise_purge`] accepts. A topic the
     /// relay has never seen is left gone too: an owner's offline device must
@@ -302,6 +332,34 @@ pub enum Answered {
     Closed,
 }
 
+/// One device's access token (ADR 0038). There is no household here: the token
+/// is what a device holds, and it is bound to the one device that first used
+/// it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccessToken {
+    pub id: String,
+    pub secret: [u8; 32],
+    /// The device that claimed the token, from the first successful bind.
+    pub device_key: Option<[u8; 32]>,
+    pub read_only: bool,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// The secret never reaches a log: it is as good as the device's password.
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessToken")
+            .field("id", &self.id)
+            .field("secret", &"<redacted>")
+            .field("device_key", &self.device_key)
+            .field("read_only", &self.read_only)
+            .field("expires_at", &self.expires_at)
+            .field("revoked_at", &self.revoked_at)
+            .finish()
+    }
+}
+
 /// The one rule both stores apply, so that they cannot disagree about it.
 fn swept(expires_at: i64, now: i64) -> bool {
     expires_at + crate::protocol::INVITE_GRACE_SECS < now
@@ -364,6 +422,7 @@ pub struct MemoryStore {
     media: Arc<Mutex<HashMap<(String, String), MediaMeta>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
     auth_challenges: Arc<Mutex<Challenges>>,
+    access_tokens: Arc<Mutex<HashMap<String, AccessToken>>>,
 }
 
 impl MemoryStore {
@@ -827,6 +886,67 @@ impl RelayStore for MemoryStore {
         self.invites.lock().unwrap().remove(id);
         Ok(())
     }
+
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<()> {
+        let token = AccessToken {
+            id: id.to_string(),
+            secret: *secret,
+            device_key: None,
+            read_only: false,
+            expires_at,
+            revoked_at: None,
+        };
+        let mut tokens = self.access_tokens.lock().unwrap();
+        if tokens.contains_key(id) {
+            // The same as the Postgres unique violation: an admin retrying a
+            // mint must not quietly replace the token it already handed out.
+            return Err(RelayError::Storage("access token already exists".into()));
+        }
+        tokens.insert(id.to_string(), token);
+        Ok(())
+    }
+
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
+        Ok(self.access_tokens.lock().unwrap().get(id).cloned())
+    }
+
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let Some(token) = tokens.get_mut(id) else {
+            return Ok(false);
+        };
+        if token.device_key.is_some() {
+            return Ok(false);
+        }
+        token.device_key = Some(*device);
+        Ok(true)
+    }
+
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()> {
+        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
+            token.read_only = read_only;
+        }
+        Ok(())
+    }
+
+    async fn unbind_access_token(&self, id: &str) -> Result<()> {
+        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
+            token.device_key = None;
+        }
+        Ok(())
+    }
+
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()> {
+        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
+            token.revoked_at.get_or_insert(now);
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +1108,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "invites_expiry",
         sql: include_str!("../migrations/0004_invites_expiry.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "access_tokens",
+        sql: include_str!("../migrations/0005_access_tokens.sql"),
     },
 ];
 
@@ -1698,6 +1823,97 @@ impl RelayStore for PostgresStore {
             .map_err(pg)?;
         Ok(())
     }
+
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<()> {
+        sqlx::query("INSERT INTO access_tokens (id, secret, expires_at) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(secret.as_slice())
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
+        let row: Option<(
+            String,
+            Vec<u8>,
+            Option<Vec<u8>>,
+            bool,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT id, secret, device_key, read_only, expires_at, revoked_at \
+                 FROM access_tokens WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        row.map(|(id, secret, device, read_only, expires_at, revoked_at)| {
+            Ok(AccessToken {
+                id,
+                secret: key32(secret)?,
+                device_key: device.map(key32).transpose()?,
+                read_only,
+                expires_at,
+                revoked_at,
+            })
+        })
+        .transpose()
+    }
+
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool> {
+        // One statement: reading first and writing after would let two devices
+        // both find the token unbound and both claim it.
+        let bound: Option<(String,)> = sqlx::query_as(
+            "UPDATE access_tokens SET device_key = $2 \
+             WHERE id = $1 AND device_key IS NULL RETURNING id",
+        )
+        .bind(id)
+        .bind(device.as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(bound.is_some())
+    }
+
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()> {
+        sqlx::query("UPDATE access_tokens SET read_only = $2 WHERE id = $1")
+            .bind(id)
+            .bind(read_only)
+            .execute(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn unbind_access_token(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE access_tokens SET device_key = NULL WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE access_tokens SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(())
+    }
 }
 
 type TopicRow = (
@@ -1932,5 +2148,72 @@ mod migration_tests {
             .map(|m| format!("{:04}_{}.sql", m.version, m.name))
             .collect();
         assert_eq!(files, listed);
+    }
+}
+
+#[cfg(test)]
+mod access_token_tests {
+    use super::{MemoryStore, RelayStore};
+
+    /// The memory store is what every socket test runs on, so its atomic bind
+    /// must agree with the one conditional UPDATE Postgres does.
+    #[tokio::test]
+    async fn a_token_binds_to_one_device_and_revokes_once() {
+        let store = MemoryStore::new();
+        let id = "AAAAAAAAAAAAAAAAAAAAAA";
+        let secret = [7u8; 32];
+        store
+            .create_access_token(id, &secret, Some(1_700_000_000))
+            .await
+            .unwrap();
+        let created = store.access_token(id).await.unwrap().unwrap();
+        assert_eq!(created.secret, secret);
+        assert_eq!(created.device_key, None);
+        assert!(!created.read_only);
+        assert_eq!(created.expires_at, Some(1_700_000_000));
+        assert!(
+            !format!("{created:?}").contains("7, 7"),
+            "Debug printed the secret"
+        );
+
+        assert!(store.bind_access_token(id, &[8u8; 32]).await.unwrap());
+        assert!(!store.bind_access_token(id, &[9u8; 32]).await.unwrap());
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().device_key,
+            Some([8u8; 32])
+        );
+
+        store.set_access_token_read_only(id, true).await.unwrap();
+        assert!(store.access_token(id).await.unwrap().unwrap().read_only);
+
+        store.unbind_access_token(id).await.unwrap();
+        assert!(
+            store.bind_access_token(id, &[9u8; 32]).await.unwrap(),
+            "an unbound token could not be claimed"
+        );
+
+        store.revoke_access_token(id, 1_700_000_100).await.unwrap();
+        store.revoke_access_token(id, 1_700_000_200).await.unwrap();
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().revoked_at,
+            Some(1_700_000_100)
+        );
+
+        assert!(store.access_token("missing").await.unwrap().is_none());
+        assert!(!store
+            .bind_access_token("missing", &[0u8; 32])
+            .await
+            .unwrap());
+        assert!(
+            store
+                .create_access_token(id, &[6u8; 32], None)
+                .await
+                .is_err(),
+            "a duplicate token ID replaced the token already handed out"
+        );
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().secret,
+            secret
+        );
     }
 }

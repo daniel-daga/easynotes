@@ -32,6 +32,12 @@ fn note() -> String {
     easynotes_core::ids::NoteId::random().encode()
 }
 
+/// Opaque like a note ID, and random so that reruns against the shared
+/// database do not collide on the token table's primary key.
+fn token_id() -> String {
+    easynotes_core::ids::NoteId::random().encode()
+}
+
 #[tokio::test]
 async fn answers_the_readiness_check() {
     let store = store_or_skip!();
@@ -192,6 +198,58 @@ async fn records_every_migration_it_applies() {
     let store = store_or_skip!();
     let newest = easynotes_relay::MIGRATIONS.last().unwrap().version;
     assert_eq!(store.schema_version().await.unwrap(), newest);
+}
+
+/// A token is created secret-only, bound by exactly one device, and stays
+/// revoked once revoked (ADR 0038). The bound device is the whole point: a
+/// second bind must lose, because two devices sharing one token would be two
+/// devices with one key.
+#[tokio::test]
+async fn a_token_is_created_bound_and_revoked() {
+    let store = store_or_skip!();
+    let id = token_id();
+    let secret = [7u8; 32];
+    let expires = 1_700_000_000;
+    store
+        .create_access_token(&id, &secret, Some(expires))
+        .await
+        .unwrap();
+
+    let created = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(created.secret, secret);
+    assert_eq!(created.device_key, None);
+    assert_eq!(created.expires_at, Some(expires));
+    assert!(!created.read_only);
+    assert_eq!(created.revoked_at, None);
+
+    assert!(store.bind_access_token(&id, &[8u8; 32]).await.unwrap());
+    assert!(
+        !store.bind_access_token(&id, &[9u8; 32]).await.unwrap(),
+        "a bound token was bound again"
+    );
+    let bound = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(bound.device_key, Some([8u8; 32]));
+
+    store.set_access_token_read_only(&id, true).await.unwrap();
+    assert!(store.access_token(&id).await.unwrap().unwrap().read_only);
+
+    store.unbind_access_token(&id).await.unwrap();
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().device_key,
+        None
+    );
+
+    store.revoke_access_token(&id, 1_700_000_100).await.unwrap();
+    store.revoke_access_token(&id, 1_700_000_200).await.unwrap();
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().revoked_at,
+        Some(1_700_000_100),
+        "revoking twice moved the revocation time"
+    );
+
+    let missing = token_id();
+    assert!(store.access_token(&missing).await.unwrap().is_none());
+    assert!(!store.bind_access_token(&missing, &[0u8; 32]).await.unwrap());
 }
 
 /// Instances start together on a deploy, and each runs the migrations. They
