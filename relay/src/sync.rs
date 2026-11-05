@@ -59,12 +59,17 @@ pub(crate) async fn sync_ws(
     if state.shutdown.is_draining() {
         return Err(RelayError::Unavailable("stopping"));
     }
-    Ok(ws.on_upgrade(move |socket| async move {
-        let _open = state.metrics.socket();
-        if let Err(e) = run(socket, state.clone(), client, stopping).await {
-            tracing::debug!(error = %e, "device session ended");
-        }
-    }))
+    Ok(ws
+        // Refused at the frame header, before the payload is buffered or
+        // base64-decoded.
+        .max_message_size(MAX_MESSAGE_BYTES)
+        .max_frame_size(MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            let _open = state.metrics.socket();
+            if let Err(e) = run(socket, state.clone(), client, stopping).await {
+                tracing::debug!(error = %e, "device session ended");
+            }
+        }))
 }
 
 /// What a note's fan-out hands the session, tagged with the note.
@@ -141,6 +146,7 @@ const _: () = assert!(OUTGOING_BYTES > BACKLOG_CHUNK * 64 * 1024);
 const _: () = assert!(OUTGOING_BYTES > MAX_QUEUED_ENVELOPE);
 const _: () = assert!(OUTGOING_BYTES < OUTGOING * MAX_QUEUED_ENVELOPE);
 const _: () = assert!(OUTGOING_BYTES >= 5 * MAX_QUEUED_ENVELOPE);
+const _: () = assert!(MAX_QUEUED_ENVELOPE < MAX_MESSAGE_BYTES);
 
 async fn run(
     socket: WebSocket,
@@ -816,6 +822,39 @@ mod queue_tests {
                 seq: 1
             }),
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod message_cap_tests {
+    use super::*;
+
+    /// Sizing the inbound cap on the largest legal message, not on a round
+    /// number: a compact's full-size base, its maximum live-media list and the
+    /// JSON around them must all fit, and nothing much more may.
+    #[test]
+    fn the_cap_admits_the_largest_legal_message_and_no_more() {
+        let largest = SyncClientMessage::Compact {
+            note: "n".repeat(22),
+            covers: i64::MAX,
+            base: URL_SAFE_NO_PAD.encode(vec![0u8; MAX_ENVELOPE_BYTES]),
+            media: Some(vec![
+                "m".repeat(22);
+                easynotes_core::compaction::MAX_LIVE_OBJECTS
+            ]),
+            key: "k".repeat(43),
+            signature: "s".repeat(86),
+        };
+        let len = serde_json::to_string(&largest).unwrap().len();
+        assert!(
+            len <= MAX_MESSAGE_BYTES,
+            "the cap refuses a legal message: {len} > {MAX_MESSAGE_BYTES}"
+        );
+        assert!(
+            MAX_MESSAGE_BYTES - len < 128 * 1024,
+            "the cap is {} bytes above the largest legal message",
+            MAX_MESSAGE_BYTES - len
         );
     }
 }
