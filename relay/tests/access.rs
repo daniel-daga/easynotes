@@ -324,6 +324,30 @@ async fn only_one_of_two_devices_claiming_a_token_wins() {
     assert_eq!(row.device_key, Some(winner.public_key().0));
 }
 
+#[tokio::test]
+async fn a_bound_token_outlives_its_link_expiry() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let token = mint(&*store, [15; 16], [16; 32], Some(now - 1)).await;
+    let device = DeviceIdentity::generate();
+    let id = token.id.as_deref().unwrap();
+
+    // Bound first, by the store: the handler refuses an expired unbound token.
+    assert!(store
+        .bind_access_token(id, &device.public_key().0)
+        .await
+        .unwrap());
+    authenticate(&http, Some(&token), &device).await.unwrap();
+
+    assert!(store.revoke_access_token(id, now).await.unwrap());
+    refused(authenticate(&http, Some(&token), &device).await);
+}
+
 /// A token request by hand: `device` signs `nonce` properly, and presents
 /// whatever `proof` it is given.
 async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusCode {
