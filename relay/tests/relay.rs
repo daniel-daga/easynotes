@@ -546,8 +546,10 @@ async fn admits_a_full_envelope_and_refuses_an_oversized_frame() {
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
         .await
         .expect("the relay kept reading an oversized frame");
+    // A close frame is the refusal as much as a dropped socket: what must not
+    // happen is a text reply carrying the oversized message.
     assert!(
-        matches!(next, Some(Err(_)) | None),
+        matches!(next, Some(Err(_)) | None | Some(Ok(Message::Close(_)))),
         "the relay answered an oversized frame: {}",
         next.is_some()
     );
