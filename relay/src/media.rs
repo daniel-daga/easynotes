@@ -63,6 +63,12 @@ pub const MIN_CHUNK_SIZE: u32 = 64 << 10;
 /// The largest sealed chunk a `PUT` may carry.
 pub const MAX_PART_BYTES: usize = MAX_CHUNK_SIZE as usize + CHUNK_OVERHEAD;
 
+/// The largest sealed object an attachment can be: its plaintext ceiling plus
+/// the overhead of its chunks at the smallest chunk the relay takes. Bounds
+/// `sealed_len` before [`Geometry::chunks`] narrows it to `u32`.
+const MAX_SEALED_BYTES: u64 =
+    MAX_AUDIO_BYTES + MAX_AUDIO_BYTES.div_ceil(MIN_CHUNK_SIZE as u64) * CHUNK_OVERHEAD as u64;
+
 /// How much one topic's objects, and all of them together, may hold, and how
 /// long an upload may sit unfinished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +160,9 @@ impl Geometry {
         }
         if self.sealed_len == 0 {
             return bad("an empty object");
+        }
+        if self.sealed_len > MAX_SEALED_BYTES {
+            return bad("larger than any attachment");
         }
         let chunks = self.chunks() as u64;
         let (_, last) = self.part(self.chunks() - 1);
@@ -905,8 +914,14 @@ fn range(headers: &HeaderMap, len: u64) -> Option<Option<(u64, u64)>> {
     };
     let spec = raw.to_str().ok()?.strip_prefix("bytes=")?;
     let (from, to) = spec.split_once('-')?;
-    let from: u64 = from.trim().parse().ok()?;
-    let to: u64 = match to.trim() {
+    let (from, to) = (from.trim(), to.trim());
+    if from.is_empty() {
+        // `bytes=-n` is the last n bytes, not a malformed start.
+        let n: u64 = to.parse().ok()?;
+        return (n > 0 && len > 0).then(|| Some((len.saturating_sub(n), n.min(len))));
+    }
+    let from: u64 = from.parse().ok()?;
+    let to: u64 = match to {
         "" => len.checked_sub(1)?,
         to => to.parse::<u64>().ok()?.min(len.checked_sub(1)?),
     };
@@ -940,7 +955,21 @@ pub(crate) async fn fetch(
         )
             .into_response());
     };
-    let (at, count) = wanted.unwrap_or((0, len));
+    let (at, count) = match wanted {
+        Some(range) => range,
+        // The core always asks for one chunk. A whole read would hold the
+        // object in memory, up to the media ceiling, for every request.
+        // shortcut: rangeless reads above one chunk are refused, not streamed;
+        // stream when a client needs whole objects.
+        None if len > row.geometry.full() => {
+            return Ok((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{len}"))],
+            )
+                .into_response());
+        }
+        None => (0, len),
+    };
     let bytes = blobs
         .read(&note, &object, at, count)
         .await?
@@ -1009,6 +1038,17 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_length_that_would_wrap_the_chunk_count_is_refused() {
+        // `chunks()` narrows to `u32`; this used to wrap to 0 and then
+        // underflow below.
+        let g = Geometry {
+            sealed_len: u64::MAX,
+            chunk_size: 1 << 20,
+        };
+        assert!(g.check().is_err());
+    }
+
+    #[test]
     fn ranges() {
         let with = |v: &str| {
             let mut h = HeaderMap::new();
@@ -1021,7 +1061,10 @@ mod tests {
         assert_eq!(range(&with("bytes=8-99"), 10), Some(Some((8, 2))));
         assert_eq!(range(&with("bytes=10-"), 10), None);
         assert_eq!(range(&with("bytes=5-2"), 10), None);
-        assert_eq!(range(&with("bytes=-5"), 10), None);
+        assert_eq!(range(&with("bytes=-5"), 10), Some(Some((5, 5))));
+        assert_eq!(range(&with("bytes=-99"), 10), Some(Some((0, 10))));
+        assert_eq!(range(&with("bytes=-0"), 10), None);
+        assert_eq!(range(&with("bytes=-"), 10), None);
     }
 
     #[tokio::test]
