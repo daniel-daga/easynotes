@@ -15,13 +15,17 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachments.dart';
+import '../core/keep_import.dart';
+import '../core/keep_import_apply.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/recording_output.dart';
@@ -854,6 +858,76 @@ class _NoteListScreenState extends State<NoteListScreen> {
     ),
   );
 
+  /// Bring an extracted Google Keep Takeout export into this device, and say
+  /// what went in and what did not. Attachments are not imported: the export
+  /// holds them as separate files this cannot reach.
+  Future<void> _importKeep() async {
+    final List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Could not open the picker: $error')),
+        );
+      }
+      return;
+    }
+    if (picked.isEmpty || !mounted) return;
+
+    final files = <String, String>{};
+    final unreadable = <KeepSkipped>[];
+    for (final file in picked) {
+      try {
+        files[file.name] = utf8.decode(
+          await file.readAsBytes(),
+          allowMalformed: true,
+        );
+      } on Object catch (error) {
+        unreadable.add(
+          KeepSkipped(
+            file: file.name,
+            reason: 'Could not read the file: $error',
+          ),
+        );
+      }
+    }
+
+    final result = await applyKeepImport(
+      widget.library,
+      parseKeepExport(files),
+    );
+    if (!mounted) return;
+    final skipped = [...result.skipped, ...unreadable];
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Google Keep import'),
+        content: Text(
+          [
+            result.imported == 1
+                ? 'Imported 1 note.'
+                : 'Imported ${result.imported} notes.',
+            if (skipped.isEmpty)
+              'Nothing was skipped.'
+            else
+              '${skipped.length == 1 ? 'Skipped 1 file' : 'Skipped ${skipped.length} files'}:\n'
+                  '${skipped.map((s) => '${s.file} — ${s.reason}').join('\n')}',
+          ].join('\n\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
     await widget.library.setLayout(next);
@@ -1374,6 +1448,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
               profile: widget.profile,
               onAbout: _openAbout,
               onSettings: _openSettings,
+              onImportKeep: _importKeep,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
               onJoin: widget.library.canJoin ? _join : null,
@@ -2663,6 +2738,7 @@ class _Shelves extends StatelessWidget {
     required this.profile,
     required this.onAbout,
     required this.onSettings,
+    required this.onImportKeep,
     required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
@@ -2685,6 +2761,9 @@ class _Shelves extends StatelessWidget {
 
   /// What one person likes about how the app behaves, rather than about a note.
   final VoidCallback onSettings;
+
+  /// Bring an extracted Google Keep export into this device.
+  final VoidCallback onImportKeep;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
@@ -2800,6 +2879,15 @@ class _Shelves extends StatelessWidget {
             onTap: () {
               Navigator.of(context).pop();
               onAbout();
+            },
+          ),
+          ListTile(
+            key: const Key('import-keep-entry'),
+            leading: const Icon(Icons.upload_file_outlined),
+            title: const Text('Import from Google Keep'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onImportKeep();
             },
           ),
         ],

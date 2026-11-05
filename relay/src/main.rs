@@ -37,7 +37,8 @@
 //!   one client address may write at once, and sustained, every socket
 //!   message and attachment together. Unset means 200 MiB and 200 MiB an hour
 //!   ([`easynotes_relay::app::WRITES_BURST`]); `RELAY_WRITE_PER_HOUR=off`
-//!   turns it off.
+//!   turns it off. Zero is refused for both: as a burst it would become one
+//!   byte, which is the same as off without saying so.
 //!
 //! `easynotes-relay check` does not serve: it asks the relay at `RELAY_ADDR`
 //! whether it is ready (`/v1/ready`) and exits 0 if so, 1 if not. It is the
@@ -200,8 +201,8 @@ async fn main() -> anyhow::Result<()> {
              Set it to a key from `easynotes-relay access-key`, or to `open` to say so on purpose"
         ),
     }
-    let burst = bytes_or_off("RELAY_WRITE_BURST", false)?.flatten();
-    let per_hour = bytes_or_off("RELAY_WRITE_PER_HOUR", true)?;
+    let burst = write_budget("RELAY_WRITE_BURST", false)?.flatten();
+    let per_hour = write_budget("RELAY_WRITE_PER_HOUR", true)?;
     if per_hour == Some(None) {
         tracing::warn!("RELAY_WRITE_PER_HOUR=off: no limit on how much one address writes");
         config.writes = RateLimit::unlimited();
@@ -366,16 +367,39 @@ async fn stopped() -> anyhow::Result<()> {
 /// for `off` where that is allowed, and an error for anything else, so a typo
 /// fails to start rather than silently keeping the default.
 fn bytes_or_off(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u64>>> {
-    match std::env::var(name).as_deref().map(str::trim) {
-        Ok("") | Err(_) => Ok(None),
-        Ok("off") if off_allowed => Ok(Some(None)),
-        Ok(raw) => raw.parse().map(|b| Some(Some(b))).map_err(|_| {
-            anyhow::anyhow!(
-                "{name} must be a whole number of bytes{}",
-                if off_allowed { ", or off" } else { "" }
-            )
-        }),
+    parse_bytes(name, std::env::var(name).as_deref().ok(), off_allowed, true)
+}
+
+/// The write budget, where zero must fail: as a burst it silently becomes a
+/// one-byte budget, which switches the limit off without saying so.
+fn write_budget(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u64>>> {
+    parse_bytes(
+        name,
+        std::env::var(name).as_deref().ok(),
+        off_allowed,
+        false,
+    )
+}
+
+fn parse_bytes(
+    name: &str,
+    value: Option<&str>,
+    off_allowed: bool,
+    zero_allowed: bool,
+) -> anyhow::Result<Option<Option<u64>>> {
+    let raw = match value.map(str::trim) {
+        None | Some("") => return Ok(None),
+        Some("off") if off_allowed => return Ok(Some(None)),
+        Some(raw) => raw,
+    };
+    let or_off = if off_allowed { ", or off" } else { "" };
+    let bytes: u64 = raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{name} must be a whole number of bytes{or_off}"))?;
+    if bytes == 0 && !zero_allowed {
+        anyhow::bail!("{name} must be at least 1 byte{or_off}");
     }
+    Ok(Some(Some(bytes)))
 }
 
 #[cfg(test)]
@@ -408,6 +432,44 @@ mod tests {
         {
             assert!(limit == expected, "rate limit {i} changed");
         }
+    }
+
+    #[test]
+    fn write_budgets_refuse_zero() {
+        use parse_bytes as parse;
+        for (name, off) in [("RELAY_WRITE_BURST", false), ("RELAY_WRITE_PER_HOUR", true)] {
+            assert!(
+                parse(name, Some("0"), off, false).is_err(),
+                "{name}=0 accepted"
+            );
+            assert!(
+                parse(name, Some(" 0 "), off, false).is_err(),
+                "{name}= 0  accepted"
+            );
+            assert_eq!(
+                parse(name, Some("1048576"), off, false).unwrap(),
+                Some(Some(1048576))
+            );
+            for value in [None, Some(""), Some(" \t ")] {
+                assert_eq!(
+                    parse(name, value, off, false).unwrap(),
+                    None,
+                    "{name}={value:?}"
+                );
+            }
+        }
+        // `off` stays the per-hour switch and is not a burst.
+        assert_eq!(
+            parse("RELAY_WRITE_PER_HOUR", Some(" off "), true, false).unwrap(),
+            Some(None)
+        );
+        assert!(parse("RELAY_WRITE_BURST", Some("off"), false, false).is_err());
+        assert!(parse("RELAY_WRITE_PER_HOUR", Some("off"), false, false).is_err());
+        // The media knobs still take zero: no attachments is a real setting.
+        assert_eq!(
+            parse("RELAY_MEDIA_CEILING", Some("0"), true, true).unwrap(),
+            Some(Some(0))
+        );
     }
 
     #[test]

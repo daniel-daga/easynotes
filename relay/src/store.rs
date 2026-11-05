@@ -984,6 +984,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "invite_pre_grant",
         sql: include_str!("../migrations/0003_invite_pre_grant.sql"),
     },
+    Migration {
+        version: 4,
+        name: "invites_expiry",
+        sql: include_str!("../migrations/0004_invites_expiry.sql"),
+    },
 ];
 
 #[async_trait]
@@ -1507,14 +1512,13 @@ impl RelayStore for PostgresStore {
         limits: &MediaLimits,
         now: i64,
     ) -> Result<Reserved> {
-        // One reservation at a time, relay-wide: the budgets are sums over
-        // rows, and two reservations that each read the sum before the other
-        // wrote would both fit. A reservation is one per attached file, so
-        // this queue is short.
-        const MEDIA_LOCK: i64 = 0x0000_EA51_0ED1;
+        // One reservation per note at a time: the note budget is a sum over
+        // rows, and two reservations for the same note that each read the sum
+        // before the other wrote would both fit. Different notes proceed at
+        // once; a hash collision only queues them needlessly.
         let mut tx = self.pool.begin().await.map_err(pg)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(MEDIA_LOCK)
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(note)
             .execute(&mut *tx)
             .await
             .map_err(pg)?;
@@ -1558,6 +1562,9 @@ impl RelayStore for PostgresStore {
             return Ok(Reserved::NoteFull);
         }
         if let Some(ceiling) = limits.ceiling {
+            // Approximate: reservations for different notes do not queue, so
+            // two can both pass this sum. Overshoot is one reservation, the
+            // same tolerance `append_within` gives its ceiling.
             let (total,): (i64,) =
                 sqlx::query_as("SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects")
                     .fetch_one(&mut *tx)

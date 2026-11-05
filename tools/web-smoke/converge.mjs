@@ -8,7 +8,9 @@
 // one makes a list and shares it, the other opens the link and is let in, and
 // then both edit it, online and then offline, and must end up with the same
 // list. Then one turns it into a text note and the other turns it back, and
-// each switch has to reach the other tab.
+// each switch has to reach the other tab. Last, one adds a photo, the other
+// sees it and removes it, and the first sees it go; the device that imported
+// it is searched for plaintext attachment bytes.
 //
 // Flutter draws to a canvas, so everything here goes through the semantics
 // tree: a node is found by the text or field label a person would see, and
@@ -109,6 +111,29 @@ async function device(name) {
     Error.stackTraceLimit = 200;
     navigator.canShare = () => true;
     navigator.share = async data => { window.__shared = data.text; };
+    // The browser's file dialog is the one thing a test cannot reach: the
+    // input is clicked and removed in the same turn, before a browser can
+    // hand it a file. Stand in for the dialog the way the share sheet is
+    // stood in for above — the next file input the app clicks gets the file
+    // named here, and dispatches its own `change`, so `file_picker` and
+    // everything below it run unchanged.
+    window.__pick = (name, mime, bytes) => {
+      window.__nextFile = { name, mime, bytes };
+    };
+    const click = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function () {
+      const file = window.__nextFile;
+      if (this.type !== 'file' || !file) return click.call(this);
+      window.__nextFile = null;
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(
+        [Uint8Array.from(atob(file.bytes), c => c.charCodeAt(0))],
+        file.name,
+        { type: file.mime },
+      ));
+      this.files = transfer.files;
+      this.dispatchEvent(new Event('change', { bubbles: true }));
+    };
   });
   const d = { name, context, crashes: [], errors: [], heap: [] };
   devices.push(d);
@@ -157,9 +182,20 @@ async function addItem(d, text) {
   await d.page.waitForTimeout(600);
 }
 
-/// The first time a device shares or joins: make an account, pass the check
-/// that the twelve words were written down, and give a name.
+/// The first time a device shares or joins: give the name others see, and on
+/// a device with no account yet, pass the set-up sheet and the check that the
+/// twelve words were written down. `configureRelay` has already made the
+/// account, so the usual first screen is the name.
 async function setUpSharing(d, name) {
+  const first = await find(
+    d,
+    n => ['Your name', 'Set up'].includes(n.text.trim()),
+  );
+  if (first.text.trim() === 'Your name') {
+    await fill(d, 'Name', name);
+    await tap(d, /^Continue$/);
+    return;
+  }
   await tap(d, /^Set up$/);
   await find(d, n => /^1\. \S+$/.test(n.text.trim()));
   const words = {};
@@ -186,8 +222,7 @@ async function cardWith(d, want, timeout = 30_000, not = []) {
   if ((await texts(d)).includes('Back')) await tap(d, /^Back$/);
   return (await find(
     d,
-    n => n.text.includes('milk')
-      && want.every(item => n.text.includes(item))
+    n => want.every(item => n.text.includes(item))
       && !not.some(item => n.text.includes(item)),
     { timeout },
   )).text;
@@ -199,6 +234,16 @@ async function reopen(d) {
   await find(d, n => n.text.trim() === 'Checklist item');
 }
 
+/// Wait for [text] to leave the screen.
+async function gone(d, text, timeout = 30_000) {
+  const until = Date.now() + timeout;
+  while ((await texts(d)).some(t => t.includes(text))) {
+    if (Date.now() > until) return false;
+    await d.page.waitForTimeout(250);
+  }
+  return true;
+}
+
 /// Open the note from its card, whichever kind it is now, and flip it with
 /// the button a person would use: "Hide checkboxes" on a checklist, "Show
 /// checkboxes" on text. Waits for the button to say the other thing.
@@ -206,7 +251,9 @@ async function switchKind(d, to) {
   const [from, then] = to === 'text'
     ? ['Hide checkboxes', 'Show checkboxes']
     : ['Show checkboxes', 'Hide checkboxes'];
-  await tap(d, /milk/);
+  // Open the card by an item that is not ticked: a ticked row can be hidden,
+  // and this test opens the note after ticking milk.
+  await tap(d, /bread/);
   await tap(d, new RegExp(`^${from}$`));
   await find(d, n => n.text.trim() === then);
 }
@@ -230,12 +277,15 @@ await tap(a, /^New invite link$/);
 // The status cell says when the link expires on a line of its own.
 await find(a, n => /^Not opened yet(\n|$)/.test(n.text.trim()));
 const message = await a.page.evaluate(() => window.__shared ?? '');
-// The link is the last `http` run in the message, and the only one: the relay
-// address inside the fragment is percent-encoded, so a messenger cannot pick
-// it out and leave the invite as plain text.
-const link = message.slice(message.lastIndexOf('http'));
+// The message carries one link. The relay address is percent-encoded inside
+// its fragment, so it is not a second `http://` for a messenger to linkify,
+// and the encoded text starts with `http` — take the message's first URL, not
+// its last `http`.
+const link = (message.match(/https?:\/\/\S+/) ?? [''])[0];
 check(
-  link.startsWith(url) && link.includes('#join#') && link.split('http').length === 2,
+  link.startsWith(url) &&
+    link.includes('#join#') &&
+    (message.match(/https?:\/\//g) ?? []).length === 1,
   `A made a link: ${link.replace(/#join#.*/, '#join#…')}`,
 );
 
@@ -334,6 +384,95 @@ check(
   asList[0] === asList[1],
   `B's switch back reached A, every line an item again: ${JSON.stringify(asList[0])}`,
 );
+
+// --- A adds a photo, B sees it and removes it -------------------------------
+// The picker's dialog is above the app's injectable attachment seam, so this
+// stands in for the dialog and nothing below it: the file input dispatches its
+// own `change`, and `file_picker`, `DeviceAttachmentFiles.pickImages`, the
+// thumbnail and the screen's import all run as they do for a person.
+step('A adds a photo');
+// A 1x1 PNG: enough for the core to recognise a picture and make a thumbnail.
+const photo = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const photoName = 'converge-photo.png';
+await reopen(a);
+await tap(a, /^Add attachment$/);
+await a.page.evaluate(
+  ([name, mime, bytes]) => window.__pick(name, mime, bytes),
+  [photoName, 'image/png', photo.toString('base64')],
+);
+await tap(a, /^Choose images$/);
+check(
+  !!(await find(a, n => n.text.trim() === photoName, { timeout: 60_000 })),
+  'A shows the picture she added',
+);
+
+// The imported bytes are sealed by the core, so the store that holds them must
+// not contain a stretch of the PNG or the file's name.
+step('A stores no plaintext attachment');
+const stored = await a.page.evaluate(async ([sample, fileName]) => {
+  const has = (bytes, needle) => {
+    outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+      return true;
+    }
+    return false;
+  };
+  const names = (await indexedDB.databases())
+    .map(d => d.name)
+    .filter(n => n.endsWith('-media'));
+  let rows = 0;
+  for (const name of names) {
+    const db = await new Promise((resolve, reject) => {
+      const r = indexedDB.open(name);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    for (const store of Array.from(db.objectStoreNames)) {
+      const tx = db.transaction(store, 'readonly');
+      const keys = await new Promise(r => {
+        const q = tx.objectStore(store).getAllKeys();
+        q.onsuccess = () => r(q.result);
+      });
+      const values = await new Promise(r => {
+        const q = tx.objectStore(store).getAll();
+        q.onsuccess = () => r(q.result);
+      });
+      for (let i = 0; i < keys.length; i++) {
+        rows++;
+        if (String(keys[i]).includes(fileName)) {
+          return { rows, leak: `a file name in key ${keys[i]}` };
+        }
+        const bytes = new Uint8Array(values[i]);
+        if (has(bytes, sample) || has(bytes, new TextEncoder().encode(fileName))) {
+          return { rows, leak: `plaintext in ${keys[i]}` };
+        }
+      }
+    }
+    db.close();
+  }
+  return { rows, leak: null };
+}, [Array.from(photo.subarray(8, 40)), photoName]);
+check(stored.rows >= 2, `A's media database holds the import: ${stored.rows} rows`);
+check(
+  stored.leak === null,
+  `no plaintext attachment bytes or file name in IndexedDB${stored.leak ? `: ${stored.leak}` : ''}`,
+);
+
+step('B sees the photo, and removes it');
+await reopen(b);
+check(
+  !!(await find(b, n => n.text.trim() === photoName, { timeout: 90_000 })),
+  'B sees the picture A added',
+);
+await tap(b, new RegExp(`^${photoName.replace(/\./g, '\\.')}$`));
+await tap(b, /^Attachment actions$/);
+await tap(b, /^Remove attachment$/);
+await tap(b, /^Remove$/);
+check(await gone(b, photoName), 'the picture is gone from B');
+check(await gone(a, photoName, 90_000), 'and the removal reached A');
 
 check(a.crashes.length === 0, `A threw nothing: ${a.crashes.slice(0, 3).join(' | ')}`);
 check(b.crashes.length === 0, `B threw nothing: ${b.crashes.slice(0, 3).join(' | ')}`);

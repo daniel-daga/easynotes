@@ -504,6 +504,57 @@ async fn refuses_an_oversized_envelope() {
     assert!(store.all_envelopes().is_empty());
 }
 
+/// The socket cap is sized on a full envelope's base64, and it is applied by
+/// the upgrade, so an oversized frame is refused before the relay buffers or
+/// decodes it.
+#[tokio::test]
+async fn admits_a_full_envelope_and_refuses_an_oversized_frame() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // A full-size envelope's base64 is admitted: the relay reads and decodes
+    // it, and answers the append rather than hanging up.
+    let raw = vec![0u8; easynotes_relay::protocol::MAX_ENVELOPE_BYTES];
+    let legal = format!(
+        r#"{{"type":"append","note":"{}","envelope":"{}"}}"#,
+        NoteId::random().encode(),
+        b64_encode(&raw),
+    );
+    socket.send(Message::text(legal)).await.unwrap();
+    let reply = loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(text) => break text.to_string(),
+            _ => continue,
+        }
+    };
+    assert!(reply.contains("not subscribed"), "got: {reply}");
+
+    // One byte past the cap is refused at the frame header, so the socket ends
+    // with no reply at all.
+    let _ = socket
+        .send(Message::text(
+            "x".repeat(easynotes_relay::protocol::MAX_MESSAGE_BYTES + 1),
+        ))
+        .await;
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("the relay kept reading an oversized frame");
+    // A close frame is the refusal as much as a dropped socket: what must not
+    // happen is a text reply carrying the oversized message.
+    assert!(
+        matches!(next, Some(Err(_)) | None | Some(Ok(Message::Close(_)))),
+        "the relay answered an oversized frame: {}",
+        next.is_some()
+    );
+}
+
 #[tokio::test]
 async fn refuses_a_blob_that_is_not_an_envelope() {
     let (relay, store) = relay().await;

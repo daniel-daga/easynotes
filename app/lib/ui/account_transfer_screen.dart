@@ -243,8 +243,13 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       });
     } catch (e) {
       if (mounted) {
+        // A pairing the relay no longer holds cannot come back by polling;
+        // the person needs a new code from the original device.
+        final gone = isTransferGone(e);
+        if (gone) _poller?.cancel();
         setState(() {
           _busy = false;
+          if (gone) _code = null;
           _message = '$e';
         });
       }

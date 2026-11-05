@@ -153,6 +153,8 @@ web-sync-smoke port="8099":
 #
 # Two browser contexts — two devices, two accounts — share a list by invite
 # link, edit it online, then both offline, and must end up with the same list.
+# One then adds a photo, the other sees it and removes it, and the first sees
+# it go; the importer's IndexedDB is searched for plaintext attachment bytes.
 # Needs `just build-web` first, and starts a relay like `web-sync-smoke`; each browser profile selects it in Relay settings.
 web-converge port="8099":
     #!/usr/bin/env bash

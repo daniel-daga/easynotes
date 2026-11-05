@@ -51,10 +51,14 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
     setUpSharing();
   }
 
+  /// Makes the next polls fail as a relay that lost the pairing does.
+  bool transferGone = false;
+
   @override
   Future<({String relayUrl, String? relayAccess})?>
   pollAccountTransferResult() async {
     calls.add('pollAccountTransferResult()');
+    if (transferGone) throw transferGoneMessage;
     final transfer = offered;
     if (transfer == null) throw 'No device transfer is active.';
     return transfer;
@@ -256,6 +260,33 @@ void main() {
     expect(
       library.calls.where((c) => c == 'cancelAccountTransfer()'),
       isEmpty,
+    );
+  });
+
+  testWidgets('a guest stops polling when the relay lost the pairing', (
+    tester,
+  ) async {
+    library.transferGone = true;
+    await pumpScreen(tester);
+
+    await scan(tester);
+
+    // The honest reason, not "the invite was withdrawn", and the waiting
+    // state is gone because no amount of polling will finish this transfer.
+    expect(find.text(transferGoneMessage), findsOneWidget);
+    expect(find.textContaining('Waiting for approval'), findsNothing);
+    expect(find.textContaining('withdrawn'), findsNothing);
+    // Only a new code can start again, so the scan is offered.
+    expect(find.byKey(const Key('scan-account-transfer')), findsOneWidget);
+
+    // The timer itself is gone, not merely quiet for one tick.
+    final polls = library.calls
+        .where((c) => c == 'pollAccountTransferResult()')
+        .length;
+    await tester.pump(const Duration(seconds: 6));
+    expect(
+      library.calls.where((c) => c == 'pollAccountTransferResult()'),
+      hasLength(polls),
     );
   });
 
