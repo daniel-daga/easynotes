@@ -4,6 +4,7 @@
 //! runnable on a laptop with no Postgres. CI sets it. Each test uses its own
 //! random note IDs, so they neither collide nor need a clean database.
 
+use easynotes_relay::media::{Geometry, Reserved};
 use easynotes_relay::{PostgresStore, RelayStore};
 
 /// Returns `None` — and prints why — when there is no database to talk to.
@@ -124,6 +125,47 @@ async fn concurrent_appends_to_one_note_do_not_collide() {
         "sequence numbers collided or skipped"
     );
     assert_eq!(store.since(&note, 0).await.unwrap().len(), 16);
+}
+
+#[tokio::test]
+async fn concurrent_reservations_to_one_note_stay_within_its_budget() {
+    // The reservation lock is keyed by the note, so same-note writers queue
+    // and the note's sum stays exact: of sixteen racing reservations, only as
+    // many as fit succeed.
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let store = std::sync::Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let note = note();
+    let geometry = Geometry {
+        sealed_len: 1000,
+        chunk_size: 1 << 16,
+    };
+    let limits = easynotes_relay::MediaLimits {
+        note_bytes: 3 * geometry.sealed_len,
+        ..Default::default()
+    };
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let store = store.clone();
+        let note = note.clone();
+        tasks.push(tokio::spawn(async move {
+            let object = easynotes_core::ids::MediaObjectId::random().encode();
+            store
+                .reserve_media(&note, &object, geometry, &limits, 1_000)
+                .await
+                .unwrap()
+        }));
+    }
+    let mut new = 0;
+    for task in tasks {
+        if task.await.unwrap() == Reserved::New {
+            new += 1;
+        }
+    }
+    assert_eq!(new, 3, "the note budget was exceeded or under-used");
 }
 
 #[tokio::test]
