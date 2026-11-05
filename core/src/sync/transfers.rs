@@ -54,7 +54,7 @@ use crate::attachment::{AttachmentState, Media, MediaRef, Variant};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use rand::RngExt;
 use std::collections::{HashMap, HashSet};
@@ -243,8 +243,8 @@ impl TransferQueue {
 #[derive(Default)]
 struct Tokens {
     held: tokio::sync::Mutex<Option<(String, Duration)>>,
-    /// The relay's access key, for the handshake (ADR 0028).
-    access: Option<RelayAccess>,
+    /// The relay's access token, for the handshake (ADR 0028).
+    access: Option<RelayToken>,
 }
 
 impl Tokens {
@@ -365,10 +365,10 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
         (runner, queue)
     }
 
-    /// The relay's access key, for a relay that lets in only the people its
+    /// The relay's access token, for a relay that lets in only the people its
     /// operator gave it to ([ADR 0028](../../../docs/decisions.md#adr-0028)).
     /// Before [`run`](Self::run), which is the only time it is read.
-    pub fn with_access(mut self, access: Option<RelayAccess>) -> Self {
+    pub fn with_access(mut self, access: Option<RelayToken>) -> Self {
         self.tokens = Arc::new(Tokens {
             held: Default::default(),
             access,

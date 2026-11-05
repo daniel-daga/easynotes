@@ -207,6 +207,13 @@ impl RelayToken {
     }
 }
 
+/// An operator's static key is a token with no ID.
+impl From<RelayAccess> for RelayToken {
+    fn from(secret: RelayAccess) -> Self {
+        Self { id: None, secret }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

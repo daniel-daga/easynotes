@@ -34,6 +34,10 @@ pub(crate) struct TokenRequest<'a> {
     /// The relay access proof (ADR 0028), when this device holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -271,6 +275,7 @@ mod protocol_tests {
             nonce: "n",
             signature: "s",
             access: None,
+            access_id: None,
         };
         assert!(!serde_json::to_string(&open).unwrap().contains("access"));
         let gated = TokenRequest {
@@ -280,6 +285,47 @@ mod protocol_tests {
         assert!(serde_json::to_string(&gated)
             .unwrap()
             .contains(r#""access":"p""#));
+    }
+
+    #[test]
+    fn a_request_names_the_token_id_only_when_it_has_one() {
+        let token = crate::relay_access::RelayToken::random();
+        let key = crate::relay_access::RelayToken::from(crate::relay_access::RelayAccess::random());
+        let id = token.id.clone().expect("a token has an id");
+
+        let billed = TokenRequest {
+            device: "d",
+            nonce: "n",
+            signature: "s",
+            access: Some("p".into()),
+            access_id: token.id.as_deref(),
+        };
+        let billed = serde_json::to_value(billed).unwrap();
+        assert_eq!(billed["access"], "p");
+        assert_eq!(billed["access_id"], id);
+
+        // An operator's key has no ID, and an absent field is not a null one.
+        let legacy = TokenRequest {
+            device: "d",
+            nonce: "n",
+            signature: "s",
+            access: Some("p".into()),
+            access_id: key.id.as_deref(),
+        };
+        assert!(serde_json::to_value(legacy)
+            .unwrap()
+            .get("access_id")
+            .is_none());
+
+        let invite = CreateInvite {
+            invite: "i",
+            token_hash: "t",
+            owner_hash: "o",
+            expires_in: 60,
+            access: Some("p".into()),
+            access_id: token.id.as_deref(),
+        };
+        assert_eq!(serde_json::to_value(invite).unwrap()["access_id"], id);
     }
 
     #[test]
@@ -556,6 +602,10 @@ pub(crate) struct CreateInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -572,6 +622,10 @@ pub(crate) struct JoinInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -590,6 +644,10 @@ pub(crate) struct PollInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 /// Where a join request stands.
@@ -619,6 +677,10 @@ pub(crate) struct OwnInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -643,6 +705,10 @@ pub(crate) struct AnswerInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -653,6 +719,10 @@ pub(crate) struct SetPreGrant<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 /// Turn an invite call's status into an answer a person can be shown.

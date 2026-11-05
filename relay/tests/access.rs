@@ -12,7 +12,7 @@ use easynotes_core::crypto::{DeviceIdentity, DeviceSigner, Envelope, NoteKey};
 use easynotes_core::error::CoreError;
 use easynotes_core::ids::{AttachmentId, NoteId};
 use easynotes_core::invite::InviteSecret;
-use easynotes_core::relay_access::RelayAccess;
+use easynotes_core::relay_access::{RelayAccess, RelayToken};
 use easynotes_core::sync::{authenticate, invite, DeviceSync, Incoming, Routed};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
@@ -58,8 +58,17 @@ async fn a_gated_relay_issues_tokens_only_to_holders_of_its_key() {
     let device = DeviceIdentity::generate();
 
     refused(authenticate(&http, None, &device).await);
-    refused(authenticate(&http, Some(&RelayAccess::random()), &device).await);
-    let token = authenticate(&http, Some(&key), &device).await.unwrap();
+    refused(
+        authenticate(
+            &http,
+            Some(&RelayToken::from(RelayAccess::random())),
+            &device,
+        )
+        .await,
+    );
+    let token = authenticate(&http, Some(&RelayToken::from(key.clone())), &device)
+        .await
+        .unwrap();
 
     // And the token opens the socket, as on any relay.
     let mut socket = NoteSocket::connect(&relay.ws_base(), &token, NoteId::random(), 0)
@@ -77,19 +86,27 @@ async fn an_open_relay_ignores_a_proof() {
         .await
         .unwrap();
     let device = DeviceIdentity::generate();
-    authenticate(&relay.http_base(), Some(&RelayAccess::random()), &device)
-        .await
-        .unwrap();
+    authenticate(
+        &relay.http_base(),
+        Some(&RelayToken::from(RelayAccess::random())),
+        &device,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn either_key_works_while_a_rotation_overlaps() {
     let (old, new) = (RelayAccess::random(), RelayAccess::random());
     let relay = gated(&[&old, &new]).await;
-    for key in [&old, &new] {
-        authenticate(&relay.http_base(), Some(key), &DeviceIdentity::generate())
-            .await
-            .unwrap();
+    for key in [old, new] {
+        authenticate(
+            &relay.http_base(),
+            Some(&RelayToken::from(key)),
+            &DeviceIdentity::generate(),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -150,14 +167,18 @@ async fn removing_a_key_stops_new_tokens_and_lets_old_ones_expire() {
     let signing = [3; 32];
     let before = gated_on(store.clone(), &[&old], signing).await;
     let device = DeviceIdentity::generate();
-    let token = authenticate(&before.http_base(), Some(&old), &device)
-        .await
-        .unwrap();
+    let token = authenticate(
+        &before.http_base(),
+        Some(&RelayToken::from(old.clone())),
+        &device,
+    )
+    .await
+    .unwrap();
     drop(before);
 
     // The operator hands out a new key and removes the old one.
     let after = gated_on(store, &[&new], signing).await;
-    refused(authenticate(&after.http_base(), Some(&old), &device).await);
+    refused(authenticate(&after.http_base(), Some(&RelayToken::from(old)), &device).await);
     // A token already issued is not revoked: it runs out within fifteen
     // minutes, or at once if the signing key is rotated too.
     NoteSocket::connect(&after.ws_base(), &token, NoteId::random(), 0)
@@ -168,14 +189,24 @@ async fn removing_a_key_stops_new_tokens_and_lets_old_ones_expire() {
 #[tokio::test]
 async fn every_invite_call_needs_the_key_on_a_gated_relay() {
     let key = RelayAccess::random();
+    let token = RelayToken::from(key.clone());
     let relay = gated(&[&key]).await;
     let http = relay.http_base();
 
     let secret = InviteSecret::random();
     let owner = easynotes_core::invite::OwnerSecret::random();
     refused(invite::open(&http, None, &secret, &owner, 3600).await);
-    refused(invite::open(&http, Some(&RelayAccess::random()), &secret, &owner, 3600).await);
-    invite::open(&http, Some(&key), &secret, &owner, 3600)
+    refused(
+        invite::open(
+            &http,
+            Some(&RelayToken::from(RelayAccess::random())),
+            &secret,
+            &owner,
+            3600,
+        )
+        .await,
+    );
+    invite::open(&http, Some(&token), &secret, &owner, 3600)
         .await
         .unwrap();
 
@@ -198,12 +229,12 @@ async fn every_invite_call_needs_the_key_on_a_gated_relay() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     refused(invite::list(&http, None, &secret, &owner).await);
-    let listing = invite::list(&http, Some(&key), &secret, &owner)
+    let listing = invite::list(&http, Some(&token), &secret, &owner)
         .await
         .unwrap();
     assert!(listing.open);
     refused(invite::withdraw(&http, None, &secret, &owner).await);
-    invite::withdraw(&http, Some(&key), &secret, &owner)
+    invite::withdraw(&http, Some(&token), &secret, &owner)
         .await
         .unwrap();
 }
