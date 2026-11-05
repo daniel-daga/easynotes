@@ -15,7 +15,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -866,7 +865,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     try {
       picked = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['json'],
+        allowedExtensions: ['zip', 'json'],
       );
     } on Object catch (error) {
       if (mounted) {
@@ -878,16 +877,15 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
     if (picked.isEmpty || !mounted) return;
 
-    final files = <String, String>{};
-    final unreadable = <KeepSkipped>[];
+    final notes = <KeepNote>[];
+    final skipped = <KeepSkipped>[];
     for (final file in picked) {
       try {
-        files[file.name] = utf8.decode(
-          await file.readAsBytes(),
-          allowMalformed: true,
-        );
+        final one = parseKeepFile(file.name, await file.readAsBytes());
+        notes.addAll(one.notes);
+        skipped.addAll(one.skipped);
       } on Object catch (error) {
-        unreadable.add(
+        skipped.add(
           KeepSkipped(
             file: file.name,
             reason: 'Could not read the file: $error',
@@ -898,10 +896,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
     final result = await applyKeepImport(
       widget.library,
-      parseKeepExport(files),
+      KeepImport(notes: notes, skipped: skipped),
     );
     if (!mounted) return;
-    final skipped = [...result.skipped, ...unreadable];
+    final skippedFiles = result.skipped;
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -911,11 +909,11 @@ class _NoteListScreenState extends State<NoteListScreen> {
             result.imported == 1
                 ? 'Imported 1 note.'
                 : 'Imported ${result.imported} notes.',
-            if (skipped.isEmpty)
+            if (skippedFiles.isEmpty)
               'Nothing was skipped.'
             else
-              '${skipped.length == 1 ? 'Skipped 1 file' : 'Skipped ${skipped.length} files'}:\n'
-                  '${skipped.map((s) => '${s.file} — ${s.reason}').join('\n')}',
+              '${skippedFiles.length == 1 ? 'Skipped 1 file' : 'Skipped ${skippedFiles.length} files'}:\n'
+                  '${skippedFiles.map((s) => '${s.file} — ${s.reason}').join('\n')}',
           ].join('\n\n'),
         ),
         actions: [
