@@ -4936,6 +4936,19 @@ mod tests {
     }
 
     #[test]
+    fn a_note_with_no_status_is_not_settled_until_it_is_gone() {
+        let library = Library::open_ephemeral().unwrap();
+        let note = note_id(&library.create_note(NoteKindView::Checklist).unwrap()).unwrap();
+
+        assert!(!library.flushed(note), "an open note is not settled");
+        library.forget_note(note.encode()).unwrap();
+        assert!(
+            library.flushed(note),
+            "a gone note has nothing left to flush"
+        );
+    }
+
+    #[test]
     fn create_account_returns_the_phrase_when_connect_fails() {
         let library = Library::open_ephemeral().unwrap();
         break_sync(&library);
