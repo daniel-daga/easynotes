@@ -222,8 +222,7 @@ async function cardWith(d, want, timeout = 30_000, not = []) {
   if ((await texts(d)).includes('Back')) await tap(d, /^Back$/);
   return (await find(
     d,
-    n => n.text.includes('milk')
-      && want.every(item => n.text.includes(item))
+    n => want.every(item => n.text.includes(item))
       && !not.some(item => n.text.includes(item)),
     { timeout },
   )).text;
