@@ -111,6 +111,9 @@ pub(crate) const GONE: &str = "gone";
 /// write budget.
 pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
+/// The relay's code for a write by a device whose household has lapsed.
+pub(crate) const READ_ONLY: &str = "read_only";
+
 /// What a person is told about a refusal the relay names with a code.
 fn said(message: String) -> String {
     match message.as_str() {
@@ -120,7 +123,7 @@ fn said(message: String) -> String {
         "relay_full" => "The sync server is not accepting new notes right now. \
                          This one is safe on this device."
             .into(),
-        "read_only" => "This relay is read-only until the plan is renewed.".into(),
+        READ_ONLY => "This relay is read-only until the plan is renewed.".into(),
         _ => message,
     }
 }
@@ -203,10 +206,14 @@ struct Coded {
 /// an access key this device does not hold. A `403` without the relay's code
 /// is left to the caller, since a proxy's own 403 is not this.
 pub(crate) fn refused(status: u16, body: &[u8]) -> Option<CoreError> {
-    if status == 403
-        && serde_json::from_slice::<Coded>(body).is_ok_and(|coded| coded.code == ACCESS_REQUIRED)
-    {
-        return Some(CoreError::AccessRequired);
+    if status == 403 {
+        match serde_json::from_slice::<Coded>(body) {
+            Ok(Coded { code }) if code == ACCESS_REQUIRED => {
+                return Some(CoreError::AccessRequired)
+            }
+            Ok(Coded { code }) if code == READ_ONLY => return Some(CoreError::ReadOnly),
+            _ => {}
+        }
     }
     outdated(status, body)
 }
@@ -267,6 +274,18 @@ mod protocol_tests {
         // Somebody else's 403 is not the relay asking for its key.
         assert!(refused(403, b"<html>Forbidden</html>").is_none());
         assert!(refused(401, br#"{"code":"access_required"}"#).is_none());
+    }
+
+    #[test]
+    fn a_read_only_refusal_is_permanent() {
+        assert!(matches!(
+            refused(403, br#"{"code":"read_only"}"#),
+            Some(CoreError::ReadOnly)
+        ));
+        assert_eq!(
+            CoreError::ReadOnly.to_string(),
+            "This relay is read-only until the plan is renewed."
+        );
     }
 
     #[test]

@@ -101,6 +101,9 @@ pub struct AppState {
     /// Whether a per-device access token ([ADR 0038](../../docs/decisions.md#adr-0038))
     /// is accepted as well as a static key.
     pub(crate) device_tokens: bool,
+    /// How long a minted token is good for, and so how long a socket may stay
+    /// open before its device has to handshake again.
+    token_ttl: Duration,
     /// Bytes written per client address, every socket message and attachment
     /// chunk together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
@@ -108,6 +111,13 @@ pub struct AppState {
     /// it is held across the check, so a burst arriving on a cold cache waits
     /// for that one check instead of each starting its own.
     ready: tokio::sync::Mutex<Option<(Instant, bool)>>,
+}
+
+/// Whether per-device tokens are accepted, and how long one lasts.
+#[derive(Clone, Copy)]
+struct TokenRules {
+    enabled: bool,
+    ttl: Duration,
 }
 
 impl AppState {
@@ -141,7 +151,10 @@ impl AppState {
             media,
             Access::Open,
             RateLimit::unlimited(),
-            false,
+            TokenRules {
+                enabled: false,
+                ttl: Duration::from_secs(TOKEN_TTL_SECS),
+            },
         )
     }
 
@@ -156,7 +169,10 @@ impl AppState {
             config.media.clone(),
             config.access.clone(),
             std::mem::replace(&mut config.writes, RateLimit::unlimited()),
-            config.tokens,
+            TokenRules {
+                enabled: config.tokens,
+                ttl: config.token_ttl,
+            },
         )
     }
 
@@ -167,7 +183,7 @@ impl AppState {
         media: crate::media::MediaConfig,
         access: Access,
         writes: RateLimit,
-        device_tokens: bool,
+        tokens: TokenRules,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -180,7 +196,8 @@ impl AppState {
             shutdown: crate::shutdown::Shutdown::default(),
             metrics: Arc::default(),
             access,
-            device_tokens,
+            device_tokens: tokens.enabled,
+            token_ttl: tokens.ttl,
             writes,
             ready: tokio::sync::Mutex::new(None),
         })
@@ -336,6 +353,8 @@ pub struct RelayConfig {
     /// Accept a per-device access token ([ADR 0038](../../docs/decisions.md#adr-0038))
     /// as well as a static key. Set from `RELAY_TOKENS`.
     pub tokens: bool,
+    /// How long a minted token is good for. Set from `RELAY_TOKEN_TTL_SECS`.
+    pub token_ttl: Duration,
     /// Bytes written per address, every socket message and attachment chunk
     /// together.
     pub writes: RateLimit,
@@ -359,6 +378,7 @@ impl Default for RelayConfig {
             trusted_proxies: TrustedProxies::default(),
             access: Access::Open,
             tokens: false,
+            token_ttl: Duration::from_secs(TOKEN_TTL_SECS),
             writes: RateLimit::unlimited(),
         }
     }
@@ -407,6 +427,8 @@ impl RelayConfig {
             access: Access::Open,
             // `main` sets this from `RELAY_TOKENS`.
             tokens: false,
+            // `main` sets this from `RELAY_TOKEN_TTL_SECS`.
+            token_ttl: Duration::from_secs(TOKEN_TTL_SECS),
             // A household's evening of holiday photos from behind one router
             // goes through at once; a flood slows to 200 MiB an hour.
             writes: RateLimit::new(WRITES_PER_HOUR / 60, WRITES_BURST),
@@ -790,7 +812,7 @@ async fn token(
             &req.device,
             &req.nonce,
             &req.signature,
-            Duration::from_secs(TOKEN_TTL_SECS),
+            state.token_ttl,
             read_only,
         )
         .await?;
@@ -807,7 +829,7 @@ async fn token(
     }
     Ok(Json(TokenResponse {
         token,
-        expires_in: TOKEN_TTL_SECS,
+        expires_in: state.token_ttl.as_secs(),
     }))
 }
 

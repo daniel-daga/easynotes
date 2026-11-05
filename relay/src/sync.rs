@@ -40,6 +40,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, Notify};
 use tokio::task::JoinHandle;
 
@@ -55,6 +56,7 @@ pub(crate) async fn sync_ws(
     let connection = Connection {
         client: client.map(|c| c.0),
         read_only: device.read_only,
+        expires_at: device.expires_at,
     };
     // Taken before the upgrade, so that a stop that begins in between still
     // waits for this session, which will see it and close at once.
@@ -75,12 +77,13 @@ pub(crate) async fn sync_ws(
         }))
 }
 
-/// Who one socket belongs to: the address its write budget is keyed on, and
-/// whether its token allows writing (ADR 0038).
+/// Who one socket belongs to: the address its write budget is keyed on,
+/// whether its token allows writing (ADR 0038), and when the token expires.
 #[derive(Clone, Copy)]
 struct Connection {
     client: Option<app::Client>,
     read_only: bool,
+    expires_at: u64,
 }
 
 /// What a note's fan-out hands the session, tagged with the note.
@@ -283,9 +286,23 @@ async fn serve(
     // Set when a chunk did not fit in the byte budget: wait for the writer
     // rather than retrying a chunk that still cannot fit.
     let mut awaiting_bytes = false;
+    // The token's own expiry. Closing here makes the device handshake again,
+    // which is how a read-only flip or a revocation reaches an open socket
+    // (ADR 0038).
+    let expires_in = Duration::from_secs(
+        connection
+            .expires_at
+            .saturating_sub(crate::auth::unix_now()),
+    );
+    let expiry = tokio::time::sleep(expires_in);
+    tokio::pin!(expiry);
 
     loop {
         tokio::select! {
+            // The token has run out: say nothing and close, as a clean session
+            // end, so the client reconnects with a fresh one.
+            () = &mut expiry => return Ok(()),
+
             // The relay is stopping. Returning drops `out`, so the writer sends
             // what is already queued and closes the socket, and the client
             // reconnects — to this relay's replacement — as it would after any
@@ -683,6 +700,15 @@ async fn handle(
             key,
             signature,
         } => {
+            // A read-only device never appends, so it is never the appender
+            // asked to compact. Refusing here keeps compaction a write.
+            if read_only {
+                let _ = out.try_send(SyncServerMessage::CompactRefused {
+                    note,
+                    reason: RelayError::ReadOnly.client_message(),
+                });
+                return Handled::Continue;
+            }
             if !subs.0.contains_key(&note) {
                 return refused(out, Some(note), "not subscribed to that note");
             }

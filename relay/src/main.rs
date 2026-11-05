@@ -14,6 +14,9 @@
 //!   not need an environment variable set to refuse a flood.
 //! * `RELAY_TOKEN_SIGNING_KEY` — a stable base64url Ed25519 seed for tokens
 //!   shared across restarts and instances. Unset generates a temporary key.
+//! * `RELAY_TOKEN_TTL_SECS` — how long an issued token is good for, and so how
+//!   long a socket may stay open before its device handshakes again. A whole
+//!   number of seconds, at least 1. Unset means 15 minutes.
 //! * `RELAY_STORAGE_CEILING` — how many bytes every note's live log may hold
 //!   together before the relay refuses to start new notes (appends to existing
 //!   ones still go). A whole number of bytes, or `off`. Unset means
@@ -131,6 +134,22 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::warn!(
             "RELAY_TOKEN_SIGNING_KEY is unset: device tokens will not survive a restart and instances will not share tokens"
         ),
+    }
+    match std::env::var("RELAY_TOKEN_TTL_SECS")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => {}
+        Ok(raw) => {
+            let secs: u64 = raw.parse().map_err(|_| {
+                anyhow::anyhow!("RELAY_TOKEN_TTL_SECS must be a whole number of seconds")
+            })?;
+            if secs == 0 {
+                anyhow::bail!("RELAY_TOKEN_TTL_SECS must be at least 1 second");
+            }
+            config.token_ttl = Duration::from_secs(secs);
+            tracing::info!(secs, "device tokens are good for this long");
+        }
     }
     match std::env::var("RELAY_STORAGE_CEILING")
         .as_deref()
@@ -517,6 +536,7 @@ mod tests {
             trusted_proxies: _,
             access: _,
             tokens: _,
+            token_ttl: _,
         } = &off;
         assert_eq!(storage.ceiling, Some(DEFAULT_CEILING));
         assert_eq!(media.limits.ceiling, Some(DEFAULT_MEDIA_CEILING));

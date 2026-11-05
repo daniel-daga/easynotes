@@ -27,12 +27,20 @@ const TOKEN_PAYLOAD_V1_LEN: usize = 1 + 8 + 32 + 16;
 const TOKEN_PAYLOAD_V2_LEN: usize = TOKEN_PAYLOAD_V1_LEN + 1;
 
 /// The device behind a valid token.
+///
+/// A flip to read-only, or a revocation, takes effect at the device's next
+/// handshake — up to one token lifetime later
+/// ([`crate::protocol::TOKEN_TTL_SECS`], 15 minutes unless
+/// `RELAY_TOKEN_TTL_SECS` says otherwise). A socket opened with a token
+/// closes when the token does, so it must handshake again to learn the new
+/// flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Device {
-    pub key: [u8; 32],
     /// A lapsed household may still read for 30 days before its tokens are
     /// revoked, but may not write ([ADR 0038](../../docs/decisions.md#adr-0038)).
     pub read_only: bool,
+    /// Unix seconds from the signed payload.
+    pub expires_at: u64,
 }
 
 fn b64(s: &str, what: &'static str) -> Result<Vec<u8>> {
@@ -143,8 +151,8 @@ impl Auth {
             return None;
         }
         Some(Device {
-            key: payload[9..41].try_into().ok()?,
             read_only: payload_len == TOKEN_PAYLOAD_V2_LEN && payload[TOKEN_PAYLOAD_V1_LEN] != 0,
+            expires_at,
         })
     }
 }
@@ -222,13 +230,9 @@ mod tests {
         let store = MemoryStore::new();
         let device = SigningKey::from_bytes(&[2; 32]);
         let token = mint(&auth, &store, &device, Duration::from_secs(900), false).await;
-        assert_eq!(
-            auth.device_for(&token),
-            Some(Device {
-                key: device.verifying_key().to_bytes(),
-                read_only: false,
-            })
-        );
+        let device = auth.device_for(&token).unwrap();
+        assert!(!device.read_only);
+        assert!(device.expires_at > unix_now());
 
         let mut bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
         bytes[1] ^= 1;
@@ -245,27 +249,42 @@ mod tests {
         let key = device.verifying_key().to_bytes();
 
         let token = mint(&auth, &store, &device, Duration::from_secs(900), true).await;
-        assert_eq!(
-            auth.device_for(&token),
-            Some(Device {
-                key,
-                read_only: true,
-            })
-        );
+        assert!(auth.device_for(&token).unwrap().read_only);
 
         // An old relay's version-1 token still verifies, and means writable.
         let token = mint_v1(&auth, key, Duration::from_secs(900));
-        assert_eq!(
-            auth.device_for(&token),
-            Some(Device {
-                key,
-                read_only: false,
-            })
-        );
+        assert!(!auth.device_for(&token).unwrap().read_only);
 
         // A token of neither length is nobody's.
         let mut bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
         bytes.pop();
+        assert_eq!(auth.device_for(&URL_SAFE_NO_PAD.encode(&bytes)), None);
+    }
+
+    #[tokio::test]
+    async fn a_token_cannot_be_edited_into_another_shape() {
+        let auth = Auth::new([1; 32]);
+        let store = MemoryStore::new();
+        let device = SigningKey::from_bytes(&[2; 32]);
+        let key = device.verifying_key().to_bytes();
+
+        // A read-only token whose flag is flipped says writable, but its
+        // signature no longer verifies.
+        let token = mint(&auth, &store, &device, Duration::from_secs(900), true).await;
+        let mut bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
+        bytes[TOKEN_PAYLOAD_V1_LEN] ^= 1;
+        assert_eq!(auth.device_for(&URL_SAFE_NO_PAD.encode(&bytes)), None);
+
+        // A version-2 token relabelled version 1 has the wrong length.
+        let mut bytes = URL_SAFE_NO_PAD.decode(&token).unwrap();
+        bytes[0] = 1;
+        assert_eq!(auth.device_for(&URL_SAFE_NO_PAD.encode(&bytes)), None);
+
+        // Nor may a version-1 token grow a version-2 flag.
+        let mut bytes = URL_SAFE_NO_PAD
+            .decode(mint_v1(&auth, key, Duration::from_secs(900)))
+            .unwrap();
+        bytes.push(0);
         assert_eq!(auth.device_for(&URL_SAFE_NO_PAD.encode(&bytes)), None);
     }
 

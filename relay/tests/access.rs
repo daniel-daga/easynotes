@@ -19,6 +19,7 @@ use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use std::sync::Arc;
+use std::time::Duration;
 use support::NoteSocket;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -113,11 +114,16 @@ async fn either_key_works_while_a_rotation_overlaps() {
 /// A relay that takes per-device tokens (ADR 0038), and the store those are
 /// minted in.
 async fn token_relay(store: Arc<dyn RelayStore>) -> Relay {
+    token_relay_ttl(store, Duration::from_secs(900)).await
+}
+
+async fn token_relay_ttl(store: Arc<dyn RelayStore>, token_ttl: Duration) -> Relay {
     Relay::serve_with(
         store,
         "127.0.0.1:0".parse().unwrap(),
         RelayConfig {
             tokens: true,
+            token_ttl,
             ..RelayConfig::default()
         },
     )
@@ -632,6 +638,10 @@ async fn raw_socket(relay: &Relay) -> RawSocket {
     let token = authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
         .await
         .unwrap();
+    raw_socket_with(relay, &token).await
+}
+
+async fn raw_socket_with(relay: &Relay, token: &str) -> RawSocket {
     let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
     tokio_tungstenite::connect_async(&url).await.unwrap().0
 }
@@ -826,6 +836,118 @@ async fn a_read_only_token_reads_history_and_cannot_append() {
 }
 
 #[tokio::test]
+async fn a_read_only_device_cannot_compact() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let (note, key) = (NoteId::random(), NoteKey::random());
+    let note_id = note.encode();
+    let written = Envelope::seal(&DeviceIdentity::generate(), note, &key, 0, b"before")
+        .unwrap()
+        .encode();
+    store
+        .append_within(&note_id, &written, &easynotes_relay::Limits::default())
+        .await
+        .unwrap();
+    let before_head = store.head(&note_id).await.unwrap();
+    let before_log = store.page(&note_id, 0, 100).await.unwrap();
+
+    let token = mint(&*store, [25; 16], [26; 32], None).await;
+    let id = token.id.as_deref().unwrap();
+    store.set_access_token_read_only(id, true).await.unwrap();
+    let token = authenticate(
+        &relay.http_base(),
+        Some(&token),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let mut socket = raw_socket_with(&relay, &token).await;
+    socket
+        .send(Message::text(
+            serde_json::json!({ "type": "subscribe", "note": &note_id, "since": 0 }).to_string(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        if text(&mut socket).await.contains("\"caught\"") {
+            break;
+        }
+    }
+
+    let compact = serde_json::json!({
+        "type": "compact",
+        "note": &note_id,
+        "covers": 1,
+        "base": URL_SAFE_NO_PAD.encode([0u8; 8]),
+        "key": URL_SAFE_NO_PAD.encode([1u8; 32]),
+        "signature": URL_SAFE_NO_PAD.encode([0u8; 64]),
+    });
+    socket
+        .send(Message::text(compact.to_string()))
+        .await
+        .unwrap();
+    let refusal = text(&mut socket).await;
+    assert!(refusal.contains("\"compact_refused\""), "{refusal}");
+    assert!(refusal.contains("read_only"), "{refusal}");
+
+    // The log, and what a client would replay, are exactly as they were.
+    assert_eq!(store.head(&note_id).await.unwrap(), before_head);
+    let after_log = store.page(&note_id, 0, 100).await.unwrap();
+    assert_eq!(after_log.len(), before_log.len());
+    for (before, after) in before_log.iter().zip(&after_log) {
+        assert_eq!(before.seq, after.seq);
+        assert_eq!(before.envelope, after.envelope);
+    }
+}
+
+#[tokio::test]
+async fn a_socket_closes_when_its_token_expires() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay_ttl(store.clone(), Duration::from_secs(1)).await;
+
+    // Start just after a whole second, so the token's one-second life is not
+    // shortened by an expiry truncated to seconds.
+    let subsec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_millis();
+    tokio::time::sleep(Duration::from_millis(1000 - subsec as u64 + 10)).await;
+
+    let token = mint(&*store, [27; 16], [28; 32], None).await;
+    let device = DeviceIdentity::generate();
+    let token = authenticate(&relay.http_base(), Some(&token), &device)
+        .await
+        .unwrap();
+    let (note, key) = (NoteId::random(), NoteKey::random());
+    let mut socket = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    assert!(matches!(
+        socket.next().await.unwrap(),
+        Some(Incoming::Caught { .. })
+    ));
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match socket.next().await {
+                Ok(None) | Err(_) => return,
+                Ok(Some(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the relay kept an expired session open");
+
+    // The socket no longer takes writes, so nothing lands after expiry.
+    let late = Envelope::seal(&device, note, &key, 0, b"late")
+        .unwrap()
+        .encode();
+    let _ = socket.append(&late).await;
+    assert_eq!(store.head(&note.encode()).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn a_read_only_device_can_read_attachments_but_not_upload() {
     let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
     let relay = token_relay(store.clone()).await;
@@ -939,6 +1061,17 @@ async fn a_read_only_device_can_read_attachments_but_not_upload() {
         let code: serde_json::Value = response.json().await.unwrap();
         assert_eq!(code["code"], "read_only");
     }
+
+    // The core turns that code into a permanent refusal with a sentence, not
+    // a retryable storage error.
+    let error = easynotes_core::sync::media::upload(&http, &token, note, &media, |index| {
+        let at = index as usize * part;
+        let body = sealed[at..(at + part).min(sealed.len())].to_vec();
+        Box::pin(async move { Ok::<_, CoreError>(body) })
+    })
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error}");
 }
 
 #[tokio::test]
