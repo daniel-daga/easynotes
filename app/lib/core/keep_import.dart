@@ -1,11 +1,14 @@
-/// Reading an extracted Google Keep Takeout export.
+/// Reading a Google Keep Takeout export.
 ///
 /// This is the parsing half of an import: it turns the text of
-/// `Takeout/Keep/*.json` into plain values for the UI and never creates a note.
-/// Unpacking the zip is the caller's job; this takes the extracted files.
+/// `Takeout/Keep/*.json`, or a whole `.zip` of them, into plain values for the
+/// UI and never creates a note.
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:archive/archive.dart';
 
 import 'note_view.dart';
 
@@ -105,6 +108,88 @@ KeepImport parseKeepExport(Map<String, String> files) {
     }
   }
   return KeepImport(notes: notes, skipped: skipped);
+}
+
+/// Parse one file a person picked: a `.zip` straight from Takeout, or one of
+/// the extracted `.json` records.
+///
+/// A zip is read in memory. That is the smallest thing that works for a
+/// Takeout download; a multi-gigabyte archive should be extracted first.
+KeepImport parseKeepFile(String name, Uint8List bytes) {
+  if (!_isZip(name, bytes)) {
+    return parseKeepExport({name: utf8.decode(bytes, allowMalformed: true)});
+  }
+  if (!_hasZipEnd(bytes)) {
+    return KeepImport(
+      notes: const [],
+      skipped: [KeepSkipped(file: name, reason: 'Not a readable zip archive.')],
+    );
+  }
+
+  final Archive archive;
+  try {
+    archive = ZipDecoder().decodeBytes(bytes);
+  } on Object {
+    return KeepImport(
+      notes: const [],
+      skipped: [KeepSkipped(file: name, reason: 'Not a readable zip archive.')],
+    );
+  }
+
+  final files = <String, String>{};
+  for (final file in archive.files) {
+    if (!file.isFile || !_isKeepJson(file.name)) continue;
+    try {
+      files[file.name] = utf8.decode(file.content, allowMalformed: true);
+    } on Object {
+      files[file.name] = '';
+    }
+  }
+  if (files.isEmpty) {
+    return KeepImport(
+      notes: const [],
+      skipped: [
+        KeepSkipped(
+          file: name,
+          reason: 'No Google Keep JSON records in the archive.',
+        ),
+      ],
+    );
+  }
+  return parseKeepExport(files);
+}
+
+bool _isZip(String name, Uint8List bytes) =>
+    name.toLowerCase().endsWith('.zip') ||
+    (bytes.length >= 4 &&
+        bytes[0] == 0x50 &&
+        bytes[1] == 0x4b &&
+        bytes[2] == 0x03 &&
+        bytes[3] == 0x04);
+
+/// A zip ends with an end-of-central-directory record. Its signature can sit up
+/// to 64 KiB before the end when the archive has a comment.
+bool _hasZipEnd(Uint8List bytes) {
+  for (
+    var i = bytes.length - 22;
+    i >= 0 && i >= bytes.length - 0x10000 - 22;
+    i--
+  ) {
+    if (bytes[i] == 0x50 &&
+        bytes[i + 1] == 0x4b &&
+        bytes[i + 2] == 0x05 &&
+        bytes[i + 3] == 0x06) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Takeout puts the records under `Takeout/Keep/`; a person who extracted and
+/// re-zipped the folder has `Keep/` at the root. Both count.
+bool _isKeepJson(String path) {
+  final parts = path.toLowerCase().split('/');
+  return path.toLowerCase().endsWith('.json') && parts.contains('keep');
 }
 
 KeepNote? _note(Map<String, dynamic> json) {

@@ -3,7 +3,9 @@
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:easynotes/core/keep_import.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -108,5 +110,76 @@ void main() {
       'Not valid JSON.',
       'Malformed Google Keep note.',
     ]);
+  });
+
+  test('a Takeout zip is read without extracting it', () {
+    final archive = Archive()
+      ..addFile(
+        ArchiveFile.string(
+          'Takeout/Keep/Text.json',
+          jsonEncode({'title': 'Text', 'textContent': 'hello'}),
+        ),
+      )
+      ..addFile(
+        ArchiveFile.string(
+          'Keep/List.json',
+          jsonEncode({
+            'title': 'List',
+            'listContent': [
+              {'text': 'milk', 'isChecked': true},
+            ],
+          }),
+        ),
+      )
+      ..addFile(
+        ArchiveFile.string('Takeout/Keep/Text.html', '<html>not a note</html>'),
+      );
+
+    final result = parseKeepFile(
+      'takeout.zip',
+      Uint8List.fromList(ZipEncoder().encode(archive)),
+    );
+
+    expect(result.notes.map((note) => note.title), ['Text', 'List']);
+    expect(result.notes.last.items.single.checked, isTrue);
+    expect(result.skipped, isEmpty);
+  });
+
+  test('a zip with no Keep JSON records says what is missing', () {
+    final archive = Archive()
+      ..addFile(ArchiveFile.string('Takeout/Keep/Text.html', '<html></html>'));
+
+    final result = parseKeepFile(
+      'takeout.zip',
+      Uint8List.fromList(ZipEncoder().encode(archive)),
+    );
+
+    expect(result.notes, isEmpty);
+    expect(
+      result.skipped.single.reason,
+      'No Google Keep JSON records in the archive.',
+    );
+  });
+
+  test('a broken zip is reported, not thrown', () {
+    final result = parseKeepFile(
+      'takeout.zip',
+      Uint8List.fromList([0x50, 0x4b, 0x03, 0x04, 0x00]),
+    );
+
+    expect(result.notes, isEmpty);
+    expect(result.skipped.single.reason, 'Not a readable zip archive.');
+  });
+
+  test('a single extracted JSON file is read too', () {
+    final result = parseKeepFile(
+      'Text.json',
+      Uint8List.fromList(
+        utf8.encode(jsonEncode({'title': 'Text', 'textContent': 'hello'})),
+      ),
+    );
+
+    expect(result.notes.single.title, 'Text');
+    expect(result.skipped, isEmpty);
   });
 }
