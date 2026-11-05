@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 /// in `tests/protocol.rs` fails if the two ever drift.
 pub const MAX_ENVELOPE_BYTES: usize = 1 << 20;
 
+/// The largest message a device may send over `/v1/sync`. A full envelope in
+/// base64 is 1.33 MiB; a compact adds its live-media list — up to
+/// `easynotes_core::compaction::MAX_LIVE_OBJECTS` ids of 22 characters, 98 KiB —
+/// and the JSON around it all, so half as much again covers every legal message
+/// while staying far below the 64 MiB a frame may be by default.
+pub const MAX_MESSAGE_BYTES: usize = MAX_ENVELOPE_BYTES * 3 / 2;
+
 /// The protocol versions this relay speaks ([ADR 0029](../../docs/decisions.md#adr-0029)). A client
 /// names its own in `?p=` on every request; one outside this range is refused
 /// with `426` before anything else runs.
