@@ -1,5 +1,7 @@
-Updates since v0.1.8:
+Updates since v0.1.9:
 
-- Checklists have sections: add a "Section heading", or type # at the start of a line, and fold an aisle away on your phone without folding it on anyone else's
-- A list offers back the things you add to it over and over, as chips under the next empty line; the history stays on your device, and Settings can forget it
-- A crossed-off item now says which section it came from, and a list shared out to Markdown keeps its headings
+- Import from Google Keep: choose your Takeout .zip, or an extracted Keep .json file, and text and checklist notes arrive with their ticks, labels, colours and archive state; anything skipped is listed
+- Emptying the trash deletes only the notes the confirmation counted, and a connect that fails no longer loses the recovery phrase
+- A recording whose import was refused is kept, and a title being typed survives a rename from another device
+- Reminder titles stay off the lock screen, and account screens block screenshots and the Recents preview on Android
+- A note you deleted while it was open stays deleted, a dropped item lands beside a folded section rather than inside it, and a web tab that cannot read its stored key says so instead of starting empty
