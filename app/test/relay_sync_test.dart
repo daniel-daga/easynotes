@@ -1377,14 +1377,11 @@ void main() {
       // withdrawing it has to change that key: otherwise whoever opened it
       // goes on reading every later edit.
       await a.setTitle('Groceries, just us');
-      // The rotation's snapshot is not counted by the acknowledgement
-      // watermark a library-wide syncNow captured, so that can wait out its
-      // 30 seconds with nothing left to send. The note's own status is what
-      // says the edit is out.
-      await owner.syncNow().timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {},
-      );
+      // The rotation's snapshot is signed by the note's revocation key, but an
+      // echo of it still counts as acknowledged, so the library-wide wait sees
+      // the withdrawal and the edit settle instead of running out its 30
+      // seconds with nothing left to send.
+      await owner.syncNow();
       await synced(a, 'owner');
       // The rotated key can leave the guest waiting on a note it can no
       // longer read, so its sync finishing is not what this asserts: the

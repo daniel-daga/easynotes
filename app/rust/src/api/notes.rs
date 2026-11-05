@@ -825,6 +825,11 @@ impl Statuses {
         .unwrap_or(false)
     }
 
+    /// One note's status now, or `None` if it has no channel.
+    fn snapshot(&self, note: NoteId) -> Option<SyncStatus> {
+        self.existing(note, |status| status.tx.get())
+    }
+
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
         let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
@@ -3924,6 +3929,22 @@ impl Library {
         Ok(())
     }
 
+    /// Nothing of this device's is left to send for the note, or the note is
+    /// gone because the owner acted on the leave record. A forgotten status
+    /// alone is not enough: a retired connection can forget it while the note
+    /// is still here and the leave still unsent, so only a note this device
+    /// can no longer open counts as settled.
+    fn flushed(&self, note: NoteId) -> bool {
+        match self.shared.statuses.snapshot(note) {
+            Some(status) => status.state == SyncState::Synced && status.pending == 0,
+            None => self
+                .shared
+                .locked()
+                .map(|core| !core.can_open(note))
+                .unwrap_or(false),
+        }
+    }
+
     /// Send what is waiting for `notes`, wait for the relay to deliver it back,
     /// and wait until none of it is unacknowledged.
     ///
@@ -3945,7 +3966,10 @@ impl Library {
             .keys()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        if !notes.iter().all(|note| connected.contains(note)) {
+        if notes
+            .iter()
+            .any(|note| !connected.contains(note) && !self.flushed(*note))
+        {
             return Err(
                 "This device is not connected to the sync server. Reconnect, then delete \
                  the account again."
@@ -3970,10 +3994,7 @@ impl Library {
         let mut status = self.shared.statuses.overall.subscribe();
         let wait = async {
             loop {
-                if notes
-                    .iter()
-                    .all(|note| self.shared.statuses.acknowledged(*note))
-                {
+                if notes.iter().all(|note| self.flushed(*note)) {
                     return Ok(());
                 }
                 status
@@ -3985,8 +4006,20 @@ impl Library {
         tokio::time::timeout(std::time::Duration::from_secs(30), wait)
             .await
             .map_err(|_| {
-                "The sync server did not acknowledge the last changes within 30 seconds."
-                    .to_string()
+                let stuck: Vec<String> = notes
+                    .iter()
+                    .map(|note| match self.shared.statuses.snapshot(*note) {
+                        Some(status) => {
+                            format!("{note}: {:?}, pending {}", status.state, status.pending)
+                        }
+                        None => format!("{note}: no status"),
+                    })
+                    .collect();
+                format!(
+                    "The sync server did not acknowledge the last changes within 30 seconds \
+                     ({}).",
+                    stuck.join("; ")
+                )
             })?
     }
 
@@ -4899,6 +4932,19 @@ mod tests {
             PendingJoinView::from(&join).note,
             Some(note.encode()),
             "a pre-granted join must name the note it opened"
+        );
+    }
+
+    #[test]
+    fn a_note_with_no_status_is_not_settled_until_it_is_gone() {
+        let library = Library::open_ephemeral().unwrap();
+        let note = note_id(&library.create_note(NoteKindView::Checklist).unwrap()).unwrap();
+
+        assert!(!library.flushed(note), "an open note is not settled");
+        library.forget_note(note.encode()).unwrap();
+        assert!(
+            library.flushed(note),
+            "a gone note has nothing left to flush"
         );
     }
 
