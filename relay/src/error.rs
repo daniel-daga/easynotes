@@ -41,6 +41,20 @@ pub enum RelayError {
     Storage(String),
 }
 
+impl RelayError {
+    /// The text a client may see: a storage error's detail could name a note
+    /// ID, a host or a table, and the relay's whole job is to not leak.
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            RelayError::Storage(detail) => {
+                tracing::error!(%detail, "storage error");
+                "internal error".to_string()
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for RelayError {
     fn into_response(self) -> Response {
         let status = match self {
@@ -74,14 +88,28 @@ impl IntoResponse for RelayError {
         }
         // The body carries the category and never the detail: a storage error's
         // text could name a note ID, and the relay's whole job is to not leak.
-        let body = match self {
-            RelayError::Storage(ref detail) => {
-                tracing::error!(%detail, "storage error");
-                "internal error".to_string()
-            }
-            ref other => other.to_string(),
-        };
+        let body = self.client_message();
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_storage_error_is_hid_from_the_client() {
+        let detail = "note 42 on db.internal failed";
+        let error = RelayError::Storage(detail.into());
+        let message = error.client_message();
+        assert_eq!(message, "internal error");
+        assert!(!message.contains(detail));
+    }
+
+    #[test]
+    fn every_other_error_keeps_its_text() {
+        let error = RelayError::BadRequest("malformed note id".into());
+        assert_eq!(error.client_message(), "bad request: malformed note id");
     }
 }
 

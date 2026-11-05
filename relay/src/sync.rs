@@ -543,7 +543,7 @@ async fn handle(
                 Ok(topic) => topic,
                 Err(e) => {
                     forwarder.abort();
-                    return refused(out, Some(note), &e.to_string());
+                    return refused(out, Some(note), &e.client_message());
                 }
             };
             if topic.gone {
@@ -596,7 +596,7 @@ async fn handle(
                 let head = match state.store.head(note).await {
                     Ok(head) => head,
                     Err(e) => {
-                        refuse(out, Some(note.clone()), &e.to_string());
+                        refuse(out, Some(note.clone()), &e.client_message());
                         continue;
                     }
                 };
@@ -633,7 +633,7 @@ async fn handle(
                         let _ = out.try_send(SyncServerMessage::Crowded { note });
                     }
                 }
-                Err(e) => refuse(out, Some(note), &e.to_string()),
+                Err(e) => refuse(out, Some(note), &e.client_message()),
             }
         }
         SyncClientMessage::Compact {
