@@ -31,6 +31,7 @@
 //! invite exists.
 
 use crate::app::AppState;
+use crate::auth::unix_now;
 use crate::error::{RelayError, Result};
 use crate::protocol::*;
 use crate::store::{AddRequest, Answered, Invite, NewInvite, SetGrant};
@@ -42,13 +43,6 @@ use base64::Engine;
 use easynotes_core::ids::NoteId;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 fn b64(s: &str, what: &'static str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
@@ -148,7 +142,7 @@ pub async fn create(
         return Err(RelayError::TooLarge);
     }
     let ttl = req.expires_in.clamp(1, INVITE_MAX_TTL_SECS);
-    let now = now();
+    let now = unix_now() as i64;
     let created = state
         .store
         .create_invite(
@@ -187,7 +181,7 @@ pub async fn join(
 
     match state
         .store
-        .add_invite_request(&id, &req.request, &payload, now())
+        .add_invite_request(&id, &req.request, &payload, unix_now() as i64)
         .await?
     {
         AddRequest::Added | AddRequest::Again => {
@@ -230,7 +224,7 @@ pub async fn poll(
             RequestState::Pending => invite.pre_grant.as_ref().map(|g| URL_SAFE_NO_PAD.encode(g)),
             _ => None,
         },
-        expires_in: expires_in(&invite, now()),
+        expires_in: expires_in(&invite, unix_now() as i64),
     }))
 }
 
@@ -243,7 +237,7 @@ pub async fn list(
     invite_id(&id)?;
     admitted(&state, &id, req.access.as_deref())?;
     let invite = as_owner(&state, &id, &req.owner).await?;
-    let now = now();
+    let now = unix_now() as i64;
     Ok(Json(InviteListing {
         open: invite.open && invite.expires_at > now,
         expires_in: expires_in(&invite, now),
@@ -280,7 +274,7 @@ pub async fn answer(
     as_owner(&state, &id, &req.owner).await?;
     match state
         .store
-        .answer_invite_request(&id, &request, grant.as_deref(), now())
+        .answer_invite_request(&id, &request, grant.as_deref(), unix_now() as i64)
         .await?
     {
         Answered::Done => Ok(StatusCode::NO_CONTENT),
@@ -307,7 +301,7 @@ pub async fn set_grant(
     as_owner(&state, &id, &req.owner).await?;
     match state
         .store
-        .set_invite_pre_grant(&id, &sealed, now())
+        .set_invite_pre_grant(&id, &sealed, unix_now() as i64)
         .await?
     {
         SetGrant::Done => Ok(StatusCode::NO_CONTENT),
