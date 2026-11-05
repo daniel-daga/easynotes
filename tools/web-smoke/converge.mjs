@@ -251,7 +251,9 @@ async function switchKind(d, to) {
   const [from, then] = to === 'text'
     ? ['Hide checkboxes', 'Show checkboxes']
     : ['Show checkboxes', 'Hide checkboxes'];
-  await tap(d, /milk/);
+  // Open the card by an item that is not ticked: a ticked row can be hidden,
+  // and this test opens the note after ticking milk.
+  await tap(d, /bread/);
   await tap(d, new RegExp(`^${from}$`));
   await find(d, n => n.text.trim() === then);
 }
