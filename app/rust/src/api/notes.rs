@@ -3796,7 +3796,7 @@ impl Library {
             None | Some("") => None,
             Some(raw) => Some(
                 RelayToken::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         {
@@ -3888,7 +3888,7 @@ impl Library {
             None | Some("") => None,
             Some(raw) => Some(
                 RelayToken::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         let endpoint = easynotes_core::sync::RelayEndpoint::parse(&relay)

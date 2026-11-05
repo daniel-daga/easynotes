@@ -5,6 +5,10 @@
 //! who anybody is — only that a device's owner was told the key, which is true
 //! of everyone it serves.
 //!
+//! A billed device token is not so anonymous: it names itself with `access_id`,
+//! a stable per-device handle, which is what billing needs — and that is why it
+//! is only used on the hosted shape ([ADR 0038](../../docs/decisions.md#adr-0038)).
+//!
 //! The key itself never crosses the wire. At the handshake a device sends an
 //! HMAC of the relay's single-use nonce and its own device key, so a proof
 //! cannot be replayed onto another handshake or another device, and a proxy
