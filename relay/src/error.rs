@@ -93,6 +93,8 @@ impl IntoResponse for RelayError {
     }
 }
 
+pub type Result<T> = std::result::Result<T, RelayError>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +114,3 @@ mod tests {
         assert_eq!(error.client_message(), "bad request: malformed note id");
     }
 }
-
-pub type Result<T> = std::result::Result<T, RelayError>;
