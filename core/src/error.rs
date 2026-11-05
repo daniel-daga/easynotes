@@ -22,6 +22,10 @@ pub enum CoreError {
     /// expired, already used, full, withdrawn.
     #[error("{0}")]
     Invite(String),
+    /// The relay no longer has this account-transfer pairing: it restarted, or
+    /// the code was made on another relay process. A new code is the only fix.
+    #[error("The transfer expired or the relay restarted. Show a new code.")]
+    TransferGone,
     #[error("malformed share blob: {0}")]
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]

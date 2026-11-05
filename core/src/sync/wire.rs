@@ -689,6 +689,18 @@ pub(crate) fn invite_status(status: u16, body: &str) -> Result<()> {
     }
 }
 
+/// Turn a pairing call's status into an answer a person can be shown.
+///
+/// A pairing 404 is not a withdrawn invite: pairings are process-local on the
+/// relay, so the usual cause is a restart or a second relay process. Everything
+/// else keeps the invite wording, which the pairings endpoints share.
+pub(crate) fn transfer_status(status: u16, body: &str) -> Result<()> {
+    if status == 404 {
+        return Err(CoreError::TransferGone);
+    }
+    invite_status(status, body)
+}
+
 pub(crate) fn invite_url(http_base: &str, invite: crate::ids::InviteId, rest: &str) -> String {
     api(http_base, &format!("/invites/{}{rest}", invite.encode()))
 }
@@ -738,6 +750,21 @@ mod tests {
             invite_status(500, "internal error"),
             Err(CoreError::Storage(_))
         ));
+    }
+
+    #[test]
+    fn a_missing_pairing_says_the_transfer_is_gone() {
+        assert!(matches!(
+            transfer_status(404, ""),
+            Err(CoreError::TransferGone)
+        ));
+        assert_eq!(
+            CoreError::TransferGone.to_string(),
+            "The transfer expired or the relay restarted. Show a new code."
+        );
+        // Ordinary invite failures keep the wording a guest is shown.
+        assert!(matches!(invite_status(404, ""), Err(CoreError::Invite(_))));
+        assert!(transfer_status(204, "").is_ok());
     }
 
     #[test]

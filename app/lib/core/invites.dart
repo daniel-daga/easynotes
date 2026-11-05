@@ -288,6 +288,15 @@ abstract interface class AccountTransfers {
   Future<void> adoptAccountTransfer();
 }
 
+/// The relay lost the pairing: it restarted, or the code was made on another
+/// relay process. Mirrors `CoreError::TransferGone`, which the bridge hands
+/// over as text.
+const transferGoneMessage =
+    'The transfer expired or the relay restarted. Show a new code.';
+
+/// Whether [error] is the core saying the pairing is gone for good.
+bool isTransferGone(Object error) => '$error' == transferGoneMessage;
+
 /// What a device can do about sharing, on either side of it.
 abstract class Invites implements Accounts {
   /// Everybody with access to a note, owner first.

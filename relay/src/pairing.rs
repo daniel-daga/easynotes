@@ -1,6 +1,11 @@
 //! Ephemeral mailbox for a one-time, owner-approved account transfer.
 //! The relay stores only random capabilities, a temporary public key and
 //! ciphertext; sessions expire after five minutes or a relay restart.
+//!
+//! Pairings are process-local, like the rate limits: they live in the relay's
+//! memory, so one relay process must serve a transfer and it must not be
+//! restarted mid-transfer. A restart or a second instance loses the pairing,
+//! and both devices need a new code.
 
 use crate::{
     app::AppState,
