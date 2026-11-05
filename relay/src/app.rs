@@ -100,7 +100,7 @@ pub struct AppState {
     pub access: Access,
     /// Whether a per-device access token ([ADR 0038](../../docs/decisions.md#adr-0038))
     /// is accepted as well as a static key.
-    pub(crate) tokens: bool,
+    pub(crate) device_tokens: bool,
     /// Bytes written per client address, every socket message and attachment
     /// chunk together ([ADR 0028](../../docs/decisions.md#adr-0028)).
     pub writes: RateLimit,
@@ -167,7 +167,7 @@ impl AppState {
         media: crate::media::MediaConfig,
         access: Access,
         writes: RateLimit,
-        tokens: bool,
+        device_tokens: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -180,7 +180,7 @@ impl AppState {
             shutdown: crate::shutdown::Shutdown::default(),
             metrics: Arc::default(),
             access,
-            tokens,
+            device_tokens,
             writes,
             ready: tokio::sync::Mutex::new(None),
         })
@@ -717,7 +717,10 @@ async fn token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<TokenResponse>> {
-    if state.access.gated() || state.tokens {
+    // Set when a fresh token must be bound, but only after `redeem` proves the
+    // device's signature.
+    let mut bind: Option<(&str, [u8; 32])> = None;
+    if state.access.gated() || state.device_tokens {
         // Before the challenge is spent, so a device that is asked for the key
         // and is given it can try again without starting over; a nonce is good
         // for a minute and for one token either way.
@@ -734,16 +737,22 @@ async fn token(
             state.metrics.access_refused();
             RelayError::AccessRequired
         };
+        // A fresh token is claimed below, once the signature proves the device
+        // holds the key it names.
         match req.access_id.as_deref() {
             Some(id) => {
-                if !state.tokens {
+                if !state.device_tokens {
                     return Err(refused());
                 }
                 let Some(row) = state.store.access_token(id).await? else {
                     return Err(refused());
                 };
                 let now = crate::auth::unix_now() as i64;
-                if row.revoked_at.is_some() || row.expires_at.is_some_and(|at| at <= now) {
+                // A link's expiry bounds the unbound token; a bound one lives
+                // until revoked or read-only (ADR 0038).
+                if row.revoked_at.is_some()
+                    || (row.device_key.is_none() && row.expires_at.is_some_and(|at| at <= now))
+                {
                     return Err(refused());
                 }
                 if crate::access::check_access_token(&row, &nonce, &device, req.access.as_deref())
@@ -756,31 +765,18 @@ async fn token(
                 match row.device_key {
                     Some(bound) if bound != device => return Err(refused()),
                     Some(_) => {}
-                    None => {
-                        // A bind that lost a race to another device is only
-                        // fine if that device was this one.
-                        if !state.store.bind_access_token(id, &device).await? {
-                            let winner = state.store.access_token(id).await?;
-                            if winner.and_then(|row| row.device_key) != Some(device) {
-                                return Err(refused());
-                            }
-                        }
-                    }
+                    None => bind = Some((id, device)),
                 }
             }
             // A relay with tokens and no static key takes only tokens: with no
             // ID there is nothing to check, and it must not fall open.
-            None if state.tokens && !state.access.gated() => return Err(refused()),
-            None => {
-                if let Err(refused) =
-                    state
-                        .access
-                        .check_token(&nonce, &device, req.access.as_deref())
-                {
+            None if state.device_tokens && !state.access.gated() => return Err(refused()),
+            None => state
+                .access
+                .check_token(&nonce, &device, req.access.as_deref())
+                .inspect_err(|_| {
                     state.metrics.access_refused();
-                    return Err(refused);
-                }
-            }
+                })?,
         }
     }
     let token = state
@@ -793,6 +789,17 @@ async fn token(
             Duration::from_secs(TOKEN_TTL_SECS),
         )
         .await?;
+    // Only a device that signed the challenge may claim a fresh token. A loss
+    // to another device leaves it with no relay token at all.
+    if let Some((id, device)) = bind {
+        if !state.store.bind_access_token(id, &device).await? {
+            let winner = state.store.access_token(id).await?;
+            if winner.and_then(|row| row.device_key) != Some(device) {
+                state.metrics.access_refused();
+                return Err(RelayError::AccessRequired);
+            }
+        }
+    }
     Ok(Json(TokenResponse {
         token,
         expires_in: TOKEN_TTL_SECS,

@@ -242,6 +242,88 @@ async fn a_relay_with_keys_and_tokens_accepts_either() {
         .unwrap();
 }
 
+/// A token request with a valid token proof and token ID, but a signature that
+/// is not the device's.
+async fn token_with_bogus_signature(
+    http: &str,
+    device: &DeviceIdentity,
+    token: &RelayToken,
+) -> StatusCode {
+    let client = reqwest::Client::new();
+    let key = device.public_key().encode();
+    let challenge: serde_json::Value = client
+        .post(format!("{http}/v1/challenge?p=2"))
+        .json(&serde_json::json!({ "device": key }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let nonce = challenge["nonce"].as_str().unwrap();
+    let raw: [u8; 32] = URL_SAFE_NO_PAD.decode(nonce).unwrap().try_into().unwrap();
+    let proof = token.token_proof(&raw, &device.public_key().0);
+    client
+        .post(format!("{http}/v1/token?p=2"))
+        .json(&serde_json::json!({
+            "device": key,
+            "nonce": nonce,
+            "signature": URL_SAFE_NO_PAD.encode([0u8; 64]),
+            "access": proof,
+            "access_id": token.id.as_deref(),
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn a_bogus_signature_does_not_claim_a_token() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let token = mint(&*store, [11; 16], [12; 32], None).await;
+    let device = DeviceIdentity::generate();
+
+    assert_eq!(
+        token_with_bogus_signature(&relay.http_base(), &device, &token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let row = store
+        .access_token(token.id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.device_key, None, "a bad signature claimed the token");
+}
+
+#[tokio::test]
+async fn only_one_of_two_devices_claiming_a_token_wins() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let token = mint(&*store, [13; 16], [14; 32], None).await;
+    let (a, b) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+
+    let (first, second) = tokio::join!(
+        authenticate(&http, Some(&token), &a),
+        authenticate(&http, Some(&token), &b),
+    );
+    let winner = match (first, second) {
+        (Ok(_), Err(CoreError::AccessRequired)) => &a,
+        (Err(CoreError::AccessRequired), Ok(_)) => &b,
+        (first, second) => {
+            panic!("expected one winner and one refusal, got {first:?} and {second:?}")
+        }
+    };
+    let row = store
+        .access_token(token.id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.device_key, Some(winner.public_key().0));
+}
+
 /// A token request by hand: `device` signs `nonce` properly, and presents
 /// whatever `proof` it is given.
 async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusCode {
