@@ -1878,6 +1878,40 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::{DeviceIdentity, NoteKey};
+
+    struct TestPeer(DeviceIdentity);
+
+    impl DeviceSigner for TestPeer {
+        fn device_key(&self) -> Result<AuthorKey> {
+            self.0.device_key()
+        }
+
+        fn sign_challenge(
+            &self,
+            nonce: &[u8; crate::crypto::RELAY_AUTH_NONCE_LEN],
+        ) -> Result<[u8; crate::crypto::SIG_LEN]> {
+            self.0.sign_challenge(nonce)
+        }
+    }
+
+    impl SyncPeer for TestPeer {
+        fn apply_remote(&self, _note: NoteId, _envelope: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn cursor(&self, _note: NoteId) -> Result<SyncCursor> {
+            Ok(SyncCursor::default())
+        }
+
+        fn save_cursor(&self, _note: NoteId, _cursor: SyncCursor) -> Result<()> {
+            Ok(())
+        }
+
+        fn unsent(&self, _note: NoteId, _after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn retry_jitter_stays_between_half_and_full_ceiling() {
@@ -1938,6 +1972,32 @@ mod tests {
 
         live.acknowledge_echo(&envelope);
         assert_eq!(live.current.acknowledged, 1);
+    }
+
+    #[test]
+    fn a_foreign_envelope_echoed_from_the_outbox_advances_the_watermark() {
+        let (status, _watcher) = watch::channel(SyncStatus::default());
+        let mut live = Live::new(1, status, Pacing::default());
+        let me = DeviceIdentity::generate().public_key();
+        let other = DeviceIdentity::generate();
+        let note = NoteId::random();
+        let envelope = Envelope::seal(&other, note, &NoteKey::random(), 1, b"rotation")
+            .unwrap()
+            .encode();
+        live.outbox.push(envelope.clone());
+
+        live.receive(
+            &TestPeer(DeviceIdentity::generate()),
+            note,
+            &me,
+            1,
+            &envelope,
+        )
+        .unwrap();
+
+        assert_eq!(live.current.acknowledged, 1);
+        assert!(live.outbox.is_empty());
+        assert!(live.cursor.sent_upto.is_none());
     }
 
     #[test]
