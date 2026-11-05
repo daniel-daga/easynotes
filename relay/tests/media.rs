@@ -194,15 +194,22 @@ impl Upload {
         request.send().await.unwrap()
     }
 
-    /// What a reader does: fetch, check against the descriptor, open.
+    /// What a reader does: fetch chunk by chunk, check against the descriptor,
+    /// open.
     async fn read_back(&self) -> Vec<u8> {
-        let response = self.fetch(None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["cache-control"],
-            "private, max-age=31536000, immutable"
-        );
-        let bytes = response.bytes().await.unwrap();
+        let full = self.media.chunk_size as u64 + 40;
+        let mut bytes = Vec::with_capacity(self.media.sealed_len() as usize);
+        for index in 0..self.media.chunks() {
+            let at = index as u64 * full;
+            let end = (at + full).min(self.media.sealed_len()) - 1;
+            let response = self.fetch(Some(&format!("bytes={at}-{end}"))).await;
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(
+                response.headers()["cache-control"],
+                "private, max-age=31536000, immutable"
+            );
+            bytes.extend_from_slice(&response.bytes().await.unwrap());
+        }
         verify_sealed(&self.media, &bytes).unwrap();
         MediaOpener::new(
             &self.key,
@@ -218,7 +225,7 @@ impl Upload {
 }
 
 #[tokio::test]
-async fn an_object_goes_up_in_chunks_and_comes_back_whole_or_by_range() {
+async fn an_object_goes_up_in_chunks_and_comes_back_by_range() {
     for (name, store) in stores().await {
         let relay = relay(store, MediaConfig::default()).await;
         // Three chunks, the last one short.
@@ -267,6 +274,36 @@ async fn an_object_goes_up_in_chunks_and_comes_back_whole_or_by_range() {
             up.plain[1 << 20..2 << 20],
             "{name}"
         );
+
+        // A suffix range is the last n bytes.
+        let sealed = up.media.sealed_len();
+        let response = up.fetch(Some("bytes=-4096")).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{name}");
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {}-{}/{sealed}", sealed - 4096, sealed - 1).as_str(),
+            "{name}"
+        );
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            &up.sealed[sealed as usize - 4096..],
+            "{name}"
+        );
+
+        // A whole read of more than one chunk is refused: the core asks by
+        // range, and the relay will not hold an object in memory for it.
+        let response = up.fetch(None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "{name}"
+        );
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes */{sealed}").as_str(),
+            "{name}"
+        );
+
         let past = format!("bytes={}-", up.media.sealed_len());
         assert_eq!(
             up.fetch(Some(&past)).await.status(),
@@ -1094,7 +1131,11 @@ async fn a_commit_that_loses_the_race_leaves_the_committed_bytes_alone() {
             Some(up.media.digest),
             "{name}"
         );
-        assert_eq!(up.fetch(None).await.status(), StatusCode::OK, "{name}");
+        assert_eq!(
+            up.fetch(Some("bytes=0-99")).await.status(),
+            StatusCode::PARTIAL_CONTENT,
+            "{name}"
+        );
         assert_eq!(up.read_back().await, up.plain, "{name}");
         assert!(
             dir.path()
