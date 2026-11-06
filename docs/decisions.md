@@ -293,3 +293,14 @@ a payment to a note. A token binds to the device key on first use, and a lapsed
 household is read-only for 30 days before its tokens are revoked. The
 private-relay shared key is unchanged, and the relay still contains no billing
 code.
+
+<a id="adr-0039"></a>
+## ADR 0039 — A seven-day card-backed trial
+
+**Accepted, amends ADR 0035.** A hosted household can try the relay for seven
+days with a card and no charge until day seven, then the normal €3 a month (or
+€30 a year) plan starts automatically. One trial per household; everyone they
+share with is included and still pays nothing, and cancelling during the trial
+runs to day seven with no charge. A failed charge or a cancellation leaves the
+household read-only for 30 days before its tokens are revoked. The trial lives
+in billing; the relay stores no trial state and needs no change.
