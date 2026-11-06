@@ -783,10 +783,14 @@ fn randomized_retry(ceiling: Duration) -> Duration {
 
 /// Whether a failure is the relay's or the note's answer, rather than the
 /// network's. [`super::media`] says an answer in words as
-/// [`CoreError::Attachment`], and bytes that are not the digest as
-/// [`CoreError::Crypto`]; everything the network does is `Storage`.
+/// [`CoreError::Attachment`], a relay whose plan has lapsed as
+/// [`CoreError::ReadOnly`], and bytes that are not the digest as
+/// [`CoreError::Crypto`]; everything else the network does is `Storage`.
 fn permanent(e: &CoreError) -> bool {
-    matches!(e, CoreError::Attachment(_) | CoreError::Crypto(_))
+    matches!(
+        e,
+        CoreError::Attachment(_) | CoreError::Crypto(_) | CoreError::ReadOnly
+    )
 }
 
 /// Upload both of an import's variants, reporting each chunk as it goes.
@@ -871,5 +875,6 @@ mod retry_tests {
         assert!(!permanent(&CoreError::RetryAfter(Duration::from_secs(9))));
         assert!(permanent(&CoreError::Attachment("relay refused".into())));
         assert!(permanent(&CoreError::Crypto("wrong digest")));
+        assert!(permanent(&CoreError::ReadOnly));
     }
 }
