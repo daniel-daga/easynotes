@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/billing.dart';
 import '../core/invites.dart';
 import '../core/app_visibility.dart';
 import '../core/relay_profiles.dart';
@@ -17,6 +18,7 @@ class AccountTransferScreen extends StatefulWidget {
     required this.profile,
     required this.onMoveLocalToRelay,
     required this.onSetAccess,
+    this.billing,
   });
 
   final AccountTransfers library;
@@ -24,6 +26,11 @@ class AccountTransferScreen extends StatefulWidget {
   final Future<void> Function(String address, {String? access})
   onMoveLocalToRelay;
   final Future<void> Function(String? access) onSetAccess;
+
+  /// Where the new device's own token comes from on a hosted relay. Null reads
+  /// the build's flag; with no service it stays disabled and the QR carries
+  /// [profile]'s access as before.
+  final BillingClient? billing;
 
   @override
   State<AccountTransferScreen> createState() => _AccountTransferScreenState();
@@ -57,6 +64,17 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   /// transfer, and [widget.profile] is a snapshot a move here does not update.
   late final bool _owner = widget.profile.url != null && _hasAccount;
 
+  late final BillingClient _billing =
+      widget.billing ?? BillingClient.fromEnvironment();
+
+  /// The token the QR carries: a fresh one for the new device on a hosted
+  /// relay, where this device's own token would bind the pairing to itself.
+  Future<String?> _accessForTransfer() async {
+    final access = widget.profile.access;
+    if (access == null || !_billing.enabled) return access;
+    return _billing.deviceToken(access);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -82,9 +100,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       _message = null;
     });
     try {
+      final access = await _accessForTransfer();
       final qr = await widget.library.beginAccountTransfer(
         widget.profile.url!,
-        widget.profile.access,
+        access,
       );
       if (!mounted) return;
       setState(() {

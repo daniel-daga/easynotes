@@ -5,14 +5,26 @@
 /// here because the device starts without an account or a name.
 library;
 
+import 'dart:convert';
+
+import 'package:easynotes/core/billing.dart';
 import 'package:easynotes/core/fake_note_core.dart';
 import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/invite_links.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/ui/invites.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:easynotes/ui/note_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+const _relay = 'https://relay.example';
+
+/// A base64url value of [bytes] bytes, as the core spells keys and tokens.
+String _token(int bytes, [int fill = 7]) =>
+    base64Url.encode(List<int>.filled(bytes, fill)).replaceAll('=', '');
 
 Future<void> pumpNote(WidgetTester tester, FakeNoteLibrary library) async {
   await tester.pumpWidget(
@@ -133,16 +145,12 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(body: SharingSetupSheet(joining: true)),
-      ),
+      const MaterialApp(home: Scaffold(body: SharingSetupSheet(joining: true))),
     );
     expect(find.text('One step before you join'), findsOneWidget);
     expect(find.textContaining('Sync & devices'), findsOneWidget);
     expect(
-      find.textContaining(
-        RegExp('encrypt|server|key', caseSensitive: false),
-      ),
+      find.textContaining(RegExp('encrypt|server|key', caseSensitive: false)),
       findsNothing,
     );
   });
@@ -444,5 +452,75 @@ void main() {
     await tester.pump(const Duration(seconds: 10));
     await tester.pumpAndSettle();
     expect(library.takeRemovals(), isEmpty);
+  });
+
+  testWidgets('a hosted relay puts a guest token in a new link', (
+    tester,
+  ) async {
+    final owner = _token(32);
+    final guest = '${_token(16, 3)}.${_token(32, 4)}';
+    final requests = <http.Request>[];
+    final billing = BillingClient(
+      base: 'https://billing.example',
+      client: MockClient((request) async {
+        requests.add(request);
+        return http.Response('{"access":"$guest"}', 200);
+      }),
+    );
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: owner,
+          billing: billing,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-invite')));
+    await tester.pumpAndSettle();
+
+    final id = library.invitesFor('groceries').single.id;
+    final link = tester.widget<Text>(find.byKey(Key('invite-link-$id'))).data!;
+    expect(relayFromInvite(link)?.access, guest);
+    expect(link, isNot(contains(owner)));
+    expect(requests.single.url.path, '/v1/guest-token');
+    expect(requests.single.headers['authorization'], 'Bearer $owner');
+    // One address, so a messenger cannot pick the relay out of the fragment
+    // and leave the invite as plain text.
+    expect('https://'.allMatches(link).length, 1);
+  });
+
+  testWidgets('a billing failure sends no invite', (tester) async {
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: _token(32),
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((_) async => http.Response('nope', 503)),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-invite')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('invite-error')), findsOneWidget);
+    expect(find.textContaining('billing service'), findsOneWidget);
+    expect(library.invitesFor('groceries'), isEmpty);
+    expect(
+      library.calls.where((c) => c.startsWith('createInvite')),
+      isEmpty,
+      reason: 'an invite nobody was sent would stay open',
+    );
   });
 }

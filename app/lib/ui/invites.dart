@@ -28,6 +28,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/billing.dart';
 import '../core/content_sharing.dart';
 import '../core/app_visibility.dart';
 import '../core/invite_links.dart';
@@ -172,6 +173,7 @@ class CollaboratorsScreen extends StatefulWidget {
     required this.noteId,
     this.relayUrl,
     this.relayAccess,
+    this.billing,
   });
 
   final Invites invites;
@@ -187,6 +189,11 @@ class CollaboratorsScreen extends StatefulWidget {
   /// the relay link, which lets whoever holds it use the relay for good.
   final String? relayAccess;
 
+  /// Where a guest's own token comes from on a hosted relay. Null reads the
+  /// build's flag; with no billing service it stays disabled, so a
+  /// self-hosted relay keeps handing out [relayAccess] as before.
+  final BillingClient? billing;
+
   @override
   State<CollaboratorsScreen> createState() => _CollaboratorsScreenState();
 }
@@ -199,6 +206,10 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   /// What the relay last said about each of [_open], by invite ID.
   final Map<String, InviteStatus> _status = {};
+
+  /// The guest token each link carries, by invite ID, so sending the same
+  /// link again sends the same token rather than minting another.
+  final Map<String, String> _guestAccess = {};
   String? _error;
 
   /// What the last gesture came to: “Anna can open this note now.”
@@ -207,6 +218,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _refreshing = false;
   bool _askedToNotify = false;
   Timer? _poll;
+
+  late final BillingClient _billing =
+      widget.billing ?? BillingClient.fromEnvironment();
 
   @override
   void initState() {
@@ -227,6 +241,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
       _people = widget.invites.people(widget.noteId);
       _open = widget.invites.invitesFor(widget.noteId);
       _status.removeWhere((id, _) => _open.every((i) => i.id != id));
+      _guestAccess.removeWhere((id, _) => _open.every((i) => i.id != id));
     } catch (e) {
       _error = '$e';
     }
@@ -292,8 +307,23 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   String _link(Invite invite) {
     final url = widget.relayUrl;
-    final relay = url == null ? null : (url: url, access: widget.relayAccess);
+    final guest = _guestAccess[invite.id];
+    final relay = url == null
+        ? null
+        : (url: url, access: guest ?? widget.relayAccess);
     if (!kIsWeb && url != null) {
+      // A guest's own token has to travel in the link: the relay's page knows
+      // the relay but not who was invited. So a link that carries one uses the
+      // page's `join#` body, exactly as the web app's does; a link without one
+      // keeps the short form.
+      if (guest != null) {
+        return inviteLinkForSharing(
+          invite.link,
+          webOrigin: url,
+          relay: relay,
+          web: true,
+        );
+      }
       // The relay is the link's base, so its own page needs only the secret
       // after the `#`. Tapping it hands the fragment to the app, which is told
       // the relay by the page; a pasted link is read the same way.
@@ -308,6 +338,15 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     );
   }
 
+  /// The token a new link's guest gets: one of their own on a hosted relay,
+  /// where [RelayProfile.access] belongs to this device. Null keeps the
+  /// profile's own access, which is all a self-hosted relay has.
+  Future<String?> _accessForGuest() async {
+    final access = widget.relayAccess;
+    if (access == null || !_billing.enabled) return null;
+    return _billing.guestToken(access);
+  }
+
   /// Open one more link and send it through the platform's share sheet. Where
   /// there is no share sheet it is copied instead. Every tap is a new link,
   /// for a new person; the ones already open stay open.
@@ -319,7 +358,11 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
       _askedToNotify = true;
       unawaited(joinAlerts?.requestPermission().catchError((_) {}));
     }
+    // Before the link exists: a billing failure must not leave an open invite
+    // behind that nobody was sent.
+    final guest = await _accessForGuest();
     final invite = await widget.invites.createInvite(widget.noteId);
+    if (guest != null) _guestAccess[invite.id] = guest;
     if (!mounted) return;
     setState(() {
       _load();
