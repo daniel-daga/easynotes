@@ -32,14 +32,14 @@ class BillingClient {
     : _base = base.replaceFirst(RegExp(r'/+$'), ''),
       _client = client ?? http.Client();
 
-  /// The client the screens use: disabled unless the build named a service.
-  factory BillingClient.fromEnvironment() => BillingClient();
-
   final String _base;
   final http.Client _client;
 
   /// Whether this build has a billing service to ask.
   bool get enabled => _base.isNotEmpty;
+
+  /// Release the HTTP client and its idle connections.
+  void close() => _client.close();
 
   /// A token for someone invited to a note, minted from this device's
   /// [deviceToken].
@@ -57,13 +57,26 @@ class BillingClient {
       // Only a caller that ignored [enabled] gets here; no request is made.
       throw StateError('This build has no billing service.');
     }
+    if (!isDeviceToken(deviceToken)) {
+      throw const BillingException(
+        "This device's key can't be used for billing.",
+      );
+    }
+    if (!_isTlsOrLoopback(_base)) {
+      throw const BillingException(
+        'The billing service address must use https.',
+      );
+    }
     final http.Response response;
     try {
+      // Not following a redirect: the bearer token must not be re-sent to a
+      // host the build was not pointed at.
+      final request = http.Request('POST', Uri.parse('$_base/v1/$path'))
+        ..followRedirects = false
+        ..headers['authorization'] = 'Bearer $deviceToken';
       response = await _client
-          .post(
-            Uri.parse('$_base/v1/$path'),
-            headers: {'authorization': 'Bearer $deviceToken'},
-          )
+          .send(request)
+          .then(http.Response.fromStream)
           .timeout(const Duration(seconds: 10));
     } on TimeoutException {
       throw const BillingException(
@@ -95,4 +108,15 @@ class BillingClient {
     }
     return normalizeAccessKey(access)!;
   }
+}
+
+/// Whether [base] is https, or plain http on this machine only. Anything else
+/// would carry the bearer token in the clear.
+bool _isTlsOrLoopback(String base) {
+  if (base.startsWith('https://')) return true;
+  final uri = Uri.tryParse(base);
+  if (uri == null || uri.scheme != 'http') return false;
+  return uri.host == '127.0.0.1' ||
+      uri.host == 'localhost' ||
+      uri.host == '::1';
 }

@@ -809,4 +809,134 @@ void main() {
     expect(find.byKey(const Key('invite-error')), findsOneWidget);
     expect(find.textContaining('billing service'), findsOneWidget);
   });
+
+  testWidgets('a device token with no billing refuses to be shared', (
+    tester,
+  ) async {
+    final device = '${_token(16, 7)}.${_token(32, 8)}';
+    final sent = <String>[];
+    final channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      sent.add((call.arguments as Map)['text'] as String);
+      return true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final copied = watchClipboard();
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: device,
+          // No billing address in this build.
+          billing: BillingClient(base: ''),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // A per-device relay link would hand the key on, so it is not offered.
+    expect(find.byKey(const Key('copy-relay-link')), findsNothing);
+
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(sent, isEmpty);
+    expect(copied, isEmpty);
+    expect(find.textContaining("own key can't be shared"), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(copied, isEmpty);
+    expect(find.textContaining("own key can't be shared"), findsOneWidget);
+  });
+
+  testWidgets('a bare operator key with billing off still shares', (
+    tester,
+  ) async {
+    final operator = _token(32);
+    final sent = <String>[];
+    final channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      sent.add((call.arguments as Map)['text'] as String);
+      return true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: operator,
+          billing: BillingClient(base: ''),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // A shared operator key is the relay's own, so its link is still offered.
+    expect(find.byKey(const Key('copy-relay-link')), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(sent, hasLength(1));
+    expect(find.byKey(const Key('invite-error')), findsNothing);
+  });
+
+  testWidgets('copying twice mints only one guest token', (tester) async {
+    final requests = <http.Request>[];
+    final copied = watchClipboard();
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: '${_token(16, 7)}.${_token(32, 8)}',
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((request) async {
+              requests.add(request);
+              return http.Response(
+                '{"access":"${_token(16, 3)}.${_token(32, 4)}"}',
+                200,
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var i = 0; i < 2; i++) {
+      await tester.ensureVisible(find.byKey(Key('copy-invite-${invite.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('copy-invite-${invite.id}')));
+      await tester.pumpAndSettle();
+    }
+
+    expect(requests, hasLength(1));
+    expect(copied, hasLength(2));
+    expect(copied.first, copied.last);
+  });
 }

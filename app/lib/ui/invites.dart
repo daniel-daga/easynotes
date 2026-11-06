@@ -219,12 +219,12 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _askedToNotify = false;
   Timer? _poll;
 
-  late final BillingClient _billing =
-      widget.billing ?? BillingClient.fromEnvironment();
+  late final BillingClient _billing;
 
   @override
   void initState() {
     super.initState();
+    _billing = widget.billing ?? BillingClient();
     _load();
     _poll = Timer.periodic(invitePollInterval, (_) => _tick());
     _refresh();
@@ -233,6 +233,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   @override
   void dispose() {
     _poll?.cancel();
+    _billing.close();
     super.dispose();
   }
 
@@ -308,9 +309,12 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   String _link(Invite invite) {
     final url = widget.relayUrl;
     final guest = _guestAccess[invite.id];
-    final relay = url == null
-        ? null
-        : (url: url, access: guest ?? widget.relayAccess);
+    // The owner's device token is bound to this device and must never appear
+    // in a link. Only a minted guest token, or a bare operator key that the
+    // relay itself shares, may travel.
+    final own = widget.relayAccess;
+    final fallback = own == null || isDeviceToken(own) ? null : own;
+    final relay = url == null ? null : (url: url, access: guest ?? fallback);
     if (!kIsWeb && url != null) {
       // A guest's own token has to travel in the link: the relay's page knows
       // the relay but not who was invited. So a link that carries one uses the
@@ -338,14 +342,17 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     );
   }
 
-  /// The token a new link's guest gets: one of their own on a hosted relay,
-  /// where [RelayProfile.access] belongs to this device. Null keeps the
-  /// profile's own access, which is all a self-hosted relay has — and all a
-  /// bare operator key ever can be, since billing cannot mint from it.
+  /// The token a link's guest gets. A bare operator key is the relay's own and
+  /// can be handed on; a device token is bound to this device, so it is minted
+  /// into a guest's own or refused — never shared.
   Future<String?> _accessForGuest() async {
     final access = widget.relayAccess;
-    if (access == null || !_billing.enabled || !isDeviceToken(access)) {
-      return null;
+    if (access == null || !isDeviceToken(access)) return access;
+    if (!_billing.enabled) {
+      throw const BillingException(
+        "This device's own key can't be shared, and this build has no billing "
+        'service to make a guest key.',
+      );
     }
     return _billing.guestToken(access);
   }
@@ -365,7 +372,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     // behind that nobody was sent.
     final guest = await _accessForGuest();
     final invite = await widget.invites.createInvite(widget.noteId);
-    if (guest != null) _guestAccess[invite.id] = guest;
+    if (guest != null && isDeviceToken(guest)) _guestAccess[invite.id] = guest;
     if (!mounted) return;
     setState(() {
       _load();
@@ -387,13 +394,15 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     await _refresh();
   }
 
-  /// The link to give someone for [invite], with that person's own token on a
-  /// hosted relay. A link made before this screen was open has none cached,
-  /// and the owner's own token would bind the guest to this device.
+  /// The link to give someone for [invite]: minted for that person on a hosted
+  /// relay. A link made before this screen was open has no guest token cached,
+  /// and the owner's own token must never stand in for one.
   Future<String> _linkForSharing(Invite invite) async {
     if (!_guestAccess.containsKey(invite.id)) {
       final guest = await _accessForGuest();
-      if (guest != null) _guestAccess[invite.id] = guest;
+      if (guest != null && isDeviceToken(guest)) {
+        _guestAccess[invite.id] = guest;
+      }
     }
     return _link(invite);
   }
@@ -843,7 +852,10 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                 ),
                 if (widget.relayUrl case final url?)
                   if (widget.relayAccess case final access?)
-                    _relayLinkSection(theme, relayLinkFor(url, access)),
+                    // A device token belongs to this device: its relay link
+                    // would hand it to whoever opens it.
+                    if (!isDeviceToken(access))
+                      _relayLinkSection(theme, relayLinkFor(url, access)),
                 const SizedBox(height: 8),
                 if (_open.isEmpty)
                   const Padding(

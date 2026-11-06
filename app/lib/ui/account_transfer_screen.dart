@@ -64,17 +64,21 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   /// transfer, and [widget.profile] is a snapshot a move here does not update.
   late final bool _owner = widget.profile.url != null && _hasAccount;
 
-  late final BillingClient _billing =
-      widget.billing ?? BillingClient.fromEnvironment();
+  late final BillingClient _billing;
 
   /// The token the QR carries: a fresh one for the new device on a hosted
   /// relay, where this device's own token would bind the pairing to itself. A
   /// bare operator key belongs to the relay, not to a device, so it is used
-  /// as it is.
+  /// as it is. A device token in a build without billing is refused: the QR
+  /// must never hand this device's own token to another.
   Future<String?> _accessForTransfer() async {
     final access = widget.profile.access;
-    if (access == null || !_billing.enabled || !isDeviceToken(access)) {
-      return access;
+    if (access == null || !isDeviceToken(access)) return access;
+    if (!_billing.enabled) {
+      throw const BillingException(
+        "This device's own key can't be put in a QR code, and this build has "
+        'no billing service to make a new one.',
+      );
     }
     return _billing.deviceToken(access);
   }
@@ -82,6 +86,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   @override
   void initState() {
     super.initState();
+    _billing = widget.billing ?? BillingClient();
     // The QR carries the account. Android keeps it out of screenshots and the
     // Recents list for as long as this screen is up; no-op elsewhere.
     unawaited(setSecureScreen(true));
@@ -91,6 +96,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   void dispose() {
     unawaited(setSecureScreen(false));
     _poller?.cancel();
+    _billing.close();
     // Backing out must not leave the pairing open for its full five minutes.
     if (!_approved && !_cancelled) {
       unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));

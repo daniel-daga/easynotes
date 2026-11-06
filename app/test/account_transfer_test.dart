@@ -593,4 +593,49 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('a device token with no billing shows no QR', (tester) async {
+    library.setUpSharing();
+    await pumpScreen(
+      tester,
+      profile: RelayProfile(
+        id: 'owner',
+        url: server,
+        access: '${token(16, 7)}.${token(32, 8)}',
+      ),
+      // No billing address in this build.
+      billing: BillingClient(base: ''),
+    );
+
+    await tester.tap(find.byKey(const Key('begin-account-transfer')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('account-transfer-qr')), findsNothing);
+    expect(find.textContaining("own key can't be put in a QR"), findsOneWidget);
+    expect(library.begunAccess, isNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a bare operator key with billing off still makes the QR', (
+    tester,
+  ) async {
+    final operator = token(32);
+    library.setUpSharing();
+    await pumpScreen(
+      tester,
+      profile: RelayProfile(id: 'owner', url: server, access: operator),
+      billing: BillingClient(base: ''),
+    );
+
+    await tester.tap(find.byKey(const Key('begin-account-transfer')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(library.begunAccess, operator);
+    expect(find.byKey(const Key('account-transfer-qr')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
 }
