@@ -12,6 +12,7 @@ use easynotes_core::attachment::seal::{seal_whole, verify_sealed};
 use easynotes_core::attachment::{ContentKey, MediaOpener, MediaRef, Variant};
 use easynotes_core::crypto::DeviceIdentity;
 use easynotes_core::ids::{AttachmentId, MediaObjectId, NoteId};
+use easynotes_core::relay_access::{RelayAccess, RelayToken};
 use easynotes_relay::error::{RelayError, Result as RelayResult};
 use easynotes_relay::media::{Assembled, MediaStatus, PartPut};
 use easynotes_relay::{
@@ -68,6 +69,12 @@ impl Upload {
         let token = easynotes_core::sync::authenticate(&base, None, &DeviceIdentity::generate())
             .await
             .unwrap();
+        Self::with_token(relay, len, token)
+    }
+
+    /// An upload made by a device holding `token`, for a relay that takes
+    /// per-device access tokens rather than an open handshake.
+    fn with_token(relay: &Relay, len: usize, token: String) -> Self {
         let (note, id, key) = (
             NoteId::random(),
             AttachmentId::random(),
@@ -77,7 +84,7 @@ impl Upload {
         let (media, sealed) =
             seal_whole(&key, note, id, Variant::Original, &plain, 1 << 20).unwrap();
         Self {
-            base,
+            base: relay.http_base(),
             http: reqwest::Client::new(),
             token,
             note,
@@ -816,6 +823,91 @@ async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
         removed.send().await;
         assert_eq!(removed.read_back().await, removed.plain, "{name}");
     }
+}
+
+/// A read is not asking for the object: a read-only device polling status
+/// must not clear a doom, or a lapsed household could keep unreferenced bytes
+/// alive for ever.
+#[tokio::test]
+async fn a_read_only_status_read_does_not_keep_a_doomed_object() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = Relay::serve_with(
+        store.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            tokens: true,
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let minted = |id: [u8; 16], secret: [u8; 32], read_only: bool| {
+        let store = store.clone();
+        let base = relay.http_base();
+        async move {
+            let id = URL_SAFE_NO_PAD.encode(id);
+            assert!(store.create_access_token(&id, &secret, None).await.unwrap());
+            if read_only {
+                store.set_access_token_read_only(&id, true).await.unwrap();
+            }
+            easynotes_core::sync::authenticate(
+                &base,
+                Some(&RelayToken {
+                    id: Some(id),
+                    secret: RelayAccess::from_bytes(secret),
+                }),
+                &DeviceIdentity::generate(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let limits = MediaLimits {
+        fresh_secs: -60,
+        ..MediaLimits::default()
+    };
+
+    let uploader = minted([21; 16], [22; 32], false).await;
+    let kept = Upload::with_token(&relay, 1000, uploader);
+    kept.send().await;
+    let removed = kept.sibling(1000);
+    removed.send().await;
+    let doomed = |upload: &Upload| {
+        let store = store.clone();
+        let (note, object) = (upload.note.encode(), upload.media.object.encode());
+        async move {
+            store
+                .media(&note, &object)
+                .await
+                .unwrap()
+                .map(|row| row.doomed)
+        }
+    };
+
+    // A writable device asking for status still makes the object wanted.
+    compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+    assert_eq!(doomed(&removed).await, Some(true));
+    assert!(removed.status().await.unwrap().committed);
+    assert_eq!(doomed(&removed).await, Some(false));
+
+    // Doomed again, and asked about by a token that may only read.
+    compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+    assert_eq!(doomed(&removed).await, Some(true));
+    let reader = minted([23; 16], [24; 32], true).await;
+    let response = reqwest::Client::new()
+        .get(removed.url("/status"))
+        .bearer_auth(&reader)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status: MediaStatus = response.json().await.unwrap();
+    assert!(status.committed);
+    assert_eq!(
+        doomed(&removed).await,
+        Some(true),
+        "a read-only status read extended the doom"
+    );
 }
 
 /// #34: expiring removes the rows *and* the bytes behind them. A committed

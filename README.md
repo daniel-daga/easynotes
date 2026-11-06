@@ -207,6 +207,7 @@ variable:
 | `RELAY_ADDR` | `127.0.0.1:8080` | Listen address (the Docker image sets `0.0.0.0:8080`) |
 | `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
 | `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
+| `RELAY_TOKEN_TTL_SECS` | `900` | Lifetime of a signed relay token, in whole seconds; a positive integer, and an invalid or zero value stops the relay. It is the upper bound on revocation and read-only changes reaching an open socket |
 | `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/decisions.md#adr-0028)) |
 | `RELAY_TOKENS` | unset (off) | `on` accepts a per-device access token, `<id>.<secret>`, at the handshake, checked against the relay's store ([ADR 0038](docs/decisions.md#adr-0038)); with no `RELAY_ACCESS_KEYS` it is the only way in |
 | `RELAY_ADMIN_ADDR` | unset | Private listener for billing's token API and `easynotes-relay token` (e.g. `127.0.0.1:9091`); keep it on loopback or a private network |

@@ -422,7 +422,10 @@ docker exec -e RELAY_ADMIN_ADDR=127.0.0.1:9091 \
 
 `easynotes-relay token revoke <id>` ends it at once, `token read-only <id>
 [on|off]` makes it read history but not write, and `token unbind <id>` returns
-it to an unclaimed link. A token belongs to the first device that uses it; a
+it to an unclaimed link. `unbind` forgets the device key so a reinstall or a
+link can bind again; it does not evict a device that is already connected.
+`revoke` is the eviction, and an open socket closes within
+`RELAY_TOKEN_TTL_SECS`. A token belongs to the first device that uses it; a
 second device presenting the same one is refused. When a household lapses, mark
 its tokens read-only for 30 days and then revoke them: the relay has no billing
 code and cannot tell a lapsed household from an active one, so that switch is
