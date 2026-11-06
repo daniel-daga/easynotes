@@ -25,6 +25,11 @@ use std::sync::Arc;
 /// that dead rows do not accumulate for ever.
 const REVOKED_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// How long an unbound token's link stays usable. A link can leak before the
+/// device that owns it claims it, so minting and unbinding both start this
+/// clock; a claimed token lives until it is revoked ([ADR 0038]).
+const UNBOUND_TTL_SECS: i64 = 24 * 60 * 60;
+
 /// The admin listener's routes, behind `secret`.
 pub fn router(state: Arc<AppState>, secret: RelayAccess) -> Router {
     Router::new()
@@ -101,9 +106,10 @@ async fn create(
     }
     let mut bytes = [0u8; 32];
     easynotes_core::crypto::random_bytes(&mut bytes);
+    let expires_at = crate::auth::unix_now() as i64 + UNBOUND_TTL_SECS;
     match state
         .store
-        .create_access_token(&body.id, &bytes, None)
+        .create_access_token(&body.id, &bytes, Some(expires_at))
         .await
         .map_err(failed)?
     {
@@ -191,7 +197,12 @@ async fn unbind(
     {
         return Err(StatusCode::NOT_FOUND);
     }
-    state.store.unbind_access_token(&id).await.map_err(failed)?;
+    let expires_at = crate::auth::unix_now() as i64 + UNBOUND_TTL_SECS;
+    state
+        .store
+        .unbind_access_token(&id, expires_at)
+        .await
+        .map_err(failed)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

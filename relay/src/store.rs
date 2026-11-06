@@ -188,9 +188,10 @@ pub trait RelayStore: Send + Sync + 'static {
     /// A missing token is a no-op.
     async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()>;
 
-    /// Drop the binding, so the token can be claimed by a device again. A
-    /// missing token is a no-op.
-    async fn unbind_access_token(&self, id: &str) -> Result<()>;
+    /// Drop the binding and set the token's link expiry to `expires_at`, so it
+    /// can be claimed by a device again but not for ever. A missing token is a
+    /// no-op.
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()>;
 
     /// Revoke at `now`. `true` if the token exists, even if it was revoked
     /// already, and then the first time is kept. `false` if there is no such
@@ -945,9 +946,10 @@ impl RelayStore for MemoryStore {
         Ok(())
     }
 
-    async fn unbind_access_token(&self, id: &str) -> Result<()> {
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()> {
         if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
             token.device_key = None;
+            token.expires_at = Some(expires_at);
         }
         Ok(())
     }
@@ -1917,9 +1919,10 @@ impl RelayStore for PostgresStore {
         Ok(())
     }
 
-    async fn unbind_access_token(&self, id: &str) -> Result<()> {
-        sqlx::query("UPDATE access_tokens SET device_key = NULL WHERE id = $1")
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()> {
+        sqlx::query("UPDATE access_tokens SET device_key = NULL, expires_at = $2 WHERE id = $1")
             .bind(id)
+            .bind(expires_at)
             .execute(&self.pool)
             .await
             .map_err(pg)?;
@@ -2222,7 +2225,10 @@ mod access_token_tests {
         store.set_access_token_read_only(id, true).await.unwrap();
         assert!(store.access_token(id).await.unwrap().unwrap().read_only);
 
-        store.unbind_access_token(id).await.unwrap();
+        store.unbind_access_token(id, 1_700_000_300).await.unwrap();
+        let unbound = store.access_token(id).await.unwrap().unwrap();
+        assert_eq!(unbound.device_key, None);
+        assert_eq!(unbound.expires_at, Some(1_700_000_300));
         assert!(
             store.bind_access_token(id, &[9u8; 32]).await.unwrap(),
             "an unbound token could not be claimed"

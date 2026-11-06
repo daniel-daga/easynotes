@@ -242,11 +242,10 @@ async fn a_token_is_created_bound_and_revoked() {
     store.set_access_token_read_only(&id, true).await.unwrap();
     assert!(store.access_token(&id).await.unwrap().unwrap().read_only);
 
-    store.unbind_access_token(&id).await.unwrap();
-    assert_eq!(
-        store.access_token(&id).await.unwrap().unwrap().device_key,
-        None
-    );
+    store.unbind_access_token(&id, 1_700_000_250).await.unwrap();
+    let unbound = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(unbound.device_key, None);
+    assert_eq!(unbound.expires_at, Some(1_700_000_250));
     assert!(
         store.bind_access_token(&id, &[10u8; 32]).await.unwrap(),
         "an unbound token could not be claimed"

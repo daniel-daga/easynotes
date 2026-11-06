@@ -93,6 +93,9 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// How long an unbound link is good for, as `admin::create` and `unbind` set it.
+const UNBOUND_TTL_SECS: i64 = 24 * 60 * 60;
+
 #[tokio::test]
 async fn a_call_without_the_right_bearer_is_refused() {
     let admin = admin().await;
@@ -112,6 +115,7 @@ async fn a_call_without_the_right_bearer_is_refused() {
 async fn create_is_idempotent_and_a_revoked_id_conflicts() {
     let admin = admin().await;
     let id = token_id(2);
+    let minted_at = now();
 
     let first = admin.create(&id).await;
     assert_eq!(first.status(), StatusCode::CREATED);
@@ -121,6 +125,10 @@ async fn create_is_idempotent_and_a_revoked_id_conflicts() {
     let row = admin.store.access_token(&id).await.unwrap().unwrap();
     assert_eq!(row.secret, bytes);
     assert_eq!(row.revoked_at, None);
+    assert!(
+        (row.expires_at.unwrap() - (minted_at + UNBOUND_TTL_SECS)).abs() <= 5,
+        "a fresh token did not start its 24-hour link life"
+    );
 
     let again = admin.create(&id).await;
     assert_eq!(again.status(), StatusCode::OK);
@@ -181,20 +189,30 @@ async fn read_only_and_unbind_change_the_row_and_missing_ids_are_404() {
             .read_only
     );
 
-    assert!(admin.store.bind_access_token(&id, &[9; 32]).await.unwrap());
-    assert_eq!(admin.unbind(&id).await.status(), StatusCode::NO_CONTENT);
+    let unbind_id = token_id(6);
+    assert!(admin
+        .store
+        .create_access_token(&unbind_id, &[7; 32], Some(0))
+        .await
+        .unwrap());
+    assert!(admin
+        .store
+        .bind_access_token(&unbind_id, &[9; 32])
+        .await
+        .unwrap());
+    let rebound_at = now();
     assert_eq!(
-        admin
-            .store
-            .access_token(&id)
-            .await
-            .unwrap()
-            .unwrap()
-            .device_key,
-        None
+        admin.unbind(&unbind_id).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let unbound = admin.store.access_token(&unbind_id).await.unwrap().unwrap();
+    assert_eq!(unbound.device_key, None);
+    assert!(
+        (unbound.expires_at.unwrap() - (rebound_at + UNBOUND_TTL_SECS)).abs() <= 5,
+        "unbinding left the old link expiry in place"
     );
 
-    let missing = token_id(6);
+    let missing = token_id(7);
     assert_eq!(
         admin.set_read_only(&missing, true).await.status(),
         StatusCode::NOT_FOUND

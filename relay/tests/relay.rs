@@ -1314,7 +1314,7 @@ impl RelayStore for Unreachable {
     ) -> easynotes_relay::error::Result<()> {
         gone()
     }
-    async fn unbind_access_token(&self, _: &str) -> easynotes_relay::error::Result<()> {
+    async fn unbind_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<()> {
         gone()
     }
     async fn revoke_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<bool> {
