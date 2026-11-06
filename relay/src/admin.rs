@@ -218,7 +218,7 @@ async fn unbind(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn is_token_id(id: &str) -> bool {
+pub(crate) fn is_token_id(id: &str) -> bool {
     URL_SAFE_NO_PAD
         .decode(id)
         .is_ok_and(|bytes| bytes.len() == 16)

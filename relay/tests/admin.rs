@@ -6,7 +6,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::relay_access::{RelayAccess, RelayToken};
-use easynotes_relay::cli::AdminClient;
+use easynotes_relay::cli::{AdminClient, Command};
 use easynotes_relay::{MemoryStore, Relay, RelayStore};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -436,11 +436,81 @@ fn the_cli_refuses_to_guess_the_admin_listener() {
 }
 
 #[tokio::test]
-async fn the_cli_reaches_an_unspecified_listener_on_loopback() {
+async fn the_cli_maps_an_unspecified_listener_to_loopback() {
+    let secret = RelayAccess::random().encode();
+    // Port 1, where nothing listens. What the call fails on is the mapping, not
+    // a lucky connection, so the error must name the loopback address.
+    for (any, loopback) in [("0.0.0.0:1", "127.0.0.1:1"), ("[::]:1", "[::1]:1")] {
+        let client = AdminClient::new(Some(any), Some(&secret)).unwrap();
+        let error = client.revoke(&token_id(15)).await.unwrap_err().to_string();
+        assert!(error.contains(loopback), "{any} went to {error}");
+    }
+}
+
+#[test]
+fn the_token_command_parses_its_arguments() {
+    fn parse(args: &[&str]) -> Result<Command, anyhow::Error> {
+        easynotes_relay::cli::parse(args.iter().map(|arg| arg.to_string()))
+    }
+    assert!(parse(&[]).is_err(), "no subcommand");
+    assert!(parse(&["revoke"]).is_err(), "revoke with no ID");
+    assert!(
+        parse(&["unbind", "id", "stray"]).is_err(),
+        "a stray fourth argument"
+    );
+    assert!(parse(&["frobnicate"]).is_err(), "an unknown subcommand");
+    assert!(parse(&["read-only", "id", "maybe"]).is_err());
+
+    assert!(matches!(parse(&["create"]).unwrap(), Command::Create));
+    assert!(matches!(
+        parse(&["read-only", "id"]).unwrap(),
+        Command::ReadOnly(id, true) if id == "id"
+    ));
+    assert!(matches!(
+        parse(&["read-only", "id", "off"]).unwrap(),
+        Command::ReadOnly(id, false) if id == "id"
+    ));
+}
+
+#[tokio::test]
+async fn a_token_id_cannot_carry_a_path() {
     let admin = admin().await;
-    let any = format!("0.0.0.0:{}", admin.addr.port());
-    let client = AdminClient::new(Some(&any), Some(&admin.secret)).unwrap();
-    assert!(client.create().await.is_ok());
+    let client = admin.client();
+    let real = token_id(16);
+    assert_eq!(admin.create(&real).await.status(), StatusCode::CREATED);
+
+    let junk = [
+        format!("junk/../{real}"),
+        "a/b".to_owned(),
+        "short".to_owned(),
+        "../x".to_owned(),
+    ];
+    for id in &junk {
+        for error in [
+            client.revoke(id).await.unwrap_err().to_string(),
+            client.read_only(id, true).await.unwrap_err().to_string(),
+            client.unbind(id).await.unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("22 base64url characters"), "{id}: {error}");
+        }
+    }
+    assert_eq!(
+        admin
+            .store
+            .access_token(&real)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked_at,
+        None,
+        "a junk ID reached a real token"
+    );
+
+    // A valid ID is still accepted; there is no row for this one, so the
+    // listener says 404 and the client reports it.
+    let missing = client.revoke(&token_id(17)).await.unwrap_err().to_string();
+    assert!(missing.contains("404"), "{missing}");
+    client.revoke(&real).await.unwrap();
 }
 
 #[tokio::test]

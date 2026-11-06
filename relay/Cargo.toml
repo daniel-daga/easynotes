@@ -14,9 +14,6 @@ base64 = "0.23.1"
 easynotes-core = { version = "0.1.0", path = "../core", default-features = false }
 ed25519-dalek = "2.2.0"
 futures-util = "0.3.34"
-# `token` commands ask the relay's own admin listener. Already in the tree for
-# the core's sync client and the tests.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 # Invite tokens and owner secrets are kept as hashes. Already in the tree under
@@ -36,6 +33,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # The tests drive the relay with real cores over a real socket, so they need the
 # full core including its sync client.
 easynotes-core = { path = "../core", features = ["sync-native", "test-support"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 tempfile = "3"
 # The compatibility fixtures leave each SQLite store as one self-contained file

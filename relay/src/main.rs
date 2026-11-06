@@ -84,7 +84,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::relay_access::RelayAccess;
-use easynotes_relay::cli::AdminClient;
+use easynotes_relay::cli::{AdminClient, Command};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{
     Access, DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
@@ -494,27 +494,13 @@ async fn check(addr: SocketAddr) -> anyhow::Result<()> {
 /// `easynotes-relay token ...`: the operator's hand on the admin listener. Kept
 /// out of the serve path, because it needs neither a store nor `RELAY_ADDR`.
 async fn token() -> anyhow::Result<()> {
-    const USAGE: &str =
-        "usage: easynotes-relay token create | revoke <id> | read-only <id> [on|off] | unbind <id>";
-    let mut args = std::env::args().skip(2);
-    let command = args.next().ok_or_else(|| anyhow::anyhow!(USAGE))?;
-    // The fourth slot is always empty, so a stray argument is a usage error
-    // rather than silently ignored.
-    match (command.as_str(), args.next(), args.next(), args.next()) {
-        ("create", None, None, None) => {
-            println!("{}", AdminClient::from_env()?.create().await?.encode())
-        }
-        ("revoke", Some(id), None, None) => AdminClient::from_env()?.revoke(&id).await?,
-        ("unbind", Some(id), None, None) => AdminClient::from_env()?.unbind(&id).await?,
-        ("read-only", Some(id), state, None) => {
-            let read_only = match state.as_deref() {
-                None | Some("on") => true,
-                Some("off") => false,
-                Some(other) => anyhow::bail!("token read-only takes on or off, not {other:?}"),
-            };
-            AdminClient::from_env()?.read_only(&id, read_only).await?
-        }
-        _ => anyhow::bail!(USAGE),
+    let command = easynotes_relay::cli::parse(std::env::args().skip(2))?;
+    let client = AdminClient::from_env()?;
+    match command {
+        Command::Create => println!("{}", client.create().await?.encode()),
+        Command::Revoke(id) => client.revoke(&id).await?,
+        Command::ReadOnly(id, read_only) => client.read_only(&id, read_only).await?,
+        Command::Unbind(id) => client.unbind(&id).await?,
     }
     Ok(())
 }
