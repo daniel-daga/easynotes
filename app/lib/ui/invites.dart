@@ -372,6 +372,13 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   });
 
   Future<void> _send(Invite invite) async {
+    // A link made before this screen was open has no guest token cached, and
+    // the owner's own token would bind the guest to this device. Mint one now,
+    // exactly as a new link does; the minted one is reused if it is there.
+    if (!_guestAccess.containsKey(invite.id)) {
+      final guest = await _accessForGuest();
+      if (guest != null) _guestAccess[invite.id] = guest;
+    }
     // One link, and everything needed to join: the note, the sync server it
     // lives on, and the key that server asks for. Somebody who taps it is in;
     // somebody who pastes the whole message rather than tapping it still is,

@@ -523,4 +523,88 @@ void main() {
       reason: 'an invite nobody was sent would stay open',
     );
   });
+
+  testWidgets('re-sending an old link mints a guest token', (tester) async {
+    // The invite was made before this screen was open — after a restart, say —
+    // so nothing is cached and the owner's own token is what it shows.
+    final owner = _token(32);
+    final guest = '${_token(16, 3)}.${_token(32, 4)}';
+    final requests = <http.Request>[];
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: owner,
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((request) async {
+              requests.add(request);
+              return http.Response('{"access":"$guest"}', 200);
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    final link = tester
+        .widget<Text>(find.byKey(Key('invite-link-${invite.id}')))
+        .data!;
+    expect(relayFromInvite(link)?.access, guest);
+    expect(link, isNot(contains(owner)));
+    expect(requests.single.url.path, '/v1/guest-token');
+    expect(requests.single.headers['authorization'], 'Bearer $owner');
+  });
+
+  testWidgets('re-sending with billing off keeps the profile token', (
+    tester,
+  ) async {
+    final owner = _token(32);
+    var asked = 0;
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: owner,
+          billing: BillingClient(
+            base: '',
+            client: MockClient((_) async {
+              asked++;
+              return http.Response('{}', 200);
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final before = tester
+        .widget<Text>(find.byKey(Key('invite-link-${invite.id}')))
+        .data;
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    final link = tester
+        .widget<Text>(find.byKey(Key('invite-link-${invite.id}')))
+        .data!;
+    // Same link, the profile's key in place, and billing never asked.
+    expect(link, before);
+    expect(link, '$_relay/#${invite.id}');
+    expect(asked, 0);
+  });
 }
