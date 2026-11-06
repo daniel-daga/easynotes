@@ -286,21 +286,36 @@ String relayLinkFor(String url, String access) =>
     Uri.decodeComponent(fragment.substring(_accessFragment.length)),
   );
   if (access == null) {
-    throw FormatException('The access key in that link is not a valid key.');
+    throw FormatException('The access key or token in that link is not valid.');
   }
   return (url: canonicalRelayUrl(raw.substring(0, hash)), access: access);
 }
 
-/// [input] as the core reads an access key — 32 bytes, base64url with no
-/// padding — or null if it is not one.
+/// [input] as the core reads an access key or a device token — a 32-byte key
+/// on its own, or a 16-byte ID and that key around a dot, base64url with no
+/// padding — or null if it is neither.
 String? normalizeAccessKey(String input) {
   final raw = input.trim().replaceAll('=', '');
-  if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(raw)) return null;
+  final parts = raw.split('.');
+  if (parts.length == 2) {
+    return _isBase64Url(parts[0], 16) && _isBase64Url(parts[1], 32)
+        ? raw
+        : null;
+  }
+  if (parts.length != 1) return null;
+  return _isBase64Url(raw, 32) ? raw : null;
+}
+
+/// Whether [value] is base64url for exactly [bytes] bytes.
+bool _isBase64Url(String value, int bytes) {
+  if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(value)) return false;
   try {
-    final bytes = base64Url.decode('$raw=');
-    return bytes.length == 32 ? raw : null;
+    final padded = value.padRight((value.length + 3) ~/ 4 * 4, '=');
+    final decoded = base64Url.decode(padded);
+    return decoded.length == bytes &&
+        base64Url.encode(decoded).replaceAll('=', '') == value;
   } on FormatException {
-    return null;
+    return false;
   }
 }
 

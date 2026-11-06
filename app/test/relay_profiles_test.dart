@@ -45,6 +45,8 @@ void main() {
 
   group('relay links', () {
     final key = base64Url.encode(List<int>.filled(32, 1)).replaceAll('=', '');
+    final id = base64Url.encode(List<int>.filled(16, 2)).replaceAll('=', '');
+    final token = '$id.$key';
 
     test('an address alone has no key', () {
       final read = parseRelayLink('wss://Relay.Example/');
@@ -75,6 +77,33 @@ void main() {
       expect(normalizeAccessKey(' $key= '), key);
       expect(normalizeAccessKey(key.substring(1)), isNull);
       expect(normalizeAccessKey('${key.substring(1)}!'), isNull);
+    });
+
+    test('a device token is an id and a secret around a dot', () {
+      expect(token, matches(RegExp(r'^[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$')));
+      expect(normalizeAccessKey(token), token);
+      expect(normalizeAccessKey(' $token= '), token);
+      expect(normalizeAccessKey(key), key);
+
+      final link = relayLinkFor('https://relay.example', token);
+      expect(link, 'https://relay.example/#access=$token');
+      final read = parseRelayLink(link);
+      expect(read.url, 'https://relay.example');
+      expect(read.access, token);
+    });
+
+    test('a token that is not an id and a secret is refused', () {
+      final shortId = base64Url
+          .encode(List<int>.filled(15, 2))
+          .replaceAll('=', '');
+      final shortSecret = base64Url
+          .encode(List<int>.filled(31, 1))
+          .replaceAll('=', '');
+      expect(normalizeAccessKey('$shortId.$key'), isNull);
+      expect(normalizeAccessKey('$id.$shortSecret'), isNull);
+      expect(normalizeAccessKey('.$key'), isNull);
+      expect(normalizeAccessKey('$id.'), isNull);
+      expect(normalizeAccessKey('$id.$key.$id'), isNull);
     });
   });
 

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:easynotes/core/invite_links.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -44,6 +46,16 @@ void main() {
     expect(link, withRelay);
     expect(relayFromInvite(link), (url: relay, access: access));
     // The core still reads the secret: it is after the last #.
+    expect(link.substring(link.lastIndexOf('#') + 1), secret);
+  });
+
+  test('a device token is carried as it is', () {
+    final token =
+        '${base64Url.encode(List<int>.filled(16, 3)).replaceAll('=', '')}'
+        '.${base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '')}';
+    final link = inviteLinkWithRelay(native, (url: relay, access: token));
+    expect(link, 'easynotes://join#relay=$relay;access=$token#$secret');
+    expect(relayFromInvite(link), (url: relay, access: token));
     expect(link.substring(link.lastIndexOf('#') + 1), secret);
   });
 
