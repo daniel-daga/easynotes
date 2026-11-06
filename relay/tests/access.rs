@@ -356,6 +356,78 @@ async fn a_bound_token_outlives_its_link_expiry() {
     refused(authenticate(&http, Some(&token), &device).await);
 }
 
+#[tokio::test]
+async fn revoking_one_devices_token_leaves_another_device_on_the_note_working() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let (note, key) = (NoteId::random(), NoteKey::random());
+    let (a, b) = (DeviceIdentity::generate(), DeviceIdentity::generate());
+    let a_token = mint(&*store, [48; 16], [49; 32], None).await;
+    let b_token = mint(&*store, [50; 16], [51; 32], None).await;
+    let a_session = authenticate(&http, Some(&a_token), &a).await.unwrap();
+    let b_session = authenticate(&http, Some(&b_token), &b).await.unwrap();
+
+    // A writes the note, and B reads what A wrote and adds its own line.
+    let mut a_socket = NoteSocket::connect(&relay.ws_base(), &a_session, note, 0)
+        .await
+        .unwrap();
+    let first = Envelope::seal(&a, note, &key, 0, b"from A")
+        .unwrap()
+        .encode();
+    a_socket.append(&first).await.unwrap();
+    loop {
+        match a_socket.next().await.unwrap() {
+            Some(Incoming::Envelope { envelope, .. }) if envelope == first => break,
+            Some(_) => {}
+            None => panic!("closed before A's append settled"),
+        }
+    }
+
+    let mut b_socket = NoteSocket::connect(&relay.ws_base(), &b_session, note, 0)
+        .await
+        .unwrap();
+    assert_eq!(history(&mut b_socket).await, vec![first.clone()]);
+    let second = Envelope::seal(&b, note, &key, 1, b"from B")
+        .unwrap()
+        .encode();
+    b_socket.append(&second).await.unwrap();
+    loop {
+        match b_socket.next().await.unwrap() {
+            Some(Incoming::Envelope { envelope, .. }) if envelope == second => break,
+            Some(_) => {}
+            None => panic!("closed before B's append settled"),
+        }
+    }
+    assert_eq!(store.head(&note.encode()).await.unwrap(), 2);
+
+    // B loses its token; the next handshake is refused. A is untouched: it
+    // opens a fresh session, reads both lines and writes a third.
+    assert!(store
+        .revoke_access_token(b_token.id.as_deref().unwrap(), 1)
+        .await
+        .unwrap());
+    refused(authenticate(&http, Some(&b_token), &b).await);
+
+    let a_session = authenticate(&http, Some(&a_token), &a).await.unwrap();
+    let mut a_socket = NoteSocket::connect(&relay.ws_base(), &a_session, note, 0)
+        .await
+        .unwrap();
+    assert_eq!(history(&mut a_socket).await, vec![first, second]);
+    let third = Envelope::seal(&a, note, &key, 2, b"still A")
+        .unwrap()
+        .encode();
+    a_socket.append(&third).await.unwrap();
+    loop {
+        match a_socket.next().await.unwrap() {
+            Some(Incoming::Envelope { envelope, .. }) if envelope == third => break,
+            Some(_) => {}
+            None => panic!("closed before A's last append settled"),
+        }
+    }
+    assert_eq!(store.head(&note.encode()).await.unwrap(), 3);
+}
+
 /// A token request by hand: `device` signs `nonce` properly, and presents
 /// whatever `proof` it is given.
 async fn token_with(http: &str, device: &DeviceIdentity, proof: &str) -> StatusCode {

@@ -50,6 +50,11 @@ void main() {
   // A relay that lets in only holders of its access key (ADR 0028).
   Process? gatedRelay;
   late String gatedRelayUrl;
+  // A relay that lets in only holders of a per-device access token (ADR 0038),
+  // and the private admin listener the token commands below use.
+  Process? tokenRelay;
+  late String tokenRelayUrl;
+  late String tokenAdminAddr;
 
   setUpAll(() async {
     if (skip != null) return;
@@ -62,6 +67,10 @@ void main() {
       relayPath,
       access: _relayKey,
     );
+    (tokenRelay, tokenRelayUrl, tokenAdminAddr) = await _startTokenRelay(
+      relayPath,
+      _adminSecret,
+    );
   });
 
   tearDownAll(() {
@@ -70,6 +79,7 @@ void main() {
     relay?.kill();
     otherRelay?.kill();
     gatedRelay?.kill();
+    tokenRelay?.kill();
   });
 
   /// A device: its own directory, its own library, connected to the relay the
@@ -1012,6 +1022,46 @@ void main() {
     });
   }, skip: skip);
 
+  group('a relay with per-device access tokens', () {
+    test('a token from the admin listener opens the relay, and a revoked one '
+        'is refused with the access sentence', () async {
+      final token = await _tokenCommand(
+        relayPath!,
+        tokenAdminAddr,
+        _adminSecret,
+        ['create'],
+      );
+      expect(isDeviceToken(token), isTrue, reason: 'got: $token');
+
+      // The bridge reads `<id>.<secret>`, and the handshake claims it for
+      // this device.
+      final library = await device(relay: tokenRelayUrl, access: token);
+      final note = await library.openNote(await library.createNote());
+      addTearDown(note.dispose);
+      await note.addItem('milk');
+      await synced(note, 'the device with a token');
+
+      // The same device, after its token is revoked, is refused at the next
+      // handshake with the sentence the app shows for access it lacks.
+      await library.disconnect();
+      await _tokenCommand(relayPath, tokenAdminAddr, _adminSecret, [
+        'revoke',
+        token.split('.').first,
+      ]);
+      await library.connect(tokenRelayUrl, access: token);
+      await _untilStatus(
+        library.watchSync(),
+        () => library.syncStatus,
+        (status) =>
+            status.lastError?.contains(
+              'This sync server needs an access key',
+            ) ??
+            false,
+        'a revoked token was not refused',
+      );
+    });
+  }, skip: skip);
+
   group('sharing with another person by invite', () {
     /// A device that can share: an account, and a name.
     Future<RustNoteLibrary> person(String name) async {
@@ -1427,6 +1477,71 @@ Future<void> _untilNotes(
 /// generate one with `easynotes-relay access-key`.
 final _relayKey = base64Url.encode(List<int>.filled(32, 7)).replaceAll('=', '');
 
+/// The token relay's admin secret: 32 bytes, base64url, as an operator would
+/// set it in `RELAY_ADMIN_SECRET`.
+final _adminSecret = base64Url
+    .encode(List<int>.filled(32, 11))
+    .replaceAll('=', '');
+
+/// Start a relay that takes per-device access tokens, with the private admin
+/// listener the token commands use. Returns the process, the relay's address
+/// and the admin listener's.
+Future<(Process, String, String)> _startTokenRelay(
+  String path,
+  String secret,
+) async {
+  final started = await Process.start(
+    path,
+    const [],
+    environment: {
+      'RELAY_ADDR': '127.0.0.1:0',
+      'RELAY_TOKENS': 'on',
+      'RELAY_ADMIN_ADDR': '127.0.0.1:0',
+      'RELAY_ADMIN_SECRET': secret,
+      'RELAY_RATE_LIMIT': 'off',
+      'RUST_LOG': 'easynotes_relay=info',
+      'NO_COLOR': '1',
+    },
+  );
+  final addresses = <String, String>{};
+  final listening = Completer<void>();
+  started.stdout
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())
+      .map(_plainLine)
+      .listen((line) {
+        final address = _addressIn(line);
+        if (address == null) return;
+        if (line.contains('relay listening')) addresses['relay'] = address;
+        if (line.contains('admin listening')) addresses['admin'] = address;
+        if (addresses.length == 2 && !listening.isCompleted) {
+          listening.complete();
+        }
+      });
+  started.stderr.drain<void>();
+  await listening.future.timeout(patience);
+  return (started, 'http://${addresses['relay']}', addresses['admin']!);
+}
+
+/// Run `easynotes-relay token ...` against the suite's token relay, and return
+/// what it printed. `token create` prints the `<id>.<secret>` to hand over.
+Future<String> _tokenCommand(
+  String path,
+  String adminAddr,
+  String secret,
+  List<String> args,
+) async {
+  final result = await Process.run(
+    path,
+    ['token', ...args],
+    environment: {'RELAY_ADMIN_ADDR': adminAddr, 'RELAY_ADMIN_SECRET': secret},
+  );
+  if (result.exitCode != 0) {
+    fail('easynotes-relay token ${args.first} failed: ${result.stderr}');
+  }
+  return (result.stdout as String).trim();
+}
+
 /// Start a relay on a port the OS picks, and return it with its address.
 ///
 /// Port 0: the OS picks, the relay logs what it got, and tests can run in
@@ -1459,7 +1574,7 @@ Future<String> _listeningAddress(Process relay) async {
       .transform(utf8.decoder)
       .transform(const LineSplitter())
       // The log is decorated for a terminal; strip that before matching.
-      .map((l) => l.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), ''))
+      .map(_plainLine)
       .listen((l) {
         if (!listening.isCompleted && l.contains('relay listening')) {
           listening.complete(l);
@@ -1467,12 +1582,20 @@ Future<String> _listeningAddress(Process relay) async {
       });
   relay.stderr.drain<void>();
   final line = await listening.future.timeout(patience);
-  final addr = RegExp(r'addr=([\d.]+:\d+)').firstMatch(line);
+  final addr = _addressIn(line);
   if (addr == null) {
     throw StateError('could not read the relay address from: $line');
   }
-  return addr.group(1)!;
+  return addr;
 }
+
+/// A relay log line without the terminal's colour codes.
+String _plainLine(String line) =>
+    line.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), '');
+
+/// The `addr=` a relay log line carries, if it carries one.
+String? _addressIn(String line) =>
+    RegExp(r'addr=([\d.]+:\d+)').firstMatch(line)?.group(1);
 
 Future<void> _until(
   Stream<NoteView> views,

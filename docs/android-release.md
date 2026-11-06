@@ -53,6 +53,31 @@ The two URLs are what *About and privacy* shows (`lib/ui/about_screen.dart`).
 A build without them says it was not published with a policy, which is right
 for a test build and wrong for a store.
 
+## Billing for a hosted relay
+
+A hosted relay mints a per-device access token ([ADR
+0038](decisions.md#adr-0038)) rather than handing out one shared key. Point a
+build at the billing service with:
+
+```sh
+--dart-define=EASYNOTES_BILLING=https://billing.example.org
+```
+
+Without the define `billingBase` is empty, no request is made, and the app uses
+the profile's own access key — the self-hosted behaviour. The address must be
+`https://`; plain `http://` is accepted only on loopback for development. The
+app's whole contract with the service is:
+
+- `POST /v1/guest-token`, for someone a note is shared with;
+- `POST /v1/device-token`, for a device being added to the account;
+- both with `Authorization: Bearer <device token>`, and both answering
+  `{"access":"<id>.<secret>"}`.
+
+The app sends no note, account or recovery phrase, and does not follow a
+redirect with that bearer token. The release and TestFlight workflows pass
+`EASYNOTES_BILLING` from the repository variable of the same name, so the
+hosted build sets it and a build without it keeps the self-hosted behaviour.
+
 ## Exact alarms and the Play declaration
 
 The app asks for `SCHEDULE_EXACT_ALARM` so a reminder set for 09:00 fires at

@@ -208,6 +208,9 @@ variable:
 | `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
 | `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
 | `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/decisions.md#adr-0028)) |
+| `RELAY_TOKENS` | unset (off) | `on` accepts a per-device access token, `<id>.<secret>`, at the handshake, checked against the relay's store ([ADR 0038](docs/decisions.md#adr-0038)); with no `RELAY_ACCESS_KEYS` it is the only way in |
+| `RELAY_ADMIN_ADDR` | unset | Private listener for billing's token API and `easynotes-relay token` (e.g. `127.0.0.1:9091`); keep it on loopback or a private network |
+| `RELAY_ADMIN_SECRET` | unset | Base64url 32-byte bearer secret for that listener; required with it, and never one of `RELAY_ACCESS_KEYS` |
 | `RELAY_WRITE_BURST` | 200 MiB | Bytes one client address may write at once |
 | `RELAY_WRITE_PER_HOUR` | 200 MiB/hr | Sustained write budget per address (`off` for none) |
 | `RELAY_STORAGE_CEILING` | 16 GiB | Total live-log bytes before the relay refuses new notes (`off` for none) |
@@ -221,7 +224,15 @@ variable:
 
 Generate keys with `easynotes-relay access-key` for access keys, and
 `openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'` for the token signing
-key.
+key and the admin secret.
+
+A relay with `RELAY_TOKENS=on` also takes a per-device token,
+`<id>.<secret>`. `easynotes-relay token create` prints one for a relay link or
+QR, `token revoke <id>` ends it, `token read-only <id> [on|off]` makes it read
+without writing, and `token unbind <id>` returns it to an unclaimed link. Those
+commands call the private admin listener, so `RELAY_ADMIN_ADDR` and
+`RELAY_ADMIN_SECRET` must be the relay's own. The admin listener is never a
+public route.
 
 The relay answers `/v1/health` (process up), `/v1/ready` (process up and
 database answering), and `/metrics`. `easynotes-relay check` asks `/v1/ready`

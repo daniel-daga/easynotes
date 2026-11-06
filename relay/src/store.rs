@@ -2160,7 +2160,68 @@ fn state_from_db(raw: i16) -> Result<RequestState> {
 
 #[cfg(test)]
 mod migration_tests {
-    use super::MIGRATIONS;
+    use super::{PostgresStore, MIGRATIONS};
+
+    /// Migration 5 only adds `access_tokens`; a database at 4 keeps every row.
+    /// The files run against a temporary schema of this test's own, so the
+    /// database the other Postgres tests share is never touched.
+    #[tokio::test]
+    async fn migration_five_leaves_existing_rows_alone() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL is not set");
+            return;
+        };
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        // Transaction-local, so this connection goes back to the pool with
+        // its search_path as it was, and the temporary schema goes with the
+        // rollback.
+        sqlx::raw_sql("SET LOCAL search_path TO pg_temp")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version < 5) {
+            sqlx::raw_sql(migration.sql)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO note_head (note_id, seq) VALUES ('kept', 1);
+             INSERT INTO note_log (note_id, seq, envelope)
+                 VALUES ('kept', 1, '\\x00'::bytea);
+             INSERT INTO media_objects
+                 (note_id, object_id, sealed_len, chunk_size, touched_at)
+                 VALUES ('kept', 'object', 1, 1, 1);
+             INSERT INTO invites (invite_id, token_hash, owner_hash, expires_at)
+                 VALUES ('kept', '\\x00'::bytea, '\\x00'::bytea, 1);",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(MIGRATIONS[4].sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        let kept: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM note_head),
+                    (SELECT count(*) FROM note_log),
+                    (SELECT count(*) FROM media_objects),
+                    (SELECT count(*) FROM invites)",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(kept, (1, 1, 1, 1), "migration 5 changed an older row");
+        let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM access_tokens")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(tokens, 0);
+        tx.rollback().await.unwrap();
+    }
 
     /// A gap or a repeat would make "applied up to N" mean something other
     /// than "applied 1 to N".
