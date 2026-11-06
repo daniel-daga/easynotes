@@ -5,6 +5,7 @@ pub mod access;
 pub mod admin;
 pub mod app;
 pub mod auth;
+pub mod cli;
 pub mod error;
 pub mod invite;
 pub mod join;

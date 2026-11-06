@@ -52,6 +52,13 @@
 //! whether it is ready (`/v1/ready`) and exits 0 if so, 1 if not. It is the
 //! container health check, which the slim runtime image has no `curl` for.
 //!
+//! `easynotes-relay token` mints and manages device tokens by hand, for a
+//! self-hosted relay with no billing to do it: `token create` prints
+//! `<id>.<secret>` for a relay link or QR, `token revoke <id>`, `token read-only
+//! <id> [on|off]` and `token unbind <id>`. It asks the relay's private admin
+//! listener (below) and needs no store and no `RELAY_ADDR`: what it prints is
+//! only real once the relay has stored it, so there is no local write.
+//!
 //! * `RELAY_DRAIN_SECONDS` — on `SIGTERM` or Ctrl-C, how long to let requests
 //!   in flight finish and sync sockets close before exiting anyway. Unset means
 //!   [`DEFAULT_DRAIN`]. Keep it under the grace period whatever stops the
@@ -77,6 +84,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use easynotes_core::relay_access::RelayAccess;
+use easynotes_relay::cli::AdminClient;
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{
     Access, DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
@@ -99,6 +107,18 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "easynotes_relay=info".into()),
         )
         .init();
+
+    // Before the address and the store: a token command neither serves nor
+    // keeps a row itself, and must not be stopped by a bad RELAY_ADDR.
+    if std::env::args().nth(1).as_deref() == Some("token") {
+        std::process::exit(match token().await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        });
+    }
 
     let addr: SocketAddr = std::env::var("RELAY_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -469,6 +489,34 @@ async fn check(addr: SocketAddr) -> anyhow::Result<()> {
         Some("200") => Ok(()),
         _ => anyhow::bail!("{addr} answered {status:?}"),
     }
+}
+
+/// `easynotes-relay token ...`: the operator's hand on the admin listener. Kept
+/// out of the serve path, because it needs neither a store nor `RELAY_ADDR`.
+async fn token() -> anyhow::Result<()> {
+    const USAGE: &str =
+        "usage: easynotes-relay token create | revoke <id> | read-only <id> [on|off] | unbind <id>";
+    let mut args = std::env::args().skip(2);
+    let command = args.next().ok_or_else(|| anyhow::anyhow!(USAGE))?;
+    // The fourth slot is always empty, so a stray argument is a usage error
+    // rather than silently ignored.
+    match (command.as_str(), args.next(), args.next(), args.next()) {
+        ("create", None, None, None) => {
+            println!("{}", AdminClient::from_env()?.create().await?.encode())
+        }
+        ("revoke", Some(id), None, None) => AdminClient::from_env()?.revoke(&id).await?,
+        ("unbind", Some(id), None, None) => AdminClient::from_env()?.unbind(&id).await?,
+        ("read-only", Some(id), state, None) => {
+            let read_only = match state.as_deref() {
+                None | Some("on") => true,
+                Some("off") => false,
+                Some(other) => anyhow::bail!("token read-only takes on or off, not {other:?}"),
+            };
+            AdminClient::from_env()?.read_only(&id, read_only).await?
+        }
+        _ => anyhow::bail!(USAGE),
+    }
+    Ok(())
 }
 
 /// Resolves on `SIGTERM` — what `docker stop` and systemd send — or on Ctrl-C.

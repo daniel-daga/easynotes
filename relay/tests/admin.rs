@@ -5,7 +5,8 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use easynotes_core::relay_access::RelayAccess;
+use easynotes_core::relay_access::{RelayAccess, RelayToken};
+use easynotes_relay::cli::AdminClient;
 use easynotes_relay::{MemoryStore, Relay, RelayStore};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
@@ -58,6 +59,13 @@ impl Admin {
     async fn unbind(&self, id: &str) -> reqwest::Response {
         self.call(&format!("/tokens/{id}/unbind"), Some(&self.secret), None)
             .await
+    }
+
+    /// The command-line client, pointed at this listener the way an operator's
+    /// environment would.
+    fn client(&self) -> AdminClient {
+        let addr = self.addr.to_string();
+        AdminClient::new(Some(&addr), Some(&self.secret)).unwrap()
     }
 }
 
@@ -326,4 +334,134 @@ async fn a_purge_drops_rows_revoked_more_than_thirty_days_ago() {
 
     assert!(admin.store.access_token(&recent).await.unwrap().is_some());
     assert!(admin.store.access_token(&live).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn the_cli_mints_a_token_the_relay_stored() {
+    let admin = admin().await;
+    let token = admin.client().create().await.unwrap();
+
+    let printed = token.encode();
+    assert_eq!(printed.matches('.').count(), 1);
+    assert_eq!(
+        RelayToken::decode(&printed).unwrap(),
+        token,
+        "the printed token would not parse"
+    );
+
+    let id = token.id.clone().unwrap();
+    let row = admin.store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(
+        RelayAccess::from_bytes(row.secret).encode(),
+        token.secret.encode(),
+        "the relay stored a different secret than the one printed"
+    );
+    assert_eq!(row.revoked_at, None);
+}
+
+#[tokio::test]
+async fn the_cli_revokes_makes_read_only_and_unbinds() {
+    let admin = admin().await;
+    let client = admin.client();
+    let id = token_id(13);
+    assert_eq!(admin.create(&id).await.status(), StatusCode::CREATED);
+    assert!(admin.store.bind_access_token(&id, &[3; 32]).await.unwrap());
+
+    client.read_only(&id, true).await.unwrap();
+    assert!(
+        admin
+            .store
+            .access_token(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .read_only
+    );
+    client.read_only(&id, false).await.unwrap();
+    assert!(
+        !admin
+            .store
+            .access_token(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .read_only
+    );
+
+    client.unbind(&id).await.unwrap();
+    assert_eq!(
+        admin
+            .store
+            .access_token(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .device_key,
+        None
+    );
+
+    client.revoke(&id).await.unwrap();
+    assert!(admin
+        .store
+        .access_token(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_some());
+}
+
+#[test]
+fn the_cli_refuses_to_guess_the_admin_listener() {
+    let secret = RelayAccess::random().encode();
+    assert!(AdminClient::new(None, Some(&secret)).is_err());
+    assert!(AdminClient::new(Some("  "), Some(&secret)).is_err());
+    assert!(AdminClient::new(Some("127.0.0.1:9091"), None).is_err());
+    assert!(AdminClient::new(Some("127.0.0.1:9091"), Some("not a secret")).is_err());
+
+    // The same two variables, as the binary reads them. Only this test touches
+    // them, and both are cleared again before it returns.
+    std::env::remove_var("RELAY_ADMIN_ADDR");
+    std::env::remove_var("RELAY_ADMIN_SECRET");
+    assert!(AdminClient::from_env().is_err(), "no address and no secret");
+    std::env::set_var("RELAY_ADMIN_ADDR", "127.0.0.1:9091");
+    assert!(
+        AdminClient::from_env().is_err(),
+        "an address with no secret was accepted"
+    );
+    std::env::set_var("RELAY_ADMIN_SECRET", &secret);
+    assert!(AdminClient::from_env().is_ok());
+    std::env::remove_var("RELAY_ADMIN_ADDR");
+    std::env::remove_var("RELAY_ADMIN_SECRET");
+}
+
+#[tokio::test]
+async fn the_cli_reaches_an_unspecified_listener_on_loopback() {
+    let admin = admin().await;
+    let any = format!("0.0.0.0:{}", admin.addr.port());
+    let client = AdminClient::new(Some(&any), Some(&admin.secret)).unwrap();
+    assert!(client.create().await.is_ok());
+}
+
+#[tokio::test]
+async fn the_cli_reports_a_refused_call_with_its_status_and_no_secret() {
+    let admin = admin().await;
+
+    let missing = admin
+        .client()
+        .revoke(&token_id(14))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("404"), "{missing}");
+
+    let wrong = RelayAccess::random().encode();
+    let addr = admin.addr.to_string();
+    let refused = AdminClient::new(Some(&addr), Some(&wrong)).unwrap();
+    let error = refused.unbind(&token_id(14)).await.unwrap_err().to_string();
+    assert!(error.contains("401"), "{error}");
+    assert!(
+        !error.contains(&wrong),
+        "the admin secret reached the error: {error}"
+    );
 }
