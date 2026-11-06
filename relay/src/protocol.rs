@@ -256,6 +256,11 @@ pub struct CreateInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
     /// The note key sealed for whoever claims the link, base64url. Optional:
     /// an older client sends none, and the join then waits for the owner's
     /// device as it always did.
@@ -284,6 +289,11 @@ pub struct JoinInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -303,6 +313,11 @@ pub struct PollInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +349,11 @@ pub struct SetPreGrant {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
     /// The sealed pre-grant, base64url.
     pub pre_grant: String,
 }
@@ -346,6 +366,11 @@ pub struct OwnInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -373,6 +398,11 @@ pub struct AnswerInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

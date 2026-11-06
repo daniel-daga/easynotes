@@ -6,6 +6,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use easynotes_core::account::RecoveryPhrase;
 use easynotes_core::attachment::seal::seal_whole;
 use easynotes_core::attachment::{ContentKey, Variant};
 use easynotes_core::crypto::{DeviceIdentity, DeviceSigner, Envelope, NoteKey};
@@ -13,6 +14,7 @@ use easynotes_core::error::CoreError;
 use easynotes_core::ids::{AttachmentId, NoteId};
 use easynotes_core::invite::InviteSecret;
 use easynotes_core::relay_access::{RelayAccess, RelayToken};
+use easynotes_core::sync::invite::Answer;
 use easynotes_core::sync::{authenticate, invite, DeviceSync, Incoming, Routed};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
@@ -481,6 +483,173 @@ async fn every_invite_call_needs_the_key_on_a_gated_relay() {
     invite::withdraw(&http, Some(&token), &secret, &owner)
         .await
         .unwrap();
+}
+
+/// A relay that takes both a static key and per-device tokens.
+async fn token_relay_with_key(store: Arc<dyn RelayStore>, key: &RelayAccess) -> Relay {
+    Relay::serve_with(
+        store,
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            access: Access::Keys(vec![key.clone()]),
+            tokens: true,
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_static_key_still_opens_an_invite_on_a_key_and_tokens_relay() {
+    let key = RelayAccess::random();
+    let relay = token_relay_with_key(Arc::new(MemoryStore::new()), &key).await;
+    let http = relay.http_base();
+    let token = RelayToken::from(key);
+    let secret = InviteSecret::random();
+    let owner = easynotes_core::invite::OwnerSecret::random();
+
+    invite::open(&http, Some(&token), &secret, &owner, 3600)
+        .await
+        .unwrap();
+    assert!(
+        invite::list(&http, Some(&token), &secret, &owner)
+            .await
+            .unwrap()
+            .open
+    );
+}
+
+#[tokio::test]
+async fn a_guest_token_joins_and_reads_an_invite_on_a_token_only_relay() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let owner_token = mint(&*store, [30; 16], [31; 32], None).await;
+    let guest_token = mint(&*store, [32; 16], [33; 32], None).await;
+    let secret = InviteSecret::random();
+    let owner = easynotes_core::invite::OwnerSecret::random();
+
+    invite::open(&http, Some(&owner_token), &secret, &owner, 3600)
+        .await
+        .unwrap();
+
+    let member = RecoveryPhrase::generate().root().member();
+    let sealed = easynotes_core::invite::seal_request(&secret, &member, "Gus").unwrap();
+    let wrong = with_secret(&guest_token, RelayAccess::random());
+    refused(invite::request(&http, Some(&wrong), &secret, &member.id(), &sealed).await);
+    let (request, _) = invite::request(&http, Some(&guest_token), &secret, &member.id(), &sealed)
+        .await
+        .unwrap();
+
+    // The owner sees the request the guest left.
+    let listing = invite::list(&http, Some(&owner_token), &secret, &owner)
+        .await
+        .unwrap();
+    assert_eq!(listing.requests.len(), 1);
+
+    // The owner answers it, and the guest reads the answer, all with tokens.
+    invite::decline(&http, Some(&owner_token), &secret, &owner, &request)
+        .await
+        .unwrap();
+    let answer = invite::poll(&http, Some(&guest_token), &secret, &member, &request)
+        .await
+        .unwrap();
+    assert!(matches!(answer, Answer::Declined));
+
+    // An invite call proves the token; it does not claim it (the handshake does).
+    let row = store
+        .access_token(guest_token.id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.device_key, None, "an invite call bound the token");
+}
+
+#[tokio::test]
+async fn a_revoked_token_is_refused_on_an_invite_call() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let token = mint(&*store, [34; 16], [35; 32], None).await;
+    assert!(store
+        .revoke_access_token(token.id.as_deref().unwrap(), 1)
+        .await
+        .unwrap());
+
+    refused(
+        invite::open(
+            &http,
+            Some(&token),
+            &InviteSecret::random(),
+            &easynotes_core::invite::OwnerSecret::random(),
+            3600,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn a_token_only_relay_refuses_an_invite_call_with_no_token() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store).await;
+    let http = relay.http_base();
+
+    refused(
+        invite::open(
+            &http,
+            None,
+            &InviteSecret::random(),
+            &easynotes_core::invite::OwnerSecret::random(),
+            3600,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn a_read_only_token_cannot_create_an_invite_but_can_join_and_read_one() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+    let writer = mint(&*store, [36; 16], [37; 32], None).await;
+    let reader = mint(&*store, [38; 16], [39; 32], None).await;
+    let reader_id = reader.id.as_deref().unwrap();
+    store
+        .set_access_token_read_only(reader_id, true)
+        .await
+        .unwrap();
+    let secret = InviteSecret::random();
+    let owner = easynotes_core::invite::OwnerSecret::random();
+
+    match invite::open(&http, Some(&reader), &secret, &owner, 3600).await {
+        Err(CoreError::ReadOnly) => {}
+        other => panic!("a read-only token was let open an invite: {other:?}"),
+    }
+
+    invite::open(&http, Some(&writer), &secret, &owner, 3600)
+        .await
+        .unwrap();
+
+    let member = RecoveryPhrase::generate().root().member();
+    let sealed = easynotes_core::invite::seal_request(&secret, &member, "Gus").unwrap();
+    let (request, _) = invite::request(&http, Some(&reader), &secret, &member.id(), &sealed)
+        .await
+        .unwrap();
+    assert!(matches!(
+        invite::poll(&http, Some(&reader), &secret, &member, &request)
+            .await
+            .unwrap(),
+        Answer::Pending { .. }
+    ));
+    assert_eq!(
+        invite::list(&http, Some(&reader), &secret, &owner)
+            .await
+            .unwrap()
+            .requests
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
