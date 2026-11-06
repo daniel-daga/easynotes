@@ -105,6 +105,19 @@ void main() {
       expect(normalizeAccessKey('$id.'), isNull);
       expect(normalizeAccessKey('$id.$key.$id'), isNull);
     });
+
+    test('a non-canonical final character is not the same id', () {
+      // A 16-byte value's last base64url character carries 2 significant bits
+      // and 4 padding bits. Another character with those same top 2 bits and
+      // non-zero padding spells the bytes but is not the ID the core writes.
+      const alphabet =
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+      final last = alphabet.indexOf(id[id.length - 1]);
+      final variant = '${id.substring(0, id.length - 1)}${alphabet[last | 1]}';
+      expect(variant, isNot(id));
+      expect(normalizeAccessKey(token), token);
+      expect(normalizeAccessKey('$variant.$key'), isNull);
+    });
   });
 
   group('RelayProfiles', () {

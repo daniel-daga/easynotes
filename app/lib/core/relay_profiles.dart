@@ -12,10 +12,10 @@ class RelayProfile {
   final String id;
   final String? url;
 
-  /// The relay's access key, base64url, if its operator gave this device one
-  /// ([ADR 0028](../../../docs/decisions.md#adr-0028)). Kept in
-  /// the keychain beside the profile rather than in its settings: it is not
-  /// part of the relay's address, and changing it is the same profile.
+  /// The relay's access key or device token, base64url, if its operator gave
+  /// this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Kept
+  /// in the keychain beside the profile rather than in its settings: it is
+  /// not part of the relay's address, and changing it is the same profile.
   final String? access;
 
   String get label => url ?? 'On this device';
@@ -217,7 +217,7 @@ class RelayProfiles {
     }
     final key = access == null ? null : normalizeAccessKey(access);
     if (access != null && key == null) {
-      throw const FormatException('That is not an access key.');
+      throw const FormatException('That is not an access key or device token.');
     }
     // Save the key first without mutating the in-memory profile list. If
     // settings refuse the move, both the live and stored selection stay local.
@@ -302,18 +302,16 @@ String? normalizeAccessKey(String input) {
         ? raw
         : null;
   }
-  if (parts.length != 1) return null;
   return _isBase64Url(raw, 32) ? raw : null;
 }
 
-/// Whether [value] is base64url for exactly [bytes] bytes.
+/// Whether [value] is base64url for exactly [bytes] bytes. The decoder refuses
+/// anything that does not spell whole bytes canonically, so no other check is
+/// needed.
 bool _isBase64Url(String value, int bytes) {
-  if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(value)) return false;
   try {
     final padded = value.padRight((value.length + 3) ~/ 4 * 4, '=');
-    final decoded = base64Url.decode(padded);
-    return decoded.length == bytes &&
-        base64Url.encode(decoded).replaceAll('=', '') == value;
+    return base64Url.decode(padded).length == bytes;
   } on FormatException {
     return false;
   }
