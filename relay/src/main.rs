@@ -63,10 +63,16 @@
 //! * `RELAY_ADMIN_ADDR` — where billing's private admin API listens: minting,
 //!   revoking, marking read-only and unbinding a device's access token
 //!   ([`easynotes_relay::admin`]). A listener of its own, never a public route.
-//!   Unset serves no admin API.
+//!   Unset serves no admin API. Keep it on loopback: unless something in front
+//!   terminates TLS, the admin secret and every minted device secret cross the
+//!   network in cleartext.
 //! * `RELAY_ADMIN_SECRET` — the bearer secret every admin call must carry,
 //!   base64url, exactly 32 bytes. Required with `RELAY_ADMIN_ADDR`; a missing
-//!   or malformed value stops the process.
+//!   or malformed value stops the process. It must not be one of
+//!   `RELAY_ACCESS_KEYS`: that would let every household holding the static
+//!   key revoke tokens.
+//!   Because the listener only mints rows, it is only useful with
+//!   `RELAY_TOKENS=on`; without it the handshake ignores what billing mints.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -336,6 +342,13 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("RELAY_ADMIN_SECRET must be a base64url 32-byte secret")
         })?),
     };
+    if let (Some(secret), Access::Keys(keys)) = (admin_secret.as_ref(), &config.access) {
+        if keys.contains(secret) {
+            anyhow::bail!(
+                "RELAY_ADMIN_SECRET is also one of RELAY_ACCESS_KEYS: every household holding the static key could then revoke tokens. Give the admin listener a secret of its own"
+            );
+        }
+    }
     let admin = match (admin_addr, admin_secret) {
         (Some(addr), Some(secret)) => Some((addr, secret)),
         (Some(_), None) => {
@@ -349,6 +362,19 @@ async fn main() -> anyhow::Result<()> {
         }
         (None, None) => None,
     };
+    if let Some((admin_addr, _)) = &admin {
+        if !admin_addr.ip().is_loopback() {
+            tracing::warn!(
+                addr = %admin_addr,
+                "RELAY_ADMIN_ADDR is not loopback: the admin secret and minted device secrets cross the network in cleartext unless TLS terminates in front of it"
+            );
+        }
+        if !config.tokens {
+            tracing::warn!(
+                "RELAY_ADMIN_ADDR is set but RELAY_TOKENS is not on: billing would mint tokens every handshake ignores"
+            );
+        }
+    }
 
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");

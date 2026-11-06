@@ -221,16 +221,65 @@ async fn read_only_and_unbind_change_the_row_and_missing_ids_are_404() {
 }
 
 #[tokio::test]
+async fn a_duplicate_id_on_a_dead_unbound_link_conflicts() {
+    let admin = admin().await;
+    let id = token_id(12);
+    let expired = now() - 1;
+    assert!(admin
+        .store
+        .create_access_token(&id, &[3; 32], Some(expired))
+        .await
+        .unwrap());
+
+    assert_eq!(admin.create(&id).await.status(), StatusCode::CONFLICT);
+
+    // The dead row is left alone: billing gets a refusal, not a live secret
+    // over an expired link.
+    let row = admin.store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(row.secret, [3; 32], "the dead link was re-minted");
+    assert_eq!(row.expires_at, Some(expired));
+}
+
+#[tokio::test]
 async fn the_public_listener_has_no_admin_routes() {
     let admin = admin().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/v1/admin/tokens?p=2", admin.relay.http_base()))
+    let existing = token_id(7);
+    assert_eq!(admin.create(&existing).await.status(), StatusCode::CREATED);
+
+    let client = reqwest::Client::new();
+    let public = admin.relay.http_base();
+    let fresh = token_id(8);
+    let created = client
+        .post(format!("{public}/tokens?p=2"))
         .bearer_auth(&admin.secret)
-        .json(&json!({ "id": token_id(7) }))
+        .json(&json!({ "id": &fresh }))
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(created.status(), StatusCode::NOT_FOUND);
+    assert!(
+        admin.store.access_token(&fresh).await.unwrap().is_none(),
+        "the public listener minted a token"
+    );
+
+    let revoked = client
+        .post(format!("{public}/tokens/{existing}/revoke?p=2"))
+        .bearer_auth(&admin.secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        admin
+            .store
+            .access_token(&existing)
+            .await
+            .unwrap()
+            .unwrap()
+            .revoked_at,
+        None,
+        "the public listener revoked a token"
+    );
 }
 
 #[tokio::test]
@@ -255,16 +304,26 @@ async fn a_purge_drops_rows_revoked_more_than_thirty_days_ago() {
         .await
         .unwrap());
 
-    // Any authenticated admin call sweeps: the request still succeeds.
+    // Any authenticated admin call sweeps, off the request path: wait for it
+    // rather than assuming the task has run before the response.
     assert_eq!(
         admin.create(&token_id(11)).await.status(),
         StatusCode::CREATED
     );
-
+    let swept = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if admin.store.access_token(&old).await.unwrap().is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(
-        admin.store.access_token(&old).await.unwrap().is_none(),
+        swept.is_ok(),
         "a token revoked 31 days ago survived the purge"
     );
+
     assert!(admin.store.access_token(&recent).await.unwrap().is_some());
     assert!(admin.store.access_token(&live).await.unwrap().is_some());
 }

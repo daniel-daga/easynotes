@@ -65,9 +65,14 @@ async fn authorise(
     }
 
     let before = crate::auth::unix_now() as i64 - REVOKED_RETENTION_SECS;
-    if let Err(error) = state.store.purge_revoked_access_tokens(before).await {
-        tracing::warn!(%error, "admin: could not purge revoked access tokens");
-    }
+    // Off the request path: housekeeping must not delay or fail a mint. A
+    // previous call's sweep is enough, and a failure is only a warning.
+    let store = state.store.clone();
+    tokio::spawn(async move {
+        if let Err(error) = store.purge_revoked_access_tokens(before).await {
+            tracing::warn!(%error, "admin: could not purge revoked access tokens");
+        }
+    });
     next.run(request).await
 }
 
@@ -122,12 +127,19 @@ async fn create(
             .into_response()),
         false => {
             let Some(token) = state.store.access_token(&body.id).await.map_err(failed)? else {
-                // The row vanished between the insert and this read, which only
-                // the sweep does, and only to a revoked row. A retry is the
-                // honest answer; minting a second secret over it is not.
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                // The row vanished between the insert and this read. Only the
+                // sweep removes rows, and only revoked ones, so this ID was
+                // revoked; a retry would mint a fresh live secret for it.
+                return Err(StatusCode::CONFLICT);
             };
             if token.revoked_at.is_some() {
+                return Err(StatusCode::CONFLICT);
+            }
+            let now = crate::auth::unix_now() as i64;
+            if token.device_key.is_none() && token.expires_at.is_some_and(|at| at <= now) {
+                // An unbound link past its expiry is dead. Returning its secret
+                // would hand billing something no handshake accepts; a new ID
+                // starts a live link.
                 return Err(StatusCode::CONFLICT);
             }
             Ok((
