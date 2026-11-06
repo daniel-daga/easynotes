@@ -101,7 +101,7 @@ pub struct Create {
     access: Option<String>,
     /// The ID of the billed device token whose secret made `access`
     /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when there is one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     access_id: Option<String>,
 }
 #[derive(Serialize)]

@@ -673,11 +673,11 @@ async fn an_expired_unbound_token_is_refused_on_an_invite_call() {
 #[tokio::test]
 async fn an_access_id_on_a_keys_only_relay_is_refused() {
     let key = RelayAccess::random();
-    let relay = gated(&[&key]).await;
-    let token = RelayToken {
-        id: Some(InviteId::random().encode()),
-        secret: RelayAccess::random(),
-    };
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = gated_on(store.clone(), &[&key], [9; 32]).await;
+    // A real row, and a proof its secret really makes: only the relay not
+    // taking tokens can be the reason this is refused.
+    let token = mint(&*store, [46; 16], [47; 32], None).await;
 
     refused(
         invite::open(

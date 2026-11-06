@@ -205,7 +205,8 @@ impl AppState {
 
     /// The token behind `id`, if it may still be used: not revoked, and an
     /// unbound token not past its link's expiry. A bound token lives until it
-    /// is revoked or made read-only ([ADR 0038](../../docs/decisions.md#adr-0038)).
+    /// is revoked; read-only only narrows what it may do
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)).
     ///
     /// Proving it is the caller's job; this only says whether the row is alive.
     pub(crate) async fn live_access_token(&self, id: &str) -> Result<Option<AccessToken>> {
