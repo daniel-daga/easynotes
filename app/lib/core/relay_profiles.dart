@@ -305,6 +305,12 @@ String? normalizeAccessKey(String input) {
   return _isBase64Url(raw, 32) ? raw : null;
 }
 
+/// Whether [input] is a device token (`<id>.<secret>`) rather than a bare
+/// shared operator key. Only a device token can be minted from: billing would
+/// not recognise a relay's own key.
+bool isDeviceToken(String input) =>
+    normalizeAccessKey(input)?.contains('.') ?? false;
+
 /// Whether [value] is base64url for exactly [bytes] bytes. The decoder refuses
 /// anything that does not spell whole bytes canonically, so no other check is
 /// needed.

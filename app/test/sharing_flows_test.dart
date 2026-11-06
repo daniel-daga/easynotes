@@ -475,7 +475,7 @@ void main() {
   testWidgets('a hosted relay puts a guest token in a new link', (
     tester,
   ) async {
-    final owner = _token(32);
+    final owner = '${_token(16, 7)}.${_token(32, 8)}';
     final guest = '${_token(16, 3)}.${_token(32, 4)}';
     final requests = <http.Request>[];
     final billing = BillingClient(
@@ -520,7 +520,7 @@ void main() {
           invites: library,
           noteId: 'groceries',
           relayUrl: _relay,
-          relayAccess: _token(32),
+          relayAccess: '${_token(16, 7)}.${_token(32, 8)}',
           billing: BillingClient(
             base: 'https://billing.example',
             client: MockClient((_) async => http.Response('nope', 503)),
@@ -545,7 +545,7 @@ void main() {
   testWidgets('re-sending an old link mints a guest token', (tester) async {
     // The invite was made before this screen was open — after a restart, say —
     // so nothing is cached and the owner's own token is what it shows.
-    final owner = _token(32);
+    final owner = '${_token(16, 7)}.${_token(32, 8)}';
     final guest = '${_token(16, 3)}.${_token(32, 4)}';
     final requests = <http.Request>[];
     final library = FakeNoteLibrary()..setUpSharing('Olga');
@@ -627,7 +627,7 @@ void main() {
   });
 
   testWidgets('copying an old link mints a guest token', (tester) async {
-    final owner = _token(32);
+    final owner = '${_token(16, 7)}.${_token(32, 8)}';
     final guest = '${_token(16, 3)}.${_token(32, 4)}';
     final requests = <http.Request>[];
     final copied = watchClipboard();
@@ -697,5 +697,116 @@ void main() {
 
     expect(copied.single, '$_relay/#${invite.id}');
     expect(asked, 0);
+  });
+
+  testWidgets('a bare operator key is never sent to billing', (tester) async {
+    // A self-hosted relay's key, even in a build that has billing configured:
+    // it belongs to the relay, and billing cannot mint from it.
+    final operator = _token(32);
+    var asked = 0;
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: operator,
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((_) async {
+              asked++;
+              return http.Response('{"access":"${_token(32)}"}', 200);
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final before = tester
+        .widget<Text>(find.byKey(Key('invite-link-${invite.id}')))
+        .data;
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<Text>(find.byKey(Key('invite-link-${invite.id}'))).data,
+      before,
+    );
+    expect(asked, 0);
+  });
+
+  testWidgets('a copy that cannot mint leaves the clipboard alone', (
+    tester,
+  ) async {
+    final copied = watchClipboard();
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: '${_token(16, 3)}.${_token(32, 4)}',
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((_) async => http.Response('nope', 503)),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(copied, isEmpty);
+    expect(find.byKey(const Key('invite-error')), findsOneWidget);
+    expect(find.textContaining('billing service'), findsOneWidget);
+  });
+
+  testWidgets('a re-send that cannot mint shares nothing', (tester) async {
+    final sent = <String>[];
+    final channel = MethodChannel('eu.fraisl.easynotes/content_sharing');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      sent.add((call.arguments as Map)['text'] as String);
+      return true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: '${_token(16, 3)}.${_token(32, 4)}',
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((_) async => http.Response('nope', 503)),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('send-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(sent, isEmpty);
+    expect(find.byKey(const Key('invite-error')), findsOneWidget);
+    expect(find.textContaining('billing service'), findsOneWidget);
   });
 }

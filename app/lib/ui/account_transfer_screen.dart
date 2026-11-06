@@ -68,10 +68,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       widget.billing ?? BillingClient.fromEnvironment();
 
   /// The token the QR carries: a fresh one for the new device on a hosted
-  /// relay, where this device's own token would bind the pairing to itself.
+  /// relay, where this device's own token would bind the pairing to itself. A
+  /// bare operator key belongs to the relay, not to a device, so it is used
+  /// as it is.
   Future<String?> _accessForTransfer() async {
     final access = widget.profile.access;
-    if (access == null || !_billing.enabled) return access;
+    if (access == null || !_billing.enabled || !isDeviceToken(access)) {
+      return access;
+    }
     return _billing.deviceToken(access);
   }
 

@@ -340,10 +340,13 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   /// The token a new link's guest gets: one of their own on a hosted relay,
   /// where [RelayProfile.access] belongs to this device. Null keeps the
-  /// profile's own access, which is all a self-hosted relay has.
+  /// profile's own access, which is all a self-hosted relay has — and all a
+  /// bare operator key ever can be, since billing cannot mint from it.
   Future<String?> _accessForGuest() async {
     final access = widget.relayAccess;
-    if (access == null || !_billing.enabled) return null;
+    if (access == null || !_billing.enabled || !isDeviceToken(access)) {
+      return null;
+    }
     return _billing.guestToken(access);
   }
 

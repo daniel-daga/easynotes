@@ -87,13 +87,12 @@ class BillingClient {
       body = null;
     }
     final access = body is Map ? body['access'] : null;
-    final token = access is String ? normalizeAccessKey(access) : null;
-    if (token == null) {
+    if (access is! String || !isDeviceToken(access)) {
       throw const BillingException(
         'The billing service sent an answer this app does not understand. '
         'Try again later.',
       );
     }
-    return token;
+    return normalizeAccessKey(access)!;
   }
 }

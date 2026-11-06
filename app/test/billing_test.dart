@@ -65,7 +65,13 @@ void main() {
   });
 
   test('an answer without a token is a sentence too', () async {
-    for (final body in ['not json', '{}', '{"access":"short"}']) {
+    for (final body in [
+      'not json',
+      '{}',
+      '{"access":"short"}',
+      // A bare operator key is not a token this app may put in a link.
+      '{"access":"${token(32)}"}',
+    ]) {
       final billing = BillingClient(
         base: 'https://billing.example',
         client: MockClient((_) async => http.Response(body, 200)),

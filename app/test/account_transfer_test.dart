@@ -510,7 +510,7 @@ void main() {
   testWidgets('the QR carries a fresh token for the new device', (
     tester,
   ) async {
-    final owner = token(32);
+    final owner = '${token(16, 7)}.${token(32, 8)}';
     final device = '${token(16, 3)}.${token(32, 4)}';
     final requests = <http.Request>[];
     library.setUpSharing();
@@ -539,11 +539,44 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('a bare operator key is never sent to billing', (tester) async {
+    // A self-hosted relay's key in a build that has billing configured: the
+    // QR keeps it, and billing is not asked to mint from it.
+    final operator = token(32);
+    var asked = 0;
+    library.setUpSharing();
+    await pumpScreen(
+      tester,
+      profile: RelayProfile(id: 'owner', url: server, access: operator),
+      billing: BillingClient(
+        base: 'https://billing.example',
+        client: MockClient((_) async {
+          asked++;
+          return http.Response('{"access":"${token(32)}"}', 200);
+        }),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('begin-account-transfer')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(library.begunAccess, operator);
+    expect(find.byKey(const Key('account-transfer-qr')), findsOneWidget);
+    expect(asked, 0);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('a billing failure shows its sentence and no QR', (tester) async {
     library.setUpSharing();
     await pumpScreen(
       tester,
-      profile: RelayProfile(id: 'owner', url: server, access: token(32)),
+      profile: RelayProfile(
+        id: 'owner',
+        url: server,
+        access: '${token(16, 7)}.${token(32, 8)}',
+      ),
       billing: BillingClient(
         base: 'https://billing.example',
         client: MockClient((_) async => http.Response('nope', 503)),
