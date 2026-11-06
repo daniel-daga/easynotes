@@ -93,7 +93,7 @@ fn holds(secret: &str, expected: &[u8]) -> bool {
 ///
 /// Returns whether the caller's token is read-only. A static key and an open
 /// relay are never read-only.
-async fn admitted(
+pub(crate) async fn admitted(
     state: &AppState,
     invite: &str,
     access_id: Option<&str>,
@@ -121,17 +121,9 @@ async fn admitted(
     if !state.device_tokens {
         return Err(refused());
     }
-    let Some(row) = state.store.access_token(token_id).await? else {
+    let Some(row) = state.live_access_token(token_id).await? else {
         return Err(refused());
     };
-    let now = unix_now() as i64;
-    // A link's expiry bounds an unbound token; a bound one lives until revoked
-    // or read-only, as at `/v1/token`.
-    if row.revoked_at.is_some()
-        || (row.device_key.is_none() && row.expires_at.is_some_and(|at| at <= now))
-    {
-        return Err(refused());
-    }
     let invite = InviteId::decode(invite)
         .map_err(|_| RelayError::BadRequest("malformed invite id".into()))?;
     let proof = proof.ok_or_else(refused)?;
@@ -174,14 +166,14 @@ pub async fn create(
     Json(req): Json<CreateInvite>,
 ) -> Result<(StatusCode, Json<CreatedInvite>)> {
     invite_id(&req.invite)?;
-    if admitted(
+    let read_only = admitted(
         &state,
         &req.invite,
         req.access_id.as_deref(),
         req.access.as_deref(),
     )
-    .await?
-    {
+    .await?;
+    if read_only {
         return Err(RelayError::ReadOnly);
     }
     let token_hash = hash32(&req.token_hash, "token hash")?;

@@ -20,7 +20,7 @@ use crate::invite;
 use crate::limit::{RateLimit, TrustedProxies};
 use crate::protocol::*;
 use crate::quota::{Limits, Proposal, Refusal};
-use crate::store::{Appended, RelayStore};
+use crate::store::{AccessToken, Appended, RelayStore};
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -201,6 +201,24 @@ impl AppState {
             writes,
             ready: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// The token behind `id`, if it may still be used: not revoked, and an
+    /// unbound token not past its link's expiry. A bound token lives until it
+    /// is revoked or made read-only ([ADR 0038](../../docs/decisions.md#adr-0038)).
+    ///
+    /// Proving it is the caller's job; this only says whether the row is alive.
+    pub(crate) async fn live_access_token(&self, id: &str) -> Result<Option<AccessToken>> {
+        let Some(row) = self.store.access_token(id).await? else {
+            return Ok(None);
+        };
+        let now = crate::auth::unix_now() as i64;
+        if row.revoked_at.is_some()
+            || (row.device_key.is_none() && row.expires_at.is_some_and(|at| at <= now))
+        {
+            return Ok(None);
+        }
+        Ok(Some(row))
     }
 
     pub(crate) fn subscribe(self: &Arc<Self>, note: &str) -> Listener {
@@ -769,17 +787,9 @@ async fn token(
                 if !state.device_tokens {
                     return Err(refused());
                 }
-                let Some(row) = state.store.access_token(id).await? else {
+                let Some(row) = state.live_access_token(id).await? else {
                     return Err(refused());
                 };
-                let now = crate::auth::unix_now() as i64;
-                // A link's expiry bounds the unbound token; a bound one lives
-                // until revoked or read-only (ADR 0038).
-                if row.revoked_at.is_some()
-                    || (row.device_key.is_none() && row.expires_at.is_some_and(|at| at <= now))
-                {
-                    return Err(refused());
-                }
                 if crate::access::check_access_token(&row, &nonce, &device, req.access.as_deref())
                     .is_err()
                 {

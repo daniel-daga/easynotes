@@ -11,11 +11,11 @@ use easynotes_core::attachment::seal::seal_whole;
 use easynotes_core::attachment::{ContentKey, Variant};
 use easynotes_core::crypto::{DeviceIdentity, DeviceSigner, Envelope, NoteKey};
 use easynotes_core::error::CoreError;
-use easynotes_core::ids::{AttachmentId, NoteId};
+use easynotes_core::ids::{AttachmentId, InviteId, NoteId};
 use easynotes_core::invite::InviteSecret;
 use easynotes_core::relay_access::{RelayAccess, RelayToken};
 use easynotes_core::sync::invite::Answer;
-use easynotes_core::sync::{authenticate, invite, DeviceSync, Incoming, Routed};
+use easynotes_core::sync::{authenticate, invite, pairing, DeviceSync, Incoming, Routed};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{Access, MemoryStore, Relay, RelayConfig, RelayStore};
 use futures_util::{SinkExt, StreamExt};
@@ -650,6 +650,119 @@ async fn a_read_only_token_cannot_create_an_invite_but_can_join_and_read_one() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn an_expired_unbound_token_is_refused_on_an_invite_call() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let token = mint(&*store, [40; 16], [41; 32], Some(0)).await;
+
+    refused(
+        invite::open(
+            &relay.http_base(),
+            Some(&token),
+            &InviteSecret::random(),
+            &easynotes_core::invite::OwnerSecret::random(),
+            3600,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn an_access_id_on_a_keys_only_relay_is_refused() {
+    let key = RelayAccess::random();
+    let relay = gated(&[&key]).await;
+    let token = RelayToken {
+        id: Some(InviteId::random().encode()),
+        secret: RelayAccess::random(),
+    };
+
+    refused(
+        invite::open(
+            &relay.http_base(),
+            Some(&token),
+            &InviteSecret::random(),
+            &easynotes_core::invite::OwnerSecret::random(),
+            3600,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn a_static_key_is_refused_on_a_token_only_relay() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store).await;
+
+    refused(
+        invite::open(
+            &relay.http_base(),
+            Some(&RelayToken::from(RelayAccess::random())),
+            &InviteSecret::random(),
+            &easynotes_core::invite::OwnerSecret::random(),
+            3600,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn pairing_create_is_gated_like_an_invite() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay(store.clone()).await;
+    let http = relay.http_base();
+
+    // A token-only relay takes no key, so a create with nothing to prove is
+    // refused rather than left open.
+    refused(
+        pairing::open(
+            http.clone(),
+            None,
+            InviteId::random().encode(),
+            [1; 32],
+            [2; 32],
+            300,
+        )
+        .await,
+    );
+
+    let revoked = mint(&*store, [42; 16], [43; 32], None).await;
+    assert!(store
+        .revoke_access_token(revoked.id.as_deref().unwrap(), 1)
+        .await
+        .unwrap());
+    refused(
+        pairing::open(
+            http,
+            Some(revoked),
+            InviteId::random().encode(),
+            [1; 32],
+            [2; 32],
+            300,
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn a_billed_token_creates_a_pairing_on_a_key_and_tokens_relay() {
+    let key = RelayAccess::random();
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = token_relay_with_key(store.clone(), &key).await;
+    let token = mint(&*store, [44; 16], [45; 32], None).await;
+
+    pairing::open(
+        relay.http_base(),
+        Some(token),
+        InviteId::random().encode(),
+        [1; 32],
+        [2; 32],
+        300,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
