@@ -43,6 +43,14 @@ Duration invitePollInterval = const Duration(seconds: 3);
 /// How often the list screen asks, with nobody necessarily looking.
 Duration inviteBannerPollInterval = const Duration(seconds: 15);
 
+/// How long a minted guest token lasts: the relay binds it 24 hours after it
+/// is made, and an invite link cannot promise more.
+const guestTokenLifetime = Duration(hours: 24);
+
+/// What the clock says when a minted guest token's age is checked. A variable,
+/// like the intervals, so a test can age a token without waiting a day.
+DateTime Function() guestTokenNow = DateTime.now;
+
 /// How the owner is told somebody joined when they are not looking at the
 /// collaborators screen. The app sets it to system notifications; unset,
 /// nobody is told beyond the line above the grid. A variable, like the
@@ -207,9 +215,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   /// What the relay last said about each of [_open], by invite ID.
   final Map<String, InviteStatus> _status = {};
 
-  /// The guest token each link carries, by invite ID, so sending the same
-  /// link again sends the same token rather than minting another.
-  final Map<String, String> _guestAccess = {};
+  /// The guest token each link carries, by invite ID and mint time, so an
+  /// immediate re-send reuses it and a day-old one is minted again.
+  final Map<String, ({String token, DateTime minted})> _guestAccess = {};
   String? _error;
 
   /// What the last gesture came to: “Anna can open this note now.”
@@ -219,12 +227,14 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _askedToNotify = false;
   Timer? _poll;
 
-  late final BillingClient _billing;
+  /// The client this screen made; an injected one is left to its owner.
+  BillingClient? _ownBilling;
+  late final BillingClient _billing =
+      widget.billing ?? (_ownBilling = BillingClient());
 
   @override
   void initState() {
     super.initState();
-    _billing = widget.billing ?? BillingClient();
     _load();
     _poll = Timer.periodic(invitePollInterval, (_) => _tick());
     _refresh();
@@ -233,7 +243,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   @override
   void dispose() {
     _poll?.cancel();
-    _billing.close();
+    _ownBilling?.close();
     super.dispose();
   }
 
@@ -314,7 +324,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     // relay itself shares, may travel.
     final own = widget.relayAccess;
     final fallback = own == null || isDeviceToken(own) ? null : own;
-    final relay = url == null ? null : (url: url, access: guest ?? fallback);
+    final relay = url == null
+        ? null
+        : (url: url, access: guest?.token ?? fallback);
     if (!kIsWeb && url != null) {
       // A guest's own token has to travel in the link: the relay's page knows
       // the relay but not who was invited. So a link that carries one uses the
@@ -372,7 +384,9 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     // behind that nobody was sent.
     final guest = await _accessForGuest();
     final invite = await widget.invites.createInvite(widget.noteId);
-    if (guest != null && isDeviceToken(guest)) _guestAccess[invite.id] = guest;
+    if (guest != null && isDeviceToken(guest)) {
+      _guestAccess[invite.id] = (token: guest, minted: guestTokenNow());
+    }
     if (!mounted) return;
     setState(() {
       _load();
@@ -396,12 +410,15 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   /// The link to give someone for [invite]: minted for that person on a hosted
   /// relay. A link made before this screen was open has no guest token cached,
-  /// and the owner's own token must never stand in for one.
+  /// and the owner's own token must never stand in for one. One minted more
+  /// than a day ago has expired at the relay and is minted again.
   Future<String> _linkForSharing(Invite invite) async {
-    if (!_guestAccess.containsKey(invite.id)) {
+    final cached = _guestAccess[invite.id];
+    if (cached == null ||
+        guestTokenNow().difference(cached.minted) > guestTokenLifetime) {
       final guest = await _accessForGuest();
       if (guest != null && isDeviceToken(guest)) {
-        _guestAccess[invite.id] = guest;
+        _guestAccess[invite.id] = (token: guest, minted: guestTokenNow());
       }
     }
     return _link(invite);
@@ -711,7 +728,12 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
-                  'Expires in ${_days(expiresIn)}',
+                  // A guest token lasts a day at the relay; saying seven days
+                  // would promise more than the link can keep.
+                  _guestAccess.containsKey(invite.id)
+                      ? 'This link works for ${guestTokenLifetime.inHours} '
+                            'hours'
+                      : 'Expires in ${_days(expiresIn)}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],

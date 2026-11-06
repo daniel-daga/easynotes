@@ -939,4 +939,58 @@ void main() {
     expect(copied, hasLength(2));
     expect(copied.first, copied.last);
   });
+
+  testWidgets('a guest link says its day limit, and is minted again after it', (
+    tester,
+  ) async {
+    var now = DateTime(2026, 1, 1);
+    guestTokenNow = () => now;
+    addTearDown(() => guestTokenNow = DateTime.now);
+    final requests = <http.Request>[];
+    final copied = watchClipboard();
+    final library = FakeNoteLibrary()..setUpSharing('Olga');
+    final invite = await library.createInvite('groceries');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CollaboratorsScreen(
+          invites: library,
+          noteId: 'groceries',
+          relayUrl: _relay,
+          relayAccess: '${_token(16, 7)}.${_token(32, 8)}',
+          billing: BillingClient(
+            base: 'https://billing.example',
+            client: MockClient((request) async {
+              requests.add(request);
+              return http.Response(
+                '{"access":"${_token(16, 3)}.${_token(32, 4)}"}',
+                200,
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // No guest token yet: the invite's own seven days.
+    expect(find.text('Expires in 7 days'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('This link works for 24 hours'), findsOneWidget);
+    expect(find.text('Expires in 7 days'), findsNothing);
+
+    // A day later the relay has dropped it, so the next copy mints a new one.
+    now = now.add(const Duration(hours: 25));
+    await tester.ensureVisible(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('copy-invite-${invite.id}')));
+    await tester.pumpAndSettle();
+
+    expect(requests, hasLength(2));
+    expect(copied, hasLength(2));
+  });
 }

@@ -64,7 +64,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   /// transfer, and [widget.profile] is a snapshot a move here does not update.
   late final bool _owner = widget.profile.url != null && _hasAccount;
 
-  late final BillingClient _billing;
+  /// The client this screen made; an injected one is left to its owner.
+  BillingClient? _ownBilling;
+  late final BillingClient _billing =
+      widget.billing ?? (_ownBilling = BillingClient());
 
   /// The token the QR carries: a fresh one for the new device on a hosted
   /// relay, where this device's own token would bind the pairing to itself. A
@@ -86,7 +89,6 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   @override
   void initState() {
     super.initState();
-    _billing = widget.billing ?? BillingClient();
     // The QR carries the account. Android keeps it out of screenshots and the
     // Recents list for as long as this screen is up; no-op elsewhere.
     unawaited(setSecureScreen(true));
@@ -96,7 +98,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   void dispose() {
     unawaited(setSecureScreen(false));
     _poller?.cancel();
-    _billing.close();
+    _ownBilling?.close();
     // Backing out must not leave the pairing open for its full five minutes.
     if (!_approved && !_cancelled) {
       unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));

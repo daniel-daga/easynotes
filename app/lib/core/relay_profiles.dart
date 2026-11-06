@@ -21,10 +21,11 @@ class RelayProfile {
   String get label => url ?? 'On this device';
 
   /// A link that gives someone this relay and its key at once, or null for a
-  /// relay with no key, whose address is all anyone needs.
+  /// relay with no key, whose address is all anyone needs. A device token is
+  /// bound to this device, so it has no link to hand on.
   String? get relayLink {
     final url = this.url, access = this.access;
-    if (url == null || access == null) return null;
+    if (url == null || access == null || isDeviceToken(access)) return null;
     return relayLinkFor(url, access);
   }
 
