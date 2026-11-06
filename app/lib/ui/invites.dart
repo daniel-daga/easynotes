@@ -372,22 +372,27 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   });
 
   Future<void> _send(Invite invite) async {
-    // A link made before this screen was open has no guest token cached, and
-    // the owner's own token would bind the guest to this device. Mint one now,
-    // exactly as a new link does; the minted one is reused if it is there.
-    if (!_guestAccess.containsKey(invite.id)) {
-      final guest = await _accessForGuest();
-      if (guest != null) _guestAccess[invite.id] = guest;
-    }
     // One link, and everything needed to join: the note, the sync server it
     // lives on, and the key that server asks for. Somebody who taps it is in;
     // somebody who pastes the whole message rather than tapping it still is,
     // because the core reads after the last `#`.
     final shared = await shareContent(
-      'Open the note I shared with you in EasyNotes: ${_link(invite)}',
+      'Open the note I shared with you in EasyNotes: '
+      '${await _linkForSharing(invite)}',
     );
-    if (!shared && mounted) _copy(invite);
+    if (!shared && mounted) await _copy(invite);
     await _refresh();
+  }
+
+  /// The link to give someone for [invite], with that person's own token on a
+  /// hosted relay. A link made before this screen was open has none cached,
+  /// and the owner's own token would bind the guest to this device.
+  Future<String> _linkForSharing(Invite invite) async {
+    if (!_guestAccess.containsKey(invite.id)) {
+      final guest = await _accessForGuest();
+      if (guest != null) _guestAccess[invite.id] = guest;
+    }
+    return _link(invite);
   }
 
   void _copyRelayLink(String link) {
@@ -428,12 +433,13 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     ],
   );
 
-  void _copy(Invite invite) {
+  Future<void> _copy(Invite invite) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
+    final link = await _linkForSharing(invite);
     // The link is on screen whatever the clipboard does: a platform without
     // one still lets it be copied by hand.
     unawaited(
-      Clipboard.setData(ClipboardData(text: _link(invite))).then(
+      Clipboard.setData(ClipboardData(text: link)).then(
         (_) => messenger?.showSnackBar(
           const SnackBar(content: Text('Link copied')),
         ),
@@ -716,7 +722,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.copy),
                 tooltip: 'Copy link ${index + 1}',
-                onPressed: _busy ? null : () => _copy(invite),
+                onPressed: _busy ? null : () => _act(() => _copy(invite)),
               ),
               IconButton(
                 key: Key('withdraw-invite-${invite.id}'),
