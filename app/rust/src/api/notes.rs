@@ -38,7 +38,7 @@ use crate::media::{Home, Store};
 use easynotes_core::attachment::storage::{ImportHints, MediaStorage, Staged, ThumbnailInput};
 use easynotes_core::attachment::{AttachmentKind, AttachmentState, Media, Variant};
 use easynotes_core::ids::AttachmentId;
-use easynotes_core::relay_access::RelayAccess;
+use easynotes_core::relay_access::RelayToken;
 use easynotes_core::sync::transfers::{
     Direction, Reach, TransferPeer, TransferQueue, TransferRunner, TransferState,
 };
@@ -186,8 +186,8 @@ pub struct TransferView {
 }
 
 /// The attachment queue that is running: the relay it runs with (`None` for
-/// none), that relay's access key, and the queue.
-type RunningTransfers = (Option<String>, Option<RelayAccess>, TransferQueue);
+/// none), that relay's access token, and the queue.
+type RunningTransfers = (Option<String>, Option<RelayToken>, TransferQueue);
 
 fn transfer_views(map: &easynotes_core::sync::transfers::TransferMap) -> Vec<TransferView> {
     let mut views: Vec<TransferView> = map
@@ -1144,10 +1144,10 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
-    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../../docs/decisions.md#adr-0028)). Named
+    /// The relay's access token, if its operator gave this device one ([ADR 0028](../../../../docs/decisions.md#adr-0028)). Named
     /// with the relay by [`Library::connect`], and not part of its address:
     /// changing it is the same relay, reconnected.
-    access: Mutex<Option<RelayAccess>>,
+    access: Mutex<Option<RelayToken>>,
     /// The relay this library belongs to: the canonical address of the first
     /// one it was connected to. It is kept across [`Library::disconnect`] and
     /// never changes, because everything in the store — the account, the
@@ -1196,8 +1196,8 @@ impl Shared {
     }
 
     /// The relay's HTTP address, for the calls that are not a socket, and
-    /// its access key if it has one.
-    fn http_base(&self) -> Result<(String, Option<RelayAccess>), String> {
+    /// its access token if it has one.
+    fn http_base(&self) -> Result<(String, Option<RelayToken>), String> {
         let relay = crate::lock::lock(&self.relay).map_err(|_| "relay lock poisoned")?;
         let relay = relay
             .as_ref()
@@ -1396,7 +1396,7 @@ impl Shared {
         self: &Arc<Self>,
         store: Arc<Store>,
         relay: Option<String>,
-        access: Option<RelayAccess>,
+        access: Option<RelayToken>,
     ) {
         let mut held = match crate::lock::lock(&self.statuses.transfers) {
             Ok(held) => held,
@@ -3784,8 +3784,8 @@ impl Library {
     /// already has is left as it was. Moving to another relay is opening
     /// another library, which is what the app's relay profiles do.
     ///
-    /// `access` is the relay's access key, base64url, for a relay whose
-    /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
+    /// `access` is the relay's access key or a device token, base64url, for a
+    /// relay whose operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
     /// for an open relay. Connecting again with another key is how a changed
     /// key takes effect.
     pub async fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
@@ -3795,8 +3795,8 @@ impl Library {
         let access = match access.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(raw) => Some(
-                RelayAccess::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                RelayToken::decode(raw)
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         {
@@ -3887,8 +3887,8 @@ impl Library {
         let access = match access.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(raw) => Some(
-                RelayAccess::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                RelayToken::decode(raw)
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         let endpoint = easynotes_core::sync::RelayEndpoint::parse(&relay)

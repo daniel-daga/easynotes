@@ -34,6 +34,10 @@ pub(crate) struct TokenRequest<'a> {
     /// The relay access proof (ADR 0028), when this device holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +111,9 @@ pub(crate) const GONE: &str = "gone";
 /// write budget.
 pub(crate) const RATE_LIMITED: &str = "rate_limited";
 
+/// The relay's code for a write by a device whose household has lapsed.
+pub(crate) const READ_ONLY: &str = "read_only";
+
 /// What a person is told about a refusal the relay names with a code.
 fn said(message: String) -> String {
     match message.as_str() {
@@ -116,6 +123,7 @@ fn said(message: String) -> String {
         "relay_full" => "The sync server is not accepting new notes right now. \
                          This one is safe on this device."
             .into(),
+        READ_ONLY => "This relay is read-only until the plan is renewed.".into(),
         _ => message,
     }
 }
@@ -198,10 +206,14 @@ struct Coded {
 /// an access key this device does not hold. A `403` without the relay's code
 /// is left to the caller, since a proxy's own 403 is not this.
 pub(crate) fn refused(status: u16, body: &[u8]) -> Option<CoreError> {
-    if status == 403
-        && serde_json::from_slice::<Coded>(body).is_ok_and(|coded| coded.code == ACCESS_REQUIRED)
-    {
-        return Some(CoreError::AccessRequired);
+    if status == 403 {
+        match serde_json::from_slice::<Coded>(body) {
+            Ok(Coded { code }) if code == ACCESS_REQUIRED => {
+                return Some(CoreError::AccessRequired)
+            }
+            Ok(Coded { code }) if code == READ_ONLY => return Some(CoreError::ReadOnly),
+            _ => {}
+        }
     }
     outdated(status, body)
 }
@@ -265,12 +277,25 @@ mod protocol_tests {
     }
 
     #[test]
+    fn a_read_only_refusal_is_permanent() {
+        assert!(matches!(
+            refused(403, br#"{"code":"read_only"}"#),
+            Some(CoreError::ReadOnly)
+        ));
+        assert_eq!(
+            CoreError::ReadOnly.to_string(),
+            "This relay is read-only until the plan is renewed."
+        );
+    }
+
+    #[test]
     fn a_token_request_names_its_proof_only_when_it_has_one() {
         let open = TokenRequest {
             device: "d",
             nonce: "n",
             signature: "s",
             access: None,
+            access_id: None,
         };
         assert!(!serde_json::to_string(&open).unwrap().contains("access"));
         let gated = TokenRequest {
@@ -280,6 +305,47 @@ mod protocol_tests {
         assert!(serde_json::to_string(&gated)
             .unwrap()
             .contains(r#""access":"p""#));
+    }
+
+    #[test]
+    fn a_request_names_the_token_id_only_when_it_has_one() {
+        let token = crate::relay_access::RelayToken::random();
+        let key = crate::relay_access::RelayToken::from(crate::relay_access::RelayAccess::random());
+        let id = token.id.clone().expect("a token has an id");
+
+        let billed = TokenRequest {
+            device: "d",
+            nonce: "n",
+            signature: "s",
+            access: Some("p".into()),
+            access_id: token.id.as_deref(),
+        };
+        let billed = serde_json::to_value(billed).unwrap();
+        assert_eq!(billed["access"], "p");
+        assert_eq!(billed["access_id"], id);
+
+        // An operator's key has no ID, and an absent field is not a null one.
+        let legacy = TokenRequest {
+            device: "d",
+            nonce: "n",
+            signature: "s",
+            access: Some("p".into()),
+            access_id: key.id.as_deref(),
+        };
+        assert!(serde_json::to_value(legacy)
+            .unwrap()
+            .get("access_id")
+            .is_none());
+
+        let invite = CreateInvite {
+            invite: "i",
+            token_hash: "t",
+            owner_hash: "o",
+            expires_in: 60,
+            access: Some("p".into()),
+            access_id: token.id.as_deref(),
+        };
+        assert_eq!(serde_json::to_value(invite).unwrap()["access_id"], id);
     }
 
     #[test]
@@ -556,6 +622,10 @@ pub(crate) struct CreateInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -572,6 +642,10 @@ pub(crate) struct JoinInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -590,6 +664,10 @@ pub(crate) struct PollInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 /// Where a join request stands.
@@ -619,6 +697,10 @@ pub(crate) struct OwnInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -643,6 +725,10 @@ pub(crate) struct AnswerInvite<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -653,6 +739,10 @@ pub(crate) struct SetPreGrant<'a> {
     /// holds a key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The device token's ID, for a billed token (ADR 0038); absent for an
+    /// operator's key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<&'a str>,
 }
 
 /// Turn an invite call's status into an answer a person can be shown.
@@ -859,6 +949,18 @@ mod tests {
         }
         // An update for a note that cannot exist is the relay talking nonsense.
         assert!(routed(r#"{"type":"update","note":"??","seq":1,"envelope":"aGk"}"#).is_err());
+    }
+
+    #[test]
+    fn a_read_only_relay_is_said_in_words() {
+        match routed(r#"{"type":"error","note":"AAAAAAAAAAAAAAAAAAAAAA","message":"read_only"}"#)
+            .unwrap()
+        {
+            Routed::Note(_, Incoming::Rejected(words)) => {
+                assert!(words.contains("read-only"), "{words}")
+            }
+            _ => panic!("expected a rejection"),
+        }
     }
 
     #[test]

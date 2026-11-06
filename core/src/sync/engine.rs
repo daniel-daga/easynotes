@@ -34,7 +34,7 @@ use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::note::{NoteCore, Outgoing, SyncCursor};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use crate::store::{Keyring, OpStore};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -287,9 +287,9 @@ where
 pub struct RelayEndpoint {
     pub http_base: String,
     pub ws_base: String,
-    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Not part
+    /// The relay's access token, if its operator gave this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Not part
     /// of the relay's address: changing it is the same relay.
-    pub access: Option<RelayAccess>,
+    pub access: Option<RelayToken>,
 }
 
 impl RelayEndpoint {
@@ -377,7 +377,7 @@ impl RelayEndpoint {
     }
 
     /// The same relay, proving `access` at the handshake.
-    pub fn with_access(self, access: Option<RelayAccess>) -> Self {
+    pub fn with_access(self, access: Option<RelayToken>) -> Self {
         Self { access, ..self }
     }
 }

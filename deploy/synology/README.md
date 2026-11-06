@@ -40,6 +40,17 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   you let in gets it as part of the relay link in step 7. Set it to `open`
   instead only if you mean anyone who finds the hostname to be able to fill
   the relay. Compose refuses to start with neither.
+- Optionally set `RELAY_TOKENS=on` to accept a per-device access token,
+  `<id>.<secret>`, as well as the access key ([ADR
+  0038](../../docs/decisions.md#adr-0038)). With the Compose file's required
+  `RELAY_ACCESS_KEYS`, both are accepted; a relay started without an access
+  key takes tokens alone. This is the shape the hosted relay uses. Tokens are
+  minted and revoked through the private admin listener, so to use them set
+  `RELAY_ADMIN_ADDR=127.0.0.1:9091` and `RELAY_ADMIN_SECRET` to a third
+  random key, made the same way and never one of `RELAY_ACCESS_KEYS`. Keep
+  the listener on loopback, or on a private network with TLS in front of it:
+  the admin secret and every minted device secret cross it in cleartext
+  otherwise.
 - Optionally set `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR`, the bytes one
   client address may write at once and in an hour, notes and attachments
   together (200 MiB each by default). A household uploading an evening's
@@ -166,7 +177,9 @@ tick **Send run details by email → only when the script terminates abnormally*
 in the task's settings, so a failed backup is an email rather than a surprise.
 The database container is found by the `easynotes-db` end of its name, so
 Container Manager's hash prefix does not matter; if more than one running
-container matches, set `DB_CONTAINER` to the one to dump.
+container matches, set `DB_CONTAINER` to the one to dump. The dump is the whole
+database, the `access_tokens` table included: a restore that left it out would
+revoke every device.
 Configure Hyper Backup to copy that folder to a different device or cloud
 storage, with encryption and a retention of its own: a backup stored only on
 the NAS will not protect against NAS failure.
@@ -387,6 +400,40 @@ A browser app served from a different origin keeps the longer
 Tokens already issued last up to fifteen minutes, so a removed key stops
 working within that. Rotating the signing key (step 6) at the same time ends it
 at once.
+
+**Per-device tokens (the hosted shape).** Instead of one shared key, the hosted
+relay gives each device a token of its own ([ADR
+0038](../../docs/decisions.md#adr-0038)). The relay stores the token and the
+device key it binds to; which tokens belong to one household, and which
+household pays, lives in billing, never here. Turn the shape on with
+`RELAY_TOKENS=on`, and the private admin listener with `RELAY_ADMIN_ADDR` and
+`RELAY_ADMIN_SECRET` from step 1. The listener must stay on loopback, or on a
+private network with TLS in front of it: the admin secret and every minted
+device secret cross it in cleartext otherwise.
+
+Mint a token inside the running container, and hand `<id>.<secret>` over as the
+relay link from earlier in this step:
+
+```sh
+relay=$(docker ps -q --filter 'name=easynotes-relay$')
+docker exec -e RELAY_ADMIN_ADDR=127.0.0.1:9091 \
+    -e RELAY_ADMIN_SECRET=... "$relay" easynotes-relay token create
+```
+
+`easynotes-relay token revoke <id>` ends it at once, `token read-only <id>
+[on|off]` makes it read history but not write, and `token unbind <id>` returns
+it to an unclaimed link. `unbind` forgets the device key so a reinstall or a
+link can bind again; it does not evict a device that is already connected.
+`revoke` is the eviction, and an open socket closes within
+`RELAY_TOKEN_TTL_SECS`. A token belongs to the first device that uses it; a
+second device presenting the same one is refused. When a household lapses, mark
+its tokens read-only for 30 days and then revoke them: the relay has no billing
+code and cannot tell a lapsed household from an active one, so that switch is
+billing's, made by token ID.
+
+The relay's records are keyed by token ID; it never has a household, an email
+address or a payment ID to log. A backup is the whole database, so the
+`access_tokens` table travels with it (step 4).
 
 Deleting an account ([ADR 0026](../../docs/decisions.md#adr-0026))
 needs no access key: someone whose access was taken away can still remove what

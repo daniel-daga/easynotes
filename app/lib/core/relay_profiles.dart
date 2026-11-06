@@ -12,19 +12,20 @@ class RelayProfile {
   final String id;
   final String? url;
 
-  /// The relay's access key, base64url, if its operator gave this device one
-  /// ([ADR 0028](../../../docs/decisions.md#adr-0028)). Kept in
-  /// the keychain beside the profile rather than in its settings: it is not
-  /// part of the relay's address, and changing it is the same profile.
+  /// The relay's access key or device token, base64url, if its operator gave
+  /// this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Kept
+  /// in the keychain beside the profile rather than in its settings: it is
+  /// not part of the relay's address, and changing it is the same profile.
   final String? access;
 
   String get label => url ?? 'On this device';
 
   /// A link that gives someone this relay and its key at once, or null for a
-  /// relay with no key, whose address is all anyone needs.
+  /// relay with no key, whose address is all anyone needs. A device token is
+  /// bound to this device, so it has no link to hand on.
   String? get relayLink {
     final url = this.url, access = this.access;
-    if (url == null || access == null) return null;
+    if (url == null || access == null || isDeviceToken(access)) return null;
     return relayLinkFor(url, access);
   }
 
@@ -217,7 +218,7 @@ class RelayProfiles {
     }
     final key = access == null ? null : normalizeAccessKey(access);
     if (access != null && key == null) {
-      throw const FormatException('That is not an access key.');
+      throw const FormatException('That is not an access key or device token.');
     }
     // Save the key first without mutating the in-memory profile list. If
     // settings refuse the move, both the live and stored selection stay local.
@@ -286,21 +287,40 @@ String relayLinkFor(String url, String access) =>
     Uri.decodeComponent(fragment.substring(_accessFragment.length)),
   );
   if (access == null) {
-    throw FormatException('The access key in that link is not a valid key.');
+    throw FormatException('The access key or token in that link is not valid.');
   }
   return (url: canonicalRelayUrl(raw.substring(0, hash)), access: access);
 }
 
-/// [input] as the core reads an access key — 32 bytes, base64url with no
-/// padding — or null if it is not one.
+/// [input] as the core reads an access key or a device token — a 32-byte key
+/// on its own, or a 16-byte ID and that key around a dot, base64url with no
+/// padding — or null if it is neither.
 String? normalizeAccessKey(String input) {
   final raw = input.trim().replaceAll('=', '');
-  if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(raw)) return null;
+  final parts = raw.split('.');
+  if (parts.length == 2) {
+    return _isBase64Url(parts[0], 16) && _isBase64Url(parts[1], 32)
+        ? raw
+        : null;
+  }
+  return _isBase64Url(raw, 32) ? raw : null;
+}
+
+/// Whether [input] is a device token (`<id>.<secret>`) rather than a bare
+/// shared operator key. Only a device token can be minted from: billing would
+/// not recognise a relay's own key.
+bool isDeviceToken(String input) =>
+    normalizeAccessKey(input)?.contains('.') ?? false;
+
+/// Whether [value] is base64url for exactly [bytes] bytes. The decoder refuses
+/// anything that does not spell whole bytes canonically, so no other check is
+/// needed.
+bool _isBase64Url(String value, int bytes) {
   try {
-    final bytes = base64Url.decode('$raw=');
-    return bytes.length == 32 ? raw : null;
+    final padded = value.padRight((value.length + 3) ~/ 4 * 4, '=');
+    return base64Url.decode(padded).length == bytes;
   } on FormatException {
-    return null;
+    return false;
   }
 }
 

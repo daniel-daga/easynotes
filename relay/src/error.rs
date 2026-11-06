@@ -34,6 +34,10 @@ pub enum RelayError {
     /// key ([ADR 0028](../../docs/decisions.md#adr-0028)).
     #[error("access_required")]
     AccessRequired,
+    /// A device whose household has lapsed tried to write before its tokens
+    /// were revoked ([ADR 0038](../../docs/decisions.md#adr-0038)).
+    #[error("read_only")]
+    ReadOnly,
     /// Past the address's write budget; try again after this many seconds.
     #[error("rate_limited")]
     RateLimited(u64),
@@ -67,7 +71,7 @@ impl IntoResponse for RelayError {
             RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
             RelayError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            RelayError::AccessRequired => StatusCode::FORBIDDEN,
+            RelayError::AccessRequired | RelayError::ReadOnly => StatusCode::FORBIDDEN,
             RelayError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         };
         if let RelayError::RateLimited(retry) = self {
@@ -83,6 +87,13 @@ impl IntoResponse for RelayError {
             return (
                 status,
                 axum::Json(serde_json::json!({ "code": "access_required" })),
+            )
+                .into_response();
+        }
+        if let RelayError::ReadOnly = self {
+            return (
+                status,
+                axum::Json(serde_json::json!({ "code": "read_only" })),
             )
                 .into_response();
         }

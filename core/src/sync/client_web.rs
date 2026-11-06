@@ -24,7 +24,7 @@
 use super::wire::{self, ChallengeResponse, TokenResponse};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -213,7 +213,7 @@ impl Drop for AbortOnDrop {
 /// sent is a public key and a signature over the relay's nonce.
 pub async fn authenticate(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     signer: &impl DeviceSigner,
 ) -> Result<String> {
     let auth = async {
@@ -235,7 +235,8 @@ pub async fn authenticate(
                 device: &device,
                 nonce: &challenge.nonce,
                 signature: &signature,
-                access: access.map(|key| key.token_proof(&nonce, &device_key.0)),
+                access: access.map(|token| token.token_proof(&nonce, &device_key.0)),
+                access_id: access.and_then(|token| token.id.as_deref()),
             },
         )
         .await?;

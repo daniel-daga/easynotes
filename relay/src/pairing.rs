@@ -99,6 +99,10 @@ pub struct Create {
     owner_hash: String,
     expires_in: u64,
     access: Option<String>,
+    /// The ID of the billed device token whose secret made `access`
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when there is one.
+    #[serde(default)]
+    access_id: Option<String>,
 }
 #[derive(Serialize)]
 pub struct Created {
@@ -109,7 +113,9 @@ pub async fn create(
     Json(r): Json<Create>,
 ) -> Result<(StatusCode, Json<Created>)> {
     validate_id(&r.id)?;
-    s.access.check_invite(&r.id, r.access.as_deref())?;
+    // A read-only token is still let through: a lapsed household may transfer
+    // its account to a new device, which is how it keeps reading.
+    crate::invite::admitted(&s, &r.id, r.access_id.as_deref(), r.access.as_deref()).await?;
     let guest_hash = decode(&r.guest_hash, 32, "guest hash")?;
     let owner_hash = decode(&r.owner_hash, 32, "owner hash")?;
     if guest_hash == owner_hash {

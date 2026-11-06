@@ -3,7 +3,7 @@
 use super::{transport::post, wire};
 use crate::{
     error::{CoreError, Result},
-    relay_access::RelayAccess,
+    relay_access::RelayToken,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -15,6 +15,8 @@ struct Create<'a> {
     owner_hash: String,
     expires_in: u64,
     access: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_id: Option<&'a str>,
 }
 #[derive(Deserialize)]
 struct Created {
@@ -64,7 +66,7 @@ fn endpoint(base: &str, id: &str, step: &str) -> String {
 }
 pub async fn open(
     base: String,
-    access: Option<RelayAccess>,
+    access: Option<RelayToken>,
     id: String,
     guest: [u8; 32],
     owner: [u8; 32],
@@ -81,6 +83,7 @@ pub async fn open(
             owner_hash: URL_SAFE_NO_PAD.encode(Sha256::digest(owner)),
             expires_in: ttl,
             access: access.as_ref().map(|k| k.invite_proof(&invite)),
+            access_id: access.as_ref().and_then(|token| token.id.as_deref()),
         },
     )
     .await?;

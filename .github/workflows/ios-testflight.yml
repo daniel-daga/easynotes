@@ -7,7 +7,8 @@ name: iOS TestFlight
 # Configure the two APPSTORE_* variables and three APPSTORE_* secrets described
 # in docs/ios-testflight.md before dispatching this workflow, plus the
 # EASYNOTES_PRIVACY_URL and EASYNOTES_SUPPORT variables the Android release
-# workflow also uses (they are baked into the About screen).
+# workflow also uses (they are baked into the About screen). EASYNOTES_BILLING
+# is optional: the hosted build's billing service, empty for self-hosted.
 on:
   workflow_dispatch:
 
@@ -124,6 +125,7 @@ jobs:
         env:
           PRIVACY_URL: ${{ vars.EASYNOTES_PRIVACY_URL }}
           SUPPORT: ${{ vars.EASYNOTES_SUPPORT }}
+          BILLING: ${{ vars.EASYNOTES_BILLING }}
         run: |
           # Start above the existing pubspec build number and make re-runs unique.
           build_number=$((1000 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT))
@@ -135,7 +137,8 @@ jobs:
           flutter build ios --release --no-codesign --build-number "$build_number" \
             --dart-define=EASYNOTES_VERSION="$version" \
             --dart-define=EASYNOTES_PRIVACY_URL="$PRIVACY_URL" \
-            --dart-define=EASYNOTES_SUPPORT="$SUPPORT"
+            --dart-define=EASYNOTES_SUPPORT="$SUPPORT" \
+            --dart-define=EASYNOTES_BILLING="$BILLING"
 
       - name: Archive and export signed IPA
         working-directory: app/ios

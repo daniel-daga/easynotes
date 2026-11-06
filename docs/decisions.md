@@ -281,3 +281,15 @@ because folding an aisle on one phone should not fold it on a partner's.
 
 Share and paste use the same two line forms on the way out and in — `# Heading`
 and `- [x] item` — so a list shared out with its sections comes back with them.
+
+<a id="adr-0038"></a>
+## ADR 0038 — A paying household is a set of device tokens
+
+**Accepted, amends ADR 0014, ADR 0021 and ADR 0028.** The hosted relay sells
+access per household but stores one random token per device. Billing keeps the
+household-to-token map and the relay never sees it, so a customer can be revoked
+by token ID without the relay being able to group a household's devices or link
+a payment to a note. A token binds to the device key on first use, and a lapsed
+household is read-only for 30 days before its tokens are revoked. The
+private-relay shared key is unchanged, and the relay still contains no billing
+code.

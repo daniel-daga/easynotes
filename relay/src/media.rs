@@ -650,17 +650,21 @@ pub struct CommitRequest {
 }
 
 /// The device a request's bearer token names, or 401.
-fn authorise(state: &AppState, headers: &HeaderMap) -> Result<()> {
+fn authorise(state: &AppState, headers: &HeaderMap) -> Result<crate::auth::Device> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(RelayError::Unauthorized)?;
-    state
-        .auth
-        .device_for(token)
-        .map(|_| ())
-        .ok_or(RelayError::Unauthorized)
+    state.auth.device_for(token).ok_or(RelayError::Unauthorized)
+}
+
+/// [`authorise`], and refuse a read-only device's uploads (ADR 0038).
+fn authorise_write(state: &AppState, headers: &HeaderMap) -> Result<()> {
+    if authorise(state, headers)?.read_only {
+        return Err(RelayError::ReadOnly);
+    }
+    Ok(())
 }
 
 fn ids(note: &str, object: &str) -> Result<()> {
@@ -729,7 +733,7 @@ pub(crate) async fn reserve(
     headers: HeaderMap,
     Json(request): Json<ReserveRequest>,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let geometry = Geometry {
@@ -767,7 +771,7 @@ pub(crate) async fn put_chunk(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     // Charged before anything is written, and for a retry of a chunk already
     // stored too: the budget is on what a client sends, which is what a flood
@@ -833,14 +837,18 @@ pub(crate) async fn status(
     Path((note, object)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<MediaStatus>> {
-    authorise(&state, &headers)?;
+    let device = authorise(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let row = row(&state, &note, &object).await?;
     // Asked about, so wanted: an upload resuming, or a device about to
     // publish what it uploaded. A committed object is fresh again, and one a
-    // compaction doomed is not doomed any more (ADR 0027).
-    state.store.touch_media(&note, &object, now()).await?;
+    // compaction doomed is not doomed any more (ADR 0027). A read-only device
+    // cannot upload, so its question must not count as wanting: otherwise a
+    // lapsed household could keep an unreferenced object alive by polling.
+    if !device.read_only {
+        state.store.touch_media(&note, &object, now()).await?;
+    }
     Ok(Json(match row.committed {
         Some(_) => MediaStatus {
             committed: true,
@@ -859,7 +867,7 @@ pub(crate) async fn commit(
     headers: HeaderMap,
     Json(request): Json<CommitRequest>,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let digest: [u8; 32] = URL_SAFE_NO_PAD

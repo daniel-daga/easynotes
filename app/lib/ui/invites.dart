@@ -28,6 +28,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/billing.dart';
 import '../core/content_sharing.dart';
 import '../core/app_visibility.dart';
 import '../core/invite_links.dart';
@@ -41,6 +42,14 @@ Duration invitePollInterval = const Duration(seconds: 3);
 
 /// How often the list screen asks, with nobody necessarily looking.
 Duration inviteBannerPollInterval = const Duration(seconds: 15);
+
+/// How long a minted guest token lasts: the relay binds it 24 hours after it
+/// is made, and an invite link cannot promise more.
+const guestTokenLifetime = Duration(hours: 24);
+
+/// What the clock says when a minted guest token's age is checked. A variable,
+/// like the intervals, so a test can age a token without waiting a day.
+DateTime Function() guestTokenNow = DateTime.now;
 
 /// How the owner is told somebody joined when they are not looking at the
 /// collaborators screen. The app sets it to system notifications; unset,
@@ -172,6 +181,7 @@ class CollaboratorsScreen extends StatefulWidget {
     required this.noteId,
     this.relayUrl,
     this.relayAccess,
+    this.billing,
   });
 
   final Invites invites;
@@ -187,6 +197,11 @@ class CollaboratorsScreen extends StatefulWidget {
   /// the relay link, which lets whoever holds it use the relay for good.
   final String? relayAccess;
 
+  /// Where a guest's own token comes from on a hosted relay. Null reads the
+  /// build's flag; with no billing service it stays disabled, so a
+  /// self-hosted relay keeps handing out [relayAccess] as before.
+  final BillingClient? billing;
+
   @override
   State<CollaboratorsScreen> createState() => _CollaboratorsScreenState();
 }
@@ -199,6 +214,10 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   /// What the relay last said about each of [_open], by invite ID.
   final Map<String, InviteStatus> _status = {};
+
+  /// The guest token each link carries, by invite ID and mint time, so an
+  /// immediate re-send reuses it and a day-old one is minted again.
+  final Map<String, ({String token, DateTime minted})> _guestAccess = {};
   String? _error;
 
   /// What the last gesture came to: “Anna can open this note now.”
@@ -207,6 +226,11 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   bool _refreshing = false;
   bool _askedToNotify = false;
   Timer? _poll;
+
+  /// The client this screen made; an injected one is left to its owner.
+  BillingClient? _ownBilling;
+  late final BillingClient _billing =
+      widget.billing ?? (_ownBilling = BillingClient());
 
   @override
   void initState() {
@@ -219,6 +243,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
   @override
   void dispose() {
     _poll?.cancel();
+    _ownBilling?.close();
     super.dispose();
   }
 
@@ -227,6 +252,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
       _people = widget.invites.people(widget.noteId);
       _open = widget.invites.invitesFor(widget.noteId);
       _status.removeWhere((id, _) => _open.every((i) => i.id != id));
+      _guestAccess.removeWhere((id, _) => _open.every((i) => i.id != id));
     } catch (e) {
       _error = '$e';
     }
@@ -292,8 +318,28 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
 
   String _link(Invite invite) {
     final url = widget.relayUrl;
-    final relay = url == null ? null : (url: url, access: widget.relayAccess);
+    final guest = _guestAccess[invite.id];
+    // The owner's device token is bound to this device and must never appear
+    // in a link. Only a minted guest token, or a bare operator key that the
+    // relay itself shares, may travel.
+    final own = widget.relayAccess;
+    final fallback = own == null || isDeviceToken(own) ? null : own;
+    final relay = url == null
+        ? null
+        : (url: url, access: guest?.token ?? fallback);
     if (!kIsWeb && url != null) {
+      // A guest's own token has to travel in the link: the relay's page knows
+      // the relay but not who was invited. So a link that carries one uses the
+      // page's `join#` body, exactly as the web app's does; a link without one
+      // keeps the short form.
+      if (guest != null) {
+        return inviteLinkForSharing(
+          invite.link,
+          webOrigin: url,
+          relay: relay,
+          web: true,
+        );
+      }
       // The relay is the link's base, so its own page needs only the secret
       // after the `#`. Tapping it hands the fragment to the app, which is told
       // the relay by the page; a pasted link is read the same way.
@@ -308,6 +354,21 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     );
   }
 
+  /// The token a link's guest gets. A bare operator key is the relay's own and
+  /// can be handed on; a device token is bound to this device, so it is minted
+  /// into a guest's own or refused — never shared.
+  Future<String?> _accessForGuest() async {
+    final access = widget.relayAccess;
+    if (access == null || !isDeviceToken(access)) return access;
+    if (!_billing.enabled) {
+      throw const BillingException(
+        "This device's own key can't be shared, and this build has no billing "
+        'service to make a guest key.',
+      );
+    }
+    return _billing.guestToken(access);
+  }
+
   /// Open one more link and send it through the platform's share sheet. Where
   /// there is no share sheet it is copied instead. Every tap is a new link,
   /// for a new person; the ones already open stay open.
@@ -319,7 +380,13 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
       _askedToNotify = true;
       unawaited(joinAlerts?.requestPermission().catchError((_) {}));
     }
+    // Before the link exists: a billing failure must not leave an open invite
+    // behind that nobody was sent.
+    final guest = await _accessForGuest();
     final invite = await widget.invites.createInvite(widget.noteId);
+    if (guest != null && isDeviceToken(guest)) {
+      _guestAccess[invite.id] = (token: guest, minted: guestTokenNow());
+    }
     if (!mounted) return;
     setState(() {
       _load();
@@ -334,10 +401,27 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     // somebody who pastes the whole message rather than tapping it still is,
     // because the core reads after the last `#`.
     final shared = await shareContent(
-      'Open the note I shared with you in EasyNotes: ${_link(invite)}',
+      'Open the note I shared with you in EasyNotes: '
+      '${await _linkForSharing(invite)}',
     );
-    if (!shared && mounted) _copy(invite);
+    if (!shared && mounted) await _copy(invite);
     await _refresh();
+  }
+
+  /// The link to give someone for [invite]: minted for that person on a hosted
+  /// relay. A link made before this screen was open has no guest token cached,
+  /// and the owner's own token must never stand in for one. One minted more
+  /// than a day ago has expired at the relay and is minted again.
+  Future<String> _linkForSharing(Invite invite) async {
+    final cached = _guestAccess[invite.id];
+    if (cached == null ||
+        guestTokenNow().difference(cached.minted) > guestTokenLifetime) {
+      final guest = await _accessForGuest();
+      if (guest != null && isDeviceToken(guest)) {
+        _guestAccess[invite.id] = (token: guest, minted: guestTokenNow());
+      }
+    }
+    return _link(invite);
   }
 
   void _copyRelayLink(String link) {
@@ -378,12 +462,13 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
     ],
   );
 
-  void _copy(Invite invite) {
+  Future<void> _copy(Invite invite) async {
     final messenger = ScaffoldMessenger.maybeOf(context);
+    final link = await _linkForSharing(invite);
     // The link is on screen whatever the clipboard does: a platform without
     // one still lets it be copied by hand.
     unawaited(
-      Clipboard.setData(ClipboardData(text: _link(invite))).then(
+      Clipboard.setData(ClipboardData(text: link)).then(
         (_) => messenger?.showSnackBar(
           const SnackBar(content: Text('Link copied')),
         ),
@@ -643,7 +728,12 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
-                  'Expires in ${_days(expiresIn)}',
+                  // A guest token lasts a day at the relay; saying seven days
+                  // would promise more than the link can keep.
+                  _guestAccess.containsKey(invite.id)
+                      ? 'This link works for ${guestTokenLifetime.inHours} '
+                            'hours'
+                      : 'Expires in ${_days(expiresIn)}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -666,7 +756,7 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.copy),
                 tooltip: 'Copy link ${index + 1}',
-                onPressed: _busy ? null : () => _copy(invite),
+                onPressed: _busy ? null : () => _act(() => _copy(invite)),
               ),
               IconButton(
                 key: Key('withdraw-invite-${invite.id}'),
@@ -784,7 +874,10 @@ class _CollaboratorsScreenState extends State<CollaboratorsScreen> {
                 ),
                 if (widget.relayUrl case final url?)
                   if (widget.relayAccess case final access?)
-                    _relayLinkSection(theme, relayLinkFor(url, access)),
+                    // A device token belongs to this device: its relay link
+                    // would hand it to whoever opens it.
+                    if (!isDeviceToken(access))
+                      _relayLinkSection(theme, relayLinkFor(url, access)),
                 const SizedBox(height: 8),
                 if (_open.isEmpty)
                   const Padding(

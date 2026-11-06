@@ -1286,6 +1286,43 @@ impl RelayStore for Unreachable {
     async fn withdraw_invite(&self, _: &str) -> easynotes_relay::error::Result<()> {
         gone()
     }
+    async fn create_access_token(
+        &self,
+        _: &str,
+        _: &[u8; 32],
+        _: Option<i64>,
+    ) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn access_token(
+        &self,
+        _: &str,
+    ) -> easynotes_relay::error::Result<Option<easynotes_relay::store::AccessToken>> {
+        gone()
+    }
+    async fn bind_access_token(
+        &self,
+        _: &str,
+        _: &[u8; 32],
+    ) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn set_access_token_read_only(
+        &self,
+        _: &str,
+        _: bool,
+    ) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn unbind_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn revoke_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn purge_revoked_access_tokens(&self, _: i64) -> easynotes_relay::error::Result<u64> {
+        gone()
+    }
     async fn purge(
         &self,
         _: &str,

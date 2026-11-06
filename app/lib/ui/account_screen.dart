@@ -735,7 +735,7 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
                           'devices → Sync server '
                           'first: a phrase restores nothing from another '
                           'server. '
-                          '${profile.access == null ? 'If this server has an access key, add it there too: the phrase does not include it.' : 'This server\'s access key is saved; the phrase does not include it.'}',
+                          '${profile.access == null ? 'If this server has an access key or a device token, add it there too: the phrase does not include it.' : 'This server\'s access key or device token is saved; the phrase does not include it.'} A device token has to be obtained again from the household\'s billing page after a restore.',
                 key: const Key('adopt-relay'),
               ),
             ],
