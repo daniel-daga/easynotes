@@ -2,6 +2,7 @@
 //! nothing about notes, items or people.
 
 pub mod access;
+pub mod admin;
 pub mod app;
 pub mod auth;
 pub mod error;

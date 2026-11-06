@@ -269,6 +269,39 @@ async fn a_token_is_created_bound_and_revoked() {
     assert!(!store.revoke_access_token(&missing, 1).await.unwrap());
 }
 
+/// The admin listener's sweep deletes only rows revoked before its cutoff; an
+/// unrevoked row and a recent one stay (ADR 0038).
+#[tokio::test]
+async fn purging_revoked_tokens_keeps_live_and_recent_rows() {
+    let store = store_or_skip!();
+    let old = note();
+    let recent = note();
+    let live = note();
+    for id in [&old, &recent, &live] {
+        assert!(store
+            .create_access_token(id, &[1u8; 32], None)
+            .await
+            .unwrap());
+    }
+    assert!(store
+        .revoke_access_token(&old, 1_700_000_000)
+        .await
+        .unwrap());
+    assert!(store
+        .revoke_access_token(&recent, 1_700_000_300)
+        .await
+        .unwrap());
+
+    store
+        .purge_revoked_access_tokens(1_700_000_200)
+        .await
+        .unwrap();
+
+    assert!(store.access_token(&old).await.unwrap().is_none());
+    assert!(store.access_token(&recent).await.unwrap().is_some());
+    assert!(store.access_token(&live).await.unwrap().is_some());
+}
+
 /// The bind is one conditional `UPDATE`, so eight devices racing for one fresh
 /// token must leave exactly one of them holding it (ADR 0038).
 #[tokio::test]

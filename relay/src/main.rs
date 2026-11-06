@@ -60,9 +60,17 @@
 //! * `RELAY_METRICS_ADDR` — where to serve `/metrics`, in the Prometheus text
 //!   format ([`easynotes_relay::metrics`]). A listener of its own, so that it
 //!   can be kept off the public network. Unset serves no metrics.
+//! * `RELAY_ADMIN_ADDR` — where billing's private admin API listens: minting,
+//!   revoking, marking read-only and unbinding a device's access token
+//!   ([`easynotes_relay::admin`]). A listener of its own, never a public route.
+//!   Unset serves no admin API.
+//! * `RELAY_ADMIN_SECRET` — the bearer secret every admin call must carry,
+//!   base64url, exactly 32 bytes. Required with `RELAY_ADMIN_ADDR`; a missing
+//!   or malformed value stops the process.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use easynotes_core::relay_access::RelayAccess;
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{
     Access, DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
@@ -310,6 +318,38 @@ async fn main() -> anyhow::Result<()> {
         })?),
     };
 
+    let admin_addr: Option<SocketAddr> = match std::env::var("RELAY_ADMIN_ADDR")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => None,
+        Ok(raw) => Some(raw.parse().map_err(|_| {
+            anyhow::anyhow!("RELAY_ADMIN_ADDR must be an address and port, such as 127.0.0.1:9091")
+        })?),
+    };
+    let admin_secret = match std::env::var("RELAY_ADMIN_SECRET")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => None,
+        Ok(raw) => Some(RelayAccess::decode(raw).map_err(|_| {
+            anyhow::anyhow!("RELAY_ADMIN_SECRET must be a base64url 32-byte secret")
+        })?),
+    };
+    let admin = match (admin_addr, admin_secret) {
+        (Some(addr), Some(secret)) => Some((addr, secret)),
+        (Some(_), None) => {
+            anyhow::bail!("RELAY_ADMIN_ADDR is set, so RELAY_ADMIN_SECRET must be too")
+        }
+        (None, Some(_)) => {
+            tracing::warn!(
+                "RELAY_ADMIN_SECRET is set but RELAY_ADMIN_ADDR is unset: no admin listener"
+            );
+            None
+        }
+        (None, None) => None,
+    };
+
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
 
@@ -322,6 +362,19 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, app).await {
                 tracing::error!(error = %e, "metrics listener stopped");
+            }
+        });
+    }
+
+    // Likewise billing's calls: they finish or they are retried, and nothing a
+    // stop does should wait on one.
+    if let Some((admin_addr, secret)) = admin {
+        let listener = tokio::net::TcpListener::bind(admin_addr).await?;
+        tracing::info!(addr = %listener.local_addr()?, "admin listening");
+        let app = easynotes_relay::admin::router(relay.state.clone(), secret);
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!(error = %e, "admin listener stopped");
             }
         });
     }

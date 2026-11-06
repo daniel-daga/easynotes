@@ -197,6 +197,11 @@ pub trait RelayStore: Send + Sync + 'static {
     /// token.
     async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool>;
 
+    /// Delete every token revoked before `before`, and say how many went. The
+    /// admin listener sweeps with this as housekeeping; a failure is logged by
+    /// it and does not fail the request.
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64>;
+
     /// Delete every envelope of a topic and leave it gone, if `key` and
     /// `signature` are what [`quota::authorise_purge`] accepts. A topic the
     /// relay has never seen is left gone too: an owner's offline device must
@@ -954,6 +959,13 @@ impl RelayStore for MemoryStore {
         };
         token.revoked_at.get_or_insert(now);
         Ok(true)
+    }
+
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let held = tokens.len();
+        tokens.retain(|_, token| !token.revoked_at.is_some_and(|at| at < before));
+        Ok((held - tokens.len()) as u64)
     }
 }
 
@@ -1926,6 +1938,17 @@ impl RelayStore for PostgresStore {
         .await
         .map_err(pg)?;
         Ok(revoked.is_some())
+    }
+
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64> {
+        let deleted = sqlx::query(
+            "DELETE FROM access_tokens WHERE revoked_at IS NOT NULL AND revoked_at < $1",
+        )
+        .bind(before)
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(deleted.rows_affected())
     }
 }
 

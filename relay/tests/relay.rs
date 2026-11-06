@@ -1320,6 +1320,9 @@ impl RelayStore for Unreachable {
     async fn revoke_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<bool> {
         gone()
     }
+    async fn purge_revoked_access_tokens(&self, _: i64) -> easynotes_relay::error::Result<u64> {
+        gone()
+    }
     async fn purge(
         &self,
         _: &str,
