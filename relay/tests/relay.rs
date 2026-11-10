@@ -1393,3 +1393,52 @@ fn b64_decode(s: &str) -> Vec<u8> {
         .decode(s)
         .unwrap()
 }
+
+/// Two instances over one store, as a rolling deploy runs them. Each fans out
+/// only what it appended itself, so a subscriber on one must not take a later
+/// number from its own instance as the next one: it would move its cursor past
+/// the append the other instance took, and never be sent it.
+#[tokio::test]
+async fn an_append_through_another_instance_is_not_skipped() {
+    let store = MemoryStore::new();
+    let config = || RelayConfig {
+        token_signing_key: [9; 32],
+        ..RelayConfig::default()
+    };
+    let serve = || {
+        Relay::serve_with(
+            Arc::new(store.clone()),
+            "127.0.0.1:0".parse().unwrap(),
+            config(),
+        )
+    };
+    let (a, b) = (serve().await.unwrap(), serve().await.unwrap());
+    let device = DeviceIdentity::generate();
+    let note = NoteId::random();
+    let key = NoteKey::random();
+    let token = easynotes_core::sync::authenticate(&a.http_base(), None, &device)
+        .await
+        .unwrap();
+
+    let mut reader = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_a = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_b = NoteSocket::connect(&b.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    for socket in [&mut reader, &mut on_a, &mut on_b] {
+        assert!(drain(socket).await.is_empty());
+    }
+
+    let first = envelope(&device, note, &key, 0, b"through B");
+    on_b.append(&first).await.unwrap();
+    take(&mut on_b, 1).await;
+    let second = envelope(&device, note, &key, 1, b"through A");
+    on_a.append(&second).await.unwrap();
+
+    assert_eq!(take(&mut reader, 2).await, vec![first, second]);
+    assert_eq!(reader.last_seq, 2);
+}

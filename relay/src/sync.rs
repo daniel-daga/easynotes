@@ -317,6 +317,18 @@ async fn serve(
                     if sub.catching_up || seq <= sub.last_sent {
                         continue;
                     }
+                    // Seen live, a note's numbers are dense: every append and
+                    // compaction on this instance takes the next one and is
+                    // broadcast under the note's lock. A jump means another
+                    // instance sharing the store took the ones in between,
+                    // and sending this would move the client's cursor past
+                    // them. Replay from the store instead, as for a lag.
+                    if seq != sub.last_sent + 1 {
+                        tracing::debug!(note = %note, seq, last = sub.last_sent, "gap in the fan-out; replaying");
+                        sub.catching_up = true;
+                        backlog.push_back(note);
+                        continue;
+                    }
                     let update = SyncServerMessage::Update {
                         note: note.clone(),
                         seq,
