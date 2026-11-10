@@ -41,6 +41,13 @@ use tokio::sync::{broadcast, OwnedMutexGuard};
 /// from its last `seq`, which is exactly the reconnect path.
 pub(crate) const FANOUT_BUFFER: usize = 256;
 
+/// How many fan-out messages one note's channel holds for its slowest
+/// subscriber. Small, because every subscribed note allocates its own: a
+/// subscriber that falls behind by this many is replayed from the store,
+/// exactly as one past [`FANOUT_BUFFER`] is, and a forwarder hands each one on
+/// to its session's queue as soon as it can.
+pub(crate) const NOTE_FANOUT_BUFFER: usize = 16;
+
 /// The `seq` a fan-out carries to say the topic was purged, with no envelope.
 /// No stored envelope has it: sequence numbers start at 1.
 pub(crate) const GONE_SEQ: i64 = -1;
@@ -226,7 +233,7 @@ impl AppState {
         let mut channels = self.channels.lock().unwrap();
         let receiver = channels
             .entry(note.to_string())
-            .or_insert_with(|| broadcast::channel(FANOUT_BUFFER).0)
+            .or_insert_with(|| broadcast::channel(NOTE_FANOUT_BUFFER).0)
             .subscribe();
         Listener {
             receiver: Some(receiver),

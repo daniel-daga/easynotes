@@ -1490,3 +1490,45 @@ async fn a_client_that_stops_reading_does_not_hold_up_a_stop() {
     assert!(started.elapsed() < std::time::Duration::from_secs(8));
     drop(socket);
 }
+
+/// A subscribe holds memory for as long as its socket is open, so it costs
+/// the write budget more than a message that only reads: two fit in a budget
+/// of ten thousand bytes, and the third is refused and the socket closed.
+#[tokio::test]
+async fn a_subscribe_spends_the_write_budget() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let relay = relay_with(RelayConfig {
+        writes: RateLimit::new(1, 10_000),
+        ..RelayConfig::default()
+    })
+    .await;
+    let token =
+        easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+            .await
+            .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // One at a time, each answered before the next is sent: a refusal closes
+    // the session, and backlogs not yet sent go with it.
+    for expected in ["\"type\":\"caught\"", "\"type\":\"caught\"", "rate_limited"] {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("no answer")
+                .unwrap()
+                .unwrap();
+            if let Message::Text(text) = message {
+                assert!(text.contains(expected), "wanted {expected}, got {text}");
+                break;
+            }
+        }
+    }
+}

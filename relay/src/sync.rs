@@ -550,9 +550,16 @@ enum Handled {
 /// writes nothing: an unsubscribe, or a type this relay does not know.
 const MESSAGE_BYTES: usize = 256;
 
-/// What one store read costs the write budget: a subscribe's topic read, or
-/// one note's head for a `Refresh`.
+/// What one store read costs the write budget: one note's head for a
+/// `Refresh`.
 const REFRESH_BYTES: usize = 1024;
+
+/// What a subscribe costs the write budget: a topic read, a backlog, and a
+/// note's fan-out channel and forwarder held for as long as the socket is
+/// open, about 1.4 KB of memory. Charged so that one address's burst holds
+/// tens of megabytes at most, while a household's every device resubscribing
+/// its notes on each token renewal stays a small part of the hourly budget.
+const SUBSCRIBE_BYTES: usize = 4096;
 
 async fn handle(
     session: &Session<'_>,
@@ -581,7 +588,7 @@ async fn handle(
                     .as_ref()
                     .map_or(0, |objects| objects.iter().map(String::len).sum())
         }
-        Ok(SyncClientMessage::Subscribe { .. }) => REFRESH_BYTES,
+        Ok(SyncClientMessage::Subscribe { .. }) => SUBSCRIBE_BYTES,
         Ok(SyncClientMessage::Refresh { .. }) => REFRESH_BYTES * subs.0.len().max(1),
         _ => MESSAGE_BYTES,
     };

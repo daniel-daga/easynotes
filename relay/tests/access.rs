@@ -908,19 +908,15 @@ async fn a_flood_of_appends_is_told_to_back_off_and_disconnected() {
     assert!(closed.is_ok(), "the relay kept the socket open");
 
     // What went before the budget ran out was stored; what came after was not.
-    // Reading is not writing, so the same device reads it all back.
-    let mut reader = NoteSocket::connect(&relay.ws_base(), &token, note, 0)
+    // Read from the store: a subscribe to read it back would spend the same
+    // address's budget too, which is the point of charging it.
+    let stored = relay
+        .state
+        .store
+        .since(&note.encode(), 0)
         .await
-        .unwrap();
-    let mut stored = 0;
-    loop {
-        match reader.next().await.unwrap() {
-            Some(Incoming::Envelope { .. }) => stored += 1,
-            Some(Incoming::Caught { .. }) => break,
-            Some(_) => {}
-            None => panic!("the relay closed a socket that only reads"),
-        }
-    }
+        .unwrap()
+        .len();
     assert!(
         (1..20).contains(&stored),
         "some appends are taken before the budget runs out, not all: {stored}"
@@ -929,13 +925,13 @@ async fn a_flood_of_appends_is_told_to_back_off_and_disconnected() {
 
 #[tokio::test]
 async fn a_refresh_is_charged_for_every_note_it_reads() {
-    let relay = budgeted(8 << 10).await;
+    // Four subscribes at 4 KiB, and one refresh of four notes at 1 KiB a note:
+    // room for that refresh exactly, and not for a second.
+    let relay = budgeted(20 << 10).await;
     let token = authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
         .await
         .unwrap();
     let mut sync = DeviceSync::connect(&relay.ws_base(), &token).await.unwrap();
-    // Four notes, one store read each: that leaves room for one refresh of
-    // four, and not for a second.
     let notes: Vec<NoteId> = (0..4).map(|_| NoteId::random()).collect();
     for note in &notes {
         sync.subscribe(*note, 0).await.unwrap();
