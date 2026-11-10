@@ -1374,15 +1374,23 @@ async fn a_read_only_device_can_read_attachments_but_not_upload() {
         .await
         .unwrap();
     assert!(status.status().is_success(), "{}", status.status());
-    let fetched = client
-        .get(url(""))
-        .bearer_auth(&token)
-        .header("range", format!("bytes=0-{}", media.sealed_len() - 1))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(fetched.status(), StatusCode::PARTIAL_CONTENT);
-    assert_eq!(fetched.bytes().await.unwrap().as_ref(), sealed);
+    // A chunk at a time, as the core reads: the relay serves no more per
+    // request.
+    let mut fetched = Vec::new();
+    for index in 0..media.chunks() as usize {
+        let at = index * part;
+        let end = ((index + 1) * part).min(sealed.len()) - 1;
+        let response = client
+            .get(url(""))
+            .bearer_auth(&token)
+            .header("range", format!("bytes={at}-{end}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        fetched.extend_from_slice(&response.bytes().await.unwrap());
+    }
+    assert_eq!(fetched, sealed);
 
     // But its uploads are refused, with the code.
     for response in [

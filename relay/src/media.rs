@@ -964,7 +964,12 @@ pub(crate) async fn fetch(
             .into_response());
     };
     let (at, count) = match wanted {
-        Some(range) => range,
+        // At most one chunk's worth, wherever it starts: an open range such
+        // as `bytes=0-` would otherwise read the whole object into memory,
+        // which is what refusing a rangeless read is for. A shorter 206 than
+        // asked for is allowed (RFC 9110 §14.4) and says what it holds; the
+        // core asks for exactly one chunk, so it never sees one.
+        Some((at, count)) => (at, count.min(row.geometry.full())),
         // The core always asks for one chunk. A whole read would hold the
         // object in memory, up to the media ceiling, for every request.
         // shortcut: rangeless reads above one chunk are refused, not streamed;

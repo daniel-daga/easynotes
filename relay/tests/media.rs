@@ -311,6 +311,34 @@ async fn an_object_goes_up_in_chunks_and_comes_back_by_range() {
             "{name}"
         );
 
+        // Nor is an open or oversized range a way round that: each is served
+        // one chunk at a time, and says so.
+        for asked in ["bytes=0-", "bytes=0-999999999"] {
+            let response = up.fetch(Some(asked)).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::PARTIAL_CONTENT,
+                "{name} {asked}"
+            );
+            assert_eq!(
+                response.headers()["content-range"],
+                format!("bytes 0-{}/{sealed}", full - 1).as_str(),
+                "{name} {asked}"
+            );
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                &up.sealed[..full as usize],
+                "{name} {asked}"
+            );
+        }
+        // A range that starts mid-object is capped from where it starts.
+        let response = up.fetch(Some(&format!("bytes={}-", full + 7))).await;
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {}-{}/{sealed}", full + 7, 2 * full + 6).as_str(),
+            "{name}"
+        );
+
         let past = format!("bytes={}-", up.media.sealed_len());
         assert_eq!(
             up.fetch(Some(&past)).await.status(),
