@@ -1063,7 +1063,8 @@ pub(crate) async fn compact(
             Ok(seq)
         }
         Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),
-        Err(e) => Err(e.to_string()),
+        // The category only: a storage error can name hosts and tables.
+        Err(e) => Err(e.client_message()),
     }
 }
 
