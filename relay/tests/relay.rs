@@ -1442,3 +1442,51 @@ async fn an_append_through_another_instance_is_not_skipped() {
     assert_eq!(take(&mut reader, 2).await, vec![first, second]);
     assert_eq!(reader.last_seq, 2);
 }
+
+/// A client that asks for a great deal and then stops reading must not hold
+/// the relay's stop. Its socket's queue fills, and neither the session nor
+/// the task writing to it may wait on that queue for ever: the session is
+/// closed when the relay stops, whatever is still unsent.
+#[tokio::test]
+async fn a_client_that_stops_reading_does_not_hold_up_a_stop() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    for _ in 0..64 {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    // Let every subscription catch up, so a refresh is answered at once
+    // rather than after a backlog.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // One refresh answered once per subscription, each answer carrying its
+    // megabyte id: far more than a socket buffers, and this client never
+    // reads any of it.
+    let id = "i".repeat(1 << 20);
+    for _ in 0..4 {
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"refresh","id":"{id}"}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    let drained = relay.shutdown(std::time::Duration::from_secs(10)).await;
+    assert!(drained, "the stop waited out its whole drain period");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    drop(socket);
+}
