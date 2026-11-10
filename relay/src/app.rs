@@ -436,6 +436,7 @@ impl RelayConfig {
             media: crate::media::MediaConfig {
                 limits: crate::media::MediaLimits {
                     ceiling: Some(crate::media::DEFAULT_MEDIA_CEILING),
+                    staging_ceiling: Some(crate::media::DEFAULT_STAGING_CEILING),
                     ..crate::media::MediaLimits::default()
                 },
                 ..crate::media::MediaConfig::default()

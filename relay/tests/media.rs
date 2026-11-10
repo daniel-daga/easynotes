@@ -488,6 +488,72 @@ async fn nobody_without_a_token_gets_anywhere() {
     assert_eq!(unknown.commit().await, StatusCode::NOT_FOUND);
 }
 
+/// A reservation costs nothing until its chunks arrive, so what is reserved
+/// and not yet committed is held apart from the ceiling: a note may have only
+/// so much of it, and so may the whole relay. Committing frees the room.
+#[tokio::test]
+async fn uploads_in_progress_are_held_apart_from_the_ceiling() {
+    let limits = |staging_ceiling| MediaLimits {
+        staging_note_bytes: 2500,
+        staging_ceiling,
+        ..MediaLimits::default()
+    };
+    for (name, store) in stores().await {
+        let relay = relay(
+            store,
+            MediaConfig {
+                limits: limits(None),
+                ..MediaConfig::default()
+            },
+        )
+        .await;
+        let first = Upload::new(&relay, 1000).await;
+        let second = first.sibling(1000);
+        let third = first.sibling(1000);
+        assert_eq!(first.reserve().await, StatusCode::CREATED, "{name}");
+        assert_eq!(second.reserve().await, StatusCode::CREATED, "{name}");
+        assert_eq!(
+            third.reserve().await,
+            StatusCode::INSUFFICIENT_STORAGE,
+            "{name}: a third upload in progress in one note"
+        );
+        // A committed object is no longer in progress.
+        first.send().await;
+        assert_eq!(third.reserve().await, StatusCode::CREATED, "{name}");
+        let metrics = easynotes_relay::metrics::render(&relay.state).await;
+        assert!(
+            metrics.lines().any(|l| l
+                == "easynotes_relay_quota_refusals_total{store=\"media\",scope=\"staging\"} 1"),
+            "{name}: {metrics}"
+        );
+    }
+
+    // Relay-wide, on the memory store alone: the Postgres one holds the other
+    // tests' uploads, so what it has in progress is not this test's to know.
+    let relay = relay(
+        Arc::new(MemoryStore::new()),
+        MediaConfig {
+            limits: limits(Some(2500)),
+            ..MediaConfig::default()
+        },
+    )
+    .await;
+    let (a, b) = (
+        Upload::new(&relay, 1000).await,
+        Upload::new(&relay, 1000).await,
+    );
+    assert_eq!(a.reserve().await, StatusCode::CREATED);
+    assert_eq!(b.reserve().await, StatusCode::CREATED);
+    let c = Upload::new(&relay, 1000).await;
+    assert_eq!(
+        c.reserve().await,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a third upload in progress, in a note of its own"
+    );
+    a.send().await;
+    assert_eq!(c.reserve().await, StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn budgets_count_what_is_reserved_and_what_is_committed() {
     for (name, store) in stores().await {

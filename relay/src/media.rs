@@ -81,6 +81,15 @@ pub struct MediaLimits {
     /// `None`. Doomed bytes count here until they are deleted, because they
     /// are on the disk until then.
     pub ceiling: Option<u64>,
+    /// Reserved bytes not yet committed, in one topic. A reservation is free
+    /// to make, so what is reserved and not yet uploaded is held apart from
+    /// what is stored: enough for several of the largest attachments going up
+    /// at once, and no more.
+    pub staging_note_bytes: u64,
+    /// Reserved bytes not yet committed, in every topic together, or `None`.
+    /// Uploads in progress may hold this much of the ceiling and no more, so
+    /// reservations that are never uploaded cannot fill it.
+    pub staging_ceiling: Option<u64>,
     /// An uncommitted reservation with no chunk for this long is dropped, and
     /// stops counting.
     pub staging_ttl_secs: i64,
@@ -98,6 +107,8 @@ impl Default for MediaLimits {
         Self {
             note_bytes: 1 << 30,
             ceiling: None,
+            staging_note_bytes: DEFAULT_STAGING_PER_NOTE,
+            staging_ceiling: None,
             staging_ttl_secs: 24 * 60 * 60,
             fresh_secs: 24 * 60 * 60,
             doomed_ttl_secs: 7 * 24 * 60 * 60,
@@ -107,6 +118,14 @@ impl Default for MediaLimits {
 
 /// Where a public relay stops reserving new media unless told otherwise.
 pub const DEFAULT_MEDIA_CEILING: u64 = 64 << 30;
+
+/// What uploads in progress may hold in one topic: five of the largest
+/// attachments at once.
+pub const DEFAULT_STAGING_PER_NOTE: u64 = 5 * MAX_AUDIO_BYTES;
+
+/// What uploads in progress may hold on a public relay unless told
+/// otherwise: an eighth of [`DEFAULT_MEDIA_CEILING`].
+pub const DEFAULT_STAGING_CEILING: u64 = DEFAULT_MEDIA_CEILING / 8;
 
 /// Media storage for a relay: the bytes, and the limits on them. `blobs` is
 /// `None` on a relay that keeps its log in Postgres and was given nowhere
@@ -198,6 +217,11 @@ pub enum Reserved {
     NoteFull,
     RelayFull,
     Gone,
+    /// Uploads in progress already hold [`MediaLimits::staging_note_bytes`]
+    /// in this topic.
+    NoteStaging,
+    /// Uploads in progress already hold [`MediaLimits::staging_ceiling`].
+    RelayStaging,
 }
 
 /// What became of a chunk.
@@ -761,6 +785,16 @@ pub(crate) async fn reserve(
             Err(RelayError::RelayFull)
         }
         Reserved::Gone => Err(RelayError::TopicGone),
+        // Full for now rather than for good: the uploads holding the room
+        // either commit, and count against the ceiling, or expire.
+        Reserved::NoteStaging => {
+            state.metrics.refused(crate::metrics::Refused::MediaStaging);
+            Err(RelayError::NoteFull)
+        }
+        Reserved::RelayStaging => {
+            state.metrics.refused(crate::metrics::Refused::MediaStaging);
+            Err(RelayError::RelayFull)
+        }
     }
 }
 

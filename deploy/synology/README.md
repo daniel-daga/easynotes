@@ -67,6 +67,12 @@ In that folder, copy `.env.example` to `.env`. Edit `.env`:
   still count against `RELAY_MEDIA_CEILING`, because they are still on the
   disk. `easynotes_relay_media_bytes{state="doomed"}` says how much is
   waiting to go.
+- Optionally set `RELAY_MEDIA_STAGING_CEILING`, the bytes uploads still in
+  progress may hold together (default 8 GiB, or `off`). A device reserves an
+  attachment's room before it sends it, so this keeps reservations nobody
+  uploads from filling the media ceiling. Past it, a new upload is refused
+  until earlier ones commit or expire;
+  `easynotes_relay_quota_refusals_total{scope="staging"}` counts those.
 - Leave `RELAY_NETWORK` empty unless the NAS already uses `172.30.87.0/24`.
   It is the subnet of the Compose network, and the relay trusts the
   `X-Forwarded-For` header only from that range, which is where DSM's reverse
