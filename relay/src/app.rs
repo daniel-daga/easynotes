@@ -903,6 +903,12 @@ pub(crate) async fn append(
     }
 }
 
+/// What a tombstone for a topic the relay has never stored costs a purge that
+/// carries no device token. A row that lasts for ever is charged far more than
+/// its few bytes: a whole account's worth fits in one burst of the write
+/// budget, and a flood of them slows to a few thousand an hour.
+const UNSEEN_PURGE_BYTES: usize = 64 << 10;
+
 /// Purge topics ([ADR 0026](../../docs/decisions.md#adr-0026)).
 ///
 /// Each under its own append lock, so an append racing a purge lands wholly
@@ -910,6 +916,8 @@ pub(crate) async fn append(
 /// once the tombstone is written.
 async fn purge(
     State(state): State<Arc<AppState>>,
+    client: Option<axum::Extension<Client>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<PurgeRequest>,
 ) -> Result<Json<PurgeResponse>> {
     if request.topics.len() > MAX_PURGE_TOPICS {
@@ -917,6 +925,18 @@ async fn purge(
             "at most {MAX_PURGE_TOPICS} topics per request"
         )));
     }
+    // A device token is optional here: a purge's authority is the signature
+    // on each topic, and a person whose access was taken away must still be
+    // able to delete what they put here. But a topic the relay has never
+    // stored has no authority to check, so purging it writes a tombstone for
+    // anyone who asks. Without a token, each costs the address's write budget.
+    let authenticated = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|token| state.auth.device_for(token))
+        .is_some();
+    let client = client.map(|c| c.0);
     let mut response = PurgeResponse::default();
     for topic in request.topics {
         let refuse = |reason: &str| PurgeRefused {
@@ -942,6 +962,16 @@ async fn purge(
             continue;
         };
         let _append = state.append_lock(&topic.note).await;
+        if !authenticated {
+            let known = state.store.topic(&topic.note).await?;
+            if !known.gone && known.head == 0 {
+                // Whatever went before in this request is purged; the
+                // caller retries the rest, which is safe, as purging is.
+                state
+                    .spend_writes(client, UNSEEN_PURGE_BYTES)
+                    .map_err(RelayError::RateLimited)?;
+            }
+        }
         match state.store.purge(&topic.note, key, signature).await? {
             Ok(()) => {
                 // The metadata went in the same transaction; the bytes follow.
