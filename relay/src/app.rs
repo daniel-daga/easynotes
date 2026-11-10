@@ -41,6 +41,13 @@ use tokio::sync::{broadcast, OwnedMutexGuard};
 /// from its last `seq`, which is exactly the reconnect path.
 pub(crate) const FANOUT_BUFFER: usize = 256;
 
+/// How many fan-out messages one note's channel holds for its slowest
+/// subscriber. Small, because every subscribed note allocates its own: a
+/// subscriber that falls behind by this many is replayed from the store,
+/// exactly as one past [`FANOUT_BUFFER`] is, and a forwarder hands each one on
+/// to its session's queue as soon as it can.
+pub(crate) const NOTE_FANOUT_BUFFER: usize = 16;
+
 /// The `seq` a fan-out carries to say the topic was purged, with no envelope.
 /// No stored envelope has it: sequence numbers start at 1.
 pub(crate) const GONE_SEQ: i64 = -1;
@@ -226,7 +233,7 @@ impl AppState {
         let mut channels = self.channels.lock().unwrap();
         let receiver = channels
             .entry(note.to_string())
-            .or_insert_with(|| broadcast::channel(FANOUT_BUFFER).0)
+            .or_insert_with(|| broadcast::channel(NOTE_FANOUT_BUFFER).0)
             .subscribe();
         Listener {
             receiver: Some(receiver),
@@ -436,6 +443,7 @@ impl RelayConfig {
             media: crate::media::MediaConfig {
                 limits: crate::media::MediaLimits {
                     ceiling: Some(crate::media::DEFAULT_MEDIA_CEILING),
+                    staging_ceiling: Some(crate::media::DEFAULT_STAGING_CEILING),
                     ..crate::media::MediaLimits::default()
                 },
                 ..crate::media::MediaConfig::default()
@@ -902,6 +910,12 @@ pub(crate) async fn append(
     }
 }
 
+/// What a tombstone for a topic the relay has never stored costs a purge that
+/// carries no device token. A row that lasts for ever is charged far more than
+/// its few bytes: a whole account's worth fits in one burst of the write
+/// budget, and a flood of them slows to a few thousand an hour.
+const UNSEEN_PURGE_BYTES: usize = 64 << 10;
+
 /// Purge topics ([ADR 0026](../../docs/decisions.md#adr-0026)).
 ///
 /// Each under its own append lock, so an append racing a purge lands wholly
@@ -909,6 +923,8 @@ pub(crate) async fn append(
 /// once the tombstone is written.
 async fn purge(
     State(state): State<Arc<AppState>>,
+    client: Option<axum::Extension<Client>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<PurgeRequest>,
 ) -> Result<Json<PurgeResponse>> {
     if request.topics.len() > MAX_PURGE_TOPICS {
@@ -916,6 +932,18 @@ async fn purge(
             "at most {MAX_PURGE_TOPICS} topics per request"
         )));
     }
+    // A device token is optional here: a purge's authority is the signature
+    // on each topic, and a person whose access was taken away must still be
+    // able to delete what they put here. But a topic the relay has never
+    // stored has no authority to check, so purging it writes a tombstone for
+    // anyone who asks. Without a token, each costs the address's write budget.
+    let authenticated = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|token| state.auth.device_for(token))
+        .is_some();
+    let client = client.map(|c| c.0);
     let mut response = PurgeResponse::default();
     for topic in request.topics {
         let refuse = |reason: &str| PurgeRefused {
@@ -941,6 +969,16 @@ async fn purge(
             continue;
         };
         let _append = state.append_lock(&topic.note).await;
+        if !authenticated {
+            let known = state.store.topic(&topic.note).await?;
+            if !known.gone && known.head == 0 {
+                // Whatever went before in this request is purged; the
+                // caller retries the rest, which is safe, as purging is.
+                state
+                    .spend_writes(client, UNSEEN_PURGE_BYTES)
+                    .map_err(RelayError::RateLimited)?;
+            }
+        }
         match state.store.purge(&topic.note, key, signature).await? {
             Ok(()) => {
                 // The metadata went in the same transaction; the bytes follow.
@@ -1025,7 +1063,8 @@ pub(crate) async fn compact(
             Ok(seq)
         }
         Ok(Err(refusal)) => Err(Refusal::as_str(refusal).to_string()),
-        Err(e) => Err(e.to_string()),
+        // The category only: a storage error can name hosts and tables.
+        Err(e) => Err(e.client_message()),
     }
 }
 

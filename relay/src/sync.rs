@@ -193,7 +193,21 @@ async fn run(
     // The sender went with `serve`, so the writer sends what is queued and
     // finishes, closing the socket. `stopping` is held until then: the relay
     // has not drained while a queue is still being written.
-    let _ = writer.await;
+    //
+    // But not for ever. A client that has stopped reading never takes the
+    // rest, and the writer would wait on its socket past the token's expiry
+    // and past the relay's stop. Past [`WRITER_GRACE`] the socket is cut:
+    // nothing is lost, because whatever was unsent is in the store and the
+    // client resumes from its cursor when it reconnects.
+    let mut writer = writer;
+    if tokio::time::timeout(WRITER_GRACE, &mut writer)
+        .await
+        .is_err()
+    {
+        tracing::debug!("the client stopped reading; cutting its socket");
+        writer.abort();
+        let _ = writer.await;
+    }
     drop(stopping);
     result
 }
@@ -317,6 +331,18 @@ async fn serve(
                     if sub.catching_up || seq <= sub.last_sent {
                         continue;
                     }
+                    // Seen live, a note's numbers are dense: every append and
+                    // compaction on this instance takes the next one and is
+                    // broadcast under the note's lock. A jump means another
+                    // instance sharing the store took the ones in between,
+                    // and sending this would move the client's cursor past
+                    // them. Replay from the store instead, as for a lag.
+                    if seq != sub.last_sent + 1 {
+                        tracing::debug!(note = %note, seq, last = sub.last_sent, "gap in the fan-out; replaying");
+                        sub.catching_up = true;
+                        backlog.push_back(note);
+                        continue;
+                    }
                     let update = SyncServerMessage::Update {
                         note: note.clone(),
                         seq,
@@ -430,6 +456,12 @@ async fn serve(
 /// How long a session closed on its client waits for the client to close too.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long an ended session's queue may take to reach its client before the
+/// socket is cut. With [`CLOSE_GRACE`] before it, inside the default drain
+/// (`RELAY_DRAIN_SECONDS`, eight seconds), so a stop is not held by a client
+/// that has stopped reading.
+const WRITER_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Send the next chunk of one note's backlog. True if there is more.
 async fn send_chunk(
     state: &Arc<AppState>,
@@ -518,9 +550,16 @@ enum Handled {
 /// writes nothing: an unsubscribe, or a type this relay does not know.
 const MESSAGE_BYTES: usize = 256;
 
-/// What one store read costs the write budget: a subscribe's topic read, or
-/// one note's head for a `Refresh`.
+/// What one store read costs the write budget: one note's head for a
+/// `Refresh`.
 const REFRESH_BYTES: usize = 1024;
+
+/// What a subscribe costs the write budget: a topic read, a backlog, and a
+/// note's fan-out channel and forwarder held for as long as the socket is
+/// open, about 1.4 KB of memory. Charged so that one address's burst holds
+/// tens of megabytes at most, while a household's every device resubscribing
+/// its notes on each token renewal stays a small part of the hourly budget.
+const SUBSCRIBE_BYTES: usize = 4096;
 
 async fn handle(
     session: &Session<'_>,
@@ -549,7 +588,7 @@ async fn handle(
                     .as_ref()
                     .map_or(0, |objects| objects.iter().map(String::len).sum())
         }
-        Ok(SyncClientMessage::Subscribe { .. }) => REFRESH_BYTES,
+        Ok(SyncClientMessage::Subscribe { .. }) => SUBSCRIBE_BYTES,
         Ok(SyncClientMessage::Refresh { .. }) => REFRESH_BYTES * subs.0.len().max(1),
         _ => MESSAGE_BYTES,
     };
@@ -615,8 +654,14 @@ async fn handle(
                     "client cursor is beyond relay head"
                 );
                 forwarder.abort();
-                let _ = out.send(SyncServerMessage::Reset { note }).await;
-                return Handled::Continue;
+                // Not waited for, for the reason a refresh is not. A reset
+                // cannot be dropped, though: the client waits for it before
+                // it trusts the note again. With no room, close instead;
+                // the client reconnects, subscribes again and is told then.
+                return match out.try_send(SyncServerMessage::Reset { note }) {
+                    Ok(()) => Handled::Continue,
+                    Err(_) => Handled::Close,
+                };
             }
             state.metrics.subscription_started();
             subs.0.insert(
@@ -652,21 +697,31 @@ async fn handle(
                         continue;
                     }
                 };
-                if sub.last_sent < head || sub.catching_up {
+                // Answered now if the subscription is already there and the
+                // queue has room. Never waited for: a client that has stopped
+                // reading would stop this session reading too, and with it
+                // the token's expiry and the relay's stop. With no room, the
+                // barrier waits like any other and goes with the next chunk.
+                let answered = !(sub.last_sent < head || sub.catching_up)
+                    && match out.try_send(SyncServerMessage::RefreshComplete {
+                        id: id.clone(),
+                        note: note.clone(),
+                        seq: head,
+                    }) {
+                        Ok(()) => {
+                            state.metrics.refresh_completed();
+                            true
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => false,
+                        // The writer has gone; the session ends with it.
+                        Err(mpsc::error::TrySendError::Closed(_)) => true,
+                    };
+                if !answered {
                     sub.refresh.push((id.clone(), head));
                     if !sub.catching_up {
                         sub.catching_up = true;
                         backlog.push_back(note.clone());
                     }
-                } else {
-                    let _ = out
-                        .send(SyncServerMessage::RefreshComplete {
-                            id: id.clone(),
-                            note: note.clone(),
-                            seq: head,
-                        })
-                        .await;
-                    state.metrics.refresh_completed();
                 }
             }
         }

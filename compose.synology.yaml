@@ -71,6 +71,7 @@ services:
       RELAY_MEDIA_DIR: /var/lib/easynotes-media
       RELAY_MEDIA_PER_NOTE: ${RELAY_MEDIA_PER_NOTE:-}
       RELAY_MEDIA_CEILING: ${RELAY_MEDIA_CEILING:-}
+      RELAY_MEDIA_STAGING_CEILING: ${RELAY_MEDIA_STAGING_CEILING:-}
       RELAY_TRUSTED_PROXIES: ${RELAY_NETWORK:-172.30.87.0/24}
       # Prometheus metrics, on a port of their own that the reverse proxy does
       # not serve. See deploy/synology/README.md, "Monitoring".
