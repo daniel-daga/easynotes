@@ -22,15 +22,29 @@ export 'invites.dart';
 export 'note_view.dart' show NoteColour, NoteKind;
 
 /// [NoteLibrary.watchReminders] for both implementations: a note edit only
-/// reaches the scheduler when it actually changed a reminder.
-Stream<List<Reminder>> watchReminderChanges(NoteLibrary library) => library
-    .watchNotes()
-    .map((_) => library.reminders)
-    .distinct(
-      (a, b) =>
-          a.length == b.length &&
-          Iterable.generate(a.length).every((i) => a[i] == b[i]),
-    );
+/// reaches the scheduler when it actually changed a reminder, or moved its note
+/// into or out of the trash.
+Stream<List<Reminder>> watchReminderChanges(NoteLibrary library) {
+  List<(Reminder, bool)> snapshot() {
+    final trashed = {for (final note in library.notes) note.id: note.trashed};
+    return [
+      for (final reminder in library.reminders)
+        (reminder, trashed[reminder.noteId] ?? false),
+    ];
+  }
+
+  return library
+      .watchNotes()
+      .map((_) => snapshot())
+      .distinct(
+        (a, b) =>
+            a.length == b.length &&
+            Iterable.generate(
+              a.length,
+            ).every((i) => a[i].$1 == b[i].$1 && a[i].$2 == b[i].$2),
+      )
+      .map((snapshot) => [for (final entry in snapshot) entry.$1]);
+}
 
 /// Whether the note list is a masonry grid or one column. A view setting, and so
 /// a personal one: it lives in the account document beside the colours.
