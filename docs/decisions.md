@@ -197,7 +197,10 @@ There is no owner approval step and no safety code.
 **Accepted, amended by ADR 0034.** A signed purge request names one topic. The
 relay deletes what the account owns and keeps a tombstone, so a deleted account
 does not come back through a stale client. ADR 0034 adds the record a guest
-leaves in notes they joined.
+leaves in notes they joined. A purge needs no device token, so a person whose
+access was taken away can still delete; but a tombstone for a topic the relay
+never stored is charged against the caller's write budget unless the request
+carries one.
 
 <a id="adr-0027"></a>
 ## ADR 0027 — Attachments: descriptors in the note, sealed chunks beside it

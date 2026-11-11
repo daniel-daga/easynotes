@@ -13,7 +13,8 @@
 //! attachment chunks together, per address
 //! ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //! Device keys are free, so a budget per key would be a budget per nothing.
-//! IPv6 clients share a bucket per /64; IPv4 clients keep one per address.
+//! An IPv6 client is keyed on its /64, which is what a subscriber is handed
+//! and so what one client controls.
 //!
 //! ## Why a token bucket, and why it is keyed on the socket's peer
 //!
@@ -123,6 +124,7 @@ impl RateLimit {
         if self.disabled() {
             return true;
         }
+        let who = bucket_key(who);
         let mut buckets = self.buckets.lock().expect("rate limiter mutex");
         if buckets.len() > SWEEP_ABOVE {
             // A bucket that has refilled to full is indistinguishable from one
@@ -134,10 +136,6 @@ impl RateLimit {
                 refilled < full
             });
         }
-        let who = match who.to_canonical() {
-            IpAddr::V6(ip) => IpAddr::V6((u128::from(ip) & (u128::MAX << 64)).into()),
-            ip => ip,
-        };
         let bucket = buckets.entry(who).or_insert(Bucket {
             tokens: self.burst,
             last: now,
@@ -172,6 +170,18 @@ impl RateLimit {
             return Duration::ZERO;
         }
         Duration::from_secs((60.0 / self.per_minute).ceil().max(1.0) as u64)
+    }
+}
+
+/// The bucket an address spends from. An IPv4 address is its own. An IPv6
+/// address is its /64: that is what one subscriber is handed, and every
+/// address in it is the same client's to pick, so keying on the whole address
+/// would give one host 2^64 allowances. An IPv4-mapped address is the IPv4
+/// address it maps.
+fn bucket_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & !u128::from(u64::MAX)).into()),
+        v4 => v4,
     }
 }
 
@@ -336,15 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_requests_share_a_bucket_only_within_the_same_64() {
-        let limit = RateLimit::new(60, 1);
-        let now = Instant::now();
-        assert!(limit.allow_at(addr("2001:db8:1234:5678::1"), now));
-        assert!(!limit.allow_at(addr("2001:db8:1234:5678:ffff:ffff:ffff:ffff"), now));
-        assert!(limit.allow_at(addr("2001:db8:1234:5679::1"), now));
-    }
-
-    #[test]
     fn ipv6_writes_share_a_bucket_only_within_the_same_64() {
         let limit = RateLimit::new(60, 1000);
         let now = Instant::now();
@@ -352,17 +353,6 @@ mod tests {
         assert!(!limit.spend_at(addr("2001:db8:1234:5678::2"), 600, now));
         assert!(limit.spend_at(addr("2001:db8:1234:5678::2"), 400, now));
         assert!(limit.spend_at(addr("2001:db8:1234:5679::1"), 600, now));
-    }
-
-    #[test]
-    fn mapped_ipv4_addresses_share_only_their_ipv4_bucket() {
-        let limit = RateLimit::new(60, 1);
-        let now = Instant::now();
-        assert!(limit.allow_at(addr("::ffff:127.0.0.1"), now));
-        assert!(!limit.allow_at(ip(1), now));
-        assert!(limit.allow_at(ip(2), now));
-        assert!(!limit.allow_at(addr("::ffff:127.0.0.2"), now));
-        assert!(limit.allow_at(addr("::1"), now));
     }
 
     #[test]
@@ -385,6 +375,26 @@ mod tests {
             proxies.client(untrusted, ["2001:db8:1234:5679::1"].into_iter()),
             untrusted,
         );
+    }
+
+    #[test]
+    fn an_ipv6_slash_64_is_one_client() {
+        let limit = RateLimit::new(60, 2);
+        let now = Instant::now();
+        let (a, b) = (addr("2001:db8:1:2::1"), addr("2001:db8:1:2:ffff::9"));
+        assert!(limit.allow_at(a, now));
+        assert!(limit.allow_at(b, now));
+        assert!(
+            !limit.allow_at(addr("2001:db8:1:2::77"), now),
+            "a third address in the same /64 had an allowance of its own"
+        );
+        // The next /64 is somebody else.
+        assert!(limit.allow_at(addr("2001:db8:1:3::1"), now));
+        // A mapped IPv4 address is that IPv4 address, not a /64 of zeros.
+        assert!(limit.allow_at(addr("::ffff:192.0.2.1"), now));
+        assert!(limit.allow_at(addr("192.0.2.1"), now));
+        assert!(!limit.allow_at(addr("192.0.2.1"), now));
+        assert!(limit.allow_at(addr("192.0.2.2"), now));
     }
 
     #[test]

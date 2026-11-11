@@ -31,6 +31,11 @@
 //! * `RELAY_MEDIA_CEILING` — bytes every note's attachments may hold together,
 //!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
 //!   64 GiB.
+//! * `RELAY_MEDIA_STAGING_CEILING` — bytes uploads in progress may hold
+//!   together, reserved and not yet committed, or `off`. Unset means
+//!   [`easynotes_relay::media::DEFAULT_STAGING_CEILING`], 8 GiB. A reservation
+//!   costs nothing until its chunks arrive, so without this one could hold the
+//!   whole media ceiling with nothing uploaded.
 //!
 //! * `RELAY_ACCESS_KEYS` — who may write here ([ADR 0028](../../docs/decisions.md#adr-0028)):
 //!   one or more base64url access keys, comma separated, or `open` for anyone.
@@ -313,6 +318,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(bytes) = bytes_or_off("RELAY_MEDIA_PER_NOTE", false)? {
         config.media.limits.note_bytes = bytes.unwrap_or(u64::MAX);
         tracing::info!(bytes, "one note's attachments stop at this much");
+    }
+    if let Some(bytes) = bytes_or_off("RELAY_MEDIA_STAGING_CEILING", true)? {
+        config.media.limits.staging_ceiling = bytes;
+        match bytes {
+            Some(bytes) => tracing::info!(bytes, "uploads in progress stop at this much reserved"),
+            None => tracing::warn!(
+                "RELAY_MEDIA_STAGING_CEILING=off: reservations may hold the whole media ceiling"
+            ),
+        }
     }
     if let Some(bytes) = bytes_or_off("RELAY_MEDIA_CEILING", true)? {
         config.media.limits.ceiling = bytes;

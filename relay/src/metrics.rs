@@ -50,13 +50,16 @@ pub(crate) enum Refused {
     LogRelay,
     MediaNote,
     MediaRelay,
+    /// Uploads in progress hold all the room they may.
+    MediaStaging,
 }
 
-const REFUSALS: [(Refused, &str, &str); 4] = [
+const REFUSALS: [(Refused, &str, &str); 5] = [
     (Refused::LogNote, "log", "note"),
     (Refused::LogRelay, "log", "relay"),
     (Refused::MediaNote, "media", "note"),
     (Refused::MediaRelay, "media", "relay"),
+    (Refused::MediaStaging, "media", "staging"),
 ];
 
 /// The relay's running counts. Relaxed atomics throughout: each number stands
@@ -67,7 +70,7 @@ pub struct Metrics {
     sockets_open: AtomicU64,
     sockets_opened: AtomicU64,
     rate_limited: [AtomicU64; 5],
-    refused: [AtomicU64; 4],
+    refused: [AtomicU64; 5],
     /// By status class, 1xx to 5xx. A socket's upgrade is a 1xx.
     responses: [AtomicU64; 5],
     /// Requests by the protocol they named, from `PROTOCOL_MIN` up.

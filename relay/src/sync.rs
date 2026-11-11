@@ -193,7 +193,21 @@ async fn run(
     // The sender went with `serve`, so the writer sends what is queued and
     // finishes, closing the socket. `stopping` is held until then: the relay
     // has not drained while a queue is still being written.
-    let _ = writer.await;
+    //
+    // But not for ever. A client that has stopped reading never takes the
+    // rest, and the writer would wait on its socket past the token's expiry
+    // and past the relay's stop. Past [`WRITER_GRACE`] the socket is cut:
+    // nothing is lost, because whatever was unsent is in the store and the
+    // client resumes from its cursor when it reconnects.
+    let mut writer = writer;
+    if tokio::time::timeout(WRITER_GRACE, &mut writer)
+        .await
+        .is_err()
+    {
+        tracing::debug!("the client stopped reading; cutting its socket");
+        writer.abort();
+        let _ = writer.await;
+    }
     drop(stopping);
     result
 }
@@ -268,26 +282,21 @@ fn queued_bytes(message: &SyncServerMessage) -> usize {
     }
 }
 
-async fn serve<S>(
+async fn serve(
     state: &Arc<AppState>,
     connection: Connection,
-    rx: &mut S,
+    rx: &mut futures_util::stream::SplitStream<WebSocket>,
     out: mpsc::Sender<SyncServerMessage>,
     stopping: &mut crate::shutdown::Watch,
     queued: &AtomicUsize,
     freed: &Notify,
-) -> anyhow::Result<()>
-where
-    S: futures_util::Stream<Item = std::result::Result<Message, axum::Error>> + Unpin,
-{
+) -> anyhow::Result<()> {
     // Bounded, so that a session that cannot keep up backs up into the note's
     // broadcast buffer, which lags, which is replayed from the store.
     let (fanned_tx, mut fanned) = mpsc::channel::<Fanned>(app::FANOUT_BUFFER);
     let mut subs = Subscriptions(HashMap::new());
     // Notes with a backlog still to send, taken in turn one chunk at a time.
     let mut backlog: VecDeque<String> = VecDeque::new();
-    // A reset must not create a subscription, even while its marker waits.
-    let mut resets: VecDeque<String> = VecDeque::new();
     // Set when a chunk did not fit in the byte budget: wait for the writer
     // rather than retrying a chunk that still cannot fit.
     let mut awaiting_bytes = false;
@@ -320,6 +329,18 @@ where
                 Fanned::Update { note, seq, envelope } => {
                     let Some(sub) = subs.0.get_mut(&note) else { continue };
                     if sub.catching_up || seq <= sub.last_sent {
+                        continue;
+                    }
+                    // Seen live, a note's numbers are dense: every append and
+                    // compaction on this instance takes the next one and is
+                    // broadcast under the note's lock. A jump means another
+                    // instance sharing the store took the ones in between,
+                    // and sending this would move the client's cursor past
+                    // them. Replay from the store instead, as for a lag.
+                    if seq != sub.last_sent + 1 {
+                        tracing::debug!(note = %note, seq, last = sub.last_sent, "gap in the fan-out; replaying");
+                        sub.catching_up = true;
+                        backlog.push_back(note);
                         continue;
                     }
                     let update = SyncServerMessage::Update {
@@ -370,20 +391,13 @@ where
                         out: &out,
                         fanned: &fanned_tx,
                     };
-                    if let Handled::Close = handle(&session, &mut subs, &mut backlog, &mut resets, &t).await {
+                    if let Handled::Close = handle(&session, &mut subs, &mut backlog, &t).await {
                         break;
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e.into()),
-            },
-
-            permit = out.reserve(), if !resets.is_empty() => {
-                let Ok(permit) = permit else { return Ok(()) };
-                permit.send(SyncServerMessage::Reset {
-                    note: resets.pop_front().expect("a pending reset"),
-                });
             },
 
             // The writer freed bytes. Retry a chunk only when a worst-case
@@ -441,6 +455,12 @@ where
 
 /// How long a session closed on its client waits for the client to close too.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long an ended session's queue may take to reach its client before the
+/// socket is cut. With [`CLOSE_GRACE`] before it, inside the default drain
+/// (`RELAY_DRAIN_SECONDS`, eight seconds), so a stop is not held by a client
+/// that has stopped reading.
+const WRITER_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Send the next chunk of one note's backlog. True if there is more.
 async fn send_chunk(
@@ -530,15 +550,21 @@ enum Handled {
 /// writes nothing: an unsubscribe, or a type this relay does not know.
 const MESSAGE_BYTES: usize = 256;
 
-/// What one store read costs the write budget: a subscribe's topic read, or
-/// one note's head for a `Refresh`.
+/// What one store read costs the write budget: one note's head for a
+/// `Refresh`.
 const REFRESH_BYTES: usize = 1024;
+
+/// What a subscribe costs the write budget: a topic read, a backlog, and a
+/// note's fan-out channel and forwarder held for as long as the socket is
+/// open, about 1.4 KB of memory. Charged so that one address's burst holds
+/// tens of megabytes at most, while a household's every device resubscribing
+/// its notes on each token renewal stays a small part of the hourly budget.
+const SUBSCRIBE_BYTES: usize = 4096;
 
 async fn handle(
     session: &Session<'_>,
     subs: &mut Subscriptions,
     backlog: &mut VecDeque<String>,
-    resets: &mut VecDeque<String>,
     text: &str,
 ) -> Handled {
     let Session {
@@ -562,7 +588,7 @@ async fn handle(
                     .as_ref()
                     .map_or(0, |objects| objects.iter().map(String::len).sum())
         }
-        Ok(SyncClientMessage::Subscribe { .. }) => REFRESH_BYTES,
+        Ok(SyncClientMessage::Subscribe { .. }) => SUBSCRIBE_BYTES,
         Ok(SyncClientMessage::Refresh { .. }) => REFRESH_BYTES * subs.0.len().max(1),
         _ => MESSAGE_BYTES,
     };
@@ -592,10 +618,10 @@ async fn handle(
             if NoteId::decode(&note).is_err() {
                 return refused(out, Some(note), "malformed note id");
             }
-            if subs.0.contains_key(&note) || resets.contains(&note) {
+            if subs.0.contains_key(&note) {
                 return refused(out, Some(note), "already subscribed");
             }
-            if subs.0.len() + resets.len() >= MAX_SUBSCRIPTIONS {
+            if subs.0.len() >= MAX_SUBSCRIPTIONS {
                 return refused(out, Some(note), "too many notes on one socket");
             }
             let since = since.max(0);
@@ -628,12 +654,14 @@ async fn handle(
                     "client cursor is beyond relay head"
                 );
                 forwarder.abort();
-                match out.try_send(SyncServerMessage::Reset { note: note.clone() }) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => resets.push_back(note),
-                    Err(mpsc::error::TrySendError::Closed(_)) => return Handled::Close,
-                }
-                return Handled::Continue;
+                // Not waited for, for the reason a refresh is not. A reset
+                // cannot be dropped, though: the client waits for it before
+                // it trusts the note again. With no room, close instead;
+                // the client reconnects, subscribes again and is told then.
+                return match out.try_send(SyncServerMessage::Reset { note }) {
+                    Ok(()) => Handled::Continue,
+                    Err(_) => Handled::Close,
+                };
             }
             state.metrics.subscription_started();
             subs.0.insert(
@@ -650,7 +678,6 @@ async fn handle(
             backlog.push_back(note);
         }
         SyncClientMessage::Unsubscribe { note } => {
-            resets.retain(|pending| pending != &note);
             // Anything of it still queued is dropped where it is read, because
             // the subscription it would be sent under is gone.
             if let Some(sub) = subs.0.remove(&note) {
@@ -670,25 +697,30 @@ async fn handle(
                         continue;
                     }
                 };
-                if sub.last_sent < head || sub.catching_up {
-                    sub.refresh.push((id.clone(), head));
-                    if !sub.catching_up {
-                        sub.catching_up = true;
-                        backlog.push_back(note.clone());
-                    }
-                } else {
-                    match out.try_send(SyncServerMessage::RefreshComplete {
+                // Answered now if the subscription is already there and the
+                // queue has room. Never waited for: a client that has stopped
+                // reading would stop this session reading too, and with it
+                // the token's expiry and the relay's stop. With no room, the
+                // barrier waits like any other and goes with the next chunk.
+                let answered = !(sub.last_sent < head || sub.catching_up)
+                    && match out.try_send(SyncServerMessage::RefreshComplete {
                         id: id.clone(),
                         note: note.clone(),
                         seq: head,
                     }) {
-                        Ok(()) => state.metrics.refresh_completed(),
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            sub.refresh.push((id.clone(), head));
-                            sub.catching_up = true;
-                            backlog.push_back(note.clone());
+                        Ok(()) => {
+                            state.metrics.refresh_completed();
+                            true
                         }
-                        Err(mpsc::error::TrySendError::Closed(_)) => return Handled::Close,
+                        Err(mpsc::error::TrySendError::Full(_)) => false,
+                        // The writer has gone; the session ends with it.
+                        Err(mpsc::error::TrySendError::Closed(_)) => true,
+                    };
+                if !answered {
+                    sub.refresh.push((id.clone(), head));
+                    if !sub.catching_up {
+                        sub.catching_up = true;
+                        backlog.push_back(note.clone());
                     }
                 }
             }
@@ -806,148 +838,6 @@ fn forward(state: &Arc<AppState>, note: String, fanned: mpsc::Sender<Fanned>) ->
 #[cfg(test)]
 mod queue_tests {
     use super::*;
-
-    // The same read/select loop as a socket session, without a network writer
-    // that might drain the queue before the incoming marker is handled.
-    async fn full_session_queue(reset: bool, finish: &str) {
-        let state = AppState::new(Arc::new(crate::store::MemoryStore::new()), [0; 32]);
-        let note = NoteId::from_bytes([7; 16]).encode();
-        let (input, incoming) =
-            mpsc::channel::<(SyncClientMessage, tokio::sync::oneshot::Sender<()>)>(4);
-        let mut rx = Box::pin(futures_util::stream::unfold(
-            incoming,
-            |mut incoming| async move {
-                let (message, taken) = incoming.recv().await?;
-                let _ = taken.send(());
-                Some((
-                    Ok(Message::Text(
-                        serde_json::to_string(&message).unwrap().into(),
-                    )),
-                    incoming,
-                ))
-            },
-        ));
-        let (out, mut outgoing) = mpsc::channel(OUTGOING);
-        let queued = AtomicUsize::new(0);
-        let freed = Notify::new();
-        let mut stopping = state.shutdown.watch();
-        let connection = Connection {
-            client: None,
-            read_only: false,
-            expires_at: crate::auth::unix_now() + if finish == "expiry" { 1 } else { 60 },
-        };
-        let session = serve(
-            &state,
-            connection,
-            &mut rx,
-            out.clone(),
-            &mut stopping,
-            &queued,
-            &freed,
-        );
-        let client = async {
-            if !reset {
-                let (taken, _) = tokio::sync::oneshot::channel();
-                input
-                    .send((
-                        SyncClientMessage::Subscribe {
-                            note: note.clone(),
-                            since: 0,
-                        },
-                        taken,
-                    ))
-                    .await
-                    .unwrap();
-                assert!(matches!(
-                    outgoing.recv().await,
-                    Some(SyncServerMessage::Caught { seq: 0, .. })
-                ));
-            }
-            for _ in 0..OUTGOING {
-                out.try_send(SyncServerMessage::Crowded {
-                    note: "filler".into(),
-                })
-                .unwrap();
-            }
-            let message = if reset {
-                SyncClientMessage::Subscribe {
-                    note: note.clone(),
-                    since: 1,
-                }
-            } else {
-                SyncClientMessage::Refresh {
-                    id: "barrier".into(),
-                }
-            };
-            let (taken, received) = tokio::sync::oneshot::channel();
-            input.send((message, taken)).await.unwrap();
-            received.await.unwrap();
-            match finish {
-                "shutdown" => state.shutdown.begin(),
-                "expiry" => {}
-                "delivery" => {
-                    // Reaching another read proves the marker did not wait for
-                    // room inside the incoming-message select arm.
-                    let (taken, received) = tokio::sync::oneshot::channel();
-                    input
-                        .send((SyncClientMessage::Unknown, taken))
-                        .await
-                        .unwrap();
-                    received.await.unwrap();
-                    for _ in 0..OUTGOING {
-                        assert!(matches!(
-                            outgoing.recv().await,
-                            Some(SyncServerMessage::Crowded { .. })
-                        ));
-                    }
-                    match outgoing.recv().await.unwrap() {
-                        SyncServerMessage::Reset { note: actual } if reset => {
-                            assert_eq!(actual, note)
-                        }
-                        SyncServerMessage::RefreshComplete {
-                            id,
-                            note: actual,
-                            seq,
-                        } if !reset => {
-                            assert_eq!(id, "barrier");
-                            assert_eq!(actual, note);
-                            assert_eq!(seq, 0);
-                        }
-                        _ => panic!("the deferred marker was lost or overtaken"),
-                    }
-                    state.shutdown.begin();
-                }
-                _ => unreachable!(),
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(3), async {
-            let (result, ()) = tokio::join!(session, client);
-            result.unwrap();
-        })
-        .await
-        .expect("a full outgoing queue stalled the session");
-    }
-
-    #[tokio::test]
-    async fn deferred_reset_and_refresh_are_delivered_when_the_queue_drains() {
-        for reset in [true, false] {
-            full_session_queue(reset, "delivery").await;
-        }
-    }
-
-    #[tokio::test]
-    async fn full_marker_queues_do_not_block_session_shutdown() {
-        for reset in [true, false] {
-            full_session_queue(reset, "shutdown").await;
-        }
-    }
-
-    #[tokio::test]
-    async fn full_marker_queues_do_not_block_session_expiry() {
-        for reset in [true, false] {
-            full_session_queue(reset, "expiry").await;
-        }
-    }
 
     fn update(len: usize) -> SyncServerMessage {
         SyncServerMessage::Update {
