@@ -321,6 +321,44 @@ async fn an_object_goes_up_in_chunks_and_comes_back_by_range() {
 }
 
 #[tokio::test]
+async fn ranges_return_at_most_one_chunk_at_the_requested_offset() {
+    for (name, store) in stores().await {
+        let relay = relay(store, MediaConfig::default()).await;
+        let up = Upload::new(&relay, (2 << 20) + 1234).await;
+        up.send().await;
+        let full = up.media.chunk_size as u64 + 40;
+        let sealed = up.media.sealed_len();
+        for at in [0, full + 17, 2 * full] {
+            let count = full.min(sealed - at);
+            for range in [
+                format!("bytes={at}-"),
+                format!("bytes={at}-999999999"),
+                format!("bytes=-{}", sealed - at),
+            ] {
+                let response = up.fetch(Some(&range)).await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::PARTIAL_CONTENT,
+                    "{name}: {range}"
+                );
+                assert_eq!(
+                    response.headers()["content-range"],
+                    format!("bytes {at}-{}/{sealed}", at + count - 1).as_str(),
+                    "{name}: {range}"
+                );
+                let body = response.bytes().await.unwrap();
+                assert_eq!(body.len() as u64, count, "{name}: {range}");
+                assert_eq!(
+                    body.as_ref(),
+                    &up.sealed[at as usize..(at + count) as usize],
+                    "{name}: {range}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn every_call_can_be_repeated_and_nothing_can_be_changed() {
     for (name, store) in stores().await {
         let relay = relay(store, MediaConfig::default()).await;

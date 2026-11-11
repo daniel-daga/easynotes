@@ -519,7 +519,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     final reminders = ReminderScheduler(library);
     _reminders = reminders;
     unawaited(reminders.start());
-    joinAlerts = SystemJoinAlerts(library);
+    joinAlerts = SystemJoinAlerts();
     _lifecycle = AppLifecycleListener(
       onHide: () {
         appIsForeground.value = false;

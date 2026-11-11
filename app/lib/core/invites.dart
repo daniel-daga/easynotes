@@ -359,15 +359,6 @@ abstract class JoinAlerts {
   });
 }
 
-/// The words of that notification.
-({String title, String body}) joinedNotificationText(
-  String name,
-  String noteTitle,
-) {
-  final who = name.trim().isEmpty ? 'Someone' : name.trim();
-  final what = noteTitle.trim();
-  return (
-    title: what.isEmpty ? '$who joined a shared note' : '$who joined $what',
-    body: 'They opened your link and can see and edit the note now.',
-  );
-}
+/// System notifications must not disclose a member's name or a note's title.
+({String title, String body}) joinedNotificationText() =>
+    (title: 'EasyNotes', body: 'Someone joined a shared note.');

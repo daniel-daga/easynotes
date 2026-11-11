@@ -978,6 +978,7 @@ pub(crate) async fn fetch(
         }
         None => (0, len),
     };
+    let count = count.min(row.geometry.full());
     let bytes = blobs
         .read(&note, &object, at, count)
         .await?

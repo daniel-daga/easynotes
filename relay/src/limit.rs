@@ -13,6 +13,7 @@
 //! attachment chunks together, per address
 //! ([ADR 0028](../../docs/decisions.md#adr-0028)).
 //! Device keys are free, so a budget per key would be a budget per nothing.
+//! IPv6 clients share a bucket per /64; IPv4 clients keep one per address.
 //!
 //! ## Why a token bucket, and why it is keyed on the socket's peer
 //!
@@ -133,6 +134,10 @@ impl RateLimit {
                 refilled < full
             });
         }
+        let who = match who.to_canonical() {
+            IpAddr::V6(ip) => IpAddr::V6((u128::from(ip) & (u128::MAX << 64)).into()),
+            ip => ip,
+        };
         let bucket = buckets.entry(who).or_insert(Bucket {
             tokens: self.burst,
             last: now,
@@ -328,6 +333,58 @@ mod tests {
         // this is keyed rather than global: one noisy client must not lock the
         // relay for everyone else.
         assert!(limit.allow_at(ip(2), now));
+    }
+
+    #[test]
+    fn ipv6_requests_share_a_bucket_only_within_the_same_64() {
+        let limit = RateLimit::new(60, 1);
+        let now = Instant::now();
+        assert!(limit.allow_at(addr("2001:db8:1234:5678::1"), now));
+        assert!(!limit.allow_at(addr("2001:db8:1234:5678:ffff:ffff:ffff:ffff"), now));
+        assert!(limit.allow_at(addr("2001:db8:1234:5679::1"), now));
+    }
+
+    #[test]
+    fn ipv6_writes_share_a_bucket_only_within_the_same_64() {
+        let limit = RateLimit::new(60, 1000);
+        let now = Instant::now();
+        assert!(limit.spend_at(addr("2001:db8:1234:5678::1"), 600, now));
+        assert!(!limit.spend_at(addr("2001:db8:1234:5678::2"), 600, now));
+        assert!(limit.spend_at(addr("2001:db8:1234:5678::2"), 400, now));
+        assert!(limit.spend_at(addr("2001:db8:1234:5679::1"), 600, now));
+    }
+
+    #[test]
+    fn mapped_ipv4_addresses_share_only_their_ipv4_bucket() {
+        let limit = RateLimit::new(60, 1);
+        let now = Instant::now();
+        assert!(limit.allow_at(addr("::ffff:127.0.0.1"), now));
+        assert!(!limit.allow_at(ip(1), now));
+        assert!(limit.allow_at(ip(2), now));
+        assert!(!limit.allow_at(addr("::ffff:127.0.0.2"), now));
+        assert!(limit.allow_at(addr("::1"), now));
+    }
+
+    #[test]
+    fn ipv6_bucket_masking_follows_proxy_resolution() {
+        let proxies = trusting("2001:db8:ffff::1");
+        let peer = addr("2001:db8:ffff::1");
+        let limit = RateLimit::new(60, 1);
+        let now = Instant::now();
+        for (forwarded, allowed) in [
+            ("2001:db8:1234:5678::1", true),
+            ("2001:db8:1234:5678::2", false),
+            ("2001:db8:1234:5679::1", true),
+        ] {
+            let client = proxies.client(peer, [forwarded].into_iter());
+            assert_eq!(client, addr(forwarded));
+            assert_eq!(limit.allow_at(client, now), allowed);
+        }
+        let untrusted = addr("2001:db8:ffff::2");
+        assert_eq!(
+            proxies.client(untrusted, ["2001:db8:1234:5679::1"].into_iter()),
+            untrusted,
+        );
     }
 
     #[test]
