@@ -253,7 +253,10 @@ fn a_batch_publishes_the_list_once<D: NoteDoc>() {
 
     core.end_batch();
     assert!(updates.has_changed().unwrap());
-    assert_eq!(titles(&updates.borrow_and_update()), ["three", "two", "one"]);
+    assert_eq!(
+        titles(&updates.borrow_and_update()),
+        ["three", "two", "one"]
+    );
 }
 
 /// Every test above, for each CRDT backend. A note list that behaved differently

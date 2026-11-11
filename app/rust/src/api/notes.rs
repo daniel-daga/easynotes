@@ -4422,15 +4422,13 @@ impl Note {
         let (applied, envelope, rev) = {
             let mut core = self.shared.locked()?;
             let (applied, envelope) = core
-                .edit_body_splice(
-                    self.id,
-                    at as usize,
-                    removed as usize,
-                    &inserted,
-                    base_rev,
-                )
+                .edit_body_splice(self.id, at as usize, removed as usize, &inserted, base_rev)
                 .map_err(|e| e.to_string())?;
-            (applied, envelope, core.rev(self.id).map_err(|e| e.to_string())?)
+            (
+                applied,
+                envelope,
+                core.rev(self.id).map_err(|e| e.to_string())?,
+            )
         };
         if let Some(envelope) = envelope {
             self.send(envelope, true);

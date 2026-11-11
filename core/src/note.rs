@@ -1495,10 +1495,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     }
 
     /// One note's cover descriptor, straight out of the sealed index.
-    pub fn cover(
-        &self,
-        id: NoteId,
-    ) -> Option<(AttachmentId, crate::attachment::Media)> {
+    pub fn cover(&self, id: NoteId) -> Option<(AttachmentId, crate::attachment::Media)> {
         self.index.get(&id).and_then(|entry| entry.cover.clone())
     }
 

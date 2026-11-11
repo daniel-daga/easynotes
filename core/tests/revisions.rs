@@ -150,16 +150,12 @@ fn a_body_splice_applies_only_at_its_base_revision<D: NoteDoc>() {
     a.set_body(id, "milk").unwrap();
     let base = a.rev(id).unwrap();
 
-    let (applied, envelope) = a
-        .edit_body_splice(id, 4, 0, " and eggs", base)
-        .unwrap();
+    let (applied, envelope) = a.edit_body_splice(id, 4, 0, " and eggs", base).unwrap();
     assert!(applied);
     assert!(envelope.is_some());
     assert_eq!(a.view(id).unwrap().body, "milk and eggs");
 
-    let stale = a
-        .edit_body_splice(id, 0, 0, "not this", base)
-        .unwrap();
+    let stale = a.edit_body_splice(id, 0, 0, "not this", base).unwrap();
     assert!(!stale.0);
     assert!(stale.1.is_none());
     assert_eq!(a.view(id).unwrap().body, "milk and eggs");
