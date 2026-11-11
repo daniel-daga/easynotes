@@ -51,6 +51,16 @@ abstract class NoteCore {
   /// can tell its own echo from somebody else's change.
   Future<int> editBody(String from, String to);
 
+  /// Apply one splice made at [baseRev]. Null when that revision is no longer
+  /// current; the caller then sends the whole edit through [editBody] so the
+  /// core can rebase it onto what arrived meanwhile.
+  Future<int?> editBodySplice(
+    int at,
+    int removed,
+    String inserted,
+    int baseRev,
+  );
+
   /// Switch between text and checklist, carrying the content across: each line
   /// with something on it becomes an item, or each item becomes a line. Ticks
   /// do not survive the trip to text. Nothing happens if it is [kind] already.

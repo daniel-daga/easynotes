@@ -1002,6 +1002,7 @@ class _NoteScreenState extends State<NoteScreen> {
     expands: expands,
     autofocus: widget.autofocusBody && note.kind == NoteKind.text,
     onEdit: widget.core.editBody,
+    onSplice: widget.core.editBodySplice,
   );
 
   /// A text note: the body, and under it any items a merge left on it — drawn,
@@ -1964,6 +1965,7 @@ class _BodyField extends StatefulWidget {
     this.expands = false,
     this.autofocus = false,
     required this.onEdit,
+    required this.onSplice,
   });
 
   final String body;
@@ -1975,6 +1977,8 @@ class _BodyField extends StatefulWidget {
   final bool expands;
   final bool autofocus;
   final Future<int> Function(String from, String to) onEdit;
+  final Future<int?> Function(int at, int removed, String inserted, int baseRev)
+  onSplice;
 
   @override
   State<_BodyField> createState() => _BodyFieldState();
@@ -2015,7 +2019,15 @@ class _BodyFieldState extends State<_BodyField> {
         _queued = null;
         final from = _base;
         _base = next;
-        final rev = await widget.onEdit(from, next);
+        final splice = bodySplice(from, next);
+        final rev =
+            await widget.onSplice(
+              splice.at,
+              splice.removed,
+              splice.inserted,
+              _mine,
+            ) ??
+            await widget.onEdit(from, next);
         if (rev > _mine) _mine = rev;
         next = _queued;
       }

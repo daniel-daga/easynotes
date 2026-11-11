@@ -2917,6 +2917,34 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.set_body(id, body)
     }
 
+    /// Apply one splice, if the screen made it at [`NoteCore::rev`] `base_rev`.
+    ///
+    /// `(false, None)` means the body moved on, and the caller must replay the
+    /// whole edit through [`NoteCore::edit_body`] instead. When it has not
+    /// moved, the offsets need no diff — which is the normal case several times
+    /// per keystroke.
+    pub fn edit_body_splice(
+        &mut self,
+        id: NoteId,
+        at: usize,
+        removed: usize,
+        inserted: &str,
+        base_rev: u32,
+    ) -> Result<(bool, Option<Vec<u8>>)> {
+        self.ensure_open(id)?;
+        if self.rev(id)? != base_rev {
+            return Ok((false, None));
+        }
+        let mut chars: Vec<char> = self.view(id)?.body.chars().collect();
+        let at = at.min(chars.len());
+        let end = at.saturating_add(removed).min(chars.len());
+        chars.splice(at..end, inserted.chars());
+        Ok((
+            true,
+            self.set_body(id, chars.into_iter().collect::<String>())?,
+        ))
+    }
+
     /// Switch a note between text and checklist, carrying its content across —
     /// the button Keep calls "show checkboxes". `None` if it is that kind already.
     ///

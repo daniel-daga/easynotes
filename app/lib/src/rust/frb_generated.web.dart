@@ -93,6 +93,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AttachmentView dco_decode_attachment_view(dynamic raw);
 
   @protected
+  BodyEditView dco_decode_body_edit_view(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
 
   @protected
@@ -368,6 +371,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AttachmentView sse_decode_attachment_view(SseDeserializer deserializer);
+
+  @protected
+  BodyEditView sse_decode_body_edit_view(SseDeserializer deserializer);
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
@@ -685,6 +691,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     AttachmentView self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_body_edit_view(BodyEditView self, SseSerializer serializer);
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);

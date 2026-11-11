@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 925361985;
+  int get rustContentHash => 983693271;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -461,6 +461,14 @@ abstract class RustLibApi extends BaseApi {
     required Note that,
     required String from,
     required String to,
+  });
+
+  Future<BodyEditView> crateApiNotesNoteEditBodySplice({
+    required Note that,
+    required int at,
+    required int removed,
+    required String inserted,
+    required int baseRev,
   });
 
   Future<int> crateApiNotesNoteEditItemText({
@@ -3746,6 +3754,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<BodyEditView> crateApiNotesNoteEditBodySplice({
+    required Note that,
+    required int at,
+    required int removed,
+    required String inserted,
+    required int baseRev,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
+            that,
+            serializer,
+          );
+          sse_encode_u_32(at, serializer);
+          sse_encode_u_32(removed, serializer);
+          sse_encode_String(inserted, serializer);
+          sse_encode_u_32(baseRev, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 89,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_body_edit_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesNoteEditBodySpliceConstMeta,
+        argValues: [that, at, removed, inserted, baseRev],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesNoteEditBodySpliceConstMeta =>
+      const TaskConstMeta(
+        debugName: "Note_edit_body_splice",
+        argNames: ["that", "at", "removed", "inserted", "baseRev"],
+      );
+
+  @override
   Future<int> crateApiNotesNoteEditItemText({
     required Note that,
     required String item,
@@ -3766,7 +3818,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 90,
             port: port_,
           );
         },
@@ -3800,7 +3852,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 90,
+            funcId: 91,
             port: port_,
           );
         },
@@ -3828,7 +3880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 91)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 92)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -3867,7 +3919,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 93,
             port: port_,
           );
         },
@@ -3911,7 +3963,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 93,
+            funcId: 94,
             port: port_,
           );
         },
@@ -3951,7 +4003,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 95,
             port: port_,
           );
         },
@@ -3991,7 +4043,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 96,
             port: port_,
           );
         },
@@ -4026,7 +4078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 97,
             port: port_,
           );
         },
@@ -4066,7 +4118,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 97,
+            funcId: 98,
             port: port_,
           );
         },
@@ -4106,7 +4158,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 99,
             port: port_,
           );
         },
@@ -4144,7 +4196,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 100,
             port: port_,
           );
         },
@@ -4182,7 +4234,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 101,
             port: port_,
           );
         },
@@ -4216,7 +4268,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 102,
           )!;
         },
         codec: SseCodec(
@@ -4255,7 +4307,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 103,
             port: port_,
           );
         },
@@ -4295,7 +4347,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 104,
             port: port_,
           );
         },
@@ -4335,7 +4387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 105,
             port: port_,
           );
         },
@@ -4375,7 +4427,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 106,
             port: port_,
           );
         },
@@ -4413,7 +4465,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 107,
             port: port_,
           );
         },
@@ -4450,7 +4502,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 107,
+            funcId: 108,
             port: port_,
           );
         },
@@ -4483,7 +4535,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 109,
             port: port_,
           );
         },
@@ -4522,7 +4574,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 109,
+            funcId: 110,
             port: port_,
           );
         },
@@ -4556,7 +4608,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 110,
+            funcId: 111,
           )!;
         },
         codec: SseCodec(
@@ -4586,7 +4638,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 111,
+            funcId: 112,
           )!;
         },
         codec: SseCodec(
@@ -4619,7 +4671,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 112,
+              funcId: 113,
               port: port_,
             );
           },
@@ -4655,7 +4707,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 113,
+              funcId: 114,
               port: port_,
             );
           },
@@ -4686,7 +4738,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 114,
+            funcId: 115,
             port: port_,
           );
         },
@@ -4714,7 +4766,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 116,
           )!;
         },
         codec: SseCodec(
@@ -4881,6 +4933,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       thumbnailWidth: dco_decode_opt_box_autoadd_u_32(arr[9]),
       thumbnailHeight: dco_decode_opt_box_autoadd_u_32(arr[10]),
       pending: dco_decode_bool(arr[11]),
+    );
+  }
+
+  @protected
+  BodyEditView dco_decode_body_edit_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return BodyEditView(
+      applied: dco_decode_bool(arr[0]),
+      rev: dco_decode_u_32(arr[1]),
     );
   }
 
@@ -5626,6 +5690,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       thumbnailHeight: var_thumbnailHeight,
       pending: var_pending,
     );
+  }
+
+  @protected
+  BodyEditView sse_decode_body_edit_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_applied = sse_decode_bool(deserializer);
+    var var_rev = sse_decode_u_32(deserializer);
+    return BodyEditView(applied: var_applied, rev: var_rev);
   }
 
   @protected
@@ -6565,6 +6637,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_body_edit_view(BodyEditView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.applied, serializer);
+    sse_encode_u_32(self.rev, serializer);
+  }
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
@@ -7367,8 +7446,8 @@ class LibraryImpl extends RustOpaque implements Library {
   /// already has is left as it was. Moving to another relay is opening
   /// another library, which is what the app's relay profiles do.
   ///
-  /// `access` is the relay's access key, base64url, for a relay whose
-  /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
+  /// `access` is the relay's access key or a device token, base64url, for a
+  /// relay whose operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
   /// for an open relay. Connecting again with another key is how a changed
   /// key takes effect.
   Future<void> connect({required String relay, String? access}) => RustLib
@@ -7852,6 +7931,11 @@ class LibraryImpl extends RustOpaque implements Library {
 
   /// Take an invite down, on the relay and here. Anyone holding the link is
   /// told it does not exist.
+  ///
+  /// When the invite carried a pre-grant, the note's key is changed as well:
+  /// the person holding the link may have read the note, and a rotation is
+  /// what stops them reading later edits ([ADR
+  /// 0030](../../../../docs/decisions.md#adr-0030)).
   Future<void> withdrawInvite({required String invite}) => RustLib.instance.api
       .crateApiNotesLibraryWithdrawInvite(that: this, invite: invite);
 }
@@ -7915,6 +7999,22 @@ class NoteImpl extends RustOpaque implements Note {
       .instance
       .api
       .crateApiNotesNoteEditBody(that: this, from: from, to: to);
+
+  /// Apply one splice when the field is still at `base_rev`. On a stale
+  /// revision nothing is written: the field sends the whole edit instead,
+  /// which is the path that can rebase onto a peer's change.
+  Future<BodyEditView> editBodySplice({
+    required int at,
+    required int removed,
+    required String inserted,
+    required int baseRev,
+  }) => RustLib.instance.api.crateApiNotesNoteEditBodySplice(
+    that: this,
+    at: at,
+    removed: removed,
+    inserted: inserted,
+    baseRev: baseRev,
+  );
 
   /// Set an item's text from the field's own edit: the text it was showing
   /// and the text it shows now. Replayed onto what the item says by the time

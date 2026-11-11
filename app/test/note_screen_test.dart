@@ -1599,7 +1599,7 @@ void main() {
 
       await tester.enterText(find.byKey(const Key('body-text')), 'milk');
       await tester.pumpAndSettle();
-      expect(core.edits, ['editBody( -> milk)']);
+      expect(core.edits, ['editBodySplice(0, 0, milk)']);
       expect(core.current.body, 'milk');
     });
 

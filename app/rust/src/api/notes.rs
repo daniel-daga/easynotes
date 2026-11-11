@@ -101,6 +101,13 @@ pub struct NoteView {
     pub attachments: Vec<AttachmentView>,
 }
 
+/// What one splice did: whether the revision it was made against was still
+/// current, and the revision the edit landed at.
+pub struct BodyEditView {
+    pub applied: bool,
+    pub rev: u32,
+}
+
 /// Whether an attachment is drawn or played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKindView {
@@ -4396,6 +4403,35 @@ impl Note {
             self.send(envelope, true);
         }
         Ok(rev)
+    }
+
+    /// Apply one splice when the field is still at `base_rev`. On a stale
+    /// revision nothing is written: the field sends the whole edit instead,
+    /// which is the path that can rebase onto a peer's change.
+    pub fn edit_body_splice(
+        &self,
+        at: u32,
+        removed: u32,
+        inserted: String,
+        base_rev: u32,
+    ) -> Result<BodyEditView, String> {
+        let (applied, envelope, rev) = {
+            let mut core = self.shared.locked()?;
+            let (applied, envelope) = core
+                .edit_body_splice(
+                    self.id,
+                    at as usize,
+                    removed as usize,
+                    &inserted,
+                    base_rev,
+                )
+                .map_err(|e| e.to_string())?;
+            (applied, envelope, core.rev(self.id).map_err(|e| e.to_string())?)
+        };
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
+        Ok(BodyEditView { applied, rev })
     }
 
     /// Switch the note between text and checklist, carrying its content across:
