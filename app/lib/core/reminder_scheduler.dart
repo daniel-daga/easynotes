@@ -27,6 +27,10 @@ class ReminderScheduler {
       FlutterLocalNotificationsPlugin();
   StreamSubscription<List<Reminder>>? _updates;
   final Map<String, Timer> _inProcessTimers = {};
+  final Map<String, int> _inProcessIds = {};
+  final Map<String, String> _scheduled = {};
+  final Map<String, String> _inProcessScheduled = {};
+  Timer? _debounce;
   bool _started = false;
   int _lifecycleGeneration = 0;
   Future<void>? _reconciling;
@@ -53,7 +57,7 @@ class ReminderScheduler {
     }
     await initializeLocalNotifications();
     if (!_isCurrent(generation)) return;
-    _updates = _library.watchReminders().listen((_) => unawaited(reconcile()));
+    _updates = _library.watchReminders().listen((_) => _queueReconcile());
     await reconcile();
   }
 
@@ -95,7 +99,19 @@ class ReminderScheduler {
   /// Mirror encrypted reminders into native pending notifications. Trashed
   /// notes are deliberately excluded; restoring the note makes its reminder
   /// eligible again without rewriting its account-document entry.
+  /// A remote change arrives in bursts. One pass after the burst is enough;
+  /// explicit calls, such as coming back from alarm settings, are immediate.
+  void _queueReconcile() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(seconds: 1), () {
+      _debounce = null;
+      unawaited(reconcile());
+    });
+  }
+
   Future<void> reconcile() {
+    _debounce?.cancel();
+    _debounce = null;
     if (!_started) return Future.value();
     // Platform calls yield. A second pass must read fresh state after the
     // current pass finishes, otherwise an older schedule can undo a deletion.
@@ -136,7 +152,7 @@ class ReminderScheduler {
 
     // iOS retains only 64 pending local notifications. Its native repeating
     // triggers count as one, so this keeps the nearest 64 reminder identities.
-    final wanted = scheduled.take(64).map((entry) => entry.reminder).toList();
+    final wanted = scheduled.take(64).toList();
     if (kIsWeb || defaultTargetPlatform == TargetPlatform.linux) {
       await _reconcileInProcess(wanted);
       return;
@@ -147,7 +163,7 @@ class ReminderScheduler {
         if (request.payload?.startsWith(_payloadPrefix) ?? false)
           request.payload!.substring(_payloadPrefix.length): request.id,
     };
-    final wantedIds = {for (final reminder in wanted) reminder.id};
+    final wantedIds = {for (final entry in wanted) entry.reminder.id};
     // Exact when the person has allowed it (Settings → Alarms & reminders,
     // which "Add reminder" opens); otherwise inexact, which Doze may delay by
     // some minutes. Null is iOS, where there is no such distinction.
@@ -167,32 +183,71 @@ class ReminderScheduler {
     }
 
     final used = existing.values.toSet();
-    for (final reminder in wanted) {
-      final id = existing[reminder.id] ?? _notificationId(reminder.id, used);
-      used.add(id);
+    for (final entry in wanted) {
+      final reminder = entry.reminder;
+      final signature = _signature(entry, exact);
+      final id = existing[reminder.id];
+      if (id != null && _scheduled[reminder.id] == signature) {
+        // Already pending at exactly this occurrence.
+        used.add(id);
+        continue;
+      }
+      final at = id ?? _notificationId(reminder.id, used);
+      used.add(at);
       try {
-        await _schedule(id: id, reminder: reminder, exact: exact);
+        await _schedule(id: at, reminder: reminder, exact: exact);
+        _scheduled[reminder.id] = signature;
       } on PlatformException {
         // Access withdrawn between the check and this call. A late reminder
         // is still materially better than a lost one.
-        await _schedule(id: id, reminder: reminder, exact: false);
+        await _schedule(id: at, reminder: reminder, exact: false);
+        _scheduled[reminder.id] = _signature(entry, false);
       }
     }
+    _scheduled.removeWhere((id, _) => !wantedIds.contains(id));
   }
 
   /// Browsers and Linux cannot hand a future notification to the OS through
   /// this plugin. While the app is running, a timer can still show it; closing
   /// the tab or app loses the timer.
-  Future<void> _reconcileInProcess(List<Reminder> reminders) async {
-    for (final timer in _inProcessTimers.values) {
-      timer.cancel();
+  Future<void> _reconcileInProcess(
+    List<({Reminder reminder, tz.TZDateTime occurrence})> wanted,
+  ) async {
+    final wantedIds = {for (final entry in wanted) entry.reminder.id};
+    for (final id in _inProcessTimers.keys.toList()) {
+      if (!wantedIds.contains(id)) {
+        _inProcessTimers.remove(id)?.cancel();
+        _inProcessIds.remove(id);
+        _inProcessScheduled.remove(id);
+      }
     }
-    _inProcessTimers.clear();
     final used = <int>{};
-    for (final reminder in reminders) {
-      _scheduleInProcess(reminder, _notificationId(reminder.id, used));
+    for (final entry in wanted) {
+      final reminder = entry.reminder;
+      final signature = _signature(entry, true);
+      final id = _inProcessIds[reminder.id];
+      if (id != null &&
+          _inProcessTimers[reminder.id]?.isActive == true &&
+          _inProcessScheduled[reminder.id] == signature) {
+        used.add(id);
+        continue;
+      }
+      final at = id ?? _notificationId(reminder.id, used);
+      used.add(at);
+      _inProcessTimers.remove(reminder.id)?.cancel();
+      _inProcessIds[reminder.id] = at;
+      _inProcessScheduled[reminder.id] = signature;
+      _scheduleInProcess(reminder, at);
     }
   }
+
+  /// Everything that decides when, and whether, this reminder fires next.
+  String _signature(
+    ({Reminder reminder, tz.TZDateTime occurrence}) entry,
+    bool exact,
+  ) =>
+      '${entry.occurrence.millisecondsSinceEpoch}|${entry.reminder.repeat.index}'
+      '|${entry.reminder.timezone}|$exact';
 
   void _scheduleInProcess(Reminder reminder, int id) {
     final due = nextOccurrence(reminder, _location(reminder.timezone));
@@ -216,6 +271,8 @@ class ReminderScheduler {
           _scheduleInProcess(reminder, id);
         } else {
           _inProcessTimers.remove(reminder.id);
+          _inProcessIds.remove(reminder.id);
+          _inProcessScheduled.remove(reminder.id);
         }
       },
     );
@@ -418,12 +475,17 @@ class ReminderScheduler {
   Future<void> dispose({bool cancelScheduled = false}) async {
     _started = false;
     _lifecycleGeneration++;
+    _debounce?.cancel();
+    _debounce = null;
     await _updates?.cancel();
     await _reconciling;
     for (final timer in _inProcessTimers.values) {
       timer.cancel();
     }
     _inProcessTimers.clear();
+    _inProcessIds.clear();
+    _inProcessScheduled.clear();
+    _scheduled.clear();
     if (cancelScheduled &&
         !kIsWeb &&
         defaultTargetPlatform != TargetPlatform.linux) {

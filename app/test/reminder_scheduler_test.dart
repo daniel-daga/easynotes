@@ -82,6 +82,25 @@ void main() {
     expect(next(first, ReminderRepeat.monthly, DateTime.utc(2026, 1)), first);
   });
 
+  test('a note edit does not emit an unchanged reminder list', () async {
+    final library = FakeNoteLibrary();
+    final note = await library.createNote(kind: NoteKind.text);
+    await library.createReminder(
+      noteId: note,
+      fireAt: DateTime.utc(2026, 12, 1, 9),
+      repeat: ReminderRepeat.never,
+      timezone: 'UTC',
+    );
+    final seen = <List<Reminder>>[];
+    final watching = library.watchReminders().listen(seen.add);
+    await pumpEventQueue();
+    expect(seen, hasLength(1));
+    await library.createNote();
+    await pumpEventQueue();
+    expect(seen, hasLength(1));
+    await watching.cancel();
+  });
+
   test('watching reminders on a quiet library can be cancelled', () async {
     // Releasing a session cancels this subscription. It used to be an
     // `async*` loop over the note stream, whose cancel waited for a note

@@ -21,6 +21,17 @@ import 'sync_status.dart';
 export 'invites.dart';
 export 'note_view.dart' show NoteColour, NoteKind;
 
+/// [NoteLibrary.watchReminders] for both implementations: a note edit only
+/// reaches the scheduler when it actually changed a reminder.
+Stream<List<Reminder>> watchReminderChanges(NoteLibrary library) => library
+    .watchNotes()
+    .map((_) => library.reminders)
+    .distinct(
+      (a, b) =>
+          a.length == b.length &&
+          Iterable.generate(a.length).every((i) => a[i] == b[i]),
+    );
+
 /// Whether the note list is a masonry grid or one column. A view setting, and so
 /// a personal one: it lives in the account document beside the colours.
 enum NoteLayout { grid, list }
@@ -310,7 +321,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// generator waiting in `await for` does not see a cancel until the next
   /// note event, so cancelling it on a quiet library never completed, and
   /// switching relay hung in the reminder scheduler's `dispose`.
-  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
+  ///
+  /// Only a change to the reminders themselves gets through. Every note edit
+  /// reaches [watchNotes], and rescheduling every alarm on every keystroke is
+  /// battery spent on nothing.
+  Stream<List<Reminder>> watchReminders() => watchReminderChanges(this);
 
   /// Make one reminder for [noteId] and return its stable account-document ID.
   Future<String> createReminder({

@@ -228,7 +228,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   ];
 
   @override
-  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
+  Stream<List<Reminder>> watchReminders() => watchReminderChanges(this);
 
   @override
   Future<String> createReminder({
