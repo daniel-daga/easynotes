@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachment_files.dart';
+import '../core/audio_playback.dart';
 import '../core/app_visibility.dart';
 import '../core/content_interchange.dart';
 import '../core/content_sharing.dart';
@@ -169,6 +170,7 @@ class _NoteScreenState extends State<NoteScreen> {
   StreamSubscription<List<AttachmentTransfer>>? _transferWatch;
   StreamSubscription<NoteView>? _viewWatch;
   AudioPlayer? _audioPlayer;
+  Future<void> Function()? _releasePlayback;
   StreamSubscription<PlayerState>? _playerStateWatch;
   StreamSubscription<Duration>? _playerPositionWatch;
   StreamSubscription<Duration?>? _playerDurationWatch;
@@ -527,6 +529,8 @@ class _NoteScreenState extends State<NoteScreen> {
         _playbackDuration = Duration(milliseconds: audio.durationMs ?? 0);
       });
       await player.stop();
+      await _releasePlayback?.call();
+      _releasePlayback = null;
       final bytes = await widget.core.readAttachment(audio.id);
       if (!mounted) return;
       if (bytes == null) {
@@ -539,11 +543,15 @@ class _NoteScreenState extends State<NoteScreen> {
         _loadingAttachment = audio.id;
         _playbackIsPlaying = false;
       });
-      await player.play(BytesSource(bytes, mimeType: audio.mime));
+      final prepared = await prepareAudio(bytes, audio.mime);
+      _releasePlayback = prepared.dispose;
+      await player.play(prepared.source);
       if (mounted && _loadingAttachment == audio.id) {
         setState(() => _loadingAttachment = null);
       }
     } on Object catch (e) {
+      await _releasePlayback?.call();
+      _releasePlayback = null;
       if (!mounted) return;
       setState(() {
         _playingAttachment = null;
@@ -581,6 +589,8 @@ class _NoteScreenState extends State<NoteScreen> {
     } on Object {
       // The note may be closing while its platform player is stopping.
     }
+    await _releasePlayback?.call();
+    _releasePlayback = null;
   }
 
   @override
@@ -593,6 +603,7 @@ class _NoteScreenState extends State<NoteScreen> {
     unawaited(_playerCompleteWatch?.cancel());
     _peoplePoll?.cancel();
     appIsForeground.removeListener(_onForeground);
+    unawaited(_releasePlayback?.call());
     if (_audioPlayer case final player?) unawaited(player.dispose());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
