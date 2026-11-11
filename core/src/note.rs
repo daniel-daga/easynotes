@@ -1490,6 +1490,14 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.summaries()
     }
 
+    /// One note's cover descriptor, straight out of the sealed index.
+    pub fn cover(
+        &self,
+        id: NoteId,
+    ) -> Option<(AttachmentId, crate::attachment::Media)> {
+        self.index.get(&id).and_then(|entry| entry.cover.clone())
+    }
+
     fn refresh_library(&self) {
         // `send_replace`, not `send`: the latter refuses when nothing is
         // subscribed yet and leaves the channel holding a list that is already

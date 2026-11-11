@@ -4207,16 +4207,8 @@ impl Library {
     /// unless a download has to be.
     pub async fn read_cover(&self, note: String) -> Result<Option<Vec<u8>>, String> {
         let note = note_id(&note)?;
-        let cover = {
-            // `listed`, which only reads: this runs on a page's main thread
-            // in a tab, where telling the list's watchers anything may not.
-            self.shared
-                .locked()?
-                .listed()
-                .into_iter()
-                .find(|s| s.id == note)
-                .and_then(|s| s.cover)
-        };
+        // By ID: looking through `listed` cloned the whole list per card.
+        let cover = self.shared.locked()?.cover(note);
         let Some((id, media)) = cover else {
             return Ok(None);
         };

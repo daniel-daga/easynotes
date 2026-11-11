@@ -13,6 +13,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
+import 'thumbnail_web_stub.dart'
+    if (dart.library.js_interop) 'thumbnail_web.dart'
+    as web_thumb;
+
 /// One file a person chose.
 @immutable
 class PickedFile {
@@ -89,7 +93,8 @@ const _thumbnailBytes = 256 << 10;
 ///
 /// Null for anything this cannot decode. The image is still attached, just
 /// without a preview; the gallery then shows the original.
-Future<Uint8List?> makeThumbnail(Uint8List image) => compute(_thumbnail, image);
+Future<Uint8List?> makeThumbnail(Uint8List image) =>
+    kIsWeb ? web_thumb.makeWebThumbnail(image) : compute(_thumbnail, image);
 
 Uint8List? _thumbnail(Uint8List bytes) {
   try {
