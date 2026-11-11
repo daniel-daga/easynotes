@@ -24,6 +24,7 @@ use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::watch;
 
@@ -520,10 +521,11 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// opening the note — on the first launch that finds one missing or stale.
     /// See [`crate::index`].
     index: HashMap<NoteId, IndexEntry>,
-    /// The list of notes, for whoever is showing one. Recomputed from `open`
-    /// every time a view changes, which is cheap because a summary is four
-    /// fields off a document that is already in memory.
+    /// The list of notes, for whoever is showing one.
     library: watch::Sender<Vec<NoteSummary>>,
+    /// The same list as last published. An edit and the screen that asked for
+    /// the list right after it used to build it twice.
+    summary_cache: RefCell<Option<Vec<NoteSummary>>>,
     /// Where a local account-document envelope goes. `None` until something
     /// asks for them, which on a device is the library wiring up its sync.
     account_sink: Option<AccountEnvelopeSink>,
@@ -579,6 +581,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             placements,
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
+            summary_cache: RefCell::new(None),
             account_sink: None,
             removals: Vec::new(),
             switched: HashMap::new(),
@@ -1492,10 +1495,21 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         // subscribed yet and leaves the channel holding a list that is already
         // wrong. A screen that subscribes after the first edit would then be
         // handed that stale list as its opening frame.
-        self.library.send_replace(self.summaries());
+        let summaries = self.compute_summaries();
+        *self.summary_cache.borrow_mut() = Some(summaries.clone());
+        self.library.send_replace(summaries);
     }
 
     fn summaries(&self) -> Vec<NoteSummary> {
+        if let Some(cached) = self.summary_cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let computed = self.compute_summaries();
+        *self.summary_cache.borrow_mut() = Some(computed.clone());
+        computed
+    }
+
+    fn compute_summaries(&self) -> Vec<NoteSummary> {
         let mut summaries: Vec<NoteSummary> = self
             .index
             .iter()

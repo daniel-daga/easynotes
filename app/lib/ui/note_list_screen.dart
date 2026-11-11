@@ -263,13 +263,17 @@ class _NoteListScreenState extends State<NoteListScreen> {
           ? 'Search Trash'
           : 'Search notes and archive');
 
+  /// One subscription for the whole screen. Building a new stream per frame
+  /// started a Rust watcher per frame.
+  late final Stream<List<NoteSummary>> _noteStream = widget.library
+      .watchNotes()
+      .asBroadcastStream();
+
   @override
   void initState() {
     super.initState();
     _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
-    _removalSubscription = widget.library.watchNotes().listen(
-      (_) => _sayRemovals(),
-    );
+    _removalSubscription = _noteStream.listen((_) => _sayRemovals());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final link = widget.initialInviteLink;
       if (link != null) _showJoinForLink(link);
@@ -1336,7 +1340,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   Widget _list(BuildContext context) {
     return StreamBuilder<List<NoteSummary>>(
-      stream: widget.library.watchNotes(),
+      stream: _noteStream,
       initialData: widget.library.notes,
       builder: (context, snapshot) {
         final all = snapshot.data ?? const <NoteSummary>[];

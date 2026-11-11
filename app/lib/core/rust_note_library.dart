@@ -43,10 +43,11 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     // cancelling its subscription has to wait for the Rust side to wake, and a
     // widget disposing would hang. [dispose] is the one place that talks to Rust
     // about stopping.
-    _upstream = _library.watchNotes().listen(
-      (notes) => _notes.add(notes.map(_toSummary).toList()),
-      onError: _notes.addError,
-    );
+    _upstream = _library.watchNotes().listen((notes) {
+      final converted = notes.map(_toSummary).toList();
+      _lastNotes = converted;
+      _notes.add(converted);
+    }, onError: _notes.addError);
     _syncUpstream = _library.watchSync().listen((status) {
       final converted = RustNoteCore.toStatus(status);
       if (converted.state == SyncState.connecting &&
@@ -161,7 +162,8 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// whole list from the first frame. On a Web Worker in a browser, for the
   /// reason [openNote] is asynchronous; [notes] after this only reads.
   Future<RustNoteLibrary> _loaded() async {
-    await _library.notes();
+    final notes = await _library.notes();
+    _lastNotes = notes.map(_toSummary).toList();
     return this;
   }
 
@@ -196,6 +198,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   final _storage = StreamController<String?>.broadcast();
   final _notes = StreamController<List<NoteSummary>>.broadcast();
   late final StreamSubscription<List<rust.NoteSummaryView>> _upstream;
+  List<NoteSummary> _lastNotes = const [];
   final _sync = StreamController<SyncStatus>.broadcast();
   late final StreamSubscription<rust.SyncStatus> _syncUpstream;
 
@@ -210,15 +213,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   final bool canJoin;
 
-  /// Read straight through to Rust rather than caching. A cached copy is only
-  /// fresh while something is listening to [watchNotes], and a caller that reads
-  /// this without subscribing would silently get a stale list.
+  /// The copy the core's own watcher last sent. It is kept from the moment this
+  /// library opens, so a build reads a list instead of crossing the bridge and
+  /// taking the core's lock again.
   @override
-  List<NoteSummary> get notes => _library.listed().map(_toSummary).toList();
+  List<NoteSummary> get notes => _lastNotes;
 
   @override
   Stream<List<NoteSummary>> watchNotes() async* {
-    yield notes;
+    yield _lastNotes;
     yield* _notes.stream;
   }
 

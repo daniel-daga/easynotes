@@ -149,6 +149,9 @@ class _NoteScreenState extends State<NoteScreen> {
 
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
+  late final Stream<NoteView> _noteViewStream = widget.core
+      .watch()
+      .asBroadcastStream();
 
   // -- attachments ----------------------------------------------------------
 
@@ -183,7 +186,7 @@ class _NoteScreenState extends State<NoteScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && widget.seedBlankItem) unawaited(_startEmptyChecklist());
     });
-    _viewWatch = widget.core.watch().listen((note) {
+    _viewWatch = _noteViewStream.listen((note) {
       _refreshPending();
       // The strip is for an empty row. The first letter typed is the answer to
       // it, and the row it belonged to is no longer blank.
@@ -1336,7 +1339,9 @@ class _NoteScreenState extends State<NoteScreen> {
   /// The view to draw before the stream answers. The note can leave the device
   /// between the list card and this screen, and a core that has forgotten it
   /// has nothing to answer with.
-  NoteView get _initialView {
+  late final NoteView _initialView = _readInitialView();
+
+  NoteView _readInitialView() {
     try {
       return widget.core.current;
     } catch (_) {
@@ -1347,7 +1352,7 @@ class _NoteScreenState extends State<NoteScreen> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
-      stream: widget.core.watch(),
+      stream: _noteViewStream,
       initialData: _initialView,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
