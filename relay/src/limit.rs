@@ -346,6 +346,38 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_writes_share_a_bucket_only_within_the_same_64() {
+        let limit = RateLimit::new(60, 1000);
+        let now = Instant::now();
+        assert!(limit.spend_at(addr("2001:db8:1234:5678::1"), 600, now));
+        assert!(!limit.spend_at(addr("2001:db8:1234:5678::2"), 600, now));
+        assert!(limit.spend_at(addr("2001:db8:1234:5678::2"), 400, now));
+        assert!(limit.spend_at(addr("2001:db8:1234:5679::1"), 600, now));
+    }
+
+    #[test]
+    fn ipv6_bucket_masking_follows_proxy_resolution() {
+        let proxies = trusting("2001:db8:ffff::1");
+        let peer = addr("2001:db8:ffff::1");
+        let limit = RateLimit::new(60, 1);
+        let now = Instant::now();
+        for (forwarded, allowed) in [
+            ("2001:db8:1234:5678::1", true),
+            ("2001:db8:1234:5678::2", false),
+            ("2001:db8:1234:5679::1", true),
+        ] {
+            let client = proxies.client(peer, [forwarded].into_iter());
+            assert_eq!(client, addr(forwarded));
+            assert_eq!(limit.allow_at(client, now), allowed);
+        }
+        let untrusted = addr("2001:db8:ffff::2");
+        assert_eq!(
+            proxies.client(untrusted, ["2001:db8:1234:5679::1"].into_iter()),
+            untrusted,
+        );
+    }
+
+    #[test]
     fn an_ipv6_slash_64_is_one_client() {
         let limit = RateLimit::new(60, 2);
         let now = Instant::now();

@@ -169,6 +169,116 @@ void main() {
       );
     });
 
+    test(
+      'preparing a saved relay keeps its key regardless of supplied access',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final other = base64Url
+            .encode(List<int>.filled(32, 3))
+            .replaceAll('=', '');
+        final storage = const FlutterSecureStorage();
+        final profiles = RelayProfiles(storage: storage);
+        await profiles.load();
+        final relay = await profiles.prepare(
+          'https://relay.example',
+          access: key,
+        );
+        final changes = <String?>[];
+        storage.registerListener(
+          key: 'easynotes.relay-access.${relay.id}',
+          listener: changes.add,
+        );
+        addTearDown(storage.unregisterAllListeners);
+
+        for (final supplied in [other, 'bad', '', null]) {
+          final prepared = await profiles.prepare(
+            'wss://Relay.Example:443/',
+            access: supplied,
+          );
+          expect(prepared.id, relay.id);
+          expect(prepared.access, key);
+        }
+        expect(changes, isEmpty);
+        final again = RelayProfiles();
+        await again.load();
+        expect(again.profiles.singleWhere((p) => p.id == relay.id).access, key);
+      },
+    );
+
+    test(
+      'invalid access is rejected without changing credentials or settings',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final storage = const FlutterSecureStorage();
+        final profiles = RelayProfiles(storage: storage);
+        await profiles.load();
+        final relay = await profiles.prepare(
+          'https://relay.example',
+          access: key,
+        );
+        final before = await storage.readAll();
+        final changes = <String?>[];
+        for (final entry in before.keys) {
+          storage.registerListener(key: entry, listener: changes.add);
+        }
+        addTearDown(storage.unregisterAllListeners);
+
+        for (final invalid in ['', ' ', 'bad', '$key.bad', '$key!']) {
+          await expectLater(
+            profiles.setAccess(relay, invalid),
+            throwsFormatException,
+          );
+          await expectLater(
+            profiles.prepare('https://new.example', access: invalid),
+            throwsFormatException,
+          );
+          expect(
+            profiles.profiles.singleWhere((p) => p.id == relay.id).access,
+            key,
+          );
+          expect(await storage.readAll(), before);
+        }
+        expect(changes, isEmpty);
+        expect(profiles.profiles, hasLength(2));
+      },
+    );
+
+    test(
+      'preparing a relay with no access accepts and normalizes a key or token',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final id = base64Url
+            .encode(List<int>.filled(16, 3))
+            .replaceAll('=', '');
+        final profiles = RelayProfiles();
+        await profiles.load();
+        for (final access in [key, '$id.$key']) {
+          final relay = await profiles.prepare(
+            'https://${access == key ? 'key' : 'token'}.example',
+          );
+          expect(relay.access, isNull);
+          final prepared = await profiles.prepare(
+            relay.url,
+            access: ' $access= ',
+          );
+          expect(prepared.id, relay.id);
+          expect(prepared.access, access);
+          final again = RelayProfiles();
+          await again.load();
+          expect(
+            again.profiles.singleWhere((p) => p.id == relay.id).access,
+            access,
+          );
+        }
+      },
+    );
+
     test('a fresh install starts on this device, and remembers it', () async {
       final profiles = RelayProfiles();
       await profiles.load();

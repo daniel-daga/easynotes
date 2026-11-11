@@ -96,8 +96,8 @@ class RelaySession extends ChangeNotifier {
   /// reopens it, so a switch either completes or leaves the app where it was.
   ///
   /// [access] is the relay's access key, from a relay link or typed in; it is
-  /// kept with the target's profile. Given for the relay already open, it is
-  /// [setAccess] rather than a switch.
+  /// kept with the target's profile only if it has none saved. Use [setAccess]
+  /// to explicitly replace or forget a saved key.
   ///
   /// [connect] is false only while sync is being set up: the profile is
   /// selected, but nothing is uploaded until the account step that goes with
@@ -120,7 +120,7 @@ class RelaySession extends ChangeNotifier {
       });
     }
     if (url == _profile.url) {
-      if (access != null && url != null && access != _profile.access) {
+      if (access != null && url != null && _profile.access == null) {
         return setAccess(access);
       }
       return Future.value();

@@ -41,9 +41,6 @@ Future<void> initializeLocalNotifications() =>
 /// arrives while the app is running or has only just been put away. Nothing
 /// wakes a closed app: that needs push, which the relay does not have.
 class SystemJoinAlerts implements JoinAlerts {
-  SystemJoinAlerts(this._library);
-
-  final NoteLibrary _library;
   final _notifications = FlutterLocalNotificationsPlugin();
 
   @override
@@ -76,11 +73,7 @@ class SystemJoinAlerts implements JoinAlerts {
     required String name,
   }) async {
     await initializeLocalNotifications();
-    final title = _library.notes
-        .where((n) => n.id == noteId)
-        .map((n) => n.title)
-        .firstOrNull;
-    final text = joinedNotificationText(name, title ?? '');
+    final text = joinedNotificationText();
     await _notifications.show(
       id: _id(inviteId),
       title: text.title,
@@ -93,6 +86,9 @@ class SystemJoinAlerts implements JoinAlerts {
                 'People joining',
                 channelDescription:
                     'When someone opens a link you sent and joins your note',
+                visibility: NotificationVisibility.private,
+                // Update existing channels too, not just new installs.
+                channelAction: AndroidNotificationChannelAction.update,
               ),
               iOS: DarwinNotificationDetails(),
               macOS: DarwinNotificationDetails(),
