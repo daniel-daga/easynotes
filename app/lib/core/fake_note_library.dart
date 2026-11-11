@@ -157,6 +157,12 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
+  Future<void> beginBatch() async => calls.add('beginBatch()');
+
+  @override
+  Future<void> endBatch() async => calls.add('endBatch()');
+
+  @override
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) async {
     calls.add(
       kind == NoteKind.checklist ? 'createNote()' : 'createNote(${kind.name})',

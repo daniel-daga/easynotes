@@ -263,6 +263,12 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) =>
       _library.createNote(kind: RustNoteCore.toRustKind(kind));
 
+  @override
+  Future<void> beginBatch() => _library.beginBatch();
+
+  @override
+  Future<void> endBatch() => _library.endBatch();
+
   // -- invites --------------------------------------------------------------
 
   @override

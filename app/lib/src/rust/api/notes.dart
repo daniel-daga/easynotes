@@ -74,6 +74,9 @@ abstract class Library implements RustOpaqueInterface {
   /// waits for approval.
   Future<String> beginAccountTransferFromQr({required String qr});
 
+  /// Hold list publication while a batch of edits lands.
+  Future<void> beginBatch();
+
   Future<void> cancelAccountTransfer();
 
   /// Stop waiting on a join request. The relay keeps the request until the
@@ -195,6 +198,9 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Forget every note in the trash. Returns how many there were.
   Future<int> emptyTrash();
+
+  /// Publish the list once the batch is done.
+  Future<void> endBatch();
 
   /// Permanently delete a note from this person's account and synced devices.
   ///

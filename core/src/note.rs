@@ -526,6 +526,9 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// The same list as last published. An edit and the screen that asked for
     /// the list right after it used to build it twice.
     summary_cache: RefCell<Option<Vec<NoteSummary>>>,
+    /// How many callers are holding list publication back, so an import that
+    /// makes a thousand edits publishes once.
+    batching: usize,
     /// Where a local account-document envelope goes. `None` until something
     /// asks for them, which on a device is the library wiring up its sync.
     account_sink: Option<AccountEnvelopeSink>,
@@ -582,6 +585,7 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
             summary_cache: RefCell::new(None),
+            batching: 0,
             account_sink: None,
             removals: Vec::new(),
             switched: HashMap::new(),
@@ -1498,7 +1502,27 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.index.get(&id).and_then(|entry| entry.cover.clone())
     }
 
+    /// Hold list publication until the matching [`NoteCore::end_batch`].
+    pub fn begin_batch(&mut self) {
+        self.batching += 1;
+    }
+
+    /// Publish the list once after the last holder ends its batch.
+    pub fn end_batch(&mut self) {
+        if self.batching == 0 {
+            return;
+        }
+        self.batching -= 1;
+        if self.batching == 0 {
+            self.refresh_library();
+        }
+    }
+
     fn refresh_library(&self) {
+        if self.batching > 0 {
+            *self.summary_cache.borrow_mut() = None;
+            return;
+        }
         // `send_replace`, not `send`: the latter refuses when nothing is
         // subscribed yet and leaves the channel holding a list that is already
         // wrong. A screen that subscribes after the first edit would then be

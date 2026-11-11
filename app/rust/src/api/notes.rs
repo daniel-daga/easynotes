@@ -2225,6 +2225,18 @@ impl Library {
             .collect())
     }
 
+    /// Hold list publication while a batch of edits lands.
+    pub fn begin_batch(&self) -> Result<(), String> {
+        self.shared.locked()?.begin_batch();
+        Ok(())
+    }
+
+    /// Publish the list once the batch is done.
+    pub fn end_batch(&self) -> Result<(), String> {
+        self.shared.locked()?.end_batch();
+        Ok(())
+    }
+
     /// The note list now, and every version of it after that.
     ///
     /// Every edit reaches it, whether it was made here or arrived from another

@@ -344,6 +344,12 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// Make a new, empty note of [kind] and return its ID.
   Future<String> createNote({NoteKind kind = NoteKind.checklist});
 
+  /// Hold the note list back while a batch of edits lands, then publish it
+  /// once. Paired calls may nest.
+  Future<void> beginBatch();
+
+  Future<void> endBatch();
+
   /// Whether this device can join someone else's list.
   ///
   /// True wherever a relay can be reached, which since the browser transport

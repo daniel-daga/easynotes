@@ -237,6 +237,25 @@ fn a_note_without_a_key_is_skipped<D: NoteDoc>() {
     assert_eq!(titles(&core.notes().unwrap()), ["readable"]);
 }
 
+/// A batch holds every list update back, then publishes the final list once.
+fn a_batch_publishes_the_list_once<D: NoteDoc>() {
+    let mut core = in_memory::<D>();
+    core.notes().unwrap();
+    let mut updates = core.watch_notes();
+    updates.borrow_and_update();
+
+    core.begin_batch();
+    for title in ["one", "two", "three"] {
+        let id = core.create_note(NoteKind::Text).unwrap();
+        core.set_title(id, title).unwrap();
+    }
+    assert!(!updates.has_changed().unwrap());
+
+    core.end_batch();
+    assert!(updates.has_changed().unwrap());
+    assert_eq!(titles(&updates.borrow_and_update()), ["three", "two", "one"]);
+}
+
 /// Every test above, for each CRDT backend. A note list that behaved differently
 /// under Automerge and Yrs would be a note list that depended on the backend,
 /// which is exactly what the trait exists to prevent.
@@ -286,6 +305,10 @@ macro_rules! backend_suite {
             #[test]
             fn a_note_without_a_key_is_skipped() {
                 super::a_note_without_a_key_is_skipped::<$backend>()
+            }
+            #[test]
+            fn a_batch_publishes_the_list_once() {
+                super::a_batch_publishes_the_list_once::<$backend>()
             }
         }
     };

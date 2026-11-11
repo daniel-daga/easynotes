@@ -161,6 +161,39 @@ void main() {
     );
   });
 
+  test('a picked file over the limit is refused before it is parsed', () {
+    final result = parseKeepFile(
+      'huge.json',
+      Uint8List.fromList(utf8.encode('{"title":"Text"}')),
+      maxFileBytes: 4,
+    );
+    expect(result.notes, isEmpty);
+    expect(result.skipped.single.reason, contains('import limit'));
+  });
+
+  test('one oversized JSON entry does not hide the rest of the archive', () {
+    final archive = Archive()
+      ..addFile(
+        ArchiveFile.string(
+          'Takeout/Keep/Text.json',
+          jsonEncode({'title': 'Text', 'textContent': 'hello'}),
+        ),
+      )
+      ..addFile(
+        ArchiveFile.string(
+          'Takeout/Keep/Large.json',
+          jsonEncode({'title': 'Large', 'textContent': 'x' * 40}),
+        ),
+      );
+    final result = parseKeepFile(
+      'takeout.zip',
+      Uint8List.fromList(ZipEncoder().encode(archive)),
+      maxEntryBytes: 60,
+    );
+    expect(result.notes.single.title, 'Text');
+    expect(result.skipped.single.file, contains('Large.json'));
+  });
+
   test('a broken zip is reported, not thrown', () {
     final result = parseKeepFile(
       'takeout.zip',
