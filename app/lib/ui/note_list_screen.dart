@@ -911,6 +911,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
       }
     }
 
+    if (!mounted) return;
     final progress = ValueNotifier<(int, int)>((0, notes.length));
     var cancelled = false;
     BuildContext? dialogContext;
@@ -957,7 +958,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
         isCancelled: () => cancelled,
       );
     } finally {
-      if (dialogContext != null) Navigator.of(dialogContext!).pop();
+      final importDialog = dialogContext;
+      if (importDialog != null && importDialog.mounted) {
+        Navigator.of(importDialog).pop();
+      }
       if (dialog != null) await dialog;
       progress.dispose();
     }
