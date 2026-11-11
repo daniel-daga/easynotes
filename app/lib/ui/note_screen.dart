@@ -150,6 +150,7 @@ class _NoteScreenState extends State<NoteScreen> {
 
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
+  late final List<NoteSummary>? _initialSummaries = widget.library?.notes;
   late final Stream<NoteView> _noteViewStream = widget.core
       .watch()
       .asBroadcastStream();
@@ -1372,7 +1373,7 @@ class _NoteScreenState extends State<NoteScreen> {
         if (library == null) return _screen(note, null);
         return StreamBuilder<List<NoteSummary>>(
           stream: _noteSummaries,
-          initialData: library.notes,
+          initialData: _initialSummaries,
           builder: (context, summaries) {
             final summary = summaries.data
                 ?.where((summary) => summary.id == widget.noteId)

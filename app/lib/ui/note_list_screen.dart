@@ -268,6 +268,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   late final Stream<List<NoteSummary>> _noteStream = widget.library
       .watchNotes()
       .asBroadcastStream();
+  late final List<NoteSummary> _initialNotes = widget.library.notes;
 
   @override
   void initState() {
@@ -1404,7 +1405,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Widget _list(BuildContext context) {
     return StreamBuilder<List<NoteSummary>>(
       stream: _noteStream,
-      initialData: widget.library.notes,
+      initialData: _initialNotes,
       builder: (context, snapshot) {
         final all = snapshot.data ?? const <NoteSummary>[];
         final notes = all.where(_where.holds).toList();

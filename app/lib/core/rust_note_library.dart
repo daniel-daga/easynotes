@@ -213,11 +213,11 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   final bool canJoin;
 
-  /// The copy the core's own watcher last sent. It is kept from the moment this
-  /// library opens, so a build reads a list instead of crossing the bridge and
-  /// taking the core's lock again.
+  /// Read through to Rust. A cached copy would be stale for a caller that
+  /// mutates and then reads, which is a contract several tests and screens rely
+  /// on; the screens cache their opening list once instead.
   @override
-  List<NoteSummary> get notes => _lastNotes;
+  List<NoteSummary> get notes => _library.listed().map(_toSummary).toList();
 
   @override
   Stream<List<NoteSummary>> watchNotes() async* {
