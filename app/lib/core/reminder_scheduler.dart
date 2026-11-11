@@ -96,9 +96,6 @@ class ReminderScheduler {
     return androidGranted ?? iosGranted ?? true;
   }
 
-  /// Mirror encrypted reminders into native pending notifications. Trashed
-  /// notes are deliberately excluded; restoring the note makes its reminder
-  /// eligible again without rewriting its account-document entry.
   /// A remote change arrives in bursts. One pass after the burst is enough;
   /// explicit calls, such as coming back from alarm settings, are immediate.
   void _queueReconcile() {
@@ -109,6 +106,9 @@ class ReminderScheduler {
     });
   }
 
+  /// Mirror encrypted reminders into native pending notifications. Trashed
+  /// notes are deliberately excluded; restoring the note makes its reminder
+  /// eligible again without rewriting its account-document entry.
   Future<void> reconcile() {
     _debounce?.cancel();
     _debounce = null;
@@ -246,8 +246,8 @@ class ReminderScheduler {
     ({Reminder reminder, tz.TZDateTime occurrence}) entry,
     bool exact,
   ) =>
-      '${entry.occurrence.millisecondsSinceEpoch}|${entry.reminder.repeat.index}'
-      '|${entry.reminder.timezone}|$exact';
+      '${entry.occurrence.millisecondsSinceEpoch}|${entry.reminder.noteId}'
+      '|${entry.reminder.repeat.index}|${entry.reminder.timezone}|$exact';
 
   void _scheduleInProcess(Reminder reminder, int id) {
     final due = nextOccurrence(reminder, _location(reminder.timezone));
