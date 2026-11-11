@@ -947,6 +947,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
           );
     KeepImportResult result;
     try {
+      // Let the dialog mount before the first note lands, so Cancel is there
+      // from the start and the pop below has a context.
+      if (dialog != null) await Future<void>.delayed(Duration.zero);
       result = await applyKeepImport(
         widget.library,
         KeepImport(notes: notes, skipped: skipped),
