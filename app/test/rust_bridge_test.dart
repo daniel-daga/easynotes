@@ -243,9 +243,13 @@ void main() {
           expect(core.current.body, isEmpty);
           expect(core.current.items.map((i) => i.text), ['milk', 'bread']);
 
+          await core.setChecked(core.current.items.first.id, true);
           await core.setKind(NoteKind.text);
-          expect(core.current.body, 'milk\nbread');
+          expect(core.current.body, '[x] milk\n[ ] bread');
           expect(core.current.items, isEmpty);
+
+          await core.setKind(NoteKind.checklist);
+          expect(core.current.items.map((i) => i.checked), [true, false]);
         },
       );
 

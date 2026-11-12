@@ -9,6 +9,7 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:easynotes/core/content_interchange.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/sync_status.dart';
@@ -102,8 +103,8 @@ class FakeNoteCore implements NoteCore {
   }
 
   /// The same carrying-across the real core does, so a screen test sees what a
-  /// person would: lines with something on them become unchecked items after
-  /// any items already there, and items become lines after any body.
+  /// person would: task markers preserve ticks and headings across conversion,
+  /// and items become Markdown lines after any body.
   @override
   Future<void> setKind(NoteKind kind) async {
     if (kind == _kind) return;
@@ -123,7 +124,7 @@ class FakeNoteCore implements NoteCore {
         final kept = _body.replaceFirst(RegExp(r'\n+$'), '');
         _body = [
           if (kept.isNotEmpty) kept,
-          for (final i in _items) i.text,
+          if (_items.isNotEmpty) contentForSharing(current),
         ].join('\n');
         _items.clear();
     }

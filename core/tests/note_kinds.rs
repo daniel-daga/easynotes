@@ -189,7 +189,7 @@ fn checklist_to_text_keeps_checked_items_as_lines<D: NoteDoc>() {
 
     let view = b.view(id).unwrap();
     assert_eq!(view.kind, NoteKind::Text);
-    assert_eq!(view.body, "milk\nbread\neggs");
+    assert_eq!(view.body, "[ ] milk\n[x] bread\n[ ] eggs");
     assert!(view.items.is_empty());
     assert_eq!(a.view(id).unwrap(), view);
 }
@@ -199,8 +199,50 @@ fn switching_there_and_back_keeps_the_lines<D: NoteDoc>() {
     body(&mut a, id, "one\ntwo\nthree");
     a.set_kind(id, NoteKind::Checklist).unwrap().unwrap();
     a.set_kind(id, NoteKind::Text).unwrap().unwrap();
-    assert_eq!(a.view(id).unwrap().body, "one\ntwo\nthree");
+    assert_eq!(a.view(id).unwrap().body, "[ ] one\n[ ] two\n[ ] three");
     assert!(a.set_kind(id, NoteKind::Text).unwrap().is_none());
+}
+
+fn switching_on_different_devices_keeps_ticks_and_sections<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>(NoteKind::Checklist);
+    let mut wire = Vec::new();
+    wire.push(a.add_heading(id, "Groceries").unwrap().1);
+    for (text, checked) in [
+        ("milk", true),
+        ("bread", false),
+        ("[x] literal", false),
+        ("# literal heading", true),
+        ("", true),
+    ] {
+        let (item, added) = a.add_item(id, text).unwrap();
+        wire.push(added);
+        if checked {
+            wire.push(a.set_checked(id, item, true).unwrap());
+        }
+    }
+    deliver(&mut b, id, &wire);
+    let before = a.view(id).unwrap();
+
+    let hidden = a.set_kind(id, NoteKind::Text).unwrap().unwrap();
+    deliver(&mut b, id, &[hidden]);
+    assert_eq!(
+        b.view(id).unwrap().body,
+        "# Groceries\n[x] milk\n[ ] bread\n[ ] [x] literal\n[x] # literal heading\n[x] "
+    );
+    assert_eq!(a.view(id).unwrap(), b.view(id).unwrap());
+
+    // The other person can show the checkboxes again without resetting them.
+    let shown = b.set_kind(id, NoteKind::Checklist).unwrap().unwrap();
+    deliver(&mut a, id, &[shown]);
+    let after = a.view(id).unwrap();
+    let rows = |view: &NoteView| {
+        view.items
+            .iter()
+            .map(|i| (i.text.clone(), i.checked, i.heading))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&after), rows(&before));
+    assert_eq!(after, b.view(id).unwrap());
 }
 
 fn typing_while_the_other_device_converts_is_not_hidden<D: NoteDoc>() {
@@ -240,7 +282,7 @@ fn an_item_added_while_the_other_device_converts_is_not_hidden<D: NoteDoc>() {
     let view = a.view(id).unwrap();
     assert_eq!(b.view(id).unwrap(), view);
     assert_eq!(view.kind, NoteKind::Text);
-    assert_eq!(view.body, "milk");
+    assert_eq!(view.body, "[ ] milk");
     assert_eq!(texts(&view), ["coffee"]);
 }
 
@@ -308,6 +350,7 @@ both_backends!(
     task_markers_keep_their_ticks_with_or_without_a_bullet,
     checklist_to_text_keeps_checked_items_as_lines,
     switching_there_and_back_keeps_the_lines,
+    switching_on_different_devices_keeps_ticks_and_sections,
     typing_while_the_other_device_converts_is_not_hidden,
     an_item_added_while_the_other_device_converts_is_not_hidden,
     a_body_survives_a_relaunch_from_its_snapshot,

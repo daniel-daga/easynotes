@@ -284,6 +284,9 @@ because folding an aisle on one phone should not fold it on a partner's.
 
 Share and paste use the same two line forms on the way out and in — `# Heading`
 and `- [x] item` — so a list shared out with its sections comes back with them.
+Converting a checklist to text also writes heading and task markers, preserving
+sections and checked state when either collaborator switches it back. This uses
+the existing text body and parser, with no new stored fields or wire format.
 
 <a id="adr-0038"></a>
 ## ADR 0038 — A paying household is a set of device tokens

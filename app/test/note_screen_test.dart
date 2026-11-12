@@ -1616,8 +1616,31 @@ void main() {
 
       await tester.tap(find.byKey(const Key('kind-toggle')));
       await tester.pumpAndSettle();
-      expect(bodyField(tester).controller!.text, 'milk\nbread');
+      expect(bodyField(tester).controller!.text, '[ ] milk\n[ ] bread');
       expect(visibleItems(tester), isEmpty);
+    });
+
+    testWidgets('hiding and showing checkboxes keeps checked items', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread']);
+      await core.setChecked(core.current.items.first.id, true);
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('kind-toggle')));
+      await tester.pumpAndSettle();
+      expect(bodyField(tester).controller!.text, '[x] milk\n[ ] bread');
+
+      await tester.tap(find.byKey(const Key('kind-toggle')));
+      await tester.pumpAndSettle();
+      expect(core.current.items.map((i) => i.checked), [true, false]);
+      await showCrossedOff(tester);
+      for (final item in core.current.items) {
+        expect(
+          tester.widget<Checkbox>(find.byKey(Key('check:${item.id}'))).value,
+          item.checked,
+        );
+      }
     });
 
     testWidgets('a checklist that a merge left text on shows the text', (
