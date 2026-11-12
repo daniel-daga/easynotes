@@ -26,6 +26,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The version the release workflows build with. Floating `stable` started
+  # emitting a deprecation for `package:flutter/material.dart` that no release
+  # uses, which failed the analyze step on every pull request.
+  FLUTTER_VERSION: 3.47.5
 
 jobs:
   # The core, the relay, and the tests that need neither Flutter nor a browser.
@@ -129,6 +133,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
 
       - name: Install the Linux desktop toolchain
         run: |

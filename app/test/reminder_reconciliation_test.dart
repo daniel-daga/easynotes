@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:easynotes/core/fake_note_core.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_core.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/reminder_scheduler.dart';
 import 'package:flutter/foundation.dart';

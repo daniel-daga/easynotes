@@ -7,7 +7,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:easynotes/core/attachment_files.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/attachments.dart';
 import 'package:easynotes/ui/note_list_screen.dart';

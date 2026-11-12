@@ -6,7 +6,8 @@
 /// here — the drawer line, the second device's field — is the way in and out.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
+import 'package:easynotes/core/bridge_error.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/ui/account_screen.dart';
 import 'package:easynotes/ui/invites.dart' show JoinDialog;
@@ -70,7 +71,8 @@ class _RefusingLibrary extends FakeNoteLibrary {
 
 class _ClosedLibrary extends FakeNoteLibrary {
   @override
-  bool get hasAccount => throw StateError('the library is closed');
+  bool get hasAccount =>
+      throw StateError(bridgeError('library_closed', 'the library is closed'));
 }
 
 void main() {
@@ -472,7 +474,10 @@ void main() {
       expect(find.textContaining('new phone'), findsOneWidget);
       expect(
         find.textContaining(
-          RegExp('server|access key|encrypt|ciphertext|QR', caseSensitive: false),
+          RegExp(
+            'server|access key|encrypt|ciphertext|QR',
+            caseSensitive: false,
+          ),
         ),
         findsNothing,
       );

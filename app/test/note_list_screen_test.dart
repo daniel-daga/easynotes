@@ -8,8 +8,8 @@ library;
 
 import 'dart:io';
 
-import 'package:easynotes/core/fake_note_core.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_core.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/relay_profiles.dart';
