@@ -1634,6 +1634,7 @@ void main() {
       await tester.tap(find.byKey(const Key('kind-toggle')));
       await tester.pumpAndSettle();
       expect(core.current.items.map((i) => i.checked), [true, false]);
+      await showCrossedOff(tester);
       for (final item in core.current.items) {
         expect(
           tester.widget<Checkbox>(find.byKey(Key('check:${item.id}'))).value,
