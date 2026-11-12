@@ -10,11 +10,11 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'attachments.dart';
+import 'package:easynotes/core/attachments.dart';
 import 'fake_note_core.dart';
-import 'note_core.dart';
-import 'note_library.dart';
-import 'sync_status.dart';
+import 'package:easynotes/core/note_core.dart';
+import 'package:easynotes/core/note_library.dart';
+import 'package:easynotes/core/sync_status.dart';
 
 /// A [StorageHealth] on its own, for a screen that wants one without a library.
 ///

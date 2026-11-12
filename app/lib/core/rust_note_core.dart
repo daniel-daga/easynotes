@@ -12,6 +12,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import '../src/rust/api/notes.dart' as rust;
 import '../src/rust/frb_generated.dart';
+import 'bridge_error.dart';
 import 'note_core.dart';
 import 'note_colour_map.dart';
 import 'note_view.dart';
@@ -113,10 +114,9 @@ class RustNoteCore implements NoteCore {
       return await _note.editItemText(item: itemId, from: from, to: to);
     } on String catch (message) {
       // A remove can overtake a keystroke already on its way, and the core
-      // answers for a row it no longer holds. The note API hands the core's
-      // words back as a plain string, so give that one refusal a name the
-      // screen can know.
-      if (message == 'unknown item $itemId') {
+      // answers for a row it no longer holds. The bridge marks that refusal
+      // with a code, so a reworded message cannot change what happens here.
+      if (bridgeErrorCode(message) == 'unknown_item') {
         throw UnknownItemException(itemId);
       }
       rethrow;

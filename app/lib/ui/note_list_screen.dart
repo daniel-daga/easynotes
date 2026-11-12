@@ -267,9 +267,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
   void initState() {
     super.initState();
     _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
-    _removalSubscription = widget.library.watchNotes().listen(
-      (_) => _sayRemovals(),
-    );
+    _removalSubscription = widget.library.watchNotes().listen((notes) {
+      _forgetGoneCards(notes);
+      _sayRemovals();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final link = widget.initialInviteLink;
       if (link != null) _showJoinForLink(link);
@@ -303,6 +304,16 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   GlobalKey _cardKeyFor(String id) => _cardKeys.putIfAbsent(id, GlobalKey.new);
+
+  /// Drop the keys of notes that have left the library for good. A key per
+  /// note ever shown is a leak; a note merely filtered, archived or trashed
+  /// still has a card, so only the library's own list decides.
+  void _forgetGoneCards(List<NoteSummary> notes) {
+    final live = {for (final note in notes) note.id};
+    _cardKeys.removeWhere(
+      (id, _) => id != _expandedNoteId.value && !live.contains(id),
+    );
+  }
 
   /// Where a card is on screen now, or null if it is not on screen at all.
   Rect? _cardRect(String id) {
