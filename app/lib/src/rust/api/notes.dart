@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `combined`, `connect_new_documents`, `connect_note`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `flush_notes`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
+// These functions are ignored because they are not marked as `pub`: `acknowledged`, `all_offline`, `attachment_id`, `begin`, `boxed_keyring`, `boxed_store`, `channel`, `check_room`, `claim`, `clamp_secs`, `close`, `closed`, `coded`, `combined`, `connect_new_documents`, `connect_note`, `core_text`, `disconnect_note`, `entry`, `existing`, `finish_approval`, `flush_notes`, `flushed`, `forget_invite`, `forget`, `forget`, `get`, `hold`, `http_base`, `item_id`, `label_id`, `locked`, `locked`, `locked`, `media_on_disk`, `media_store`, `new`, `new`, `new`, `note_id`, `note_ids`, `nothing_to_sync`, `now`, `of`, `offline`, `on_disk`, `open`, `outgoing`, `publish_soon`, `publish`, `purge_media`, `queue`, `refresh_pre_grant`, `refresh`, `registry`, `reminder_id`, `reminder_time`, `report`, `resend`, `rotate_if_pre_granted`, `send_edit`, `send_replace`, `send`, `settle`, `shared`, `snapshot`, `spawn_watch_status`, `staged`, `start_transfers`, `state`, `stop_transfers`, `subscribe`, `take_pre_grant`, `transfer_views`, `transfers`, `turn_away`, `waiting`, `watch_status`, `wipe_media`, `with_connection`, `wrap_with`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Claim`, `GuestTransfer`, `HeldLibrary`, `MediaPeer`, `NoteStatus`, `OpenLibraries`, `Open`, `OwnerTransfer`, `Peer`, `Shared`, `StatusCell`, `Statuses`, `TransferOffer`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `is_deleted`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `unsent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `account_topic`, `acknowledged`, `apply_remote`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `attachment_state`, `attachment`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `cmp`, `compaction`, `cursor`, `deref_mut`, `deref`, `device_key`, `device_key`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `gone`, `is_deleted`, `is_gone`, `partial_cmp`, `publish`, `reach`, `save_cursor`, `settled`, `sign_challenge`, `sign_challenge`, `squash`, `unsent`
 
 /// The master key a device wrote beside its database before the app could reach
 /// the OS keychain, if it has one.
@@ -136,8 +136,8 @@ abstract class Library implements RustOpaqueInterface {
   /// already has is left as it was. Moving to another relay is opening
   /// another library, which is what the app's relay profiles do.
   ///
-  /// `access` is the relay's access key, base64url, for a relay whose
-  /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
+  /// `access` is the relay's access key or a device token, base64url, for a
+  /// relay whose operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
   /// for an open relay. Connecting again with another key is how a changed
   /// key takes effect.
   Future<void> connect({required String relay, String? access});
@@ -541,6 +541,12 @@ abstract class Library implements RustOpaqueInterface {
   /// device, because both go through the core's one refresh.
   Stream<List<NoteSummaryView>> watchNotes();
 
+  /// A tick whenever a write is queued for the browser's store, and one at
+  /// the start so that anything queued before this was listening is drained
+  /// too. The tick says only that there is something to take; taking it stays
+  /// [`Library::take_storage_batches`].
+  Stream<int> watchStorage();
+
   Stream<SyncStatus> watchSync();
 
   /// The transfers now and at every change, until [`Library::stop_watching`].
@@ -548,6 +554,11 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Take an invite down, on the relay and here. Anyone holding the link is
   /// told it does not exist.
+  ///
+  /// When the invite carried a pre-grant, the note's key is changed as well:
+  /// the person holding the link may have read the note, and a rotation is
+  /// what stops them reading later edits ([ADR
+  /// 0030](../../../../docs/decisions.md#adr-0030)).
   Future<void> withdrawInvite({required String invite});
 }
 

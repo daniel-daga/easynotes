@@ -15,10 +15,25 @@
 use crate::api::notes::{StorageArea, StorageBatch};
 use easynotes_core::store::{Change, ChangeSink};
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 /// The batches, oldest first.
-#[derive(Default)]
-pub struct Pending(Mutex<Vec<StorageBatch>>);
+pub struct Pending {
+    batches: Mutex<Vec<StorageBatch>>,
+    /// Bumped whenever a batch is queued. A watch rather than a second queue:
+    /// the reader only needs to know there is something to take, and taking it
+    /// is the pull [`Pending::take`] already is.
+    queued: watch::Sender<u64>,
+}
+
+impl Default for Pending {
+    fn default() -> Self {
+        Self {
+            batches: Mutex::new(Vec::new()),
+            queued: watch::channel(0).0,
+        }
+    }
+}
 
 impl Pending {
     /// Everything queued, and forget it.
@@ -35,11 +50,23 @@ impl Pending {
         self.locked().len() as u32
     }
 
+    /// Told when a batch is queued, so that a caller does not have to poll to
+    /// notice one.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.queued.subscribe()
+    }
+
+    /// Wake a subscriber with the value it already has, so that one told to
+    /// stop notices while it waits.
+    pub fn resend(&self) {
+        self.queued.send_modify(|_| {});
+    }
+
     /// A poisoned lock here would mean a panic while a batch was being queued.
     /// Losing a batch is the one thing that must not happen, so the queue is
     /// read through the poison rather than unwrapped.
     fn locked(&self) -> std::sync::MutexGuard<'_, Vec<StorageBatch>> {
-        match crate::lock::lock(&self.0) {
+        match crate::lock::lock(&self.batches) {
             Ok(pending) => pending,
             Err(poisoned) => poisoned.into_inner(),
         }
@@ -61,5 +88,6 @@ impl ChangeSink for Queue {
             },
             writes: changes.iter().map(Into::into).collect(),
         });
+        self.pending.queued.send_modify(|n| *n = n.wrapping_add(1));
     }
 }

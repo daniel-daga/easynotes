@@ -4,7 +4,7 @@
 /// every other platform the call is a no-op rather than a pretend cover.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/secure_screen.dart';
 import 'package:easynotes/ui/account_screen.dart';
 import 'package:flutter/foundation.dart';

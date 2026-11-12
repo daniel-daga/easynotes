@@ -1,4 +1,4 @@
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/shared_text.dart';
 import 'package:flutter_test/flutter_test.dart';

@@ -647,6 +647,25 @@ impl RelayStore for MemoryStore {
                 return Ok(Reserved::RelayFull);
             }
         }
+        let staged = |m: &&MediaMeta| m.row.committed.is_none();
+        let staged_in_note: u64 = media
+            .iter()
+            .filter(|((n, _), m)| n == note && staged(m))
+            .map(|(_, m)| m.row.geometry.sealed_len)
+            .sum();
+        if staged_in_note + geometry.sealed_len > limits.staging_note_bytes {
+            return Ok(Reserved::NoteStaging);
+        }
+        if let Some(ceiling) = limits.staging_ceiling {
+            let staged: u64 = media
+                .values()
+                .filter(staged)
+                .map(|m| m.row.geometry.sealed_len)
+                .sum();
+            if staged + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayStaging);
+            }
+        }
         media.insert(
             (note.to_string(), object.to_string()),
             MediaMeta {
@@ -1719,6 +1738,32 @@ impl RelayStore for PostgresStore {
                     .map_err(pg)?;
             if total as u64 + geometry.sealed_len > ceiling {
                 return Ok(Reserved::RelayFull);
+            }
+        }
+        // Uploads in progress, which a reservation alone makes and so which
+        // are held to less than the ceiling. Per note under the lock above;
+        // relay-wide approximate, as the ceiling is.
+        let (staged_in_note,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+             WHERE note_id = $1 AND digest IS NULL",
+        )
+        .bind(note)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(pg)?;
+        if staged_in_note as u64 + geometry.sealed_len > limits.staging_note_bytes {
+            return Ok(Reserved::NoteStaging);
+        }
+        if let Some(ceiling) = limits.staging_ceiling {
+            let (staged,): (i64,) = sqlx::query_as(
+                "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+                 WHERE digest IS NULL",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(pg)?;
+            if staged as u64 + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayStaging);
             }
         }
         sqlx::query(

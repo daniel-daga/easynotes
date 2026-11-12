@@ -1393,3 +1393,142 @@ fn b64_decode(s: &str) -> Vec<u8> {
         .decode(s)
         .unwrap()
 }
+
+/// Two instances over one store, as a rolling deploy runs them. Each fans out
+/// only what it appended itself, so a subscriber on one must not take a later
+/// number from its own instance as the next one: it would move its cursor past
+/// the append the other instance took, and never be sent it.
+#[tokio::test]
+async fn an_append_through_another_instance_is_not_skipped() {
+    let store = MemoryStore::new();
+    let config = || RelayConfig {
+        token_signing_key: [9; 32],
+        ..RelayConfig::default()
+    };
+    let serve = || {
+        Relay::serve_with(
+            Arc::new(store.clone()),
+            "127.0.0.1:0".parse().unwrap(),
+            config(),
+        )
+    };
+    let (a, b) = (serve().await.unwrap(), serve().await.unwrap());
+    let device = DeviceIdentity::generate();
+    let note = NoteId::random();
+    let key = NoteKey::random();
+    let token = easynotes_core::sync::authenticate(&a.http_base(), None, &device)
+        .await
+        .unwrap();
+
+    let mut reader = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_a = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_b = NoteSocket::connect(&b.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    for socket in [&mut reader, &mut on_a, &mut on_b] {
+        assert!(drain(socket).await.is_empty());
+    }
+
+    let first = envelope(&device, note, &key, 0, b"through B");
+    on_b.append(&first).await.unwrap();
+    take(&mut on_b, 1).await;
+    let second = envelope(&device, note, &key, 1, b"through A");
+    on_a.append(&second).await.unwrap();
+
+    assert_eq!(take(&mut reader, 2).await, vec![first, second]);
+    assert_eq!(reader.last_seq, 2);
+}
+
+/// A client that asks for a great deal and then stops reading must not hold
+/// the relay's stop. Its socket's queue fills, and neither the session nor
+/// the task writing to it may wait on that queue for ever: the session is
+/// closed when the relay stops, whatever is still unsent.
+#[tokio::test]
+async fn a_client_that_stops_reading_does_not_hold_up_a_stop() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    for _ in 0..64 {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    // Let every subscription catch up, so a refresh is answered at once
+    // rather than after a backlog.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // One refresh answered once per subscription, each answer carrying its
+    // megabyte id: far more than a socket buffers, and this client never
+    // reads any of it.
+    let id = "i".repeat(1 << 20);
+    for _ in 0..4 {
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"refresh","id":"{id}"}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    let drained = relay.shutdown(std::time::Duration::from_secs(10)).await;
+    assert!(drained, "the stop waited out its whole drain period");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    drop(socket);
+}
+
+/// A subscribe holds memory for as long as its socket is open, so it costs
+/// the write budget more than a message that only reads: two fit in a budget
+/// of ten thousand bytes, and the third is refused and the socket closed.
+#[tokio::test]
+async fn a_subscribe_spends_the_write_budget() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let relay = relay_with(RelayConfig {
+        writes: RateLimit::new(1, 10_000),
+        ..RelayConfig::default()
+    })
+    .await;
+    let token =
+        easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+            .await
+            .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // One at a time, each answered before the next is sent: a refusal closes
+    // the session, and backlogs not yet sent go with it.
+    for expected in ["\"type\":\"caught\"", "\"type\":\"caught\"", "rate_limited"] {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("no answer")
+                .unwrap()
+                .unwrap();
+            if let Message::Text(text) = message {
+                assert!(text.contains(expected), "wanted {expected}, got {text}");
+                break;
+            }
+        }
+    }
+}

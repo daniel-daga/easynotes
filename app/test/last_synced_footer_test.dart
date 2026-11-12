@@ -1,7 +1,7 @@
 /// The "last synced" line, and the Sync & devices card it sits in.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/sync_status.dart';
 import 'package:easynotes/ui/last_synced_footer.dart';

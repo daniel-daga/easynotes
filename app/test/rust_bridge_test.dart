@@ -935,6 +935,25 @@ void main() {
         expect(reopened.current.items.map((i) => i.text), ['asparagus']);
       });
 
+      test('a write reaches the store without a flush', () async {
+        final db = MemoryBrowserStore();
+        final library = await openTab(db, MasterKeyStore.newKey());
+        final note = await library.openNote(await library.createNote());
+        addTearDown(note.dispose);
+        // Everything up to opening the note is written, so what grows below
+        // can only be the title.
+        await library.flush();
+        final before = (await db.rows(StorageArea.notes)).length;
+
+        await note.setTitle('Kept without a flush');
+
+        for (var i = 0; i < 100; i++) {
+          if ((await db.rows(StorageArea.notes)).length > before) return;
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        fail('the title never reached the browser store');
+      });
+
       test('the device keeps its identity across a tab', () async {
         // A tab that minted a new identity every launch would look like a
         // forger to every peer it already shares a list with, and its own log

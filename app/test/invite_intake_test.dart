@@ -6,7 +6,7 @@
 /// holds the link, moves the device itself, and hands the link on.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';

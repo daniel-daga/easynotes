@@ -5,7 +5,9 @@
 /// real store cannot be made to fail on cue.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'dart:convert';
+
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';
@@ -230,6 +232,72 @@ void main() {
       events.clear();
       await s.switchTo('wss://relay.example:443/');
       expect(events, isEmpty);
+    },
+  );
+
+  test(
+    'supplied access never replaces a saved key when switching or already selected',
+    () async {
+      final key = base64Url.encode(List<int>.filled(32, 2)).replaceAll('=', '');
+      final other = base64Url
+          .encode(List<int>.filled(32, 3))
+          .replaceAll('=', '');
+      final relay = await profiles.prepare(
+        'https://relay.example',
+        access: key,
+      );
+      final s = session(_Library('local'));
+      for (final supplied in [other, 'bad']) {
+        await s.switchTo('wss://Relay.Example:443/', access: supplied);
+        expect(s.profile.id, relay.id);
+        expect(s.profile.access, key);
+        expect((s.library as _Library).calls, [
+          'connect(https://relay.example, $key)',
+        ]);
+        await s.switchTo('https://relay.example', access: supplied);
+        expect(s.profile.access, key);
+        expect((s.library as _Library).calls, [
+          'connect(https://relay.example, $key)',
+        ]);
+        final again = RelayProfiles();
+        await again.load();
+        expect(again.selected.access, key);
+        await s.switchTo(null);
+      }
+    },
+  );
+
+  test(
+    'an empty access slot accepts a key; explicit changes and forgetting still work',
+    () async {
+      final key = base64Url.encode(List<int>.filled(32, 2)).replaceAll('=', '');
+      final other = base64Url
+          .encode(List<int>.filled(32, 3))
+          .replaceAll('=', '');
+      final s = session(_Library('local'));
+      await s.switchTo('https://relay.example');
+      final library = s.library as _Library;
+      library.calls.clear();
+      await s.switchTo('https://relay.example', access: ' $key= ');
+      expect(s.profile.access, key);
+      expect(library.calls, ['connect(https://relay.example, $key)']);
+      library.calls.clear();
+      final before = await const FlutterSecureStorage().readAll();
+      await expectLater(s.setAccess('bad'), throwsFormatException);
+      expect(s.profile.access, key);
+      expect(library.calls, isEmpty);
+      expect(await const FlutterSecureStorage().readAll(), before);
+      await s.setAccess(' $other= ');
+      expect(s.profile.access, other);
+      await s.setAccess(null);
+      expect(s.profile.access, isNull);
+      expect(library.calls, [
+        'connect(https://relay.example, $other)',
+        'connect(https://relay.example)',
+      ]);
+      final again = RelayProfiles();
+      await again.load();
+      expect(again.selected.access, isNull);
     },
   );
 

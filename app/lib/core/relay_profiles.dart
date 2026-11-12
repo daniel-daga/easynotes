@@ -133,13 +133,13 @@ class RelayProfiles {
   }
 
   /// The profile for [address], made if there is none. [access], when
-  /// given, becomes its access key; when not, it keeps the one it has.
+  /// given, becomes its access key only if it has none saved.
   Future<RelayProfile> prepare(String? address, {String? access}) async {
     final url = address == null ? null : canonicalRelayUrl(address);
     var target =
         _profiles.where((p) => p.url == url).firstOrNull ??
         RelayProfile(id: _newId(), url: url);
-    if (access != null && url != null) {
+    if (access != null && url != null && target.access == null) {
       target = await setAccess(target, access);
     }
     final next = [target, ..._profiles.where((p) => p.id != target.id)];
@@ -153,6 +153,9 @@ class RelayProfiles {
   /// Returns the profile as it now is.
   Future<RelayProfile> setAccess(RelayProfile profile, String? access) async {
     final key = access == null ? null : normalizeAccessKey(access);
+    if (access != null && key == null) {
+      throw const FormatException('That is not an access key or device token.');
+    }
     if (key == null) {
       await _storage.delete(key: _accessKey(profile.id));
     } else {
