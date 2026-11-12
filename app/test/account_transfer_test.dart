@@ -10,7 +10,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:easynotes/core/billing.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
+import 'package:easynotes/core/bridge_error.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/relay_session.dart';
@@ -66,7 +67,9 @@ class _TransferLibrary extends FakeNoteLibrary implements AccountTransfers {
   Future<({String relayUrl, String? relayAccess})?>
   pollAccountTransferResult() async {
     calls.add('pollAccountTransferResult()');
-    if (transferGone) throw transferGoneMessage;
+    if (transferGone) {
+      throw bridgeError('transfer_gone', transferGoneMessage);
+    }
     final transfer = offered;
     if (transfer == null) throw 'No device transfer is active.';
     return transfer;

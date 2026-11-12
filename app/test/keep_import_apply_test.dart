@@ -2,7 +2,7 @@
 /// and that one refused note does not take the rest with it.
 library;
 
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/keep_import.dart';
 import 'package:easynotes/core/keep_import_apply.dart';
 import 'package:easynotes/core/note_core.dart';

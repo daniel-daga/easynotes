@@ -17,6 +17,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../core/bridge_error.dart';
 import '../core/invites.dart';
 import '../core/relay_profiles.dart';
 import '../core/secure_screen.dart';
@@ -195,7 +196,7 @@ class _AccountScreenState extends State<AccountScreen> {
       // A profile switch can close this screen's library while its route is
       // still leaving the navigator. It has no account UI to show at that
       // point, and must not rebuild by reading the retired bridge handle.
-      if ('$error'.contains('the library is closed')) {
+      if (isLibraryClosed(error)) {
         return const SizedBox.shrink();
       }
       rethrow;

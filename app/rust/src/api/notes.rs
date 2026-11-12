@@ -837,8 +837,16 @@ impl Statuses {
         self.existing(note, |status| status.tx.get())
     }
 
+    /// The per-note map, read through a poison. A panic while it was held is
+    /// one bug; making every later status report panic too would end every
+    /// background task that reports one. The map is still usable: its writes
+    /// are short and have no invariant that a panic could leave half written.
+    fn locked(&self) -> std::sync::MutexGuard<'_, HashMap<NoteId, NoteStatus>> {
+        crate::lock::lock(&self.per_note).unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
             tx: Arc::new(StatusCell::new(SyncStatus::offline())),
             epoch: 0,
@@ -848,7 +856,7 @@ impl Statuses {
     /// The same, for a note that must already have a channel. `None` means it
     /// does not — which, since [`Statuses::forget`], means the note is gone.
     fn existing<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> Option<T> {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         per_note.get_mut(&note).map(f)
     }
 
@@ -897,14 +905,14 @@ impl Statuses {
     /// here is dropped, and its channel goes with it so that the device's status
     /// stops counting a note that does not exist toward what is pending.
     fn forget(&self, note: NoteId) {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         per_note.remove(&note);
         drop(per_note);
         self.refresh();
     }
 
     fn refresh(&self) {
-        let per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let per_note = self.locked();
         let each: Vec<SyncStatus> = per_note.values().map(|status| status.tx.get()).collect();
         drop(per_note);
         self.overall.send_replace(SyncStatus::combined(each.iter()));
@@ -914,7 +922,7 @@ impl Statuses {
     /// whose last word may not arrive before their tasks are gone — and whose
     /// last word is now ignored, because ending an epoch is what this is.
     fn all_offline(&self) {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         for status in per_note.values_mut() {
             status.epoch += 1;
             status.tx.send_replace(SyncStatus::offline());
@@ -956,8 +964,28 @@ pub(crate) struct Peer {
     device: Weak<Shared>,
 }
 
+/// Marks a code on a bridge error. A character no message uses, so Dart can
+/// read the code without guessing from the words that follow.
+const BRIDGE_CODE: char = '\u{1}';
+
+/// A refusal Dart has to recognise by kind. The code comes first so that
+/// rewording the message cannot silently change what the app does.
+fn coded(code: &str, message: impl std::fmt::Display) -> String {
+    format!("{BRIDGE_CODE}{code}{BRIDGE_CODE}{message}")
+}
+
 fn closed() -> String {
-    "the library is closed".to_string()
+    coded("library_closed", "the library is closed")
+}
+
+/// A core error as the bridge hands it over, with a code for the kinds Dart
+/// acts on.
+fn core_text(error: CoreError) -> String {
+    match &error {
+        CoreError::TransferGone => coded("transfer_gone", &error),
+        CoreError::UnknownItem(_) => coded("unknown_item", &error),
+        _ => error.to_string(),
+    }
 }
 
 impl Peer {
@@ -2145,6 +2173,31 @@ impl Library {
         self.pending.len()
     }
 
+    /// A tick whenever a write is queued for the browser's store, and one at
+    /// the start so that anything queued before this was listening is drained
+    /// too. The tick says only that there is something to take; taking it stays
+    /// [`Library::take_storage_batches`].
+    pub fn watch_storage(&self, sink: StreamSink<u32>) -> Result<(), String> {
+        let mut queued = self.pending.subscribe();
+        let stop = self.stop.clone();
+        crate::relay::spawn(async move {
+            if sink.add(*queued.borrow_and_update() as u32).is_err() {
+                return;
+            }
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            loop {
+                if queued.changed().await.is_err() || stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                if sink.add(*queued.borrow_and_update() as u32).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
     fn wrap_with(
         mut core: Core,
         pending: Arc<Pending>,
@@ -3014,7 +3067,7 @@ impl Library {
             public_key: URL_SAFE_NO_PAD.encode(keypair.public_key()),
         };
         let open = easynotes_core::sync::pairing::open(http, access, id.clone(), guest, owner, 300);
-        on_network(async move { open.await.map(|_| ()).map_err(|e| e.to_string()) }).await?;
+        on_network(async move { open.await.map(|_| ()).map_err(core_text) }).await?;
         let qr = serde_json::to_string(&offer).map_err(|e| e.to_string())?;
         *self
             .transfer_owner
@@ -3045,8 +3098,7 @@ impl Library {
         };
         let request_id = id.clone();
         let result = easynotes_core::sync::pairing::poll_request(http, id, owner);
-        let (public, _) =
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let (public, _) = on_network(async move { result.await.map_err(core_text) }).await?;
         let Some(public) = public else {
             return Ok(None);
         };
@@ -3093,7 +3145,7 @@ impl Library {
             .seal(&public, id.as_bytes(), &root, &relay, access.as_deref())
             .map_err(|e| e.to_string())?;
         let result = easynotes_core::sync::pairing::send_response(http, id, owner, encrypted);
-        on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        on_network(async move { result.await.map_err(core_text) }).await?;
         // The approval is spent: the tokens, keypair and relay access must not
         // outlive it. Only after the send, so a failure stays retryable. A
         // poisoned lock still holds the state, and dropping it is the point.
@@ -3114,7 +3166,7 @@ impl Library {
             let id = state.offer.id;
             let owner = state.owner;
             let result = easynotes_core::sync::pairing::close(http, id, owner);
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+            on_network(async move { result.await.map_err(core_text) }).await?;
         }
         *self
             .transfer_guest
@@ -3159,7 +3211,7 @@ impl Library {
             offer.guest.clone(),
             key,
         );
-        on_network(async move { request.await.map_err(|e| e.to_string()) }).await?;
+        on_network(async move { request.await.map_err(core_text) }).await?;
         *self
             .transfer_guest
             .lock()
@@ -3195,8 +3247,7 @@ impl Library {
         let token = state.offer.guest.clone();
         let transfer_id = id.clone();
         let result = easynotes_core::sync::pairing::poll_response(endpoint.http_base, id, token);
-        let (encrypted, _) =
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let (encrypted, _) = on_network(async move { result.await.map_err(core_text) }).await?;
         let Some(encrypted) = encrypted else {
             return Ok(None);
         };
@@ -4142,6 +4193,7 @@ impl Library {
         self.stop.store(true, Ordering::SeqCst);
         self.shared.statuses.overall.resend();
         self.shared.statuses.transfer_views.send_modify(|_| {});
+        self.pending.resend();
         // The note list watcher is parked on its own channel and needs the same
         // wake. Re-sending the list it already has changes nothing and moves it.
         //
@@ -4571,7 +4623,7 @@ impl Note {
             let mut core = self.shared.locked()?;
             let envelope = core
                 .edit_item_text(self.id, item_id(&item)?, &from, &to)
-                .map_err(|e| e.to_string())?;
+                .map_err(core_text)?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
         if let Some(envelope) = envelope {
@@ -4984,6 +5036,29 @@ mod tests {
             library.flushed(note),
             "a gone note has nothing left to flush"
         );
+    }
+
+    #[test]
+    fn a_poisoned_status_lock_does_not_panic_every_later_report() {
+        let statuses = Statuses::new();
+        let note = NoteId::random();
+        std::thread::scope(|scope| {
+            let poisoned = scope
+                .spawn(|| {
+                    let _held = crate::lock::lock(&statuses.per_note).unwrap();
+                    panic!("poison the status map");
+                })
+                .join();
+            assert!(poisoned.is_err(), "the status map must be poisoned");
+        });
+
+        // Each of these used to unwrap the poison and panic in the task that
+        // reported a status.
+        statuses.entry(note, |status| status.epoch);
+        assert!(statuses.existing(note, |status| status.epoch).is_some());
+        statuses.refresh();
+        statuses.all_offline();
+        statuses.forget(note);
     }
 
     #[test]

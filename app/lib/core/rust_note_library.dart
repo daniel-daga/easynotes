@@ -71,9 +71,14 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       _transfers.add(_lastTransfers);
     }, onError: _transfers.addError);
     if (_db != null) {
-      _drain = Timer.periodic(writeInterval, (_) => _writeOut());
-      // And once more the moment the tab goes away, because [writeInterval] is
-      // a window in which an edit is on the screen and nowhere else.
+      _storageWatch = _library.watchStorage().listen(
+        (_) => _writeOut(),
+        // A watcher that dies stops the drain, not the edits: the queue is
+        // still emptied when the page is hidden or the library is closed.
+        onError: (Object _) {},
+      );
+      // And once more the moment the tab goes away: a tick that arrives just
+      // after it is a write left in memory.
       _stopWatchingPage = page.whenPageHidden(_writeOut);
     }
   }
@@ -167,27 +172,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     return this;
   }
 
-  /// How often the writes the core has queued are handed to the browser.
-  ///
-  /// The cost of being wrong in each direction is not symmetric, and neither is
-  /// large: too long and a tab closed in the gap loses the last edits, too short
-  /// and a timer that mostly finds an empty queue runs more often. Fifty
-  /// milliseconds is below what anyone notices and well under the time a person
-  /// takes to close a tab after typing. The native store has no equivalent gap —
-  /// it fsyncs before `append` returns — and [ADR 0011](../../../docs/decisions.md#adr-0011) says why a browser cannot.
-  ///
-  /// The window is narrower than this number, because a page being hidden
-  /// empties the queue too rather than waiting for the next tick. It is not
-  /// closed: what the browser then has is a transaction it has been asked to
-  /// run, and nothing in `visibilitychange` can wait for one to finish.
-  static const writeInterval = Duration(milliseconds: 50);
-
   final rust.Library _library;
 
   /// Where this browser keeps the notes, or null on a device with a disk and in
   /// a tab whose notes are only in memory.
   final BrowserStore? _db;
-  Timer? _drain;
+
+  /// Told by the core when a write is queued. The queue is still emptied when
+  /// the page is hidden or the library closes, not only on a tick.
+  StreamSubscription<int>? _storageWatch;
 
   /// Stops the `visibilitychange` listener, and does nothing off the web.
   void Function()? _stopWatchingPage;
@@ -315,18 +308,33 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// also forgets the invite. So one caller can finish a join the other is
   /// still asking about: two checks at once would answer the relay twice, and a
   /// check after the join would find no invite to report it from. A check
-  /// that starts while another is out gets that one's result, and a join,
-  /// being final, stays here for whoever asks next.
+  /// that starts while another is out gets that one's result.
   final _checks = <String, Future<InviteStatus>>{};
+
+  /// Joins already reported, for whoever asks again after the core forgot the
+  /// invite. Bounded: a device joins a handful of notes in a tab's life, and
+  /// keeping every one of them for ever is a leak.
+  ///
+  /// shortcut: the oldest answer is forgotten after [maxRememberedJoins],
+  /// raise it if a caller can still ask about an older join.
+  static const maxRememberedJoins = 8;
+  final _joined = <String, InviteStatus>{};
 
   @override
   Future<InviteStatus> checkInvite(String inviteId) {
+    final joined = _joined[inviteId];
+    if (joined != null) return Future.value(joined);
     final known = _checks[inviteId];
     if (known != null) return known;
     final check = _checks[inviteId] = _checkInvite(inviteId);
     check.then(
       (status) {
-        if (status.joined == null) _checks.remove(inviteId);
+        _checks.remove(inviteId);
+        if (status.joined == null) return;
+        _joined[inviteId] = status;
+        while (_joined.length > maxRememberedJoins) {
+          _joined.remove(_joined.keys.first);
+        }
       },
       onError: (Object _) {
         _checks.remove(inviteId);
@@ -873,15 +881,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     // core and would otherwise keep applying updates to notes nothing is
     // watching.
     await _library.disconnect();
+    _stopWatchingPage?.call();
+    // Stop the watchers before the store goes, so no tick can try to write to a
+    // closed database. Cancelling an upstream subscription waits for that
+    // stream to close, and none closes on its own.
+    await _library.stopWatching();
+    await _storageWatch?.cancel();
     // Whatever is still queued, before anything stops: this is the last chance
     // those bytes have to reach the browser.
-    _drain?.cancel();
-    _stopWatchingPage?.call();
     await flush();
     await _db?.close();
-    // Then stop the Rust watchers: cancelling an upstream subscription waits for
-    // that stream to close, and neither closes on its own.
-    await _library.stopWatching();
     await _upstream.cancel();
     await _syncUpstream.cancel();
     await _transfersUpstream.cancel();

@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../core/billing.dart';
-import '../core/invites.dart';
 import '../core/app_visibility.dart';
+import '../core/billing.dart';
+import '../core/bridge_error.dart';
+import '../core/invites.dart';
 import '../core/relay_profiles.dart';
 import '../core/secure_screen.dart';
 
@@ -281,7 +282,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
         setState(() {
           _busy = false;
           if (gone) _code = null;
-          _message = '$e';
+          _message = bridgeErrorText(e);
         });
       }
     }

@@ -10,8 +10,8 @@ library;
 
 import 'dart:async';
 
-import 'package:easynotes/core/fake_note_core.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_core.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/ui/note_expand_route.dart';
 import 'package:easynotes/ui/note_list_screen.dart';
 import 'package:easynotes/ui/note_screen.dart';

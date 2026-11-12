@@ -9,9 +9,9 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'note_core.dart';
-import 'note_view.dart';
-import 'sync_status.dart';
+import 'package:easynotes/core/note_core.dart';
+import 'package:easynotes/core/note_view.dart';
+import 'package:easynotes/core/sync_status.dart';
 
 class FakeNoteCore implements NoteCore {
   FakeNoteCore({
