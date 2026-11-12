@@ -22,6 +22,10 @@ pub enum CoreError {
     /// expired, already used, full, withdrawn.
     #[error("{0}")]
     Invite(String),
+    /// The relay no longer has this account-transfer pairing: it restarted, or
+    /// the code was made on another relay process. A new code is the only fix.
+    #[error("The transfer expired or the relay restarted. Show a new code.")]
+    TransferGone,
     #[error("malformed share blob: {0}")]
     MalformedShareBlob(&'static str),
     #[error("unknown note {0}")]
@@ -60,6 +64,10 @@ pub enum CoreError {
     /// fixes it in Settings, with the relay link they were given.
     #[error("This sync server needs an access key. Ask whoever runs it for its server link, and add it under Settings, Sync server. Your notes are safe on this device.")]
     AccessRequired,
+    /// The relay is read-only until its plan is renewed ([ADR 0038](../../docs/decisions.md#adr-0038)).
+    /// Permanent: retrying cannot fix it, so it is not a [`CoreError::Storage`].
+    #[error("This relay is read-only until the plan is renewed.")]
+    ReadOnly,
     #[error("envelope exceeds the {limit} byte cap")]
     TooLarge { limit: usize },
 }

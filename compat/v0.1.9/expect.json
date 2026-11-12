@@ -1,0 +1,80 @@
+{
+  "version": "0.1.9",
+  "phrase": "pulse expand truth warm attitude shed young snake injury obtain horn margin",
+  "notes": [
+    {
+      "id": "fyaR2cIffRye9mgtRXOl_A",
+      "kind": "Checklist",
+      "title": "Groceries",
+      "body": "",
+      "items": [
+        [
+          "milk",
+          true
+        ],
+        [
+          "bread",
+          false
+        ],
+        [
+          "olive oil",
+          false
+        ],
+        [
+          "lemons",
+          true
+        ],
+        [
+          "rice",
+          false
+        ],
+        [
+          "coffee",
+          false
+        ],
+        [
+          "apples",
+          false
+        ],
+        [
+          "butter",
+          true
+        ],
+        [
+          "flour",
+          false
+        ],
+        [
+          "tea",
+          false
+        ],
+        [
+          "eggs",
+          false
+        ]
+      ],
+      "colour": "Green",
+      "pinned": true,
+      "shared": true,
+      "attachments": []
+    },
+    {
+      "id": "n6KSdI2Enx3lKTPwAj811w",
+      "kind": "Text",
+      "title": "Letter",
+      "body": "Dear Ben,\n\nThe garden is doing well.\n",
+      "items": [],
+      "colour": null,
+      "pinned": false,
+      "shared": false,
+      "attachments": [
+        {
+          "name": "garden.png",
+          "len": 20000,
+          "sha256": "12351af05a3937cb8fa3f8b9d10658e64078e8770fb744d0acd72e2a27f57919"
+        }
+      ]
+    }
+  ],
+  "invite_link": "easynotes://join#AXg06K5Xkh9eWIUopfcoa71ewm7JyTml4wvJE0Ve2hXr"
+}

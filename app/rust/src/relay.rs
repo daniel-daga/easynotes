@@ -129,7 +129,7 @@ impl Device {
     pub fn open<P: SyncPeer>(
         peer: P,
         relay: &str,
-        access: Option<easynotes_core::relay_access::RelayAccess>,
+        access: Option<easynotes_core::relay_access::RelayToken>,
     ) -> Result<Self, String> {
         let endpoint = RelayEndpoint::parse(relay)
             .map_err(|e| e.to_string())?

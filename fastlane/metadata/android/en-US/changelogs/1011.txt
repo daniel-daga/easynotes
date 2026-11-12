@@ -1,0 +1,6 @@
+Updates since v0.1.10:
+
+- On a hosted sync server, each device now has its own access token; inviting someone or adding a device no longer shares yours
+- A plan that lapses keeps read-only access for 30 days before its tokens are revoked
+- Self-hosted servers work exactly as before, with the same shared access key
+- The rest of the app is unchanged

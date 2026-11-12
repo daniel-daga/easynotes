@@ -12,12 +12,15 @@
 /// one state this design cannot recover from.
 library;
 
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../core/bridge_error.dart';
 import '../core/invites.dart';
 import '../core/relay_profiles.dart';
+import '../core/secure_screen.dart';
 
 /// How many words the backup check asks for.
 ///
@@ -193,7 +196,7 @@ class _AccountScreenState extends State<AccountScreen> {
       // A profile switch can close this screen's library while its route is
       // still leaving the navigator. It has no account UI to show at that
       // point, and must not rebuild by reading the retired bridge handle.
-      if ('$error'.contains('the library is closed')) {
+      if (isLibraryClosed(error)) {
         return const SizedBox.shrink();
       }
       rethrow;
@@ -395,7 +398,16 @@ class _RecoveryPhraseScreenState extends State<RecoveryPhraseScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // These words are the account. Android keeps them out of screenshots and
+    // the Recents list for as long as this screen is up; no-op elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     for (final field in _fields) {
       field.dispose();
     }
@@ -644,7 +656,17 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
   bool _busy = false;
 
   @override
+  void initState() {
+    super.initState();
+    // The words typed here are the account. Android keeps them out of
+    // screenshots and the Recents list while they are on screen; no-op
+    // elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
+  @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     _controller.dispose();
     super.dispose();
   }
@@ -714,7 +736,7 @@ class _AdoptAccountScreenState extends State<AdoptAccountScreen> {
                           'devices → Sync server '
                           'first: a phrase restores nothing from another '
                           'server. '
-                          '${profile.access == null ? 'If this server has an access key, add it there too: the phrase does not include it.' : 'This server\'s access key is saved; the phrase does not include it.'}',
+                          '${profile.access == null ? 'If this server has an access key or a device token, add it there too: the phrase does not include it.' : 'This server\'s access key or device token is saved; the phrase does not include it.'} A device token has to be obtained again from the household\'s billing page after a restore.',
                 key: const Key('adopt-relay'),
               ),
             ],

@@ -19,6 +19,7 @@ class ItemView {
     required this.text,
     required this.checked,
     required this.order,
+    this.heading = false,
   });
 
   /// The item's stable ID, base64url. Survives renames and reorders, which is
@@ -31,19 +32,29 @@ class ItemView {
   /// where a drag landed.
   final String order;
 
+  /// A section heading rather than something to tick off.
+  ///
+  /// A heading owns the rows under it until the next heading, so a section is a
+  /// run of this ordered list and never a container of its own. It has no
+  /// checkbox; a tick a device on an older build puts on it is merged and
+  /// ignored ([ADR 0037](../../../docs/decisions.md#adr-0037)).
+  final bool heading;
+
   @override
   bool operator ==(Object other) =>
       other is ItemView &&
       other.id == id &&
       other.text == text &&
       other.checked == checked &&
-      other.order == order;
+      other.order == order &&
+      other.heading == heading;
 
   @override
-  int get hashCode => Object.hash(id, text, checked, order);
+  int get hashCode => Object.hash(id, text, checked, order, heading);
 
   @override
-  String toString() => 'ItemView($id, "$text", checked: $checked)';
+  String toString() =>
+      'ItemView($id, "$text", checked: $checked, heading: $heading)';
 }
 
 /// Whether a note is prose or a list of things to tick off.

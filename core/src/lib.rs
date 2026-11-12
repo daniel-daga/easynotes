@@ -20,6 +20,7 @@ pub mod order;
 pub mod purge;
 pub mod relay_access;
 pub mod store;
+pub mod suggestions;
 pub mod text;
 
 // Always, though the transports inside it are not: `sync::wire` is the protocol

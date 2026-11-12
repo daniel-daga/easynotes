@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../core/invites.dart';
 import '../core/app_visibility.dart';
+import '../core/billing.dart';
+import '../core/bridge_error.dart';
+import '../core/invites.dart';
 import '../core/relay_profiles.dart';
+import '../core/secure_screen.dart';
 
 /// One-time pairing from an existing device or QR scan on a new one.
 class AccountTransferScreen extends StatefulWidget {
@@ -16,6 +19,7 @@ class AccountTransferScreen extends StatefulWidget {
     required this.profile,
     required this.onMoveLocalToRelay,
     required this.onSetAccess,
+    this.billing,
   });
 
   final AccountTransfers library;
@@ -23,6 +27,11 @@ class AccountTransferScreen extends StatefulWidget {
   final Future<void> Function(String address, {String? access})
   onMoveLocalToRelay;
   final Future<void> Function(String? access) onSetAccess;
+
+  /// Where the new device's own token comes from on a hosted relay. Null reads
+  /// the build's flag; with no service it stays disabled and the QR carries
+  /// [profile]'s access as before.
+  final BillingClient? billing;
 
   @override
   State<AccountTransferScreen> createState() => _AccountTransferScreenState();
@@ -36,9 +45,65 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
   bool _busy = false;
   bool _approved = false;
 
+  /// Whether the pairing has already been cancelled, so [dispose] does not
+  /// cancel it a second time after [cancel].
+  bool _cancelled = false;
+
+  /// Whether this device belongs to an account.
+  bool get _hasAccount {
+    try {
+      return widget.library is Accounts &&
+          (widget.library as Accounts).hasAccount;
+    } on Object {
+      return false;
+    }
+  }
+
+  /// The side of the pairing this screen was opened on. Only a device that
+  /// arrived with an account and a relay can act as the owner. A guest stays
+  /// on the guest's side after adopting, because it is still finishing its own
+  /// transfer, and [widget.profile] is a snapshot a move here does not update.
+  late final bool _owner = widget.profile.url != null && _hasAccount;
+
+  /// The client this screen made; an injected one is left to its owner.
+  BillingClient? _ownBilling;
+  late final BillingClient _billing =
+      widget.billing ?? (_ownBilling = BillingClient());
+
+  /// The token the QR carries: a fresh one for the new device on a hosted
+  /// relay, where this device's own token would bind the pairing to itself. A
+  /// bare operator key belongs to the relay, not to a device, so it is used
+  /// as it is. A device token in a build without billing is refused: the QR
+  /// must never hand this device's own token to another.
+  Future<String?> _accessForTransfer() async {
+    final access = widget.profile.access;
+    if (access == null || !isDeviceToken(access)) return access;
+    if (!_billing.enabled) {
+      throw const BillingException(
+        "This device's own key can't be put in a QR code, and this build has "
+        'no billing service to make a new one.',
+      );
+    }
+    return _billing.deviceToken(access);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // The QR carries the account. Android keeps it out of screenshots and the
+    // Recents list for as long as this screen is up; no-op elsewhere.
+    unawaited(setSecureScreen(true));
+  }
+
   @override
   void dispose() {
+    unawaited(setSecureScreen(false));
     _poller?.cancel();
+    _ownBilling?.close();
+    // Backing out must not leave the pairing open for its full five minutes.
+    if (!_approved && !_cancelled) {
+      unawaited(widget.library.cancelAccountTransfer().catchError((_) {}));
+    }
     super.dispose();
   }
 
@@ -48,9 +113,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       _message = null;
     });
     try {
+      final access = await _accessForTransfer();
       final qr = await widget.library.beginAccountTransfer(
         widget.profile.url!,
-        widget.profile.access,
+        access,
       );
       if (!mounted) return;
       setState(() {
@@ -72,12 +138,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
     if (_busy || _code != null || _approved || !appIsForeground.value) return;
     try {
       final code = await widget.library.accountTransferRequestCode();
-      if (code != null && mounted) {
+      if (code != null && mounted && !_approved) {
         _poller?.cancel();
         setState(() => _code = code);
       }
     } catch (e) {
-      if (mounted) {
+      // A poll that was in flight when the owner approved cannot overwrite
+      // the approval message with the error it came back with.
+      if (mounted && !_approved) {
         _poller?.cancel();
         setState(() => _message = '$e');
       }
@@ -95,6 +163,9 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       setState(() {
         _busy = false;
         _approved = true;
+        // The QR is the account: it does not outlive the approval.
+        _qr = null;
+        _code = null;
         _message =
             'Transfer sent securely. The new device can now finish setup.';
       });
@@ -146,31 +217,72 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       }
       final current = widget.profile.url;
       final address = transfer.relayUrl;
-      if (current == null) {
-        await widget.onMoveLocalToRelay(address, access: transfer.relayAccess);
-      } else if (current == address) {
-        await widget.onSetAccess(transfer.relayAccess);
-      } else {
+      if (current != null && current != address) {
         throw StateError(
           'Choose the same sync server as the original device in Sync server '
           'settings, then scan again.',
         );
       }
-      await widget.library.adoptAccountTransfer();
+      // The account goes on before the collection moves. A device with no
+      // account that moves first is asked to create one, and adopting the
+      // transferred account is then refused: the transfer cannot finish.
+      // An account already on this device is the same account paired again
+      // after a failure, and adopting it a second time is refused just the
+      // same, so only a device without one adopts.
+      if (!_hasAccount) await widget.library.adoptAccountTransfer();
       _poller?.cancel();
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _approved = true;
-          _message =
-              'Account added. This device is connected to ${transfer.relayUrl}.';
-        });
+      // Paired: no longer waiting for approval, whether or not the move follows.
+      if (mounted) setState(() => _code = null);
+      try {
+        if (current == null) {
+          await widget.onMoveLocalToRelay(
+            address,
+            access: transfer.relayAccess,
+          );
+        } else {
+          await widget.onSetAccess(transfer.relayAccess);
+        }
+      } on Object catch (e) {
+        // The account is on this device; what is left is the move or the
+        // connection. True whether it stopped before the profile moved or
+        // after it, when the notes are already on the relay.
+        throw StateError(
+          'This device has your account, but the transfer to $address did not '
+          'finish: $e Open Sync server settings to finish.',
+        );
       }
+      if (!mounted) return;
+      if (current == null) {
+        // The library moved, so the screen that opened this one holds a
+        // collection that has since closed. Report the move on the way out.
+        // Finished, so the dispose on the way out must not cancel it.
+        _approved = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Account added. This device is connected to ${transfer.relayUrl}.',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(true);
+        return;
+      }
+      setState(() {
+        _busy = false;
+        _approved = true;
+        _message =
+            'Account added. This device is connected to ${transfer.relayUrl}.';
+      });
     } catch (e) {
       if (mounted) {
+        // A pairing the relay no longer holds cannot come back by polling;
+        // the person needs a new code from the original device.
+        final gone = isTransferGone(e);
+        if (gone) _poller?.cancel();
         setState(() {
           _busy = false;
-          _message = '$e';
+          if (gone) _code = null;
+          _message = bridgeErrorText(e);
         });
       }
     }
@@ -178,6 +290,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
 
   Future<void> _cancel() async {
     _poller?.cancel();
+    _cancelled = true;
     try {
       await widget.library.cancelAccountTransfer();
     } catch (_) {}
@@ -186,8 +299,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final owner =
-        widget.library is Accounts && (widget.library as Accounts).hasAccount;
+    final owner = _owner;
     return Scaffold(
       appBar: AppBar(
         title: Text(owner ? 'Add another device' : 'Add this device'),
@@ -195,13 +307,14 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Text(
-            owner
-                ? 'Scan this QR code with your new device. The account key and server access key are encrypted for that device. Keep this screen open until you approve the request.'
-                : 'Scan the QR code shown by your original device. Both devices will show a matching code; compare them before approving on the original device.',
-          ),
+          if (!_approved)
+            Text(
+              owner
+                  ? 'Scan this QR code with your new device. The QR code is the account, so anyone who sees it can ask for it. Keep this screen open, and approve only a request you started a moment ago on a device in front of you — never one from a code someone read to you or sent you.'
+                  : 'Scan the QR code shown by your original device. Both screens show the same code: it is not a check on which device is which.',
+            ),
           const SizedBox(height: 20),
-          if (owner && _qr == null)
+          if (owner && _qr == null && !_approved)
             FilledButton.icon(
               key: const Key('begin-account-transfer'),
               onPressed: _busy || widget.profile.url == null
@@ -210,9 +323,10 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
               icon: const Icon(Icons.qr_code_2),
               label: const Text('Show one-time QR code'),
             ),
-          if (owner && _qr != null) ...[
+          if (owner && _qr != null && !_approved) ...[
             Center(
               child: Container(
+                key: const Key('account-transfer-qr'),
                 color: Colors.white,
                 padding: const EdgeInsets.all(12),
                 child: QrImageView(
@@ -226,7 +340,7 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
             if (_code == null)
               const Center(child: CircularProgressIndicator())
             else ...[
-              const Text('Check that the new device shows this same code:'),
+              const Text('The new device shows this code:'),
               const SizedBox(height: 8),
               Center(
                 child: Text(
@@ -255,7 +369,8 @@ class _AccountTransferScreenState extends State<AccountTransferScreen> {
           if (_code != null && !owner && !_approved) ...[
             const SizedBox(height: 24),
             const Text(
-              'Compare this code with the original device. Approve there only if they match.',
+              'Approve the transfer on the original device. This code is on '
+              'both screens; it is not a check on which device is which.',
             ),
             const SizedBox(height: 8),
             Center(

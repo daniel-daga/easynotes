@@ -1,12 +1,9 @@
 //! One-time account transfer relay calls. The relay sees only capability
 //! hashes, a temporary public key and the encrypted transfer response.
-use super::{
-    transport::post,
-    wire::{self, invite_status},
-};
+use super::{transport::post, wire};
 use crate::{
     error::{CoreError, Result},
-    relay_access::RelayAccess,
+    relay_access::RelayToken,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -18,6 +15,8 @@ struct Create<'a> {
     owner_hash: String,
     expires_in: u64,
     access: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_id: Option<&'a str>,
 }
 #[derive(Deserialize)]
 struct Created {
@@ -54,20 +53,20 @@ struct ResponseStatus {
 async fn call<Q: Serialize, R: DeserializeOwned>(url: &str, body: &Q) -> Result<R> {
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;
     let (status, text, _) = post(url, body).await?;
-    invite_status(status, &text)?;
+    wire::transfer_status(status, &text)?;
     serde_json::from_str(&text).map_err(|e| wire::net(format!("sync server sent nonsense: {e}")))
 }
 async fn post_empty<Q: Serialize>(url: &str, body: &Q) -> Result<()> {
     let body = serde_json::to_string(body).map_err(|e| CoreError::Storage(e.to_string()))?;
     let (status, text, _) = post(url, body).await?;
-    invite_status(status, &text)
+    wire::transfer_status(status, &text)
 }
 fn endpoint(base: &str, id: &str, step: &str) -> String {
     wire::api(base, &format!("/pairings/{id}/{step}"))
 }
 pub async fn open(
     base: String,
-    access: Option<RelayAccess>,
+    access: Option<RelayToken>,
     id: String,
     guest: [u8; 32],
     owner: [u8; 32],
@@ -84,6 +83,7 @@ pub async fn open(
             owner_hash: URL_SAFE_NO_PAD.encode(Sha256::digest(owner)),
             expires_in: ttl,
             access: access.as_ref().map(|k| k.invite_proof(&invite)),
+            access_id: access.as_ref().and_then(|token| token.id.as_deref()),
         },
     )
     .await?;

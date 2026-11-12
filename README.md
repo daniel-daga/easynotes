@@ -207,25 +207,43 @@ variable:
 | `RELAY_ADDR` | `127.0.0.1:8080` | Listen address (the Docker image sets `0.0.0.0:8080`) |
 | `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
 | `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
+| `RELAY_TOKEN_TTL_SECS` | `900` | Lifetime of a signed relay token, in whole seconds; a positive integer, and an invalid or zero value stops the relay. It is the upper bound on revocation and read-only changes reaching an open socket |
 | `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/decisions.md#adr-0028)) |
+| `RELAY_TOKENS` | unset (off) | `on` accepts a per-device access token, `<id>.<secret>`, at the handshake, checked against the relay's store ([ADR 0038](docs/decisions.md#adr-0038)); with no `RELAY_ACCESS_KEYS` it is the only way in |
+| `RELAY_ADMIN_ADDR` | unset | Private listener for billing's token API and `easynotes-relay token` (e.g. `127.0.0.1:9091`); keep it on loopback or a private network |
+| `RELAY_ADMIN_SECRET` | unset | Base64url 32-byte bearer secret for that listener; required with it, and never one of `RELAY_ACCESS_KEYS` |
 | `RELAY_WRITE_BURST` | 200 MiB | Bytes one client address may write at once |
 | `RELAY_WRITE_PER_HOUR` | 200 MiB/hr | Sustained write budget per address (`off` for none) |
 | `RELAY_STORAGE_CEILING` | 16 GiB | Total live-log bytes before the relay refuses new notes (`off` for none) |
 | `RELAY_MEDIA_DIR` | unset | Where attachment bytes live; back up with the database |
 | `RELAY_MEDIA_PER_NOTE` | 1 GiB | Attachment bytes one note may hold |
 | `RELAY_MEDIA_CEILING` | 64 GiB | Attachment bytes all notes may hold together (`off` for none) |
+| `RELAY_MEDIA_STAGING_CEILING` | 8 GiB | Of that, bytes uploads in progress may hold reserved and not yet committed (`off` for none) |
 | `RELAY_TRUSTED_PROXIES` | unset | Addresses/CIDRs to trust `X-Forwarded-For` from, so clients behind a proxy aren't one rate-limit bucket |
-| `RELAY_RATE_LIMIT` | on | `off` answers as fast as asked (development only) |
+| `RELAY_RATE_LIMIT` | on | `off` removes the rate limits, not the storage and media ceilings (development only) |
 | `RELAY_DRAIN_SECONDS` | 8 | Graceful-shutdown drain before exiting on `SIGTERM` |
 | `RELAY_METRICS_ADDR` | unset | Serves Prometheus `/metrics` on a separate listener (e.g. `0.0.0.0:9090`) |
 
 Generate keys with `easynotes-relay access-key` for access keys, and
 `openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'` for the token signing
-key.
+key and the admin secret.
+
+A relay with `RELAY_TOKENS=on` also takes a per-device token,
+`<id>.<secret>`. `easynotes-relay token create` prints one for a relay link or
+QR, `token revoke <id>` ends it, `token read-only <id> [on|off]` makes it read
+without writing, and `token unbind <id>` returns it to an unclaimed link. Those
+commands call the private admin listener, so `RELAY_ADMIN_ADDR` and
+`RELAY_ADMIN_SECRET` must be the relay's own. The admin listener is never a
+public route.
 
 The relay answers `/v1/health` (process up), `/v1/ready` (process up and
 database answering), and `/metrics`. `easynotes-relay check` asks `/v1/ready`
 and exits 0 or 1 — the container health check.
+
+Account transfers are process-local: open pairings live in the relay's memory,
+not its database. One relay process must serve a transfer, and it must not be
+restarted mid-transfer. A restart or a second instance loses the pairing, and
+both devices need a new code.
 
 ## Deployment
 

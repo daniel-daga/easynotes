@@ -34,7 +34,7 @@ use crate::crypto::{AuthorKey, DeviceSigner, Envelope};
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::note::{NoteCore, Outgoing, SyncCursor};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use crate::store::{Keyring, OpStore};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -287,9 +287,9 @@ where
 pub struct RelayEndpoint {
     pub http_base: String,
     pub ws_base: String,
-    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Not part
+    /// The relay's access token, if its operator gave this device one ([ADR 0028](../../../docs/decisions.md#adr-0028)). Not part
     /// of the relay's address: changing it is the same relay.
-    pub access: Option<RelayAccess>,
+    pub access: Option<RelayToken>,
 }
 
 impl RelayEndpoint {
@@ -377,7 +377,7 @@ impl RelayEndpoint {
     }
 
     /// The same relay, proving `access` at the handshake.
-    pub fn with_access(self, access: Option<RelayAccess>) -> Self {
+    pub fn with_access(self, access: Option<RelayToken>) -> Self {
         Self { access, ..self }
     }
 }
@@ -1787,7 +1787,7 @@ impl Live {
                 // not the device key used for the relay handshake. Byte equality
                 // still proves this is the envelope queued above; only the
                 // per-device `sent_upto` watermark must remain untouched.
-                self.outbox.retain(|queued| queued != envelope);
+                self.acknowledge_echo(envelope);
             }
         }
         self.advance(peer, note, seq);
@@ -1823,15 +1823,23 @@ impl Live {
     /// The relay has our envelope: drop it from the outbox and remember how far
     /// the acknowledgement reaches.
     fn acknowledge(&mut self, counter: u64, envelope: &[u8]) {
+        self.acknowledge_echo(envelope);
+        self.cursor.sent_upto = Some(match self.cursor.sent_upto {
+            Some(sent) => sent.max(counter),
+            None => counter,
+        });
+    }
+
+    /// An echo of ours counts as acknowledged even when another key signed it —
+    /// the rotation snapshot case — so it never leaves `sync_now` waiting on a
+    /// target that echo could not move. Counting only an envelope actually in
+    /// the outbox keeps a second echo from counting twice.
+    fn acknowledge_echo(&mut self, envelope: &[u8]) {
         let before = self.outbox.len();
         self.outbox.retain(|queued| queued != envelope);
         if self.outbox.len() != before {
             self.current.acknowledged = self.current.acknowledged.saturating_add(1);
         }
-        self.cursor.sent_upto = Some(match self.cursor.sent_upto {
-            Some(sent) => sent.max(counter),
-            None => counter,
-        });
     }
 
     /// The relay explicitly says its log is older than this device's cursor.
@@ -1870,6 +1878,40 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::{DeviceIdentity, NoteKey};
+
+    struct TestPeer(DeviceIdentity);
+
+    impl DeviceSigner for TestPeer {
+        fn device_key(&self) -> Result<AuthorKey> {
+            self.0.device_key()
+        }
+
+        fn sign_challenge(
+            &self,
+            nonce: &[u8; crate::crypto::RELAY_AUTH_NONCE_LEN],
+        ) -> Result<[u8; crate::crypto::SIG_LEN]> {
+            self.0.sign_challenge(nonce)
+        }
+    }
+
+    impl SyncPeer for TestPeer {
+        fn apply_remote(&self, _note: NoteId, _envelope: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn cursor(&self, _note: NoteId) -> Result<SyncCursor> {
+            Ok(SyncCursor::default())
+        }
+
+        fn save_cursor(&self, _note: NoteId, _cursor: SyncCursor) -> Result<()> {
+            Ok(())
+        }
+
+        fn unsent(&self, _note: NoteId, _after: Option<u64>) -> Result<Vec<(u64, Vec<u8>)>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn retry_jitter_stays_between_half_and_full_ceiling() {
@@ -1914,6 +1956,48 @@ mod tests {
         assert_eq!(live.current.acknowledged, 1);
         live.acknowledge(1, &envelope);
         assert_eq!(live.current.acknowledged, 1);
+    }
+
+    #[test]
+    fn a_rotation_snapshot_echo_is_acknowledged_without_moving_the_sent_watermark() {
+        let (status, _watcher) = watch::channel(SyncStatus::default());
+        let mut live = Live::new(1, status, Pacing::default());
+        let envelope = vec![9, 9, 9];
+        live.outbox.push(envelope.clone());
+
+        live.acknowledge_echo(&envelope);
+        assert!(live.outbox.is_empty());
+        assert_eq!(live.current.acknowledged, 1);
+        assert!(live.cursor.sent_upto.is_none());
+
+        live.acknowledge_echo(&envelope);
+        assert_eq!(live.current.acknowledged, 1);
+    }
+
+    #[test]
+    fn a_foreign_envelope_echoed_from_the_outbox_advances_the_watermark() {
+        let (status, _watcher) = watch::channel(SyncStatus::default());
+        let mut live = Live::new(1, status, Pacing::default());
+        let me = DeviceIdentity::generate().public_key();
+        let other = DeviceIdentity::generate();
+        let note = NoteId::random();
+        let envelope = Envelope::seal(&other, note, &NoteKey::random(), 1, b"rotation")
+            .unwrap()
+            .encode();
+        live.outbox.push(envelope.clone());
+
+        live.receive(
+            &TestPeer(DeviceIdentity::generate()),
+            note,
+            &me,
+            1,
+            &envelope,
+        )
+        .unwrap();
+
+        assert_eq!(live.current.acknowledged, 1);
+        assert!(live.outbox.is_empty());
+        assert!(live.cursor.sent_upto.is_none());
     }
 
     #[test]

@@ -8,11 +8,15 @@
 //! * `RELAY_ALLOWED_ORIGINS` — a comma-separated list of the origins allowed to
 //!   drive the handshake from a browser. Unset means any, which is what a
 //!   development relay and the browser smoke tests need.
-//! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked. Unset means
-//!   the defaults in [`RelayConfig::public`], because a process listening on a
-//!   socket should not need an environment variable set to refuse a flood.
+//! * `RELAY_RATE_LIMIT` — `off` to answer as fast as it is asked; the storage
+//!   and media ceilings still apply. Unset means the rate limits in
+//!   [`RelayConfig::public`], because a process listening on a socket should
+//!   not need an environment variable set to refuse a flood.
 //! * `RELAY_TOKEN_SIGNING_KEY` — a stable base64url Ed25519 seed for tokens
 //!   shared across restarts and instances. Unset generates a temporary key.
+//! * `RELAY_TOKEN_TTL_SECS` — how long an issued token is good for, and so how
+//!   long a socket may stay open before its device handshakes again. A whole
+//!   number of seconds, at least 1. Unset means 15 minutes.
 //! * `RELAY_STORAGE_CEILING` — how many bytes every note's live log may hold
 //!   together before the relay refuses to start new notes (appends to existing
 //!   ones still go). A whole number of bytes, or `off`. Unset means
@@ -27,20 +31,38 @@
 //! * `RELAY_MEDIA_CEILING` — bytes every note's attachments may hold together,
 //!   or `off`. Unset means [`easynotes_relay::media::DEFAULT_MEDIA_CEILING`],
 //!   64 GiB.
+//! * `RELAY_MEDIA_STAGING_CEILING` — bytes uploads in progress may hold
+//!   together, reserved and not yet committed, or `off`. Unset means
+//!   [`easynotes_relay::media::DEFAULT_STAGING_CEILING`], 8 GiB. A reservation
+//!   costs nothing until its chunks arrive, so without this one could hold the
+//!   whole media ceiling with nothing uploaded.
 //!
 //! * `RELAY_ACCESS_KEYS` — who may write here ([ADR 0028](../../docs/decisions.md#adr-0028)):
 //!   one or more base64url access keys, comma separated, or `open` for anyone.
 //!   More than one so a rotation can overlap. Unset is `open`, with a warning.
 //!   `easynotes-relay access-key` prints a new key.
+//! * `RELAY_TOKENS` — `on` to accept a per-device access token
+//!   ([ADR 0038](../../docs/decisions.md#adr-0038)) at the handshake, minted by
+//!   billing and checked against this relay's store. Unset or empty is off, and
+//!   anything else is an error. Refuses to start with `RELAY_ACCESS_KEYS=open`;
+//!   with a key configured too, either a static key or a token is enough.
 //! * `RELAY_WRITE_BURST` and `RELAY_WRITE_PER_HOUR` — the write budget: bytes
-//!   one client address may write at once, and sustained, appends and
-//!   attachments together. Unset means 200 MiB and 200 MiB an hour
+//!   one client address may write at once, and sustained, every socket
+//!   message and attachment together. Unset means 200 MiB and 200 MiB an hour
 //!   ([`easynotes_relay::app::WRITES_BURST`]); `RELAY_WRITE_PER_HOUR=off`
-//!   turns it off.
+//!   turns it off. Zero is refused for both: as a burst it would become one
+//!   byte, which is the same as off without saying so.
 //!
 //! `easynotes-relay check` does not serve: it asks the relay at `RELAY_ADDR`
 //! whether it is ready (`/v1/ready`) and exits 0 if so, 1 if not. It is the
 //! container health check, which the slim runtime image has no `curl` for.
+//!
+//! `easynotes-relay token` mints and manages device tokens by hand, for a
+//! self-hosted relay with no billing to do it: `token create` prints
+//! `<id>.<secret>` for a relay link or QR, `token revoke <id>`, `token read-only
+//! <id> [on|off]` and `token unbind <id>`. It asks the relay's private admin
+//! listener (below) and needs no store and no `RELAY_ADDR`: what it prints is
+//! only real once the relay has stored it, so there is no local write.
 //!
 //! * `RELAY_DRAIN_SECONDS` — on `SIGTERM` or Ctrl-C, how long to let requests
 //!   in flight finish and sync sockets close before exiting anyway. Unset means
@@ -50,9 +72,24 @@
 //! * `RELAY_METRICS_ADDR` — where to serve `/metrics`, in the Prometheus text
 //!   format ([`easynotes_relay::metrics`]). A listener of its own, so that it
 //!   can be kept off the public network. Unset serves no metrics.
+//! * `RELAY_ADMIN_ADDR` — where billing's private admin API listens: minting,
+//!   revoking, marking read-only and unbinding a device's access token
+//!   ([`easynotes_relay::admin`]). A listener of its own, never a public route.
+//!   Unset serves no admin API. Keep it on loopback: unless something in front
+//!   terminates TLS, the admin secret and every minted device secret cross the
+//!   network in cleartext.
+//! * `RELAY_ADMIN_SECRET` — the bearer secret every admin call must carry,
+//!   base64url, exactly 32 bytes. Required with `RELAY_ADMIN_ADDR`; a missing
+//!   or malformed value stops the process. It must not be one of
+//!   `RELAY_ACCESS_KEYS`: that would let every household holding the static
+//!   key revoke tokens.
+//!   Because the listener only mints rows, it is only useful with
+//!   `RELAY_TOKENS=on`; without it the handshake ignores what billing mints.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use easynotes_core::relay_access::RelayAccess;
+use easynotes_relay::cli::{AdminClient, Command};
 use easynotes_relay::limit::RateLimit;
 use easynotes_relay::{
     Access, DirBlobs, MemoryStore, Origins, PostgresStore, Relay, RelayConfig, RelayStore,
@@ -75,6 +112,18 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "easynotes_relay=info".into()),
         )
         .init();
+
+    // Before the address and the store: a token command neither serves nor
+    // keeps a row itself, and must not be stopped by a bad RELAY_ADDR.
+    if std::env::args().nth(1).as_deref() == Some("token") {
+        std::process::exit(match token().await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        });
+    }
 
     let addr: SocketAddr = std::env::var("RELAY_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -110,13 +159,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut config = match std::env::var("RELAY_RATE_LIMIT").as_deref() {
-        Ok("off") => {
-            tracing::warn!("RELAY_RATE_LIMIT=off: answering every caller as fast as it asks");
-            RelayConfig::default()
-        }
-        _ => RelayConfig::public(),
-    };
+    let mut config = base_config(std::env::var("RELAY_RATE_LIMIT").ok().as_deref());
     match std::env::var("RELAY_TOKEN_SIGNING_KEY") {
         Ok(raw) => {
             let bytes = URL_SAFE_NO_PAD
@@ -130,6 +173,22 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::warn!(
             "RELAY_TOKEN_SIGNING_KEY is unset: device tokens will not survive a restart and instances will not share tokens"
         ),
+    }
+    match std::env::var("RELAY_TOKEN_TTL_SECS")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => {}
+        Ok(raw) => {
+            let secs: u64 = raw.parse().map_err(|_| {
+                anyhow::anyhow!("RELAY_TOKEN_TTL_SECS must be a whole number of seconds")
+            })?;
+            if secs == 0 {
+                anyhow::bail!("RELAY_TOKEN_TTL_SECS must be at least 1 second");
+            }
+            config.token_ttl = Duration::from_secs(secs);
+            tracing::info!(secs, "device tokens are good for this long");
+        }
     }
     match std::env::var("RELAY_STORAGE_CEILING")
         .as_deref()
@@ -183,6 +242,17 @@ async fn main() -> anyhow::Result<()> {
         ),
     }
 
+    // Before the keys, so the refusal below can see both.
+    config.tokens = match std::env::var("RELAY_TOKENS").as_deref().map(str::trim) {
+        Ok("") | Err(_) => false,
+        Ok("on") => {
+            tracing::info!("per-device access tokens are accepted");
+            true
+        }
+        // A typo must not quietly switch off a gate an operator believes in.
+        Ok(_) => anyhow::bail!("RELAY_TOKENS must be `on`, or unset for off"),
+    };
+
     match std::env::var("RELAY_ACCESS_KEYS").as_deref().map(str::trim) {
         Ok(raw) if !raw.is_empty() => {
             // A list that cannot be read fails to start rather than falling
@@ -190,6 +260,13 @@ async fn main() -> anyhow::Result<()> {
             // closed to strangers.
             config.access = Access::parse(raw)
                 .map_err(|e| anyhow::anyhow!("RELAY_ACCESS_KEYS could not be understood: {e}"))?;
+            // A token relay with `open` would take anyone who omits the token
+            // ID, which is the whole gate gone.
+            if config.tokens && !config.access.gated() {
+                anyhow::bail!(
+                    "RELAY_TOKENS=on and RELAY_ACCESS_KEYS=open: a relay with tokens must not accept anyone without one. Set a key too, or leave RELAY_ACCESS_KEYS unset for a token-only relay"
+                );
+            }
             match &config.access {
                 Access::Keys(keys) => tracing::info!(
                     keys = keys.len(),
@@ -200,13 +277,16 @@ async fn main() -> anyhow::Result<()> {
                 ),
             }
         }
+        _ if config.tokens => {
+            tracing::info!("RELAY_ACCESS_KEYS is unset: only a per-device token is accepted")
+        }
         _ => tracing::warn!(
             "RELAY_ACCESS_KEYS is unset: anyone who can reach this relay may write to it. \
              Set it to a key from `easynotes-relay access-key`, or to `open` to say so on purpose"
         ),
     }
-    let burst = bytes_or_off("RELAY_WRITE_BURST", false)?.flatten();
-    let per_hour = bytes_or_off("RELAY_WRITE_PER_HOUR", true)?;
+    let burst = write_budget("RELAY_WRITE_BURST", false)?.flatten();
+    let per_hour = write_budget("RELAY_WRITE_PER_HOUR", true)?;
     if per_hour == Some(None) {
         tracing::warn!("RELAY_WRITE_PER_HOUR=off: no limit on how much one address writes");
         config.writes = RateLimit::unlimited();
@@ -239,6 +319,15 @@ async fn main() -> anyhow::Result<()> {
         config.media.limits.note_bytes = bytes.unwrap_or(u64::MAX);
         tracing::info!(bytes, "one note's attachments stop at this much");
     }
+    if let Some(bytes) = bytes_or_off("RELAY_MEDIA_STAGING_CEILING", true)? {
+        config.media.limits.staging_ceiling = bytes;
+        match bytes {
+            Some(bytes) => tracing::info!(bytes, "uploads in progress stop at this much reserved"),
+            None => tracing::warn!(
+                "RELAY_MEDIA_STAGING_CEILING=off: reservations may hold the whole media ceiling"
+            ),
+        }
+    }
     if let Some(bytes) = bytes_or_off("RELAY_MEDIA_CEILING", true)? {
         config.media.limits.ceiling = bytes;
         match bytes {
@@ -269,6 +358,58 @@ async fn main() -> anyhow::Result<()> {
         })?),
     };
 
+    let admin_addr: Option<SocketAddr> = match std::env::var("RELAY_ADMIN_ADDR")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => None,
+        Ok(raw) => Some(raw.parse().map_err(|_| {
+            anyhow::anyhow!("RELAY_ADMIN_ADDR must be an address and port, such as 127.0.0.1:9091")
+        })?),
+    };
+    let admin_secret = match std::env::var("RELAY_ADMIN_SECRET")
+        .as_deref()
+        .map(str::trim)
+    {
+        Ok("") | Err(_) => None,
+        Ok(raw) => Some(RelayAccess::decode(raw).map_err(|_| {
+            anyhow::anyhow!("RELAY_ADMIN_SECRET must be a base64url 32-byte secret")
+        })?),
+    };
+    if let (Some(secret), Access::Keys(keys)) = (admin_secret.as_ref(), &config.access) {
+        if keys.contains(secret) {
+            anyhow::bail!(
+                "RELAY_ADMIN_SECRET is also one of RELAY_ACCESS_KEYS: every household holding the static key could then revoke tokens. Give the admin listener a secret of its own"
+            );
+        }
+    }
+    let admin = match (admin_addr, admin_secret) {
+        (Some(addr), Some(secret)) => Some((addr, secret)),
+        (Some(_), None) => {
+            anyhow::bail!("RELAY_ADMIN_ADDR is set, so RELAY_ADMIN_SECRET must be too")
+        }
+        (None, Some(_)) => {
+            tracing::warn!(
+                "RELAY_ADMIN_SECRET is set but RELAY_ADMIN_ADDR is unset: no admin listener"
+            );
+            None
+        }
+        (None, None) => None,
+    };
+    if let Some((admin_addr, _)) = &admin {
+        if !admin_addr.ip().is_loopback() {
+            tracing::warn!(
+                addr = %admin_addr,
+                "RELAY_ADMIN_ADDR is not loopback: the admin secret and minted device secrets cross the network in cleartext unless TLS terminates in front of it"
+            );
+        }
+        if !config.tokens {
+            tracing::warn!(
+                "RELAY_ADMIN_ADDR is set but RELAY_TOKENS is not on: billing would mint tokens every handshake ignores"
+            );
+        }
+    }
+
     let relay = Relay::serve_with(store, addr, config).await?;
     tracing::info!(addr = %relay.addr, "relay listening");
 
@@ -285,6 +426,19 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Likewise billing's calls: they finish or they are retried, and nothing a
+    // stop does should wait on one.
+    if let Some((admin_addr, secret)) = admin {
+        let listener = tokio::net::TcpListener::bind(admin_addr).await?;
+        tracing::info!(addr = %listener.local_addr()?, "admin listening");
+        let app = easynotes_relay::admin::router(relay.state.clone(), secret);
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!(error = %e, "admin listener stopped");
+            }
+        });
+    }
+
     stopped().await?;
     tracing::info!(
         seconds = drain.as_secs(),
@@ -296,6 +450,25 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("stopped with work still in flight: the drain period ran out");
     }
     Ok(())
+}
+
+/// The config before the other environment knobs are applied. `off` removes the
+/// rate limits and leaves every other limit — above all the storage and media
+/// ceilings — in force.
+fn base_config(rate_limit: Option<&str>) -> RelayConfig {
+    let mut config = RelayConfig::public();
+    if rate_limit != Some("off") {
+        return config;
+    }
+    tracing::warn!(
+        "RELAY_RATE_LIMIT=off: answering every caller as fast as it asks; the storage and media ceilings still apply"
+    );
+    config.handshake = RateLimit::unlimited();
+    config.sockets = RateLimit::unlimited();
+    config.invites = RateLimit::unlimited();
+    config.media_rate = RateLimit::unlimited();
+    config.writes = RateLimit::unlimited();
+    config
 }
 
 /// Ask the relay listening on `addr` whether it is ready. By hand over one
@@ -332,6 +505,20 @@ async fn check(addr: SocketAddr) -> anyhow::Result<()> {
     }
 }
 
+/// `easynotes-relay token ...`: the operator's hand on the admin listener. Kept
+/// out of the serve path, because it needs neither a store nor `RELAY_ADDR`.
+async fn token() -> anyhow::Result<()> {
+    let command = easynotes_relay::cli::parse(std::env::args().skip(2))?;
+    let client = AdminClient::from_env()?;
+    match command {
+        Command::Create => println!("{}", client.create().await?.encode()),
+        Command::Revoke(id) => client.revoke(&id).await?,
+        Command::ReadOnly(id, read_only) => client.read_only(&id, read_only).await?,
+        Command::Unbind(id) => client.unbind(&id).await?,
+    }
+    Ok(())
+}
+
 /// Resolves on `SIGTERM` — what `docker stop` and systemd send — or on Ctrl-C.
 async fn stopped() -> anyhow::Result<()> {
     #[cfg(unix)]
@@ -352,14 +539,151 @@ async fn stopped() -> anyhow::Result<()> {
 /// for `off` where that is allowed, and an error for anything else, so a typo
 /// fails to start rather than silently keeping the default.
 fn bytes_or_off(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u64>>> {
-    match std::env::var(name).as_deref().map(str::trim) {
-        Ok("") | Err(_) => Ok(None),
-        Ok("off") if off_allowed => Ok(Some(None)),
-        Ok(raw) => raw.parse().map(|b| Some(Some(b))).map_err(|_| {
-            anyhow::anyhow!(
-                "{name} must be a whole number of bytes{}",
-                if off_allowed { ", or off" } else { "" }
-            )
-        }),
+    parse_bytes(name, std::env::var(name).as_deref().ok(), off_allowed, true)
+}
+
+/// The write budget, where zero must fail: as a burst it silently becomes a
+/// one-byte budget, which switches the limit off without saying so.
+fn write_budget(name: &str, off_allowed: bool) -> anyhow::Result<Option<Option<u64>>> {
+    parse_bytes(
+        name,
+        std::env::var(name).as_deref().ok(),
+        off_allowed,
+        false,
+    )
+}
+
+fn parse_bytes(
+    name: &str,
+    value: Option<&str>,
+    off_allowed: bool,
+    zero_allowed: bool,
+) -> anyhow::Result<Option<Option<u64>>> {
+    let raw = match value.map(str::trim) {
+        None | Some("") => return Ok(None),
+        Some("off") if off_allowed => return Ok(Some(None)),
+        Some(raw) => raw,
+    };
+    let or_off = if off_allowed { ", or off" } else { "" };
+    let bytes: u64 = raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{name} must be a whole number of bytes{or_off}"))?;
+    if bytes == 0 && !zero_allowed {
+        anyhow::bail!("{name} must be at least 1 byte{or_off}");
+    }
+    Ok(Some(Some(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easynotes_relay::app::DEFAULT_CEILING;
+    use easynotes_relay::media::DEFAULT_MEDIA_CEILING;
+
+    /// The allowances `off` removes, listed in one place.
+    fn rate_limits(config: &RelayConfig) -> [&RateLimit; 5] {
+        [
+            &config.handshake,
+            &config.sockets,
+            &config.invites,
+            &config.media_rate,
+            &config.writes,
+        ]
+    }
+
+    /// Everything `public()` decides except the random token key: both
+    /// ceilings, the rest of the limits, and the five rate limits.
+    fn assert_public(config: &RelayConfig) {
+        let public = RelayConfig::public();
+        assert_eq!(config.storage, public.storage);
+        assert_eq!(config.media.limits, public.media.limits);
+        for (i, (limit, expected)) in rate_limits(config)
+            .into_iter()
+            .zip(rate_limits(&public))
+            .enumerate()
+        {
+            assert!(limit == expected, "rate limit {i} changed");
+        }
+    }
+
+    #[test]
+    fn write_budgets_refuse_zero() {
+        use parse_bytes as parse;
+        for (name, off) in [("RELAY_WRITE_BURST", false), ("RELAY_WRITE_PER_HOUR", true)] {
+            assert!(
+                parse(name, Some("0"), off, false).is_err(),
+                "{name}=0 accepted"
+            );
+            assert!(
+                parse(name, Some(" 0 "), off, false).is_err(),
+                "{name}= 0  accepted"
+            );
+            assert_eq!(
+                parse(name, Some("1048576"), off, false).unwrap(),
+                Some(Some(1048576))
+            );
+            for value in [None, Some(""), Some(" \t ")] {
+                assert_eq!(
+                    parse(name, value, off, false).unwrap(),
+                    None,
+                    "{name}={value:?}"
+                );
+            }
+        }
+        // `off` stays the per-hour switch and is not a burst.
+        assert_eq!(
+            parse("RELAY_WRITE_PER_HOUR", Some(" off "), true, false).unwrap(),
+            Some(None)
+        );
+        assert!(parse("RELAY_WRITE_BURST", Some("off"), false, false).is_err());
+        assert!(parse("RELAY_WRITE_PER_HOUR", Some("off"), false, false).is_err());
+        // The media knobs still take zero: no attachments is a real setting.
+        assert_eq!(
+            parse("RELAY_MEDIA_CEILING", Some("0"), true, true).unwrap(),
+            Some(Some(0))
+        );
+    }
+
+    #[test]
+    fn rate_limit_off_keeps_the_storage_and_media_ceilings() {
+        let off = base_config(Some("off"));
+        let public = RelayConfig::public();
+        let RelayConfig {
+            handshake,
+            sockets,
+            invites,
+            storage,
+            media_rate,
+            media,
+            writes,
+            // Every field is named, so a new one fails to compile until `off`
+            // says whether it keeps it.
+            origins: _,
+            token_signing_key: _,
+            trusted_proxies: _,
+            access: _,
+            tokens: _,
+            token_ttl: _,
+        } = &off;
+        assert_eq!(storage.ceiling, Some(DEFAULT_CEILING));
+        assert_eq!(media.limits.ceiling, Some(DEFAULT_MEDIA_CEILING));
+        assert_eq!(*storage, public.storage);
+        assert_eq!(media.limits, public.media.limits);
+        for limit in [handshake, sockets, invites, media_rate, writes] {
+            assert!(limit.retry_after().is_zero(), "off left a rate limit on");
+        }
+    }
+
+    #[test]
+    fn anything_but_off_leaves_the_public_limits_alone() {
+        for value in [None, Some(""), Some("on")] {
+            assert_public(&base_config(value));
+        }
+        // Without this the comparisons above would pass if `public()` itself
+        // were unlimited, and a limiter that never refuses anything is not a
+        // limit the test can hold `off` against.
+        for limit in rate_limits(&RelayConfig::public()) {
+            assert!(!limit.retry_after().is_zero(), "public() is unlimited");
+        }
     }
 }

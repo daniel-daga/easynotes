@@ -13,6 +13,7 @@
 //! metrics, which carry nothing anyone wrote.
 
 use crate::error::{RelayError, Result};
+use crate::store::AccessToken;
 use easynotes_core::ids::InviteId;
 use easynotes_core::relay_access::RelayAccess;
 
@@ -90,6 +91,23 @@ impl Access {
     }
 }
 
+/// Check a per-device token's proof against the secret the relay stored for
+/// it (ADR 0038). The caller has already refused a missing, revoked or expired
+/// row, and still has to bind the token to this device.
+pub(crate) fn check_access_token(
+    token: &AccessToken,
+    nonce: &[u8],
+    device: &[u8; 32],
+    proof: Option<&str>,
+) -> Result<()> {
+    let proof = proof.ok_or(RelayError::AccessRequired)?;
+    if RelayAccess::from_bytes(token.secret).verifies_token(nonce, device, proof) {
+        Ok(())
+    } else {
+        Err(RelayError::AccessRequired)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +149,36 @@ mod tests {
     fn an_open_relay_asks_for_nothing() {
         assert!(Access::Open.check_token(&[0; 32], &[0; 32], None).is_ok());
         assert!(Access::Open.check_invite("not even an id", None).is_ok());
+    }
+
+    #[test]
+    fn a_device_token_checks_the_secret_the_relay_stored() {
+        let token = AccessToken {
+            id: "id".into(),
+            secret: [4; 32],
+            device_key: None,
+            read_only: false,
+            expires_at: None,
+            revoked_at: None,
+        };
+        let (nonce, device) = ([1u8; 32], [2u8; 32]);
+        let proof = RelayAccess::from_bytes(token.secret).token_proof(&nonce, &device);
+        assert!(check_access_token(&token, &nonce, &device, Some(&proof)).is_ok());
+        assert!(matches!(
+            check_access_token(&token, &nonce, &device, None),
+            Err(RelayError::AccessRequired)
+        ));
+        assert!(matches!(
+            check_access_token(&token, &[3; 32], &device, Some(&proof)),
+            Err(RelayError::AccessRequired)
+        ));
+        let other = AccessToken {
+            secret: [5; 32],
+            ..token
+        };
+        assert!(matches!(
+            check_access_token(&other, &nonce, &device, Some(&proof)),
+            Err(RelayError::AccessRequired)
+        ));
     }
 }

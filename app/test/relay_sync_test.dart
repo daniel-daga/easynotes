@@ -50,6 +50,11 @@ void main() {
   // A relay that lets in only holders of its access key (ADR 0028).
   Process? gatedRelay;
   late String gatedRelayUrl;
+  // A relay that lets in only holders of a per-device access token (ADR 0038),
+  // and the private admin listener the token commands below use.
+  Process? tokenRelay;
+  late String tokenRelayUrl;
+  late String tokenAdminAddr;
 
   setUpAll(() async {
     if (skip != null) return;
@@ -62,6 +67,10 @@ void main() {
       relayPath,
       access: _relayKey,
     );
+    (tokenRelay, tokenRelayUrl, tokenAdminAddr) = await _startTokenRelay(
+      relayPath,
+      _adminSecret,
+    );
   });
 
   tearDownAll(() {
@@ -70,6 +79,7 @@ void main() {
     relay?.kill();
     otherRelay?.kill();
     gatedRelay?.kill();
+    tokenRelay?.kill();
   });
 
   /// A device: its own directory, its own library, connected to the relay the
@@ -121,6 +131,14 @@ void main() {
     addTearDown(core.dispose);
     return (library, core);
   }
+
+  /// Connected and with nothing of this device's left unacknowledged.
+  Future<void> synced(NoteCore core, String who) => _untilStatus(
+    core.watchSync(),
+    () => core.syncStatus,
+    (status) => status.state == SyncState.synced && status.pending == 0,
+    '$who never caught up',
+  );
 
   /// Keep checking the invite until whoever opened the link is in — which
   /// is what the invite dialog's poll, and the grid's, does. Nobody approves
@@ -379,6 +397,9 @@ void main() {
       () async {
         final (aLibrary, a) = await open();
         final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+        await synced(a, 'A');
+        await synced(b, 'B');
+        final before = b.syncStatus.lastSeq;
 
         // Typing is held back until it pauses (ADR 0016), so each of these
         // is logged at once and sent later, as one.
@@ -395,8 +416,87 @@ void main() {
           (view) => view.title == title,
           'B never received the title A typed',
         );
+        await synced(b, 'B');
+        expect(
+          b.syncStatus.lastSeq - before,
+          1,
+          reason:
+              'the title should be one entry on the relay, not one per letter',
+        );
       },
     );
+
+    test('a line typed into a list item is one relay entry', () async {
+      final (aLibrary, a) = await open();
+      final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+      final itemId = await a.addItem('');
+      await _until(
+        b.watch(),
+        (view) => view.items.any((i) => i.id == itemId),
+        'B never received the item',
+      );
+      await synced(a, 'A');
+      await synced(b, 'B');
+      final before = b.syncStatus.lastSeq;
+
+      const line = 'milk and honey';
+      var from = '';
+      for (final ch in line.split('')) {
+        final to = '$from$ch';
+        await a.editItemText(itemId, from, to);
+        from = to;
+      }
+      aLibrary.sendHeldEdits();
+      await _until(
+        b.watch(),
+        (view) => view.items.any((i) => i.text == line),
+        'B never received the line',
+      );
+      await synced(b, 'B');
+      expect(
+        b.syncStatus.lastSeq - before,
+        1,
+        reason:
+            'a typed line should be one entry on the relay, not one per '
+            'letter',
+      );
+    });
+
+    test('a line typed into a body is one relay entry', () async {
+      final (aLibrary, a) = await open();
+      final (_, b) = await share(aLibrary, aLibrary.notes.single.id);
+      await a.setKind(NoteKind.text);
+      await _until(
+        b.watch(),
+        (view) => view.kind == NoteKind.text,
+        'B never saw the note become a text note',
+      );
+      await synced(a, 'A');
+      await synced(b, 'B');
+      final before = b.syncStatus.lastSeq;
+
+      const line = 'milk and honey';
+      var from = '';
+      for (final ch in line.split('')) {
+        final to = '$from$ch';
+        await a.editBody(from, to);
+        from = to;
+      }
+      aLibrary.sendHeldEdits();
+      await _until(
+        b.watch(),
+        (view) => view.body == line,
+        'B never received the body A typed',
+      );
+      await synced(b, 'B');
+      expect(
+        b.syncStatus.lastSeq - before,
+        1,
+        reason:
+            'a typed body should be one entry on the relay, not one per '
+            'letter',
+      );
+    });
 
     test(
       'the app reports itself synced once the relay has everything',
@@ -922,6 +1022,46 @@ void main() {
     });
   }, skip: skip);
 
+  group('a relay with per-device access tokens', () {
+    test('a token from the admin listener opens the relay, and a revoked one '
+        'is refused with the access sentence', () async {
+      final token = await _tokenCommand(
+        relayPath!,
+        tokenAdminAddr,
+        _adminSecret,
+        ['create'],
+      );
+      expect(isDeviceToken(token), isTrue, reason: 'got: $token');
+
+      // The bridge reads `<id>.<secret>`, and the handshake claims it for
+      // this device.
+      final library = await device(relay: tokenRelayUrl, access: token);
+      final note = await library.openNote(await library.createNote());
+      addTearDown(note.dispose);
+      await note.addItem('milk');
+      await synced(note, 'the device with a token');
+
+      // The same device, after its token is revoked, is refused at the next
+      // handshake with the sentence the app shows for access it lacks.
+      await library.disconnect();
+      await _tokenCommand(relayPath, tokenAdminAddr, _adminSecret, [
+        'revoke',
+        token.split('.').first,
+      ]);
+      await library.connect(tokenRelayUrl, access: token);
+      await _untilStatus(
+        library.watchSync(),
+        () => library.syncStatus,
+        (status) =>
+            status.lastError?.contains(
+              'This sync server needs an access key',
+            ) ??
+            false,
+        'a revoked token was not refused',
+      );
+    });
+  }, skip: skip);
+
   group('sharing with another person by invite', () {
     /// A device that can share: an account, and a name.
     Future<RustNoteLibrary> person(String name) async {
@@ -1262,11 +1402,19 @@ void main() {
       },
     );
 
-    test('a withdrawn link is gone for the guest waiting on it', () async {
-      final (owner, _, noteId) = await owned();
+    test('a withdrawn link is gone, and stops reaching the note', () async {
+      final (owner, a, noteId) = await owned();
+      await a.setTitle('Groceries');
       final invite = await owner.createInvite(noteId);
       final guest = await person('Anna');
       final waiting = await guest.requestJoin(invite.link);
+      final b = await guest.openNote(noteId);
+      addTearDown(b.dispose);
+      await _until(
+        b.watch(),
+        (view) => view.title == 'Groceries',
+        'the guest could not read the note through the link',
+      );
 
       await owner.withdrawInvite(invite.id);
 
@@ -1274,6 +1422,29 @@ void main() {
       expect(check.state, JoinState.gone);
       expect(check.message, contains('does not exist'));
       expect(guest.pendingJoins, isEmpty);
+
+      // The link handed the note's key over before anybody was let in, so
+      // withdrawing it has to change that key: otherwise whoever opened it
+      // goes on reading every later edit.
+      await a.setTitle('Groceries, just us');
+      // The rotation's snapshot is signed by the note's revocation key, but an
+      // echo of it still counts as acknowledged, so the library-wide wait sees
+      // the withdrawal and the edit settle instead of running out its 30
+      // seconds with nothing left to send.
+      await owner.syncNow();
+      await synced(a, 'owner');
+      // The rotated key can leave the guest waiting on a note it can no
+      // longer read, so its sync finishing is not what this asserts: the
+      // title not moving is.
+      await guest.syncNow().timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {},
+      );
+      expect(
+        b.current.title,
+        'Groceries',
+        reason: 'a withdrawn link must not keep reading the note',
+      );
     });
 
     test('sharing asks for a name once sync is set up', () async {
@@ -1305,6 +1476,71 @@ Future<void> _untilNotes(
 /// The gated relay's access key: 32 bytes, base64url, as an operator would
 /// generate one with `easynotes-relay access-key`.
 final _relayKey = base64Url.encode(List<int>.filled(32, 7)).replaceAll('=', '');
+
+/// The token relay's admin secret: 32 bytes, base64url, as an operator would
+/// set it in `RELAY_ADMIN_SECRET`.
+final _adminSecret = base64Url
+    .encode(List<int>.filled(32, 11))
+    .replaceAll('=', '');
+
+/// Start a relay that takes per-device access tokens, with the private admin
+/// listener the token commands use. Returns the process, the relay's address
+/// and the admin listener's.
+Future<(Process, String, String)> _startTokenRelay(
+  String path,
+  String secret,
+) async {
+  final started = await Process.start(
+    path,
+    const [],
+    environment: {
+      'RELAY_ADDR': '127.0.0.1:0',
+      'RELAY_TOKENS': 'on',
+      'RELAY_ADMIN_ADDR': '127.0.0.1:0',
+      'RELAY_ADMIN_SECRET': secret,
+      'RELAY_RATE_LIMIT': 'off',
+      'RUST_LOG': 'easynotes_relay=info',
+      'NO_COLOR': '1',
+    },
+  );
+  final addresses = <String, String>{};
+  final listening = Completer<void>();
+  started.stdout
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())
+      .map(_plainLine)
+      .listen((line) {
+        final address = _addressIn(line);
+        if (address == null) return;
+        if (line.contains('relay listening')) addresses['relay'] = address;
+        if (line.contains('admin listening')) addresses['admin'] = address;
+        if (addresses.length == 2 && !listening.isCompleted) {
+          listening.complete();
+        }
+      });
+  started.stderr.drain<void>();
+  await listening.future.timeout(patience);
+  return (started, 'http://${addresses['relay']}', addresses['admin']!);
+}
+
+/// Run `easynotes-relay token ...` against the suite's token relay, and return
+/// what it printed. `token create` prints the `<id>.<secret>` to hand over.
+Future<String> _tokenCommand(
+  String path,
+  String adminAddr,
+  String secret,
+  List<String> args,
+) async {
+  final result = await Process.run(
+    path,
+    ['token', ...args],
+    environment: {'RELAY_ADMIN_ADDR': adminAddr, 'RELAY_ADMIN_SECRET': secret},
+  );
+  if (result.exitCode != 0) {
+    fail('easynotes-relay token ${args.first} failed: ${result.stderr}');
+  }
+  return (result.stdout as String).trim();
+}
 
 /// Start a relay on a port the OS picks, and return it with its address.
 ///
@@ -1338,7 +1574,7 @@ Future<String> _listeningAddress(Process relay) async {
       .transform(utf8.decoder)
       .transform(const LineSplitter())
       // The log is decorated for a terminal; strip that before matching.
-      .map((l) => l.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), ''))
+      .map(_plainLine)
       .listen((l) {
         if (!listening.isCompleted && l.contains('relay listening')) {
           listening.complete(l);
@@ -1346,12 +1582,20 @@ Future<String> _listeningAddress(Process relay) async {
       });
   relay.stderr.drain<void>();
   final line = await listening.future.timeout(patience);
-  final addr = RegExp(r'addr=([\d.]+:\d+)').firstMatch(line);
+  final addr = _addressIn(line);
   if (addr == null) {
     throw StateError('could not read the relay address from: $line');
   }
-  return addr.group(1)!;
+  return addr;
 }
+
+/// A relay log line without the terminal's colour codes.
+String _plainLine(String line) =>
+    line.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), '');
+
+/// The `addr=` a relay log line carries, if it carries one.
+String? _addressIn(String line) =>
+    RegExp(r'addr=([\d.]+:\d+)').firstMatch(line)?.group(1);
 
 Future<void> _until(
   Stream<NoteView> views,

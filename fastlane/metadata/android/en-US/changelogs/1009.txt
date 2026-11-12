@@ -1,0 +1,5 @@
+Updates since v0.1.8:
+
+- Checklists have sections: add a "Section heading", or type # at the start of a line, and fold an aisle away on your phone without folding it on anyone else's
+- A list offers back the things you add to it over and over, as chips under the next empty line; the history stays on your device, and Settings can forget it
+- A crossed-off item now says which section it came from, and a list shared out to Markdown keeps its headings

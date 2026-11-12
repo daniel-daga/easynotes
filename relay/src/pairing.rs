@@ -1,6 +1,11 @@
 //! Ephemeral mailbox for a one-time, owner-approved account transfer.
 //! The relay stores only random capabilities, a temporary public key and
 //! ciphertext; sessions expire after five minutes or a relay restart.
+//!
+//! Pairings are process-local, like the rate limits: they live in the relay's
+//! memory, so one relay process must serve a transfer and it must not be
+//! restarted mid-transfer. A restart or a second instance loses the pairing,
+//! and both devices need a new code.
 
 use crate::{
     app::AppState,
@@ -94,6 +99,10 @@ pub struct Create {
     owner_hash: String,
     expires_in: u64,
     access: Option<String>,
+    /// The ID of the billed device token whose secret made `access`
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when there is one.
+    #[serde(default)]
+    access_id: Option<String>,
 }
 #[derive(Serialize)]
 pub struct Created {
@@ -104,7 +113,9 @@ pub async fn create(
     Json(r): Json<Create>,
 ) -> Result<(StatusCode, Json<Created>)> {
     validate_id(&r.id)?;
-    s.access.check_invite(&r.id, r.access.as_deref())?;
+    // A read-only token is still let through: a lapsed household may transfer
+    // its account to a new device, which is how it keeps reading.
+    crate::invite::admitted(&s, &r.id, r.access_id.as_deref(), r.access.as_deref()).await?;
     let guest_hash = decode(&r.guest_hash, 32, "guest hash")?;
     let owner_hash = decode(&r.owner_hash, 32, "owner hash")?;
     if guest_hash == owner_hash {
@@ -218,19 +229,12 @@ pub async fn poll_response(
 ) -> Result<Json<ResponseStatus>> {
     validate_id(&id)?;
     guest(&s, &id, &r.token)?;
-    let mut map = s.pairings.lock().unwrap();
-    let p = map.get_mut(&id).ok_or(RelayError::NotFound)?;
-    if !has(&r.token, &p.guest_hash) {
-        return Err(RelayError::NotFound);
-    }
-    let response = ResponseStatus {
-        ciphertext: p.ciphertext.take().map(|v| URL_SAFE_NO_PAD.encode(v)),
+    let map = s.pairings.lock().unwrap();
+    let p = map.get(&id).ok_or(RelayError::NotFound)?;
+    Ok(Json(ResponseStatus {
+        ciphertext: p.ciphertext.as_ref().map(|v| URL_SAFE_NO_PAD.encode(v)),
         expires_in: (p.expires - now()).max(0) as u64,
-    };
-    if response.ciphertext.is_some() {
-        map.remove(&id);
-    }
-    Ok(Json(response))
+    }))
 }
 pub async fn close(
     State(s): State<Arc<AppState>>,

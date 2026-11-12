@@ -200,8 +200,9 @@ impl Device {
     }
 
     pub async fn set_item_text(&mut self, item: ItemId, text: &str) {
-        let e = self.core.set_item_text(self.note, item, text).unwrap();
-        self.send(&e).await;
+        if let Some(e) = self.core.set_item_text(self.note, item, text).unwrap() {
+            self.send(&e).await;
+        }
     }
 
     pub async fn move_item(&mut self, item: ItemId, to: usize) {

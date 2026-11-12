@@ -197,7 +197,10 @@ There is no owner approval step and no safety code.
 **Accepted, amended by ADR 0034.** A signed purge request names one topic. The
 relay deletes what the account owns and keeps a tombstone, so a deleted account
 does not come back through a stale client. ADR 0034 adds the record a guest
-leaves in notes they joined.
+leaves in notes they joined. A purge needs no device token, so a person whose
+access was taken away can still delete; but a tombstone for a topic the relay
+never stored is charged against the caller's write budget unless the request
+carries one.
 
 <a id="adr-0027"></a>
 ## ADR 0027 — Attachments: descriptors in the note, sealed chunks beside it
@@ -251,3 +254,56 @@ member rewrite another's name.
 every note they joined. The owner sees the record, removes the member and
 rotates the note key on the next sync, so the deleted account does not linger
 in other people's People lists.
+
+<a id="adr-0036"></a>
+## ADR 0036 — An item's text merges like a body
+
+**Accepted.** A checklist item's text is the CRDT's own text type, as a note
+body already was, so two people typing into one item at the same moment both
+keep their words; a true collision shows them side by side rather than losing
+one. Closing a note no longer deletes a blank item it made: the item is marked
+dropped and hidden only while blank, so text a peer typed into it meanwhile
+brings it back. A note that was just joined is not seeded with a blank item,
+because its items are still arriving. Item text written by releases before
+this is not read; those releases' documents keep everything else.
+
+<a id="adr-0037"></a>
+## ADR 0037 — A heading is a flag on an item, not a container
+
+**Accepted.** A checklist section is a heading item (`heading: true`) that owns
+the rows after it until the next heading. There is no second ordered list and no
+parent/child link, so which rows a section holds is read off their positions:
+moves, merges and deletions need no new rule, and two people editing at once can
+never produce half a section. An older build reads a heading as an ordinary item
+with the same text, so nothing is lost in either direction. A heading has no
+checkbox; a tick that a build which does not know the flag puts on it merges as
+an ordinary field and does not undo the heading. Removing a heading never removes
+its items — they join the section above. Folding a section is local to the
+device, kept in the note's sealed metadata rather than in the account document,
+because folding an aisle on one phone should not fold it on a partner's.
+
+Share and paste use the same two line forms on the way out and in — `# Heading`
+and `- [x] item` — so a list shared out with its sections comes back with them.
+
+<a id="adr-0038"></a>
+## ADR 0038 — A paying household is a set of device tokens
+
+**Accepted, amends ADR 0014, ADR 0021 and ADR 0028.** The hosted relay sells
+access per household but stores one random token per device. Billing keeps the
+household-to-token map and the relay never sees it, so a customer can be revoked
+by token ID without the relay being able to group a household's devices or link
+a payment to a note. A token binds to the device key on first use, and a lapsed
+household is read-only for 30 days before its tokens are revoked. The
+private-relay shared key is unchanged, and the relay still contains no billing
+code.
+
+<a id="adr-0039"></a>
+## ADR 0039 — A seven-day card-backed trial
+
+**Accepted, amends ADR 0035.** A hosted household can try the relay for seven
+days with a card and no charge until day seven, then the normal €3 a month (or
+€30 a year) plan starts automatically. One trial per household; everyone they
+share with is included and still pays nothing, and cancelling during the trial
+runs to day seven with no charge. A failed charge or a cancellation leaves the
+household read-only for 30 days before its tokens are revoked. The trial lives
+in billing; the relay stores no trial state and needs no change.

@@ -10,11 +10,11 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'attachments.dart';
+import 'package:easynotes/core/attachments.dart';
 import 'fake_note_core.dart';
-import 'note_core.dart';
-import 'note_library.dart';
-import 'sync_status.dart';
+import 'package:easynotes/core/note_core.dart';
+import 'package:easynotes/core/note_library.dart';
+import 'package:easynotes/core/sync_status.dart';
 
 /// A [StorageHealth] on its own, for a screen that wants one without a library.
 ///
@@ -84,6 +84,10 @@ class FakeNoteLibrary implements NoteLibrary {
   /// Holds [openNote] at the door when set, so a test can act while the note is
   /// still opening.
   Completer<void>? openGate;
+
+  /// What every note this fake makes refuses an attachment with, as a core
+  /// over its limit would ([FakeNoteCore.refuseAttachment]).
+  Object? refuseAttachment;
 
   List<NoteSummary> _summaries = const [];
   SyncStatus _status = const SyncStatus.offline();
@@ -158,7 +162,7 @@ class FakeNoteLibrary implements NoteLibrary {
       kind == NoteKind.checklist ? 'createNote()' : 'createNote(${kind.name})',
     );
     final id = 'note-${_counter++}';
-    _add(id, FakeNoteCore(kind: kind));
+    _add(id, FakeNoteCore(kind: kind)..refuseAttachment = refuseAttachment);
     _emit();
     return id;
   }
@@ -594,8 +598,8 @@ class FakeNoteLibrary implements NoteLibrary {
     _emit();
   }
 
-  /// When set, [forgetNote] and [emptyTrash] throw it, having done nothing,
-  /// as a store that refused the deletion's first write would.
+  /// When set, [forgetNote], [forgetNotes] and [emptyTrash] throw it, having
+  /// done nothing, as a store that refused the deletion's first write would.
   Object? refuseDeletion;
 
   @override
@@ -713,6 +717,31 @@ class FakeNoteLibrary implements NoteLibrary {
   Future<void> setTickedShown(bool shown) async {
     calls.add('setTickedShown($shown)');
     _tickedShown = shown;
+  }
+
+  bool _suggestionsEnabled = true;
+
+  @override
+  bool get suggestionsEnabled => _suggestionsEnabled;
+
+  @override
+  Future<void> setSuggestionsEnabled(bool enabled) async {
+    calls.add('setSuggestionsEnabled($enabled)');
+    _suggestionsEnabled = enabled;
+  }
+
+  /// How many notes this fake would have cleaned up: every note it has ever
+  /// handed out, so that a test can tell "forget everything" reached the
+  /// library rather than only the screen.
+  @override
+  Future<int> forgetSuggestions() async {
+    calls.add('forgetSuggestions()');
+    var cleared = 0;
+    for (final core in _cores.values) {
+      if (core.history.isNotEmpty) cleared++;
+      await core.forgetHistory();
+    }
+    return cleared;
   }
 
   /// The twelve words this fake hands out, so a test can assert on what a
@@ -934,6 +963,9 @@ class FakeNoteLibrary implements NoteLibrary {
   Future<void> dispose() async {
     for (final watcher in _watchers.values) {
       await watcher.cancel();
+    }
+    for (final core in _cores.values) {
+      await core.closeStreams();
     }
     await _notes.close();
     await _sync.close();

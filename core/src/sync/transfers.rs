@@ -54,7 +54,7 @@ use crate::attachment::{AttachmentState, Media, MediaRef, Variant};
 use crate::crypto::DeviceSigner;
 use crate::error::{CoreError, Result};
 use crate::ids::{AttachmentId, NoteId};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use rand::RngExt;
 use std::collections::{HashMap, HashSet};
@@ -243,8 +243,8 @@ impl TransferQueue {
 #[derive(Default)]
 struct Tokens {
     held: tokio::sync::Mutex<Option<(String, Duration)>>,
-    /// The relay's access key, for the handshake (ADR 0028).
-    access: Option<RelayAccess>,
+    /// The relay's access token, for the handshake (ADR 0028).
+    access: Option<RelayToken>,
 }
 
 impl Tokens {
@@ -365,10 +365,10 @@ impl<P: TransferPeer, S: MediaStorage> TransferRunner<P, S> {
         (runner, queue)
     }
 
-    /// The relay's access key, for a relay that lets in only the people its
+    /// The relay's access token, for a relay that lets in only the people its
     /// operator gave it to ([ADR 0028](../../../docs/decisions.md#adr-0028)).
     /// Before [`run`](Self::run), which is the only time it is read.
-    pub fn with_access(mut self, access: Option<RelayAccess>) -> Self {
+    pub fn with_access(mut self, access: Option<RelayToken>) -> Self {
         self.tokens = Arc::new(Tokens {
             held: Default::default(),
             access,
@@ -783,10 +783,14 @@ fn randomized_retry(ceiling: Duration) -> Duration {
 
 /// Whether a failure is the relay's or the note's answer, rather than the
 /// network's. [`super::media`] says an answer in words as
-/// [`CoreError::Attachment`], and bytes that are not the digest as
-/// [`CoreError::Crypto`]; everything the network does is `Storage`.
+/// [`CoreError::Attachment`], a relay whose plan has lapsed as
+/// [`CoreError::ReadOnly`], and bytes that are not the digest as
+/// [`CoreError::Crypto`]; everything else the network does is `Storage`.
 fn permanent(e: &CoreError) -> bool {
-    matches!(e, CoreError::Attachment(_) | CoreError::Crypto(_))
+    matches!(
+        e,
+        CoreError::Attachment(_) | CoreError::Crypto(_) | CoreError::ReadOnly
+    )
 }
 
 /// Upload both of an import's variants, reporting each chunk as it goes.
@@ -871,5 +875,6 @@ mod retry_tests {
         assert!(!permanent(&CoreError::RetryAfter(Duration::from_secs(9))));
         assert!(permanent(&CoreError::Attachment("relay refused".into())));
         assert!(permanent(&CoreError::Crypto("wrong digest")));
+        assert!(permanent(&CoreError::ReadOnly));
     }
 }

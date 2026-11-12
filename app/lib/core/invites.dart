@@ -16,6 +16,8 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'bridge_error.dart';
+
 /// The initials shown for a chosen name: the first letter of its first two
 /// words, or “?” when there is no name. A name is a label, so two people with
 /// one name still get the same letters, and are told apart elsewhere.
@@ -288,6 +290,15 @@ abstract interface class AccountTransfers {
   Future<void> adoptAccountTransfer();
 }
 
+/// The relay lost the pairing: it restarted, or the code was made on another
+/// relay process. Mirrors `CoreError::TransferGone`, which the bridge hands
+/// over marked with the `transfer_gone` code.
+const transferGoneMessage =
+    'The transfer expired or the relay restarted. Show a new code.';
+
+/// Whether [error] is the core saying the pairing is gone for good.
+bool isTransferGone(Object error) => bridgeErrorCode(error) == 'transfer_gone';
+
 /// What a device can do about sharing, on either side of it.
 abstract class Invites implements Accounts {
   /// Everybody with access to a note, owner first.
@@ -350,15 +361,6 @@ abstract class JoinAlerts {
   });
 }
 
-/// The words of that notification.
-({String title, String body}) joinedNotificationText(
-  String name,
-  String noteTitle,
-) {
-  final who = name.trim().isEmpty ? 'Someone' : name.trim();
-  final what = noteTitle.trim();
-  return (
-    title: what.isEmpty ? '$who joined a shared note' : '$who joined $what',
-    body: 'They opened your link and can see and edit the note now.',
-  );
-}
+/// System notifications must not disclose a member's name or a note's title.
+({String title, String body}) joinedNotificationText() =>
+    (title: 'EasyNotes', body: 'Someone joined a shared note.');

@@ -38,6 +38,18 @@ class SyncSetupCancelled implements Exception {
   String toString() => 'Sync setup was cancelled.';
 }
 
+/// Thrown when the notes have already moved to the relay but sync could not
+/// start. The move is durable and cannot be repeated, so the setup screen
+/// reports it and closes instead of offering the move again.
+class SyncNotStartedAfterMove implements Exception {
+  const SyncNotStartedAfterMove(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class RelaySession extends ChangeNotifier {
   RelaySession({
     required this.profiles,
@@ -76,14 +88,16 @@ class RelaySession extends ChangeNotifier {
   ///
   /// The same relay again, however it is spelled, is no switch at all, and a
   /// second call while one is under way waits for that one rather than
-  /// starting another. Refused, with this profile still open and untouched,
+  /// starting another. Asking for a different relay then is refused once that
+  /// one finishes, rather than quietly handing back its result. Refused, with
+  /// this profile still open and untouched,
   /// if its notes cannot be kept: a tab with no storage, or a store that has
   /// refused a write. Once this profile's library is closed, a failure
   /// reopens it, so a switch either completes or leaves the app where it was.
   ///
   /// [access] is the relay's access key, from a relay link or typed in; it is
-  /// kept with the target's profile. Given for the relay already open, it is
-  /// [setAccess] rather than a switch.
+  /// kept with the target's profile only if it has none saved. Use [setAccess]
+  /// to explicitly replace or forget a saved key.
   ///
   /// [connect] is false only while sync is being set up: the profile is
   /// selected, but nothing is uploaded until the account step that goes with
@@ -93,11 +107,20 @@ class RelaySession extends ChangeNotifier {
     String? access,
     bool connect = true,
   }) {
-    final running = _switching;
-    if (running != null) return running;
     final url = address == null ? null : canonicalRelayUrl(address);
+    final running = _switching;
+    if (running != null) {
+      return running.then((_) {
+        if (_profile.url != url) {
+          throw StateError(
+            'Another server is being selected. Wait for that to finish, then '
+            'switch again.',
+          );
+        }
+      });
+    }
     if (url == _profile.url) {
-      if (access != null && url != null && access != _profile.access) {
+      if (access != null && url != null && _profile.access == null) {
         return setAccess(access);
       }
       return Future.value();
@@ -329,7 +352,7 @@ class RelaySession extends ChangeNotifier {
     try {
       await _library.connect(_profile.url!, access: _profile.access);
     } on Object catch (error) {
-      throw StateError(
+      throw SyncNotStartedAfterMove(
         'Your collection has moved to ${_profile.url} and is '
         'available offline. Sync could not start: $error',
       );

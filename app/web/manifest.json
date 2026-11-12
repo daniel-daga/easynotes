@@ -1,11 +1,11 @@
 {
-    "name": "easynotes",
-    "short_name": "easynotes",
+    "name": "EasyNotes",
+    "short_name": "EasyNotes",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#FFB300",
-    "theme_color": "#FFB300",
-    "description": "A new Flutter project.",
+    "background_color": "#FFFFFF",
+    "theme_color": "#000000",
+    "description": "Private, end-to-end encrypted notes and lists.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

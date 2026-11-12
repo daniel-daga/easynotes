@@ -45,6 +45,8 @@ void main() {
 
   group('relay links', () {
     final key = base64Url.encode(List<int>.filled(32, 1)).replaceAll('=', '');
+    final id = base64Url.encode(List<int>.filled(16, 2)).replaceAll('=', '');
+    final token = '$id.$key';
 
     test('an address alone has no key', () {
       final read = parseRelayLink('wss://Relay.Example/');
@@ -75,6 +77,59 @@ void main() {
       expect(normalizeAccessKey(' $key= '), key);
       expect(normalizeAccessKey(key.substring(1)), isNull);
       expect(normalizeAccessKey('${key.substring(1)}!'), isNull);
+    });
+
+    test('a device token is an id and a secret around a dot', () {
+      expect(token, matches(RegExp(r'^[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$')));
+      expect(normalizeAccessKey(token), token);
+      expect(normalizeAccessKey(' $token= '), token);
+      expect(normalizeAccessKey(key), key);
+
+      final link = relayLinkFor('https://relay.example', token);
+      expect(link, 'https://relay.example/#access=$token');
+      final read = parseRelayLink(link);
+      expect(read.url, 'https://relay.example');
+      expect(read.access, token);
+    });
+
+    test('a bare key has a server link, a device token does not', () {
+      const url = 'https://relay.example';
+      expect(
+        RelayProfile(id: 'shared', url: url, access: key).relayLink,
+        '$url/#access=$key',
+      );
+      // Bound to this device: there is nobody to hand it to.
+      expect(
+        RelayProfile(id: 'mine', url: url, access: token).relayLink,
+        isNull,
+      );
+    });
+
+    test('a token that is not an id and a secret is refused', () {
+      final shortId = base64Url
+          .encode(List<int>.filled(15, 2))
+          .replaceAll('=', '');
+      final shortSecret = base64Url
+          .encode(List<int>.filled(31, 1))
+          .replaceAll('=', '');
+      expect(normalizeAccessKey('$shortId.$key'), isNull);
+      expect(normalizeAccessKey('$id.$shortSecret'), isNull);
+      expect(normalizeAccessKey('.$key'), isNull);
+      expect(normalizeAccessKey('$id.'), isNull);
+      expect(normalizeAccessKey('$id.$key.$id'), isNull);
+    });
+
+    test('a non-canonical final character is not the same id', () {
+      // A 16-byte value's last base64url character carries 2 significant bits
+      // and 4 padding bits. Another character with those same top 2 bits and
+      // non-zero padding spells the bytes but is not the ID the core writes.
+      const alphabet =
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+      final last = alphabet.indexOf(id[id.length - 1]);
+      final variant = '${id.substring(0, id.length - 1)}${alphabet[last | 1]}';
+      expect(variant, isNot(id));
+      expect(normalizeAccessKey(token), token);
+      expect(normalizeAccessKey('$variant.$key'), isNull);
     });
   });
 
@@ -114,6 +169,116 @@ void main() {
       );
     });
 
+    test(
+      'preparing a saved relay keeps its key regardless of supplied access',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final other = base64Url
+            .encode(List<int>.filled(32, 3))
+            .replaceAll('=', '');
+        final storage = const FlutterSecureStorage();
+        final profiles = RelayProfiles(storage: storage);
+        await profiles.load();
+        final relay = await profiles.prepare(
+          'https://relay.example',
+          access: key,
+        );
+        final changes = <String?>[];
+        storage.registerListener(
+          key: 'easynotes.relay-access.${relay.id}',
+          listener: changes.add,
+        );
+        addTearDown(storage.unregisterAllListeners);
+
+        for (final supplied in [other, 'bad', '', null]) {
+          final prepared = await profiles.prepare(
+            'wss://Relay.Example:443/',
+            access: supplied,
+          );
+          expect(prepared.id, relay.id);
+          expect(prepared.access, key);
+        }
+        expect(changes, isEmpty);
+        final again = RelayProfiles();
+        await again.load();
+        expect(again.profiles.singleWhere((p) => p.id == relay.id).access, key);
+      },
+    );
+
+    test(
+      'invalid access is rejected without changing credentials or settings',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final storage = const FlutterSecureStorage();
+        final profiles = RelayProfiles(storage: storage);
+        await profiles.load();
+        final relay = await profiles.prepare(
+          'https://relay.example',
+          access: key,
+        );
+        final before = await storage.readAll();
+        final changes = <String?>[];
+        for (final entry in before.keys) {
+          storage.registerListener(key: entry, listener: changes.add);
+        }
+        addTearDown(storage.unregisterAllListeners);
+
+        for (final invalid in ['', ' ', 'bad', '$key.bad', '$key!']) {
+          await expectLater(
+            profiles.setAccess(relay, invalid),
+            throwsFormatException,
+          );
+          await expectLater(
+            profiles.prepare('https://new.example', access: invalid),
+            throwsFormatException,
+          );
+          expect(
+            profiles.profiles.singleWhere((p) => p.id == relay.id).access,
+            key,
+          );
+          expect(await storage.readAll(), before);
+        }
+        expect(changes, isEmpty);
+        expect(profiles.profiles, hasLength(2));
+      },
+    );
+
+    test(
+      'preparing a relay with no access accepts and normalizes a key or token',
+      () async {
+        final key = base64Url
+            .encode(List<int>.filled(32, 2))
+            .replaceAll('=', '');
+        final id = base64Url
+            .encode(List<int>.filled(16, 3))
+            .replaceAll('=', '');
+        final profiles = RelayProfiles();
+        await profiles.load();
+        for (final access in [key, '$id.$key']) {
+          final relay = await profiles.prepare(
+            'https://${access == key ? 'key' : 'token'}.example',
+          );
+          expect(relay.access, isNull);
+          final prepared = await profiles.prepare(
+            relay.url,
+            access: ' $access= ',
+          );
+          expect(prepared.id, relay.id);
+          expect(prepared.access, access);
+          final again = RelayProfiles();
+          await again.load();
+          expect(
+            again.profiles.singleWhere((p) => p.id == relay.id).access,
+            access,
+          );
+        }
+      },
+    );
+
     test('a fresh install starts on this device, and remembers it', () async {
       final profiles = RelayProfiles();
       await profiles.load();
@@ -135,47 +300,67 @@ void main() {
       expect(profiles.profiles, hasLength(2));
     });
 
-    test('moving local notes keeps their store and creates a separate local collection', () async {
-      final profiles = RelayProfiles();
-      await profiles.load();
-      final original = profiles.selected;
-      final key = base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '');
-      final moved = await profiles.moveLocalToRelay('wss://Relay.Example/', access: key);
-      expect(moved.id, original.id);
-      expect(moved.url, 'https://relay.example');
-      expect(moved.access, key);
-      expect(profiles.selected, moved);
-      final local = profiles.profiles.singleWhere((p) => p.url == null);
-      expect(local.id, isNot(original.id));
-      expect(local.access, isNull);
+    test(
+      'moving local notes keeps their store and creates a separate local collection',
+      () async {
+        final profiles = RelayProfiles();
+        await profiles.load();
+        final original = profiles.selected;
+        final key = base64Url
+            .encode(List<int>.filled(32, 4))
+            .replaceAll('=', '');
+        final moved = await profiles.moveLocalToRelay(
+          'wss://Relay.Example/',
+          access: key,
+        );
+        expect(moved.id, original.id);
+        expect(moved.url, 'https://relay.example');
+        expect(moved.access, key);
+        expect(profiles.selected, moved);
+        final local = profiles.profiles.singleWhere((p) => p.url == null);
+        expect(local.id, isNot(original.id));
+        expect(local.access, isNull);
 
-      final again = RelayProfiles();
-      await again.load();
-      expect(again.selected.id, original.id);
-      expect(again.selected.access, key);
-      expect(again.selected.url, moved.url);
-      expect((await again.select(null)).id, local.id);
-      expect((await again.select(moved.url)).id, original.id);
-    });
+        final again = RelayProfiles();
+        await again.load();
+        expect(again.selected.id, original.id);
+        expect(again.selected.access, key);
+        expect(again.selected.url, moved.url);
+        expect((await again.select(null)).id, local.id);
+        expect((await again.select(moved.url)).id, original.id);
+      },
+    );
 
-    test('moving cannot replace a saved relay collection or move a relay again', () async {
-      final profiles = RelayProfiles();
-      await profiles.load();
-      final local = profiles.selected;
-      final saved = await profiles.prepare('https://relay.example');
-      await expectLater(profiles.moveLocalToRelay('https://relay.example'), throwsStateError);
-      expect(profiles.selected.id, local.id);
-      await profiles.activate(saved);
-      await expectLater(profiles.moveLocalToRelay('https://other.example'), throwsStateError);
-      expect(profiles.selected.id, saved.id);
-      expect(profiles.profiles, hasLength(2));
-    });
+    test(
+      'moving cannot replace a saved relay collection or move a relay again',
+      () async {
+        final profiles = RelayProfiles();
+        await profiles.load();
+        final local = profiles.selected;
+        final saved = await profiles.prepare('https://relay.example');
+        await expectLater(
+          profiles.moveLocalToRelay('https://relay.example'),
+          throwsStateError,
+        );
+        expect(profiles.selected.id, local.id);
+        await profiles.activate(saved);
+        await expectLater(
+          profiles.moveLocalToRelay('https://other.example'),
+          throwsStateError,
+        );
+        expect(profiles.selected.id, saved.id);
+        expect(profiles.profiles, hasLength(2));
+      },
+    );
 
     test('an invalid access key does not move the local collection', () async {
       final profiles = RelayProfiles();
       await profiles.load();
       final local = profiles.selected;
-      await expectLater(profiles.moveLocalToRelay('https://relay.example', access: 'bad'), throwsFormatException);
+      await expectLater(
+        profiles.moveLocalToRelay('https://relay.example', access: 'bad'),
+        throwsFormatException,
+      );
       expect(profiles.selected, local);
       final again = RelayProfiles();
       await again.load();
@@ -279,4 +464,3 @@ void main() {
     });
   });
 }
-

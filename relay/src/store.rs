@@ -159,6 +159,50 @@ pub trait RelayStore: Send + Sync + 'static {
     /// Remove an invite and everything on it. Not an error if it is not there.
     async fn withdraw_invite(&self, id: &str) -> Result<()>;
 
+    // -- access tokens (ADR 0038) -------------------------------------------
+    //
+    // One random token per device. The store keeps them and makes the bind
+    // atomic; it does not decide who may mint, verify or revoke one. Times are
+    // Unix seconds, passed in as for invites.
+
+    /// Store a token, unbound. `false` if the ID is taken, and then the row is
+    /// left as it was: the admin layer decides whether retrying a mint is safe.
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<bool>;
+
+    /// A token, revoked or not. `None` if there is no such token.
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>>;
+
+    /// Bind an unbound token to `device`, atomically. `false` if the token does
+    /// not exist or is bound already, so two devices cannot both claim it.
+    ///
+    /// The caller checks expiry and revocation before binding: binding a
+    /// just-revoked token is harmless, but it leaves a device key on a dead
+    /// token.
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool>;
+
+    /// A missing token is a no-op.
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()>;
+
+    /// Drop the binding and set the token's link expiry to `expires_at`, so it
+    /// can be claimed by a device again but not for ever. A missing token is a
+    /// no-op.
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()>;
+
+    /// Revoke at `now`. `true` if the token exists, even if it was revoked
+    /// already, and then the first time is kept. `false` if there is no such
+    /// token.
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool>;
+
+    /// Delete every token revoked before `before`, and say how many went. The
+    /// admin listener sweeps with this as housekeeping; a failure is logged by
+    /// it and does not fail the request.
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64>;
+
     /// Delete every envelope of a topic and leave it gone, if `key` and
     /// `signature` are what [`quota::authorise_purge`] accepts. A topic the
     /// relay has never seen is left gone too: an owner's offline device must
@@ -302,9 +346,58 @@ pub enum Answered {
     Closed,
 }
 
+/// One device's access token (ADR 0038). There is no household here: the token
+/// is what a device holds, and it is bound to the one device that first used
+/// it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccessToken {
+    pub id: String,
+    pub secret: [u8; 32],
+    /// The device that claimed the token, from the first successful bind.
+    pub device_key: Option<[u8; 32]>,
+    pub read_only: bool,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// The secret never reaches a log: it is as good as the device's password.
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessToken")
+            .field("id", &self.id)
+            .field("secret", &"<redacted>")
+            .field("device_key", &self.device_key)
+            .field("read_only", &self.read_only)
+            .field("expires_at", &self.expires_at)
+            .field("revoked_at", &self.revoked_at)
+            .finish()
+    }
+}
+
 /// The one rule both stores apply, so that they cannot disagree about it.
 fn swept(expires_at: i64, now: i64) -> bool {
     expires_at + crate::protocol::INVITE_GRACE_SECS < now
+}
+
+/// Recover access metadata for a log written before ADR 0024, when neither
+/// store recorded it. After this, a compaction keeps the package chain and a
+/// purge knows whose key outranks a guest's.
+fn recover_memory_access(log: &mut Log, note: &str) {
+    if log.topic.gone {
+        return;
+    }
+    let (owner, current, keep) = quota::recover(
+        &log.topic,
+        note,
+        log.rows
+            .iter()
+            .map(|row| (row.stored.seq, row.stored.envelope.as_slice())),
+    );
+    for row in &mut log.rows {
+        row.keep = keep.binary_search(&row.stored.seq).is_ok();
+    }
+    log.topic.owner = owner;
+    log.topic.current = current;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +436,7 @@ pub struct MemoryStore {
     media: Arc<Mutex<HashMap<(String, String), MediaMeta>>>,
     invites: Arc<Mutex<HashMap<String, Invite>>>,
     auth_challenges: Arc<Mutex<Challenges>>,
+    access_tokens: Arc<Mutex<HashMap<String, AccessToken>>>,
 }
 
 impl MemoryStore {
@@ -448,6 +542,7 @@ impl RelayStore for MemoryStore {
         let Some(log) = notes.get_mut(note) else {
             return Ok(Err(Refusal::Stale));
         };
+        recover_memory_access(log, note);
         let register = match quota::authorise(&log.topic, note, proposal) {
             Ok(register) => register,
             Err(refusal) => return Ok(Err(refusal)),
@@ -504,6 +599,7 @@ impl RelayStore for MemoryStore {
     ) -> Result<std::result::Result<(), Refusal>> {
         let mut notes = self.notes.lock().unwrap();
         let log = notes.entry(note.to_string()).or_default();
+        recover_memory_access(log, note);
         if let Err(refusal) = quota::authorise_purge(&log.topic, note, key, signature) {
             return Ok(Err(refusal));
         }
@@ -549,6 +645,25 @@ impl RelayStore for MemoryStore {
             let total: u64 = media.values().map(|m| m.row.geometry.sealed_len).sum();
             if total + geometry.sealed_len > ceiling {
                 return Ok(Reserved::RelayFull);
+            }
+        }
+        let staged = |m: &&MediaMeta| m.row.committed.is_none();
+        let staged_in_note: u64 = media
+            .iter()
+            .filter(|((n, _), m)| n == note && staged(m))
+            .map(|(_, m)| m.row.geometry.sealed_len)
+            .sum();
+        if staged_in_note + geometry.sealed_len > limits.staging_note_bytes {
+            return Ok(Reserved::NoteStaging);
+        }
+        if let Some(ceiling) = limits.staging_ceiling {
+            let staged: u64 = media
+                .values()
+                .filter(staged)
+                .map(|m| m.row.geometry.sealed_len)
+                .sum();
+            if staged + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayStaging);
             }
         }
         media.insert(
@@ -804,6 +919,75 @@ impl RelayStore for MemoryStore {
         self.invites.lock().unwrap().remove(id);
         Ok(())
     }
+
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<bool> {
+        let token = AccessToken {
+            id: id.to_string(),
+            secret: *secret,
+            device_key: None,
+            read_only: false,
+            expires_at,
+            revoked_at: None,
+        };
+        let mut tokens = self.access_tokens.lock().unwrap();
+        if tokens.contains_key(id) {
+            return Ok(false);
+        }
+        tokens.insert(id.to_string(), token);
+        Ok(true)
+    }
+
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
+        Ok(self.access_tokens.lock().unwrap().get(id).cloned())
+    }
+
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let Some(token) = tokens.get_mut(id) else {
+            return Ok(false);
+        };
+        if token.device_key.is_some() {
+            return Ok(false);
+        }
+        token.device_key = Some(*device);
+        Ok(true)
+    }
+
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()> {
+        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
+            token.read_only = read_only;
+        }
+        Ok(())
+    }
+
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()> {
+        if let Some(token) = self.access_tokens.lock().unwrap().get_mut(id) {
+            token.device_key = None;
+            token.expires_at = Some(expires_at);
+        }
+        Ok(())
+    }
+
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let Some(token) = tokens.get_mut(id) else {
+            return Ok(false);
+        };
+        token.revoked_at.get_or_insert(now);
+        Ok(true)
+    }
+
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64> {
+        let mut tokens = self.access_tokens.lock().unwrap();
+        let held = tokens.len();
+        tokens.retain(|_, token| !token.revoked_at.is_some_and(|at| at < before));
+        Ok((held - tokens.len()) as u64)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +1145,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "invite_pre_grant",
         sql: include_str!("../migrations/0003_invite_pre_grant.sql"),
     },
+    Migration {
+        version: 4,
+        name: "invites_expiry",
+        sql: include_str!("../migrations/0004_invites_expiry.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "access_tokens",
+        sql: include_str!("../migrations/0005_access_tokens.sql"),
+    },
 ];
 
 #[async_trait]
@@ -1066,6 +1260,7 @@ impl RelayStore for PostgresStore {
         let Some(mut topic) = lock_topic(&mut tx, note).await? else {
             return Ok(Err(Refusal::Stale));
         };
+        recover_postgres_access(&mut tx, note, &mut topic).await?;
         let register = match quota::authorise(&topic, note, proposal) {
             Ok(register) => register,
             Err(refusal) => return Ok(Err(refusal)),
@@ -1153,9 +1348,10 @@ impl RelayStore for PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(pg)?;
-        let topic = lock_topic(&mut tx, note)
+        let mut topic = lock_topic(&mut tx, note)
             .await?
             .ok_or_else(|| RelayError::Storage("topic row vanished".into()))?;
+        recover_postgres_access(&mut tx, note, &mut topic).await?;
         if let Err(refusal) = quota::authorise_purge(&topic, note, key, signature) {
             return Ok(Err(refusal));
         }
@@ -1482,14 +1678,13 @@ impl RelayStore for PostgresStore {
         limits: &MediaLimits,
         now: i64,
     ) -> Result<Reserved> {
-        // One reservation at a time, relay-wide: the budgets are sums over
-        // rows, and two reservations that each read the sum before the other
-        // wrote would both fit. A reservation is one per attached file, so
-        // this queue is short.
-        const MEDIA_LOCK: i64 = 0x0000_EA51_0ED1;
+        // One reservation per note at a time: the note budget is a sum over
+        // rows, and two reservations for the same note that each read the sum
+        // before the other wrote would both fit. Different notes proceed at
+        // once; a hash collision only queues them needlessly.
         let mut tx = self.pool.begin().await.map_err(pg)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(MEDIA_LOCK)
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(note)
             .execute(&mut *tx)
             .await
             .map_err(pg)?;
@@ -1533,6 +1728,9 @@ impl RelayStore for PostgresStore {
             return Ok(Reserved::NoteFull);
         }
         if let Some(ceiling) = limits.ceiling {
+            // Approximate: reservations for different notes do not queue, so
+            // two can both pass this sum. Overshoot is one reservation, the
+            // same tolerance `append_within` gives its ceiling.
             let (total,): (i64,) =
                 sqlx::query_as("SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects")
                     .fetch_one(&mut *tx)
@@ -1540,6 +1738,32 @@ impl RelayStore for PostgresStore {
                     .map_err(pg)?;
             if total as u64 + geometry.sealed_len > ceiling {
                 return Ok(Reserved::RelayFull);
+            }
+        }
+        // Uploads in progress, which a reservation alone makes and so which
+        // are held to less than the ceiling. Per note under the lock above;
+        // relay-wide approximate, as the ceiling is.
+        let (staged_in_note,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+             WHERE note_id = $1 AND digest IS NULL",
+        )
+        .bind(note)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(pg)?;
+        if staged_in_note as u64 + geometry.sealed_len > limits.staging_note_bytes {
+            return Ok(Reserved::NoteStaging);
+        }
+        if let Some(ceiling) = limits.staging_ceiling {
+            let (staged,): (i64,) = sqlx::query_as(
+                "SELECT COALESCE(sum(sealed_len), 0)::BIGINT FROM media_objects \
+                 WHERE digest IS NULL",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(pg)?;
+            if staged as u64 + geometry.sealed_len > ceiling {
+                return Ok(Reserved::RelayStaging);
             }
         }
         sqlx::query(
@@ -1666,6 +1890,114 @@ impl RelayStore for PostgresStore {
             .map_err(pg)?;
         Ok(())
     }
+
+    async fn create_access_token(
+        &self,
+        id: &str,
+        secret: &[u8; 32],
+        expires_at: Option<i64>,
+    ) -> Result<bool> {
+        let inserted: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO access_tokens (id, secret, expires_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING RETURNING id",
+        )
+        .bind(id)
+        .bind(secret.as_slice())
+        .bind(expires_at)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(inserted.is_some())
+    }
+
+    async fn access_token(&self, id: &str) -> Result<Option<AccessToken>> {
+        let row: Option<(
+            String,
+            Vec<u8>,
+            Option<Vec<u8>>,
+            bool,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT id, secret, device_key, read_only, expires_at, revoked_at \
+                 FROM access_tokens WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        row.map(|(id, secret, device, read_only, expires_at, revoked_at)| {
+            Ok(AccessToken {
+                id,
+                secret: key32(secret)?,
+                device_key: device.map(key32).transpose()?,
+                read_only,
+                expires_at,
+                revoked_at,
+            })
+        })
+        .transpose()
+    }
+
+    async fn bind_access_token(&self, id: &str, device: &[u8; 32]) -> Result<bool> {
+        // One statement: reading first and writing after would let two devices
+        // both find the token unbound and both claim it.
+        let bound: Option<(String,)> = sqlx::query_as(
+            "UPDATE access_tokens SET device_key = $2 \
+             WHERE id = $1 AND device_key IS NULL RETURNING id",
+        )
+        .bind(id)
+        .bind(device.as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(bound.is_some())
+    }
+
+    async fn set_access_token_read_only(&self, id: &str, read_only: bool) -> Result<()> {
+        sqlx::query("UPDATE access_tokens SET read_only = $2 WHERE id = $1")
+            .bind(id)
+            .bind(read_only)
+            .execute(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn unbind_access_token(&self, id: &str, expires_at: i64) -> Result<()> {
+        sqlx::query("UPDATE access_tokens SET device_key = NULL, expires_at = $2 WHERE id = $1")
+            .bind(id)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    async fn revoke_access_token(&self, id: &str, now: i64) -> Result<bool> {
+        // COALESCE keeps the first revocation time when this is a repeat.
+        let revoked: Option<(String,)> = sqlx::query_as(
+            "UPDATE access_tokens SET revoked_at = COALESCE(revoked_at, $2) \
+             WHERE id = $1 RETURNING id",
+        )
+        .bind(id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(revoked.is_some())
+    }
+
+    async fn purge_revoked_access_tokens(&self, before: i64) -> Result<u64> {
+        let deleted = sqlx::query(
+            "DELETE FROM access_tokens WHERE revoked_at IS NOT NULL AND revoked_at < $1",
+        )
+        .bind(before)
+        .execute(&self.pool)
+        .await
+        .map_err(pg)?;
+        Ok(deleted.rows_affected())
+    }
 }
 
 type TopicRow = (
@@ -1746,6 +2078,63 @@ async fn read_topic(
     }))
 }
 
+/// See [`recover_memory_access`] for the memory store: replay a pre-0024 log so its
+/// packages stay kept and its owner is known before a compaction or purge.
+async fn recover_postgres_access(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note: &str,
+    topic: &mut Topic,
+) -> Result<()> {
+    if topic.gone {
+        return Ok(());
+    }
+    let rows: Vec<(i64, Vec<u8>, bool)> =
+        sqlx::query_as("SELECT seq, envelope, keep FROM note_log WHERE note_id = $1 ORDER BY seq")
+            .bind(note)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(pg)?;
+    let (owner, current, keep) = quota::recover(
+        topic,
+        note,
+        rows.iter()
+            .map(|(seq, envelope, _)| (*seq, envelope.as_slice())),
+    );
+    topic.owner = owner;
+    topic.current = current;
+    // Only rewrite rows whose flag actually changes; a normal note has every
+    // package already kept, so a compaction writes nothing here.
+    let mut kept = Vec::new();
+    let mut loose = Vec::new();
+    for (seq, _, was_kept) in &rows {
+        let should_keep = keep.binary_search(seq).is_ok();
+        if should_keep != *was_kept {
+            if should_keep {
+                kept.push(*seq);
+            } else {
+                loose.push(*seq);
+            }
+        }
+    }
+    if !kept.is_empty() {
+        sqlx::query("UPDATE note_log SET keep = TRUE WHERE note_id = $1 AND seq = ANY($2)")
+            .bind(note)
+            .bind(&kept)
+            .execute(&mut **tx)
+            .await
+            .map_err(pg)?;
+    }
+    if !loose.is_empty() {
+        sqlx::query("UPDATE note_log SET keep = FALSE WHERE note_id = $1 AND seq = ANY($2)")
+            .bind(note)
+            .bind(&loose)
+            .execute(&mut **tx)
+            .await
+            .map_err(pg)?;
+    }
+    Ok(())
+}
+
 async fn save_topic(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     note: &str,
@@ -1816,7 +2205,68 @@ fn state_from_db(raw: i16) -> Result<RequestState> {
 
 #[cfg(test)]
 mod migration_tests {
-    use super::MIGRATIONS;
+    use super::{PostgresStore, MIGRATIONS};
+
+    /// Migration 5 only adds `access_tokens`; a database at 4 keeps every row.
+    /// The files run against a temporary schema of this test's own, so the
+    /// database the other Postgres tests share is never touched.
+    #[tokio::test]
+    async fn migration_five_leaves_existing_rows_alone() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL is not set");
+            return;
+        };
+        let store = PostgresStore::connect(&url).await.unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        // Transaction-local, so this connection goes back to the pool with
+        // its search_path as it was, and the temporary schema goes with the
+        // rollback.
+        sqlx::raw_sql("SET LOCAL search_path TO pg_temp")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version < 5) {
+            sqlx::raw_sql(migration.sql)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO note_head (note_id, seq) VALUES ('kept', 1);
+             INSERT INTO note_log (note_id, seq, envelope)
+                 VALUES ('kept', 1, '\\x00'::bytea);
+             INSERT INTO media_objects
+                 (note_id, object_id, sealed_len, chunk_size, touched_at)
+                 VALUES ('kept', 'object', 1, 1, 1);
+             INSERT INTO invites (invite_id, token_hash, owner_hash, expires_at)
+                 VALUES ('kept', '\\x00'::bytea, '\\x00'::bytea, 1);",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(MIGRATIONS[4].sql)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        let kept: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM note_head),
+                    (SELECT count(*) FROM note_log),
+                    (SELECT count(*) FROM media_objects),
+                    (SELECT count(*) FROM invites)",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(kept, (1, 1, 1, 1), "migration 5 changed an older row");
+        let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM access_tokens")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(tokens, 0);
+        tx.rollback().await.unwrap();
+    }
 
     /// A gap or a repeat would make "applied up to N" mean something other
     /// than "applied 1 to N".
@@ -1843,5 +2293,76 @@ mod migration_tests {
             .map(|m| format!("{:04}_{}.sql", m.version, m.name))
             .collect();
         assert_eq!(files, listed);
+    }
+}
+
+#[cfg(test)]
+mod access_token_tests {
+    use super::{MemoryStore, RelayStore};
+
+    /// The memory store is what every socket test runs on, so its atomic bind
+    /// must agree with the one conditional UPDATE Postgres does.
+    #[tokio::test]
+    async fn a_token_binds_to_one_device_and_revokes_once() {
+        let store = MemoryStore::new();
+        let id = "AAAAAAAAAAAAAAAAAAAAAA";
+        let secret = [7u8; 32];
+        store
+            .create_access_token(id, &secret, Some(1_700_000_000))
+            .await
+            .unwrap();
+        let created = store.access_token(id).await.unwrap().unwrap();
+        assert_eq!(created.secret, secret);
+        assert_eq!(created.device_key, None);
+        assert!(!created.read_only);
+        assert_eq!(created.expires_at, Some(1_700_000_000));
+        assert!(
+            !format!("{created:?}").contains("7, 7"),
+            "Debug printed the secret"
+        );
+
+        assert!(store.bind_access_token(id, &[8u8; 32]).await.unwrap());
+        assert!(!store.bind_access_token(id, &[9u8; 32]).await.unwrap());
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().device_key,
+            Some([8u8; 32])
+        );
+
+        store.set_access_token_read_only(id, true).await.unwrap();
+        assert!(store.access_token(id).await.unwrap().unwrap().read_only);
+
+        store.unbind_access_token(id, 1_700_000_300).await.unwrap();
+        let unbound = store.access_token(id).await.unwrap().unwrap();
+        assert_eq!(unbound.device_key, None);
+        assert_eq!(unbound.expires_at, Some(1_700_000_300));
+        assert!(
+            store.bind_access_token(id, &[9u8; 32]).await.unwrap(),
+            "an unbound token could not be claimed"
+        );
+
+        assert!(store.revoke_access_token(id, 1_700_000_100).await.unwrap());
+        assert!(store.revoke_access_token(id, 1_700_000_200).await.unwrap());
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().revoked_at,
+            Some(1_700_000_100)
+        );
+
+        assert!(store.access_token("missing").await.unwrap().is_none());
+        assert!(!store
+            .bind_access_token("missing", &[0u8; 32])
+            .await
+            .unwrap());
+        assert!(!store.revoke_access_token("missing", 1).await.unwrap());
+        assert!(
+            !store
+                .create_access_token(id, &[6u8; 32], None)
+                .await
+                .unwrap(),
+            "a duplicate mint reported success"
+        );
+        assert_eq!(
+            store.access_token(id).await.unwrap().unwrap().secret,
+            secret
+        );
     }
 }

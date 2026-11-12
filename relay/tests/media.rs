@@ -12,7 +12,9 @@ use easynotes_core::attachment::seal::{seal_whole, verify_sealed};
 use easynotes_core::attachment::{ContentKey, MediaOpener, MediaRef, Variant};
 use easynotes_core::crypto::DeviceIdentity;
 use easynotes_core::ids::{AttachmentId, MediaObjectId, NoteId};
-use easynotes_relay::media::MediaStatus;
+use easynotes_core::relay_access::{RelayAccess, RelayToken};
+use easynotes_relay::error::{RelayError, Result as RelayResult};
+use easynotes_relay::media::{Assembled, MediaStatus, PartPut};
 use easynotes_relay::{
     Blobs, DirBlobs, MediaConfig, MediaLimits, MemoryBlobs, MemoryStore, PostgresStore, Relay,
     RelayConfig, RelayStore,
@@ -67,6 +69,12 @@ impl Upload {
         let token = easynotes_core::sync::authenticate(&base, None, &DeviceIdentity::generate())
             .await
             .unwrap();
+        Self::with_token(relay, len, token)
+    }
+
+    /// An upload made by a device holding `token`, for a relay that takes
+    /// per-device access tokens rather than an open handshake.
+    fn with_token(relay: &Relay, len: usize, token: String) -> Self {
         let (note, id, key) = (
             NoteId::random(),
             AttachmentId::random(),
@@ -76,7 +84,7 @@ impl Upload {
         let (media, sealed) =
             seal_whole(&key, note, id, Variant::Original, &plain, 1 << 20).unwrap();
         Self {
-            base,
+            base: relay.http_base(),
             http: reqwest::Client::new(),
             token,
             note,
@@ -193,15 +201,22 @@ impl Upload {
         request.send().await.unwrap()
     }
 
-    /// What a reader does: fetch, check against the descriptor, open.
+    /// What a reader does: fetch chunk by chunk, check against the descriptor,
+    /// open.
     async fn read_back(&self) -> Vec<u8> {
-        let response = self.fetch(None).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["cache-control"],
-            "private, max-age=31536000, immutable"
-        );
-        let bytes = response.bytes().await.unwrap();
+        let full = self.media.chunk_size as u64 + 40;
+        let mut bytes = Vec::with_capacity(self.media.sealed_len() as usize);
+        for index in 0..self.media.chunks() {
+            let at = index as u64 * full;
+            let end = (at + full).min(self.media.sealed_len()) - 1;
+            let response = self.fetch(Some(&format!("bytes={at}-{end}"))).await;
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(
+                response.headers()["cache-control"],
+                "private, max-age=31536000, immutable"
+            );
+            bytes.extend_from_slice(&response.bytes().await.unwrap());
+        }
         verify_sealed(&self.media, &bytes).unwrap();
         MediaOpener::new(
             &self.key,
@@ -217,7 +232,7 @@ impl Upload {
 }
 
 #[tokio::test]
-async fn an_object_goes_up_in_chunks_and_comes_back_whole_or_by_range() {
+async fn an_object_goes_up_in_chunks_and_comes_back_by_range() {
     for (name, store) in stores().await {
         let relay = relay(store, MediaConfig::default()).await;
         // Three chunks, the last one short.
@@ -266,12 +281,108 @@ async fn an_object_goes_up_in_chunks_and_comes_back_whole_or_by_range() {
             up.plain[1 << 20..2 << 20],
             "{name}"
         );
+
+        // A suffix range is the last n bytes.
+        let sealed = up.media.sealed_len();
+        let response = up.fetch(Some("bytes=-4096")).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{name}");
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {}-{}/{sealed}", sealed - 4096, sealed - 1).as_str(),
+            "{name}"
+        );
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            &up.sealed[sealed as usize - 4096..],
+            "{name}"
+        );
+
+        // A whole read of more than one chunk is refused: the core asks by
+        // range, and the relay will not hold an object in memory for it.
+        let response = up.fetch(None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "{name}"
+        );
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes */{sealed}").as_str(),
+            "{name}"
+        );
+
+        // Nor is an open or oversized range a way round that: each is served
+        // one chunk at a time, and says so.
+        for asked in ["bytes=0-", "bytes=0-999999999"] {
+            let response = up.fetch(Some(asked)).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::PARTIAL_CONTENT,
+                "{name} {asked}"
+            );
+            assert_eq!(
+                response.headers()["content-range"],
+                format!("bytes 0-{}/{sealed}", full - 1).as_str(),
+                "{name} {asked}"
+            );
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                &up.sealed[..full as usize],
+                "{name} {asked}"
+            );
+        }
+        // A range that starts mid-object is capped from where it starts.
+        let response = up.fetch(Some(&format!("bytes={}-", full + 7))).await;
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {}-{}/{sealed}", full + 7, 2 * full + 6).as_str(),
+            "{name}"
+        );
+
         let past = format!("bytes={}-", up.media.sealed_len());
         assert_eq!(
             up.fetch(Some(&past)).await.status(),
             StatusCode::RANGE_NOT_SATISFIABLE,
             "{name}"
         );
+    }
+}
+
+#[tokio::test]
+async fn ranges_return_at_most_one_chunk_at_the_requested_offset() {
+    for (name, store) in stores().await {
+        let relay = relay(store, MediaConfig::default()).await;
+        let up = Upload::new(&relay, (2 << 20) + 1234).await;
+        up.send().await;
+        let full = up.media.chunk_size as u64 + 40;
+        let sealed = up.media.sealed_len();
+        for at in [0, full + 17, 2 * full] {
+            let count = full.min(sealed - at);
+            for range in [
+                format!("bytes={at}-"),
+                format!("bytes={at}-999999999"),
+                format!("bytes=-{}", sealed - at),
+            ] {
+                let response = up.fetch(Some(&range)).await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::PARTIAL_CONTENT,
+                    "{name}: {range}"
+                );
+                assert_eq!(
+                    response.headers()["content-range"],
+                    format!("bytes {at}-{}/{sealed}", at + count - 1).as_str(),
+                    "{name}: {range}"
+                );
+                let body = response.bytes().await.unwrap();
+                assert_eq!(body.len() as u64, count, "{name}: {range}");
+                assert_eq!(
+                    body.as_ref(),
+                    &up.sealed[at as usize..(at + count) as usize],
+                    "{name}: {range}"
+                );
+            }
+        }
     }
 }
 
@@ -413,6 +524,72 @@ async fn nobody_without_a_token_gets_anywhere() {
     assert_eq!(unknown.status().await.unwrap_err(), StatusCode::NOT_FOUND);
     assert_eq!(unknown.put(0, up.chunk(0)).await, StatusCode::NOT_FOUND);
     assert_eq!(unknown.commit().await, StatusCode::NOT_FOUND);
+}
+
+/// A reservation costs nothing until its chunks arrive, so what is reserved
+/// and not yet committed is held apart from the ceiling: a note may have only
+/// so much of it, and so may the whole relay. Committing frees the room.
+#[tokio::test]
+async fn uploads_in_progress_are_held_apart_from_the_ceiling() {
+    let limits = |staging_ceiling| MediaLimits {
+        staging_note_bytes: 2500,
+        staging_ceiling,
+        ..MediaLimits::default()
+    };
+    for (name, store) in stores().await {
+        let relay = relay(
+            store,
+            MediaConfig {
+                limits: limits(None),
+                ..MediaConfig::default()
+            },
+        )
+        .await;
+        let first = Upload::new(&relay, 1000).await;
+        let second = first.sibling(1000);
+        let third = first.sibling(1000);
+        assert_eq!(first.reserve().await, StatusCode::CREATED, "{name}");
+        assert_eq!(second.reserve().await, StatusCode::CREATED, "{name}");
+        assert_eq!(
+            third.reserve().await,
+            StatusCode::INSUFFICIENT_STORAGE,
+            "{name}: a third upload in progress in one note"
+        );
+        // A committed object is no longer in progress.
+        first.send().await;
+        assert_eq!(third.reserve().await, StatusCode::CREATED, "{name}");
+        let metrics = easynotes_relay::metrics::render(&relay.state).await;
+        assert!(
+            metrics.lines().any(|l| l
+                == "easynotes_relay_quota_refusals_total{store=\"media\",scope=\"staging\"} 1"),
+            "{name}: {metrics}"
+        );
+    }
+
+    // Relay-wide, on the memory store alone: the Postgres one holds the other
+    // tests' uploads, so what it has in progress is not this test's to know.
+    let relay = relay(
+        Arc::new(MemoryStore::new()),
+        MediaConfig {
+            limits: limits(Some(2500)),
+            ..MediaConfig::default()
+        },
+    )
+    .await;
+    let (a, b) = (
+        Upload::new(&relay, 1000).await,
+        Upload::new(&relay, 1000).await,
+    );
+    assert_eq!(a.reserve().await, StatusCode::CREATED);
+    assert_eq!(b.reserve().await, StatusCode::CREATED);
+    let c = Upload::new(&relay, 1000).await;
+    assert_eq!(
+        c.reserve().await,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a third upload in progress, in a note of its own"
+    );
+    a.send().await;
+    assert_eq!(c.reserve().await, StatusCode::CREATED);
 }
 
 #[tokio::test]
@@ -777,5 +954,489 @@ async fn a_doomed_object_is_kept_if_fetched_and_swept_if_not() {
         // A device that still had it, and was not told, can put it back.
         removed.send().await;
         assert_eq!(removed.read_back().await, removed.plain, "{name}");
+    }
+}
+
+/// A read is not asking for the object: a read-only device polling status
+/// must not clear a doom, or a lapsed household could keep unreferenced bytes
+/// alive for ever.
+#[tokio::test]
+async fn a_read_only_status_read_does_not_keep_a_doomed_object() {
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let relay = Relay::serve_with(
+        store.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            tokens: true,
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let minted = |id: [u8; 16], secret: [u8; 32], read_only: bool| {
+        let store = store.clone();
+        let base = relay.http_base();
+        async move {
+            let id = URL_SAFE_NO_PAD.encode(id);
+            assert!(store.create_access_token(&id, &secret, None).await.unwrap());
+            if read_only {
+                store.set_access_token_read_only(&id, true).await.unwrap();
+            }
+            easynotes_core::sync::authenticate(
+                &base,
+                Some(&RelayToken {
+                    id: Some(id),
+                    secret: RelayAccess::from_bytes(secret),
+                }),
+                &DeviceIdentity::generate(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let limits = MediaLimits {
+        fresh_secs: -60,
+        ..MediaLimits::default()
+    };
+
+    let uploader = minted([21; 16], [22; 32], false).await;
+    let kept = Upload::with_token(&relay, 1000, uploader);
+    kept.send().await;
+    let removed = kept.sibling(1000);
+    removed.send().await;
+    let doomed = |upload: &Upload| {
+        let store = store.clone();
+        let (note, object) = (upload.note.encode(), upload.media.object.encode());
+        async move {
+            store
+                .media(&note, &object)
+                .await
+                .unwrap()
+                .map(|row| row.doomed)
+        }
+    };
+
+    // A writable device asking for status still makes the object wanted.
+    compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+    assert_eq!(doomed(&removed).await, Some(true));
+    assert!(removed.status().await.unwrap().committed);
+    assert_eq!(doomed(&removed).await, Some(false));
+
+    // Doomed again, and asked about by a token that may only read.
+    compact_listing(&store, &kept, vec![kept.media.object], &limits).await;
+    assert_eq!(doomed(&removed).await, Some(true));
+    let reader = minted([23; 16], [24; 32], true).await;
+    let response = reqwest::Client::new()
+        .get(removed.url("/status"))
+        .bearer_auth(&reader)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status: MediaStatus = response.json().await.unwrap();
+    assert!(status.committed);
+    assert_eq!(
+        doomed(&removed).await,
+        Some(true),
+        "a read-only status read extended the doom"
+    );
+}
+
+/// #34: expiring removes the rows *and* the bytes behind them. A committed
+/// object no compaction lists and an abandoned upload both leave the disk.
+#[tokio::test]
+async fn an_expired_object_leaves_no_bytes_behind() {
+    // Memory only: a Postgres store is shared between tests, and these TTLs
+    // would sweep another test's media.
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let limits = MediaLimits {
+        staging_ttl_secs: -60,
+        fresh_secs: -60,
+        doomed_ttl_secs: -60,
+        ..MediaLimits::default()
+    };
+    let relay = relay(
+        store.clone(),
+        MediaConfig {
+            blobs: Some(Arc::new(DirBlobs::open(dir.path()).unwrap())),
+            limits,
+        },
+    )
+    .await;
+
+    let doomed = Upload::new(&relay, 1000).await;
+    doomed.send().await;
+    let abandoned = doomed.sibling(1000);
+    abandoned.reserve().await;
+    abandoned.put(0, abandoned.chunk(0)).await;
+
+    let object = || {
+        dir.path()
+            .join("objects")
+            .join(doomed.note.encode())
+            .join(doomed.media.object.encode())
+    };
+    let part = || {
+        dir.path()
+            .join("parts")
+            .join(abandoned.note.encode())
+            .join(abandoned.media.object.encode())
+    };
+
+    // Nothing live lists it, so the compaction dooms it. Both are on disk.
+    compact_listing(&store, &doomed, vec![], &limits).await;
+    assert!(object().exists(), "the committed object was never written");
+    assert!(part().exists(), "the abandoned chunk was never written");
+
+    // A reservation sweeps the abandoned upload and the doomed object.
+    assert_eq!(doomed.sibling(1000).reserve().await, StatusCode::CREATED);
+    assert!(!object().exists(), "the doomed bytes stayed");
+    assert!(!part().exists(), "the abandoned bytes stayed");
+}
+
+/// A `Blobs` whose volume will not unlink one object, as a full or misbehaving
+/// disk does.
+struct FailsOneRemove {
+    dir: Arc<DirBlobs>,
+    failing: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl Blobs for FailsOneRemove {
+    async fn put_part(
+        &self,
+        note: &str,
+        object: &str,
+        index: u32,
+        bytes: axum::body::Bytes,
+    ) -> RelayResult<PartPut> {
+        self.dir.put_part(note, object, index, bytes).await
+    }
+
+    async fn parts(&self, note: &str, object: &str) -> RelayResult<Vec<u32>> {
+        self.dir.parts(note, object).await
+    }
+
+    async fn assemble(
+        &self,
+        note: &str,
+        object: &str,
+        chunks: u32,
+        digest: [u8; 32],
+    ) -> RelayResult<Assembled> {
+        self.dir.assemble(note, object, chunks, digest).await
+    }
+
+    async fn read(
+        &self,
+        note: &str,
+        object: &str,
+        at: u64,
+        len: u64,
+    ) -> RelayResult<Option<Vec<u8>>> {
+        self.dir.read(note, object, at, len).await
+    }
+
+    async fn remove(&self, note: &str, object: &str) -> RelayResult<()> {
+        if self.failing.lock().unwrap().as_deref() == Some(object) {
+            return Err(RelayError::Storage("this volume will not unlink".into()));
+        }
+        self.dir.remove(note, object).await
+    }
+
+    async fn remove_note(&self, note: &str) -> RelayResult<()> {
+        self.dir.remove_note(note).await
+    }
+}
+
+/// Issue #17: the sweep drops rows before it removes bytes, so a removal that
+/// aborted the batch orphaned every later object with nothing left to name it.
+#[tokio::test]
+async fn a_sweep_that_cannot_unlink_one_object_still_finishes_the_rest() {
+    // Memory only: a Postgres store is shared between tests, and another
+    // test's sweep would remove the abandoned object before this one runs.
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(FailsOneRemove {
+        dir: Arc::new(DirBlobs::open(dir.path()).unwrap()),
+        failing: std::sync::Mutex::new(None),
+    });
+    let store: Arc<dyn RelayStore> = Arc::new(MemoryStore::new());
+    let limits = MediaLimits {
+        staging_ttl_secs: -60,
+        fresh_secs: -60,
+        doomed_ttl_secs: -60,
+        ..MediaLimits::default()
+    };
+    let relay = relay(
+        store.clone(),
+        MediaConfig {
+            blobs: Some(blobs.clone()),
+            limits,
+        },
+    )
+    .await;
+
+    // Committed, and the compaction below lists nothing, so it is doomed.
+    let note = Upload::new(&relay, 1000).await;
+    let doomed = note.sibling(1000);
+    doomed.send().await;
+    // Reserved after the last sweep, so it is still here when the next runs.
+    let abandoned = note.sibling(1000);
+    abandoned.reserve().await;
+    abandoned.put(0, abandoned.chunk(0)).await;
+
+    // The volume refuses the abandoned object, which the sweep reaches first.
+    *blobs.failing.lock().unwrap() = Some(abandoned.media.object.encode());
+    compact_listing(&store, &note, vec![], &limits).await;
+    // A reservation runs the sweep: the abandoned object and the doomed one.
+    assert_eq!(
+        note.sibling(1000).reserve().await,
+        StatusCode::CREATED,
+        "a failed unlink must not refuse the reservation"
+    );
+
+    let held = |u: &Upload| {
+        let (note, object) = (u.note.encode(), u.media.object.encode());
+        dir.path()
+            .join("objects")
+            .join(&note)
+            .join(&object)
+            .exists()
+            || dir.path().join("parts").join(&note).join(&object).exists()
+    };
+    assert!(
+        !held(&doomed),
+        "the sweep stopped at the first failed unlink"
+    );
+    assert!(
+        held(&abandoned),
+        "at most the object that would not unlink may leak"
+    );
+    for u in [&doomed, &abandoned] {
+        assert!(
+            store
+                .media(&u.note.encode(), &u.media.object.encode())
+                .await
+                .unwrap()
+                .is_none(),
+            "a swept object's row is gone"
+        );
+    }
+}
+
+/// Another instance's commit landing between this one's row read and its
+/// assemble: the race in #22, made to happen every time.
+struct CommitsElsewhere {
+    dir: Arc<DirBlobs>,
+    store: Arc<dyn RelayStore>,
+    landing: std::sync::Mutex<Option<Landing>>,
+}
+
+struct Landing {
+    note: String,
+    object: String,
+    chunks: u32,
+    digest: [u8; 32],
+}
+
+#[async_trait::async_trait]
+impl Blobs for CommitsElsewhere {
+    async fn put_part(
+        &self,
+        note: &str,
+        object: &str,
+        index: u32,
+        bytes: axum::body::Bytes,
+    ) -> RelayResult<PartPut> {
+        self.dir.put_part(note, object, index, bytes).await
+    }
+
+    async fn parts(&self, note: &str, object: &str) -> RelayResult<Vec<u32>> {
+        self.dir.parts(note, object).await
+    }
+
+    async fn assemble(
+        &self,
+        note: &str,
+        object: &str,
+        chunks: u32,
+        digest: [u8; 32],
+    ) -> RelayResult<Assembled> {
+        let landing = self.landing.lock().unwrap().take();
+        if let Some(other) = landing {
+            // The other instance assembles, then records its commit.
+            assert_eq!(
+                self.dir
+                    .assemble(&other.note, &other.object, other.chunks, other.digest)
+                    .await
+                    .unwrap(),
+                Assembled::Done
+            );
+            self.store
+                .commit_media(&other.note, &other.object, other.digest)
+                .await
+                .unwrap();
+        }
+        self.dir.assemble(note, object, chunks, digest).await
+    }
+
+    async fn read(
+        &self,
+        note: &str,
+        object: &str,
+        at: u64,
+        len: u64,
+    ) -> RelayResult<Option<Vec<u8>>> {
+        self.dir.read(note, object, at, len).await
+    }
+
+    async fn remove(&self, note: &str, object: &str) -> RelayResult<()> {
+        self.dir.remove(note, object).await
+    }
+
+    async fn remove_note(&self, note: &str) -> RelayResult<()> {
+        self.dir.remove_note(note).await
+    }
+}
+
+/// Issue #22: a commit on another instance deleted attachment bytes that were
+/// already committed, because `assemble` cannot see the metadata that says so.
+#[tokio::test]
+async fn a_commit_that_loses_the_race_leaves_the_committed_bytes_alone() {
+    for (name, store) in stores().await {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(DirBlobs::open(dir.path()).unwrap());
+        let racer = Arc::new(CommitsElsewhere {
+            dir: blobs.clone(),
+            store: store.clone(),
+            landing: std::sync::Mutex::new(None),
+        });
+        let relay = relay(
+            store.clone(),
+            MediaConfig {
+                blobs: Some(racer.clone()),
+                limits: MediaLimits::default(),
+            },
+        )
+        .await;
+
+        // This instance reserves, sends every chunk, and is about to commit.
+        let up = Upload::new(&relay, (1 << 20) + 4000).await;
+        assert_eq!(up.reserve().await, StatusCode::CREATED, "{name}");
+        for i in 0..up.media.chunks() {
+            assert_eq!(up.put(i, up.chunk(i)).await, StatusCode::CREATED, "{name}");
+        }
+        // Between this commit's row read and its assemble, the other instance
+        // commits the same object under the digest of the same chunks.
+        *racer.landing.lock().unwrap() = Some(Landing {
+            note: up.note.encode(),
+            object: up.media.object.encode(),
+            chunks: up.media.chunks(),
+            digest: up.media.digest,
+        });
+
+        // This commit names another digest. It must be refused and touch
+        // nothing: those bytes are the object now.
+        assert_eq!(
+            up.commit_with([7; 32]).await,
+            StatusCode::CONFLICT,
+            "{name}"
+        );
+        // The hook did fire, rather than this passing because no commit ever
+        // reached `assemble`.
+        assert_eq!(
+            store
+                .media(&up.note.encode(), &up.media.object.encode())
+                .await
+                .unwrap()
+                .unwrap()
+                .committed,
+            Some(up.media.digest),
+            "{name}"
+        );
+        assert_eq!(
+            up.fetch(Some("bytes=0-99")).await.status(),
+            StatusCode::PARTIAL_CONTENT,
+            "{name}"
+        );
+        assert_eq!(up.read_back().await, up.plain, "{name}");
+        assert!(
+            dir.path()
+                .join("objects")
+                .join(up.note.encode())
+                .join(up.media.object.encode())
+                .is_file(),
+            "{name}"
+        );
+    }
+}
+
+/// The crash-between-assemble-and-commit state: an object on disk under a row
+/// that still says uncommitted. A commit naming another digest must not delete
+/// it — nothing here can prove that a commit on another instance is not
+/// recording it — and the chunks it hashed are dropped so they are sent again.
+#[tokio::test]
+async fn a_mismatch_against_an_uncommitted_object_is_left_on_disk() {
+    for (name, store) in stores().await {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(DirBlobs::open(dir.path()).unwrap());
+        let relay = relay(
+            store,
+            MediaConfig {
+                blobs: Some(blobs.clone()),
+                limits: MediaLimits::default(),
+            },
+        )
+        .await;
+        let up = Upload::new(&relay, (1 << 20) + 4000).await;
+        assert_eq!(up.reserve().await, StatusCode::CREATED, "{name}");
+        for i in 0..up.media.chunks() {
+            assert_eq!(up.put(i, up.chunk(i)).await, StatusCode::CREATED, "{name}");
+        }
+        // Assembled, and a crash before the commit was recorded: the object
+        // is on disk under a row that still says uncommitted.
+        let (note, object) = (up.note.encode(), up.media.object.encode());
+        let on_disk = dir.path().join("objects").join(&note).join(&object);
+        assert_eq!(
+            blobs
+                .assemble(&note, &object, up.media.chunks(), up.media.digest)
+                .await
+                .unwrap(),
+            Assembled::Done,
+            "{name}"
+        );
+
+        // A digest it is not. `assemble` leaves the object, and the commit
+        // deletes nothing either: the row it read says nothing about what
+        // another instance is doing this moment.
+        assert_eq!(
+            blobs
+                .assemble(&note, &object, up.media.chunks(), [7; 32])
+                .await
+                .unwrap(),
+            Assembled::Mismatch { assembled: true },
+            "{name}"
+        );
+        assert!(on_disk.is_file(), "{name}: assemble dropped bytes");
+        assert_eq!(
+            up.commit_with([7; 32]).await,
+            StatusCode::CONFLICT,
+            "{name}"
+        );
+        assert!(on_disk.is_file(), "{name}: the commit dropped bytes");
+        assert_eq!(
+            up.status().await.unwrap().received,
+            Vec::<u32>::new(),
+            "{name}"
+        );
+        assert_eq!(
+            up.fetch(None).await.status(),
+            StatusCode::NOT_FOUND,
+            "{name}"
+        );
+        // Nothing was thrown away: the digest the object does have commits it.
+        up.send().await;
+        assert_eq!(up.read_back().await, up.plain, "{name}");
     }
 }

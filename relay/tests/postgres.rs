@@ -4,6 +4,7 @@
 //! runnable on a laptop with no Postgres. CI sets it. Each test uses its own
 //! random note IDs, so they neither collide nor need a clean database.
 
+use easynotes_relay::media::{Geometry, Reserved};
 use easynotes_relay::{PostgresStore, RelayStore};
 
 /// Returns `None` — and prints why — when there is no database to talk to.
@@ -27,6 +28,8 @@ macro_rules! store_or_skip {
     };
 }
 
+/// Opaque and random, so reruns against the shared database never collide on a
+/// primary key — notes and access tokens alike.
 fn note() -> String {
     easynotes_core::ids::NoteId::random().encode()
 }
@@ -127,6 +130,47 @@ async fn concurrent_appends_to_one_note_do_not_collide() {
 }
 
 #[tokio::test]
+async fn concurrent_reservations_to_one_note_stay_within_its_budget() {
+    // The reservation lock is keyed by the note, so same-note writers queue
+    // and the note's sum stays exact: of sixteen racing reservations, only as
+    // many as fit succeed.
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let store = std::sync::Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let note = note();
+    let geometry = Geometry {
+        sealed_len: 1000,
+        chunk_size: 1 << 16,
+    };
+    let limits = easynotes_relay::MediaLimits {
+        note_bytes: 3 * geometry.sealed_len,
+        ..Default::default()
+    };
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let store = store.clone();
+        let note = note.clone();
+        tasks.push(tokio::spawn(async move {
+            let object = easynotes_core::ids::MediaObjectId::random().encode();
+            store
+                .reserve_media(&note, &object, geometry, &limits, 1_000)
+                .await
+                .unwrap()
+        }));
+    }
+    let mut new = 0;
+    for task in tasks {
+        if task.await.unwrap() == Reserved::New {
+            new += 1;
+        }
+    }
+    assert_eq!(new, 3, "the note budget was exceeded or under-used");
+}
+
+#[tokio::test]
 async fn stores_ciphertext_verbatim() {
     // Bytes in, the same bytes out — including a NUL and high bytes, which a
     // TEXT column would have mangled.
@@ -150,6 +194,151 @@ async fn records_every_migration_it_applies() {
     let store = store_or_skip!();
     let newest = easynotes_relay::MIGRATIONS.last().unwrap().version;
     assert_eq!(store.schema_version().await.unwrap(), newest);
+}
+
+/// A token is created secret-only, bound by exactly one device, and stays
+/// revoked once revoked (ADR 0038). The bound device is the whole point: a
+/// second bind must lose, because two devices sharing one token would be two
+/// devices with one key.
+#[tokio::test]
+async fn a_token_is_created_bound_and_revoked() {
+    let store = store_or_skip!();
+    let id = note();
+    let secret = [7u8; 32];
+    let expires = 1_700_000_000;
+    assert!(store
+        .create_access_token(&id, &secret, Some(expires))
+        .await
+        .unwrap());
+
+    let created = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(created.secret, secret);
+    assert_eq!(created.device_key, None);
+    assert_eq!(created.expires_at, Some(expires));
+    assert!(!created.read_only);
+    assert_eq!(created.revoked_at, None);
+
+    assert!(
+        !store
+            .create_access_token(&id, &[6u8; 32], None)
+            .await
+            .unwrap(),
+        "a duplicate mint reported success"
+    );
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().secret,
+        secret,
+        "a duplicate mint replaced the token already handed out"
+    );
+
+    assert!(store.bind_access_token(&id, &[8u8; 32]).await.unwrap());
+    assert!(
+        !store.bind_access_token(&id, &[9u8; 32]).await.unwrap(),
+        "a bound token was bound again"
+    );
+    let bound = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(bound.device_key, Some([8u8; 32]));
+
+    store.set_access_token_read_only(&id, true).await.unwrap();
+    assert!(store.access_token(&id).await.unwrap().unwrap().read_only);
+
+    store.unbind_access_token(&id, 1_700_000_250).await.unwrap();
+    let unbound = store.access_token(&id).await.unwrap().unwrap();
+    assert_eq!(unbound.device_key, None);
+    assert_eq!(unbound.expires_at, Some(1_700_000_250));
+    assert!(
+        store.bind_access_token(&id, &[10u8; 32]).await.unwrap(),
+        "an unbound token could not be claimed"
+    );
+
+    assert!(store.revoke_access_token(&id, 1_700_000_100).await.unwrap());
+    assert!(
+        store.revoke_access_token(&id, 1_700_000_200).await.unwrap(),
+        "a repeat revocation reported the token missing"
+    );
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().revoked_at,
+        Some(1_700_000_100),
+        "revoking twice moved the revocation time"
+    );
+
+    let missing = note();
+    assert!(store.access_token(&missing).await.unwrap().is_none());
+    assert!(!store.bind_access_token(&missing, &[0u8; 32]).await.unwrap());
+    assert!(!store.revoke_access_token(&missing, 1).await.unwrap());
+}
+
+/// The admin listener's sweep deletes only rows revoked before its cutoff; an
+/// unrevoked row and a recent one stay (ADR 0038).
+#[tokio::test]
+async fn purging_revoked_tokens_keeps_live_and_recent_rows() {
+    let store = store_or_skip!();
+    let old = note();
+    let recent = note();
+    let live = note();
+    for id in [&old, &recent, &live] {
+        assert!(store
+            .create_access_token(id, &[1u8; 32], None)
+            .await
+            .unwrap());
+    }
+    assert!(store
+        .revoke_access_token(&old, 1_700_000_000)
+        .await
+        .unwrap());
+    assert!(store
+        .revoke_access_token(&recent, 1_700_000_300)
+        .await
+        .unwrap());
+
+    store
+        .purge_revoked_access_tokens(1_700_000_200)
+        .await
+        .unwrap();
+
+    assert!(store.access_token(&old).await.unwrap().is_none());
+    assert!(store.access_token(&recent).await.unwrap().is_some());
+    assert!(store.access_token(&live).await.unwrap().is_some());
+}
+
+/// The bind is one conditional `UPDATE`, so eight devices racing for one fresh
+/// token must leave exactly one of them holding it (ADR 0038).
+#[tokio::test]
+async fn concurrent_binds_to_one_token_leave_one_device() {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let store = std::sync::Arc::new(PostgresStore::connect(&url).await.unwrap());
+    let id = note();
+    store
+        .create_access_token(&id, &[7u8; 32], None)
+        .await
+        .unwrap();
+
+    let mut tasks = Vec::new();
+    let mut devices = Vec::new();
+    for i in 0..8u8 {
+        let device = [i + 1; 32];
+        devices.push(device);
+        let store = store.clone();
+        let id = id.clone();
+        tasks.push(tokio::spawn(async move {
+            store.bind_access_token(&id, &device).await.unwrap()
+        }));
+    }
+    let mut winners = Vec::new();
+    for (task, device) in tasks.into_iter().zip(devices) {
+        if task.await.unwrap() {
+            winners.push(device);
+        }
+    }
+    assert_eq!(winners.len(), 1, "more than one device claimed the token");
+    assert_eq!(
+        store.access_token(&id).await.unwrap().unwrap().device_key,
+        Some(winners[0]),
+        "the stored device key is not the one that won the bind"
+    );
 }
 
 /// Instances start together on a deploy, and each runs the migrations. They

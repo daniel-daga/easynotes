@@ -59,12 +59,19 @@ services:
       # let in, or `open` for anyone who finds the hostname. Required, so a
       # household relay is never open by accident.
       RELAY_ACCESS_KEYS: ${RELAY_ACCESS_KEYS:?Set RELAY_ACCESS_KEYS in .env, to a key or to open}
+      # Per-device access tokens (ADR 0038) and billing's private admin
+      # listener. Empty leaves both off. The listener must stay on loopback or
+      # a private network; see deploy/synology/README.md, step 7.
+      RELAY_TOKENS: ${RELAY_TOKENS:-}
+      RELAY_ADMIN_ADDR: ${RELAY_ADMIN_ADDR:-}
+      RELAY_ADMIN_SECRET: ${RELAY_ADMIN_SECRET:-}
       RELAY_WRITE_BURST: ${RELAY_WRITE_BURST:-}
       RELAY_WRITE_PER_HOUR: ${RELAY_WRITE_PER_HOUR:-}
       RELAY_STORAGE_CEILING: ${RELAY_STORAGE_CEILING:-}
       RELAY_MEDIA_DIR: /var/lib/easynotes-media
       RELAY_MEDIA_PER_NOTE: ${RELAY_MEDIA_PER_NOTE:-}
       RELAY_MEDIA_CEILING: ${RELAY_MEDIA_CEILING:-}
+      RELAY_MEDIA_STAGING_CEILING: ${RELAY_MEDIA_STAGING_CEILING:-}
       RELAY_TRUSTED_PROXIES: ${RELAY_NETWORK:-172.30.87.0/24}
       # Prometheus metrics, on a port of their own that the reverse proxy does
       # not serve. See deploy/synology/README.md, "Monitoring".

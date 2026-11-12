@@ -274,6 +274,8 @@ class SearchHit {
 /// batches for Dart to apply ([ADR 0011](../../../docs/decisions.md#adr-0011)), the core hands each batch
 /// over exactly once and keeps no copy, and so a batch the browser refuses —
 /// out of quota, or a database cleared under the tab — is an edit that is gone.
+/// A tab the browser gave no database at all has nowhere to hand a write: it
+/// reports that from the start, because nothing typed there is kept either.
 abstract interface class StorageHealth {
   /// What this device could not keep, in the browser's own words, or null while
   /// everything has been kept.
@@ -281,8 +283,10 @@ abstract interface class StorageHealth {
   /// It latches: once a write has failed it stays failed, because nothing can
   /// undo it. The edit is not in the queue — it was handed over and dropped —
   /// so there is no retry to offer and no later success that would make the
-  /// first one true again. Telling someone their notes are safe after telling
-  /// them they were not is worse than not telling them at all.
+  /// first one true again. A tab with no store says so from its first edit, and
+  /// for the same reason: nothing typed there is being kept, and that will not
+  /// change while it is open. Telling someone their notes are safe after
+  /// telling them they were not is worse than not telling them at all.
   String? get storageError;
 
   /// [storageError] now, and every version of it after that. Emits immediately.
@@ -435,6 +439,9 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   Future<void> forgetNote(String noteId);
 
   /// Delete every note in the trash for good. Returns how many there were.
+  ///
+  /// The trash is read when this is called, so it cannot match a count anyone
+  /// saw: the UI deletes the set a confirmation named with [forgetNotes].
   Future<int> emptyTrash();
 
   // A selection of notes. Each of these is one change however many notes it
@@ -473,6 +480,23 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   bool get tickedShown;
 
   Future<void> setTickedShown(bool shown);
+
+  /// Whether this device offers back the lines a person adds over and over.
+  ///
+  /// On unless it has been turned off. The setting is this person's and travels
+  /// to their own devices; the history it governs never leaves the device that
+  /// wrote it.
+  bool get suggestionsEnabled;
+
+  Future<void> setSuggestionsEnabled(bool enabled);
+
+  /// Forget what this person has added on every note, and say how many lists
+  /// there was something to forget for.
+  ///
+  /// What the settings sheet's "forget what I have added" is made of. Turning
+  /// suggestions off stops new learning and hides what is known; this deletes
+  /// it, which is the answer for somebody who wants both.
+  Future<int> forgetSuggestions();
 
   // The account — twelve words and a name — is declared on [Accounts], which
   // [Invites] implements: sharing is where a device first needs one.

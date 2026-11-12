@@ -1,0 +1,80 @@
+{
+  "version": "0.1.10",
+  "phrase": "second genius fade lawn april certain session detect record come brown breeze",
+  "notes": [
+    {
+      "id": "Ij4nw2aArZBc9ya1-VzQ5A",
+      "kind": "Checklist",
+      "title": "Groceries",
+      "body": "",
+      "items": [
+        [
+          "milk",
+          true
+        ],
+        [
+          "bread",
+          false
+        ],
+        [
+          "olive oil",
+          false
+        ],
+        [
+          "lemons",
+          true
+        ],
+        [
+          "rice",
+          false
+        ],
+        [
+          "coffee",
+          false
+        ],
+        [
+          "apples",
+          false
+        ],
+        [
+          "butter",
+          true
+        ],
+        [
+          "flour",
+          false
+        ],
+        [
+          "tea",
+          false
+        ],
+        [
+          "eggs",
+          false
+        ]
+      ],
+      "colour": "Green",
+      "pinned": true,
+      "shared": true,
+      "attachments": []
+    },
+    {
+      "id": "L172269hgbDihXN7dUYF6Q",
+      "kind": "Text",
+      "title": "Letter",
+      "body": "Dear Ben,\n\nThe garden is doing well.\n",
+      "items": [],
+      "colour": null,
+      "pinned": false,
+      "shared": false,
+      "attachments": [
+        {
+          "name": "garden.png",
+          "len": 20000,
+          "sha256": "12351af05a3937cb8fa3f8b9d10658e64078e8770fb744d0acd72e2a27f57919"
+        }
+      ]
+    }
+  ],
+  "invite_link": "easynotes://join#AW5VqpkK2_IZF0jvZujm4rS0U7bxKAiO-SZpiG5Zbw4r"
+}

@@ -16,12 +16,15 @@ library;
 
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachments.dart';
+import '../core/keep_import.dart';
+import '../core/keep_import_apply.dart';
 import '../core/note_core.dart';
 import '../core/note_library.dart';
 import '../core/recording_output.dart';
@@ -264,9 +267,10 @@ class _NoteListScreenState extends State<NoteListScreen> {
   void initState() {
     super.initState();
     _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
-    _removalSubscription = widget.library.watchNotes().listen(
-      (_) => _sayRemovals(),
-    );
+    _removalSubscription = widget.library.watchNotes().listen((notes) {
+      _forgetGoneCards(notes);
+      _sayRemovals();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final link = widget.initialInviteLink;
       if (link != null) _showJoinForLink(link);
@@ -300,6 +304,16 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   GlobalKey _cardKeyFor(String id) => _cardKeys.putIfAbsent(id, GlobalKey.new);
+
+  /// Drop the keys of notes that have left the library for good. A key per
+  /// note ever shown is a leak; a note merely filtered, archived or trashed
+  /// still has a card, so only the library's own list decides.
+  void _forgetGoneCards(List<NoteSummary> notes) {
+    final live = {for (final note in notes) note.id};
+    _cardKeys.removeWhere(
+      (id, _) => id != _expandedNoteId.value && !live.contains(id),
+    );
+  }
 
   /// Where a card is on screen now, or null if it is not on screen at all.
   Rect? _cardRect(String id) {
@@ -363,9 +377,13 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// [origin] is the card the tap landed on. Notes opened from anywhere else —
   /// a share, a link, the button that makes one — pass null and get the shared
   /// fade instead of growing from a card that is not there.
+  /// [seedBlankItem] is false for a note this device has just joined: its items
+  /// are on the relay and on their way, and a blank made here would sync out to
+  /// everyone on it.
   Future<void> _openNote(
     String id, {
     bool autofocusBody = false,
+    bool seedBlankItem = true,
     Rect? origin,
   }) async {
     // A tap that arrives while an earlier one is still waiting for the core is
@@ -453,6 +471,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
           noteId: id,
           invites: widget.library,
           autofocusBody: autofocusBody,
+          seedBlankItem: seedBlankItem,
           relayUrl: widget.profile.url,
           relayAccess: widget.profile.access,
           onLabels: () async {
@@ -544,6 +563,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
     }
 
     String? createdNoteId;
+    var imported = false;
     try {
       final noteId = await widget.library.createNote(kind: NoteKind.text);
       createdNoteId = noteId;
@@ -565,25 +585,47 @@ class _NoteListScreenState extends State<NoteListScreen> {
             durationMs: recording.duration.inMilliseconds,
           );
         }
+        // Before the core is let go: a failing dispose must not make a saved
+        // recording look unsaved, and the finally below deletes it.
+        imported = true;
       } finally {
         await core.dispose();
       }
       if (mounted) await _openNote(noteId);
     } on Object catch (error) {
-      if (createdNoteId != null) {
+      // Only undo the note for a recording that is not in it: one that was
+      // imported is saved, and trashing it would contradict the message.
+      if (createdNoteId != null && !imported) {
         try {
           await widget.library.setTrashed(createdNoteId, true);
         } on Object {
           // Keep the original save error for the person.
         }
       }
+      // A kept file leaves the temp namespace the startup sweep deletes, before
+      // the message says it is still here.
+      final keptPath = mounted && !imported && !kIsWeb
+          ? await keepRecordingPath(recording.path)
+          : recording.path;
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text('Could not save audio note: $error')),
-        );
+        // Say what happened to the recording, matching what the finally below
+        // does with it: an imported one is in the note and is deleted, a
+        // browser's goes with its blob URL, and a file on disk is kept at the
+        // path named here.
+        final message = imported
+            ? 'Saved the audio note, but could not open it: $error'
+            : kIsWeb
+            ? 'Could not save audio note: $error. The recording was not kept.'
+            : 'Could not save audio note: $error. The recording is still on '
+                  'this device at $keptPath.';
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
-      await discardRecordingPath(recording.path);
+      // A browser's recording is a blob URL nothing else holds, so it is
+      // released either way; a file on disk is kept unless the note has it.
+      if (imported || kIsWeb) await discardRecordingPath(recording.path);
     }
   }
 
@@ -652,12 +694,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
     // request is still answered in the background, and a decline takes the
     // note away again.
     if (join.readable) {
-      await _openNote(join.noteId!);
+      await _openNote(join.noteId!, seedBlankItem: false);
       return;
     }
     final id = await _waitForJoin(join);
     if (id == null || !mounted) return;
-    await _openNote(id);
+    await _openNote(id, seedBlankItem: false);
   }
 
   /// Show the wait for [join], and stay out of [InviteBanners]'s way while it
@@ -761,11 +803,139 @@ class _NoteListScreenState extends State<NoteListScreen> {
     if (mounted) setState(() {});
   }
 
+  /// The handful of choices that are about the app rather than about a note.
+  ///
+  /// Today that is one feature: whether this device offers back the lines this
+  /// person adds over and over, and how to forget what it has learned. Both are
+  /// here, together, because a switch that stops learning is not the same as
+  /// deleting what was learned and a person looking for one will want the other.
+  Future<void> _openSettings() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => StatefulBuilder(
+        builder: (sheet, setSheet) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                key: const Key('suggestions-setting'),
+                title: const Text('Suggest what I add'),
+                subtitle: const Text(
+                  'Offers back the things you add to a list. Kept on this '
+                  'device, never sent anywhere.',
+                ),
+                value: widget.library.suggestionsEnabled,
+                onChanged: (on) async {
+                  await widget.library.setSuggestionsEnabled(on);
+                  if (sheet.mounted) setSheet(() {});
+                },
+              ),
+              ListTile(
+                key: const Key('forget-suggestions'),
+                leading: const Icon(Icons.delete_sweep_outlined),
+                title: const Text('Forget what I have added'),
+                onTap: () async {
+                  // Taken before the wait: the sheet is gone by the time the
+                  // answer arrives, and this screen's context is the one that
+                  // can still show a message.
+                  final messenger = ScaffoldMessenger.maybeOf(context);
+                  final navigator = Navigator.of(sheet);
+                  final cleared = await widget.library.forgetSuggestions();
+                  if (!mounted) return;
+                  navigator.pop();
+                  messenger?.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        cleared == 1
+                            ? 'Forgotten on 1 list.'
+                            : 'Forgotten on $cleared lists.',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _openAbout() => Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (context) => AboutScreen(profile: widget.profile),
     ),
   );
+
+  /// Bring an extracted Google Keep Takeout export into this device, and say
+  /// what went in and what did not. Attachments are not imported: the export
+  /// holds them as separate files this cannot reach.
+  Future<void> _importKeep() async {
+    final List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip', 'json'],
+      );
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Could not open the picker: $error')),
+        );
+      }
+      return;
+    }
+    if (picked.isEmpty || !mounted) return;
+
+    final notes = <KeepNote>[];
+    final skipped = <KeepSkipped>[];
+    for (final file in picked) {
+      try {
+        final one = parseKeepFile(file.name, await file.readAsBytes());
+        notes.addAll(one.notes);
+        skipped.addAll(one.skipped);
+      } on Object catch (error) {
+        skipped.add(
+          KeepSkipped(
+            file: file.name,
+            reason: 'Could not read the file: $error',
+          ),
+        );
+      }
+    }
+
+    final result = await applyKeepImport(
+      widget.library,
+      KeepImport(notes: notes, skipped: skipped),
+    );
+    if (!mounted) return;
+    final skippedFiles = result.skipped;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Google Keep import'),
+        content: Text(
+          [
+            result.imported == 1
+                ? 'Imported 1 note.'
+                : 'Imported ${result.imported} notes.',
+            if (skippedFiles.isEmpty)
+              'Nothing was skipped.'
+            else
+              '${skippedFiles.length == 1 ? 'Skipped 1 file' : 'Skipped ${skippedFiles.length} files'}:\n'
+                  '${skippedFiles.map((s) => '${s.file} — ${s.reason}').join('\n')}',
+          ].join('\n\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _toggleLayout() async {
     final next = _layout == NoteLayout.grid ? NoteLayout.list : NoteLayout.grid;
@@ -851,18 +1021,28 @@ class _NoteListScreenState extends State<NoteListScreen> {
   /// Move the selection between shelves: into or out of the archive, into or
   /// out of the trash.
   ///
+  /// Only the notes this actually moves are counted and undone: a search can
+  /// select notes already on the target shelf, and undoing those would pull
+  /// them out of the archive or the trash they were never in.
+  ///
   /// Going into either unpins, in the core, so the pins are written down here
   /// first: undoing has to put back what the person had, not what the core
   /// left.
   Future<void> _shelveSelected(
     List<NoteSummary> notes, {
+    required bool Function(NoteSummary note) current,
     required Future<void> Function(List<String> ids, bool on) move,
     required bool on,
     required String done,
   }) async {
-    final ids = [for (final note in notes) note.id];
-    final pinned = [
+    final changed = [
       for (final note in notes)
+        if (current(note) != on) note,
+    ];
+    if (changed.isEmpty) return;
+    final ids = [for (final note in changed) note.id];
+    final pinned = [
+      for (final note in changed)
         if (note.pinned) note.id,
     ];
     _clearSelection();
@@ -876,6 +1056,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _archiveSelected(List<NoteSummary> notes, bool archived) =>
       _shelveSelected(
         notes,
+        current: (note) => note.archived,
         move: widget.library.setArchivedMany,
         on: archived,
         done: archived ? 'archived' : 'unarchived',
@@ -884,6 +1065,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
   Future<void> _trashSelected(List<NoteSummary> notes, bool trashed) =>
       _shelveSelected(
         notes,
+        current: (note) => note.trashed,
         move: widget.library.setTrashedMany,
         on: trashed,
         done: trashed ? 'moved to trash' : 'restored',
@@ -955,16 +1137,29 @@ class _NoteListScreenState extends State<NoteListScreen> {
   }
 
   /// The same, for everything in the trash at once.
-  Future<void> _emptyTrash(int count) async {
+  ///
+  /// The notes are the ones the confirmation counted, not whatever is in the
+  /// trash when the answer arrives: a note thrown away on another device and
+  /// synced while the question was open was never asked about.
+  Future<void> _emptyTrash(List<NoteSummary> notes) async {
     final confirmed = await _confirmDelete(
-      question: count == 1
+      question: notes.length == 1
           ? 'Delete 1 note permanently?'
-          : 'Delete all $count notes permanently?',
+          : 'Delete all ${notes.length} notes permanently?',
       action: 'Delete all',
     );
     if (!confirmed || !mounted) return;
     try {
-      await widget.library.emptyTrash();
+      // Confirmed and still in the trash: one taken back out on another device
+      // while the question was open is not deleted.
+      final trashed = {
+        for (final note in widget.library.notes)
+          if (note.trashed) note.id,
+      };
+      await widget.library.forgetNotes([
+        for (final note in notes)
+          if (trashed.contains(note.id)) note.id,
+      ]);
     } catch (error) {
       _deletionFailed('Could not finish emptying the trash: $error.');
     }
@@ -1244,7 +1439,7 @@ class _NoteListScreenState extends State<NoteListScreen> {
                             key: const Key('empty-trash-button'),
                             icon: const Icon(Icons.delete_sweep_outlined),
                             tooltip: 'Empty the trash',
-                            onPressed: () => _emptyTrash(notes.length),
+                            onPressed: () => _emptyTrash(notes),
                           ),
                       ],
                     ],
@@ -1261,6 +1456,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
               onSyncDevices: _openSyncDevices,
               profile: widget.profile,
               onAbout: _openAbout,
+              onSettings: _openSettings,
+              onImportKeep: _importKeep,
               // A tapped invite link is the way in; this is for one that
               // arrived somewhere it could not be tapped.
               onJoin: widget.library.canJoin ? _join : null,
@@ -2549,6 +2746,8 @@ class _Shelves extends StatelessWidget {
     required this.onSyncDevices,
     required this.profile,
     required this.onAbout,
+    required this.onSettings,
+    required this.onImportKeep,
     required this.onJoin,
     required this.watchSync,
     required this.initialSyncStatus,
@@ -2568,6 +2767,12 @@ class _Shelves extends StatelessWidget {
   final VoidCallback onSyncDevices;
   final RelayProfile profile;
   final VoidCallback onAbout;
+
+  /// What one person likes about how the app behaves, rather than about a note.
+  final VoidCallback onSettings;
+
+  /// Bring an extracted Google Keep export into this device.
+  final VoidCallback onImportKeep;
   final VoidCallback? onJoin;
   final Stream<SyncStatus> Function() watchSync;
   final SyncStatus initialSyncStatus;
@@ -2668,12 +2873,30 @@ class _Shelves extends StatelessWidget {
             ),
           const Divider(),
           ListTile(
+            key: const Key('settings-entry'),
+            leading: const Icon(Icons.tune),
+            title: const Text('Settings'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onSettings();
+            },
+          ),
+          ListTile(
             key: const Key('about-entry'),
             leading: const Icon(Icons.info_outline),
             title: const Text('About and privacy'),
             onTap: () {
               Navigator.of(context).pop();
               onAbout();
+            },
+          ),
+          ListTile(
+            key: const Key('import-keep-entry'),
+            leading: const Icon(Icons.upload_file_outlined),
+            title: const Text('Import from Google Keep'),
+            onTap: () {
+              Navigator.of(context).pop();
+              onImportKeep();
             },
           ),
         ],

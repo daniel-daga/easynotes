@@ -10,7 +10,8 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/relay_profiles.dart';
-import '../core/relay_session.dart' show SyncSetupCancelled;
+import '../core/relay_session.dart'
+    show SyncNotStartedAfterMove, SyncSetupCancelled;
 import 'relay_address.dart';
 
 /// What the wizard was opened to do.
@@ -206,8 +207,13 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
     if (_busy) return;
     if (!(_form.currentState?.validate() ?? false)) return;
     final link = parseRelayLink(_url.text);
+    // A key belongs to one address: one pasted for another relay must not be
+    // offered to this one.
+    if (_canonical != null && link.url != _canonical) {
+      _access.clear();
+    }
     _canonical = link.url;
-    if (link.access != null && _access.text.trim().isEmpty) {
+    if (link.access != null) {
       _access.text = link.access!;
     }
     setState(() => _step = _Step.access);
@@ -296,11 +302,14 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
         _error = null;
       });
       return;
+    } on SyncNotStartedAfterMove catch (error) {
+      // The move is already written: retrying it cannot work, so this is
+      // reported and closed, not offered again.
+      _fail(error, moved: true);
+      return;
     } on Object catch (error) {
-      // A move may already be durable when starting sync fails. Retrying the
-      // same move cannot work — this collection is no longer local — so this
-      // is reported and closed, not offered again.
-      _fail(error, moved: move);
+      // Nothing was written, so the move can be tried again.
+      _fail(error);
       return;
     }
     if (!mounted) return;
@@ -454,6 +463,8 @@ class _RelaySetupWizardState extends State<RelaySetupWizard> {
           controller: _access,
           autofocus: true,
           autocorrect: false,
+          obscureText: true,
+          enableSuggestions: false,
           decoration: const InputDecoration(
             labelText: 'Access key (optional)',
             helperText:

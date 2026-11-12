@@ -5,6 +5,10 @@
 //! who anybody is — only that a device's owner was told the key, which is true
 //! of everyone it serves.
 //!
+//! A billed device token is not so anonymous: it names itself with `access_id`,
+//! a stable per-device handle, which is what billing needs — and that is why it
+//! is only used on the hosted shape ([ADR 0038](../../docs/decisions.md#adr-0038)).
+//!
 //! The key itself never crosses the wire. At the handshake a device sends an
 //! HMAC of the relay's single-use nonce and its own device key, so a proof
 //! cannot be replayed onto another handshake or another device, and a proxy
@@ -38,6 +42,12 @@ const INVITE_DOMAIN: &[u8] = b"easynotes/relay-access/v1/invite\0";
 /// A fragment, so that a link pasted into a browser never sends the key to a
 /// server, and never lands in an access log.
 pub const LINK_FRAGMENT: &str = "access=";
+
+/// A relay link: the relay's address with an encoded key or token in its
+/// fragment.
+fn relay_link(address: &str, access: &str) -> String {
+    format!("{}/#{LINK_FRAGMENT}{access}", address.trim_end_matches('/'))
+}
 
 /// A relay's access key. Never printed: `Debug` says only that there is one.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
@@ -122,11 +132,89 @@ impl RelayAccess {
 
     /// A relay link: the relay's address with this key in its fragment.
     pub fn link(&self, address: &str) -> String {
-        format!(
-            "{}/#{LINK_FRAGMENT}{}",
-            address.trim_end_matches('/'),
-            self.encode()
-        )
+        relay_link(address, &self.encode())
+    }
+}
+
+/// How many bytes a device token's ID is.
+const TOKEN_ID_LEN: usize = 16;
+
+/// A device's access to one relay ([ADR 0038](../../docs/decisions.md#adr-0038)).
+///
+/// `{id, secret}`: the ID is a public lookup handle the relay stores, and the
+/// secret is a [`RelayAccess`] that never crosses the wire. An operator's static
+/// key is the same thing with no ID, so both shapes travel the same way.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct RelayToken {
+    /// `None` for a legacy operator key; `Some` for a billed device token.
+    pub id: Option<String>,
+    pub secret: RelayAccess,
+}
+
+impl std::fmt::Debug for RelayToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RelayToken(..)")
+    }
+}
+
+impl RelayToken {
+    /// A new token, for a billing program issuing one device.
+    pub fn random() -> Self {
+        let mut id = [0u8; TOKEN_ID_LEN];
+        crate::crypto::random_bytes(&mut id);
+        Self {
+            id: Some(URL_SAFE_NO_PAD.encode(id)),
+            secret: RelayAccess::random(),
+        }
+    }
+
+    /// `<id>.<secret>`, or the bare secret for an operator key.
+    pub fn encode(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{id}.{}", self.secret.encode()),
+            None => self.secret.encode(),
+        }
+    }
+
+    /// Read a token back. A string with no dot is a legacy operator key.
+    pub fn decode(raw: &str) -> Result<Self> {
+        let bad = || CoreError::Storage("that is not a device access token".into());
+        let raw = raw.trim();
+        let Some((id, secret)) = raw.split_once('.') else {
+            return Ok(Self {
+                id: None,
+                secret: RelayAccess::decode(raw)?,
+            });
+        };
+        if URL_SAFE_NO_PAD.decode(id).map_err(|_| bad())?.len() != TOKEN_ID_LEN {
+            return Err(bad());
+        }
+        Ok(Self {
+            id: Some(id.to_owned()),
+            secret: RelayAccess::decode(secret).map_err(|_| bad())?,
+        })
+    }
+
+    /// The proof a device sends with its token request, base64url.
+    pub fn token_proof(&self, nonce: &[u8], device: &[u8; 32]) -> String {
+        self.secret.token_proof(nonce, device)
+    }
+
+    /// The proof an invite call carries, base64url.
+    pub fn invite_proof(&self, invite: &InviteId) -> String {
+        self.secret.invite_proof(invite)
+    }
+
+    /// A relay link: the relay's address with this token in its fragment.
+    pub fn link(&self, address: &str) -> String {
+        relay_link(address, &self.encode())
+    }
+}
+
+/// An operator's static key is a token with no ID.
+impl From<RelayAccess> for RelayToken {
+    fn from(secret: RelayAccess) -> Self {
+        Self { id: None, secret }
     }
 }
 
@@ -186,5 +274,41 @@ mod tests {
             key.link("https://relay.example/"),
             format!("https://relay.example/#access={}", key.encode())
         );
+    }
+
+    #[test]
+    fn a_token_is_an_id_and_a_secret() {
+        let token = RelayToken::random();
+        assert_eq!(RelayToken::decode(&token.encode()).unwrap(), token);
+        assert_eq!(
+            RelayToken::decode(&format!(" {} ", token.encode())).unwrap(),
+            token
+        );
+        assert_eq!(token.encode().matches('.').count(), 1);
+    }
+
+    #[test]
+    fn a_bare_key_is_still_a_key() {
+        let key = RelayAccess::random();
+        let token = RelayToken::decode(&key.encode()).unwrap();
+        assert!(token.id.is_none());
+        assert_eq!(token.secret, key);
+    }
+
+    #[test]
+    fn a_link_carries_the_id_and_the_secret() {
+        let token = RelayToken::random();
+        assert_eq!(
+            token.link("https://relay.example/"),
+            format!("https://relay.example/#access={}", token.encode())
+        );
+    }
+
+    #[test]
+    fn a_token_without_a_sixteen_byte_id_is_not_a_token() {
+        let key = RelayAccess::random();
+        assert!(RelayToken::decode(&format!(".{}", key.encode())).is_err());
+        let short = URL_SAFE_NO_PAD.encode([0u8; 15]);
+        assert!(RelayToken::decode(&format!("{short}.{}", key.encode())).is_err());
     }
 }

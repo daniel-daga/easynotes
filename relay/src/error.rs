@@ -34,11 +34,29 @@ pub enum RelayError {
     /// key ([ADR 0028](../../docs/decisions.md#adr-0028)).
     #[error("access_required")]
     AccessRequired,
+    /// A device whose household has lapsed tried to write before its tokens
+    /// were revoked ([ADR 0038](../../docs/decisions.md#adr-0038)).
+    #[error("read_only")]
+    ReadOnly,
     /// Past the address's write budget; try again after this many seconds.
     #[error("rate_limited")]
     RateLimited(u64),
     #[error("storage: {0}")]
     Storage(String),
+}
+
+impl RelayError {
+    /// The text a client may see: a storage error's detail could name a note
+    /// ID, a host or a table, and the relay's whole job is to not leak.
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            RelayError::Storage(detail) => {
+                tracing::error!(%detail, "storage error");
+                "internal error".to_string()
+            }
+            other => other.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for RelayError {
@@ -53,7 +71,7 @@ impl IntoResponse for RelayError {
             RelayError::NoteFull | RelayError::RelayFull => StatusCode::INSUFFICIENT_STORAGE,
             RelayError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             RelayError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            RelayError::AccessRequired => StatusCode::FORBIDDEN,
+            RelayError::AccessRequired | RelayError::ReadOnly => StatusCode::FORBIDDEN,
             RelayError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         };
         if let RelayError::RateLimited(retry) = self {
@@ -72,17 +90,38 @@ impl IntoResponse for RelayError {
             )
                 .into_response();
         }
+        if let RelayError::ReadOnly = self {
+            return (
+                status,
+                axum::Json(serde_json::json!({ "code": "read_only" })),
+            )
+                .into_response();
+        }
         // The body carries the category and never the detail: a storage error's
         // text could name a note ID, and the relay's whole job is to not leak.
-        let body = match self {
-            RelayError::Storage(ref detail) => {
-                tracing::error!(%detail, "storage error");
-                "internal error".to_string()
-            }
-            ref other => other.to_string(),
-        };
+        let body = self.client_message();
         (status, body).into_response()
     }
 }
 
 pub type Result<T> = std::result::Result<T, RelayError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_storage_error_is_hid_from_the_client() {
+        let detail = "note 42 on db.internal failed";
+        let error = RelayError::Storage(detail.into());
+        let message = error.client_message();
+        assert_eq!(message, "internal error");
+        assert!(!message.contains(detail));
+    }
+
+    #[test]
+    fn every_other_error_keeps_its_text() {
+        let error = RelayError::BadRequest("malformed note id".into());
+        assert_eq!(error.client_message(), "bad request: malformed note id");
+    }
+}

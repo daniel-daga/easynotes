@@ -54,6 +54,16 @@ pub struct ItemView {
     pub checked: bool,
     /// The fractional index. Exposed so the UI can compute a drop target's key.
     pub order: String,
+    /// This row is a heading rather than a thing to tick off.
+    ///
+    /// A heading *owns* the rows under it until the next heading, so a section
+    /// is implied by position and never stored as a thing of its own: there is
+    /// no second list to keep in step and no way for two people merging to
+    /// produce half a section. The field defaults to `false`, which is also what
+    /// a build that has never heard of it reads, so a heading shows up there as
+    /// an ordinary item with the same words and loses nothing
+    /// ([ADR 0029](../../../docs/decisions.md#adr-0029)).
+    pub heading: bool,
 }
 
 /// Whether a note is written as prose or as a list of things to tick off.
@@ -127,6 +137,9 @@ pub struct NoteView {
     /// adding it again would write a fresh map over the tombstone and bring a
     /// removed file back for everyone — so [`crate::note::NoteCore`] refuses it.
     pub retired_attachments: Vec<AttachmentId>,
+    /// Items the document holds and this view does not draw: dropped as blank
+    /// and still blank. Sorted. An edit to one is accepted, and brings it back.
+    pub dropped_items: Vec<ItemId>,
 }
 
 impl NoteView {
@@ -167,6 +180,10 @@ pub enum Edit {
         id: ItemId,
         text: String,
         order: String,
+        /// Added as a section heading rather than as something to tick off.
+        /// Part of the add rather than a second edit, so a peer never sees the
+        /// row flash from item to heading.
+        heading: bool,
     },
     SetItemText {
         id: ItemId,
@@ -176,11 +193,25 @@ pub enum Edit {
         id: ItemId,
         checked: bool,
     },
+    /// Whether a row is a heading. One boolean register, last writer wins, the
+    /// same rule [`Edit::SetChecked`] follows; the rows under it are not touched
+    /// because which section a row is in is not stored anywhere.
+    SetHeading {
+        id: ItemId,
+        heading: bool,
+    },
     MoveItem {
         id: ItemId,
         order: String,
     },
     RemoveItem {
+        id: ItemId,
+    },
+    /// Mark an item as one a screen tidied away for being blank. It stays in
+    /// the document and is hidden only while it *is* blank: text a peer typed
+    /// into it before this arrived, or after, shows it again. A removal would
+    /// take that text with it ([ADR 0036](../../../docs/decisions.md#adr-0036)).
+    DropIfBlank {
         id: ItemId,
     },
     /// Record the kind and nothing else. What a new text note is created with.
@@ -262,6 +293,9 @@ pub struct NewItem {
     pub text: String,
     pub checked: bool,
     pub order: String,
+    /// A line of a note that was Markdown `# Heading` becomes a section heading
+    /// on its way into the list, so a pasted list keeps the grouping it had.
+    pub heading: bool,
 }
 
 /// The one splice that turns `old` into `new`: `(byte offset, bytes to delete,

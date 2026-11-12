@@ -1,0 +1,5 @@
+Updates since v0.1.7:
+
+- Two people typing into the same checklist line keep both sets of words, and closing a note no longer removes a blank line someone else was filling in
+- Joining a shared note is explained in plain words: the invite says what tapping it will do, and a link that has expired asks for a new one instead of showing an error
+- A new device can start the transfer from the one you already use before it is signed in

@@ -101,15 +101,53 @@ async fn is_gone(store: &Arc<dyn RelayStore>, topic: &str) -> bool {
 #[tokio::test]
 async fn a_never_shared_note_is_purged_and_stays_gone() {
     for (name, store) in stores().await {
+        // The relay-wide ceiling is checked against the memory store only:
+        // on Postgres every test shares the table, so its usage moves under us.
+        let memory = name == "memory";
         let mut note = Note::new();
         let topic = note.topic();
+        let mut bytes = 0;
         for _ in 0..3 {
-            store.append(&topic, &note.update()).await.unwrap();
+            let update = note.update();
+            bytes += update.len() as u64;
+            store.append(&topic, &update).await.unwrap();
+        }
+        // A purge must hand the note's bytes back: the ceiling is measured
+        // against what the relay holds, and a deleted note is not held.
+        let before = store.usage().await.unwrap().log_bytes;
+        let limits = Limits {
+            ceiling: memory.then_some(before),
+            ..Limits::default()
+        };
+        let mut other = Note::new();
+        if memory {
+            assert_eq!(
+                store
+                    .append_within(&other.topic(), &other.update(), &limits)
+                    .await
+                    .unwrap(),
+                Appended::RelayFull,
+                "{name}: a note was taken at the ceiling"
+            );
         }
         purge(&store, &topic, &note.by_compaction_key())
             .await
             .unwrap_or_else(|r| panic!("{name}: refused: {r:?}"));
         assert!(is_gone(&store, &topic).await, "{name}");
+        if memory {
+            let after = store.usage().await.unwrap().log_bytes;
+            assert_eq!(after, before - bytes, "{name}: a purge kept its bytes");
+            assert!(
+                matches!(
+                    store
+                        .append_within(&other.topic(), &other.update(), &limits)
+                        .await
+                        .unwrap(),
+                    Appended::Stored { .. }
+                ),
+                "{name}: the ceiling was not released"
+            );
+        }
 
         // An offline device's outbox cannot bring it back.
         let appended = store
@@ -309,4 +347,74 @@ async fn a_refusal_names_the_topic_and_the_rest_still_go() {
     assert_eq!(refused[0].0, shared.id);
     assert!(is_gone(&log, &plain.topic()).await);
     assert!(!is_gone(&log, &shared.topic()).await);
+}
+
+/// A topic the relay has never stored has nobody's authority to check, so a
+/// purge of one writes a tombstone for whoever asks. Without a device token it
+/// costs the address's write budget; with one it is free, and a topic already
+/// gone is free either way.
+#[tokio::test]
+async fn an_unseen_topic_costs_a_purge_without_a_token() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use easynotes_relay::limit::RateLimit;
+    use easynotes_relay::RelayConfig;
+    // Room for two tombstones at 64 KiB, and next to no refill.
+    let relay = Relay::serve_with(
+        Arc::new(MemoryStore::new()),
+        "127.0.0.1:0".parse().unwrap(),
+        RelayConfig {
+            writes: RateLimit::new(1, 128 << 10),
+            ..RelayConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let http = reqwest::Client::new();
+    let url = format!("{}/v1/purge?p=2", relay.http_base());
+    let body = |note: &Note| {
+        let request = note.by_compaction_key();
+        serde_json::json!({ "topics": [{
+            "note": note.topic(),
+            "key": URL_SAFE_NO_PAD.encode(request.key.0),
+            "signature": URL_SAFE_NO_PAD.encode(request.signature),
+        }]})
+    };
+    let purge = |note: &Note, token: Option<&str>| {
+        let mut call = http.post(&url).json(&body(note));
+        if let Some(token) = token {
+            call = call.bearer_auth(token);
+        }
+        call.send()
+    };
+
+    let (first, second, third) = (Note::new(), Note::new(), Note::new());
+    assert_eq!(purge(&first, None).await.unwrap().status(), 200);
+    assert_eq!(purge(&second, None).await.unwrap().status(), 200);
+    let refused = purge(&third, None).await.unwrap();
+    assert_eq!(
+        refused.status(),
+        429,
+        "a third unseen topic without a token"
+    );
+    assert!(refused.headers().contains_key("retry-after"));
+
+    // Purging what is already gone writes nothing, and costs nothing.
+    assert_eq!(purge(&first, None).await.unwrap().status(), 200);
+
+    // A device token is what a client purging its own account holds.
+    let token =
+        easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+            .await
+            .unwrap();
+    assert_eq!(purge(&third, Some(&token)).await.unwrap().status(), 200);
+    assert!(is_gone(&relay.state.store, &third.topic()).await);
+    // And a bad one is no token at all.
+    assert_eq!(
+        purge(&Note::new(), Some("not-a-token"))
+            .await
+            .unwrap()
+            .status(),
+        429
+    );
 }

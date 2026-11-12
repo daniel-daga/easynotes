@@ -44,7 +44,11 @@ class ReminderScheduler {
     if (!_isCurrent(generation)) return;
     try {
       tz.setLocalLocation(tz.getLocation(zone));
-    } on ArgumentError {
+    } on tz.LocationNotFoundException {
+      // Some devices spell a fixed offset "GMT+02:00"; the database holds
+      // offset zones but not that spelling. UTC keeps each reminder's stored
+      // instant, so it still fires when requested; only a later offset change
+      // shifts a repeat.
       tz.setLocalLocation(tz.UTC);
     }
     await initializeLocalNotifications();
@@ -134,7 +138,7 @@ class ReminderScheduler {
     // triggers count as one, so this keeps the nearest 64 reminder identities.
     final wanted = scheduled.take(64).map((entry) => entry.reminder).toList();
     if (kIsWeb || defaultTargetPlatform == TargetPlatform.linux) {
-      await _reconcileInProcess(wanted, noteById);
+      await _reconcileInProcess(wanted);
       return;
     }
     final pending = await _notifications.pendingNotificationRequests();
@@ -166,17 +170,12 @@ class ReminderScheduler {
     for (final reminder in wanted) {
       final id = existing[reminder.id] ?? _notificationId(reminder.id, used);
       used.add(id);
-      final note = noteById[reminder.noteId];
-      final title = note?.title.trim();
-      final label = title == null || title.isEmpty
-          ? 'EasyNotes reminder'
-          : title;
       try {
-        await _schedule(id: id, reminder: reminder, title: label, exact: exact);
+        await _schedule(id: id, reminder: reminder, exact: exact);
       } on PlatformException {
         // Access withdrawn between the check and this call. A late reminder
         // is still materially better than a lost one.
-        await _schedule(id: id, reminder: reminder, title: label, exact: false);
+        await _schedule(id: id, reminder: reminder, exact: false);
       }
     }
   }
@@ -184,26 +183,18 @@ class ReminderScheduler {
   /// Browsers and Linux cannot hand a future notification to the OS through
   /// this plugin. While the app is running, a timer can still show it; closing
   /// the tab or app loses the timer.
-  Future<void> _reconcileInProcess(
-    List<Reminder> reminders,
-    Map<String, NoteSummary> noteById,
-  ) async {
+  Future<void> _reconcileInProcess(List<Reminder> reminders) async {
     for (final timer in _inProcessTimers.values) {
       timer.cancel();
     }
     _inProcessTimers.clear();
     final used = <int>{};
     for (final reminder in reminders) {
-      final title = noteById[reminder.noteId]?.title.trim();
-      _scheduleInProcess(
-        reminder,
-        _notificationId(reminder.id, used),
-        title == null || title.isEmpty ? 'EasyNotes reminder' : title,
-      );
+      _scheduleInProcess(reminder, _notificationId(reminder.id, used));
     }
   }
 
-  void _scheduleInProcess(Reminder reminder, int id, String title) {
+  void _scheduleInProcess(Reminder reminder, int id) {
     final due = nextOccurrence(reminder, _location(reminder.timezone));
     if (due == null) return;
     final delay = due.difference(
@@ -214,7 +205,7 @@ class ReminderScheduler {
       () async {
         await _notifications.show(
           id: id,
-          title: title,
+          title: _notificationTitle,
           body: 'Reminder',
           notificationDetails: kIsWeb
               ? null
@@ -222,7 +213,7 @@ class ReminderScheduler {
           payload: '$_payloadPrefix${reminder.id}',
         );
         if (reminder.repeat != ReminderRepeat.never) {
-          _scheduleInProcess(reminder, id, title);
+          _scheduleInProcess(reminder, id);
         } else {
           _inProcessTimers.remove(reminder.id);
         }
@@ -233,7 +224,6 @@ class ReminderScheduler {
   Future<void> _schedule({
     required int id,
     required Reminder reminder,
-    required String title,
     required bool exact,
   }) async {
     final location = _location(reminder.timezone);
@@ -244,7 +234,7 @@ class ReminderScheduler {
     }
     await _notifications.zonedSchedule(
       id: id,
-      title: title,
+      title: _notificationTitle,
       body: 'Reminder',
       scheduledDate: scheduled,
       notificationDetails: const NotificationDetails(
@@ -254,6 +244,10 @@ class ReminderScheduler {
           channelDescription: 'EasyNotes time-based reminders',
           importance: Importance.high,
           priority: Priority.high,
+          visibility: NotificationVisibility.private,
+          // Existing installs already have this channel as public; only an
+          // update rewrites its lock-screen visibility.
+          channelAction: AndroidNotificationChannelAction.update,
         ),
         iOS: DarwinNotificationDetails(),
       ),
@@ -274,7 +268,10 @@ class ReminderScheduler {
   tz.Location _location(String name) {
     try {
       return tz.getLocation(name);
-    } on ArgumentError {
+    } on tz.LocationNotFoundException {
+      // Keeps the reminder's instant, but a repeat is pinned to this device's
+      // wall-clock hour of it, not the author's, and drifts when DST changes
+      // here. Better than aborting the whole pass.
       return tz.local;
     }
   }
@@ -453,3 +450,6 @@ Future<String> deviceTimezone() async {
 
 const _channelId = 'reminders';
 const _payloadPrefix = 'easynotes-reminder:';
+
+/// Deliberately generic: the lock screen must not name the note it belongs to.
+const _notificationTitle = 'EasyNotes reminder';

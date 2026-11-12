@@ -24,13 +24,16 @@
 //! by a device and joined by another, the relay would hold an edge between two
 //! device keys that says "these are two people", which is precisely what ADR
 //! 0014 promises it never learns. The link's token and the owner's secret are
-//! the whole of the authority here, and they name nobody.
+//! the whole of the authority here, and neither names a device. A guest or an
+//! owner may instead prove a billed token by its `access_id` (ADR 0038), which
+//! names the token but is still not bound to a device key here.
 //!
 //! **A wrong secret and a missing invite get the same answer.** A caller that
 //! does not hold the token learns nothing from asking, including whether the
 //! invite exists.
 
 use crate::app::AppState;
+use crate::auth::unix_now;
 use crate::error::{RelayError, Result};
 use crate::protocol::*;
 use crate::store::{AddRequest, Answered, Invite, NewInvite, SetGrant};
@@ -39,16 +42,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use easynotes_core::ids::NoteId;
+use easynotes_core::ids::{InviteId, NoteId};
+use easynotes_core::relay_access::RelayAccess;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 fn b64(s: &str, what: &'static str) -> Result<Vec<u8>> {
     URL_SAFE_NO_PAD
@@ -84,14 +81,56 @@ fn holds(secret: &str, expected: &[u8]) -> bool {
     }
 }
 
-/// Whether the caller holds the relay's access key, on a relay that has one
-/// ([ADR 0028](../../docs/decisions.md#adr-0028)). The proof is
-/// over the invite ID, which everyone holding the link shares, so it names
-/// nobody: the reason these calls have no device key still holds.
-fn admitted(state: &AppState, id: &str, proof: Option<&str>) -> Result<()> {
-    state.access.check_invite(id, proof).inspect_err(|_| {
+/// Whether the caller may use this invite, on a relay that gates them
+/// ([ADR 0028](../../docs/decisions.md#adr-0028)). The proof is over the invite
+/// ID, which everyone holding the link shares, so it names nobody: the reason
+/// these calls have no device key still holds.
+///
+/// A caller holding a billed token ([ADR 0038](../../docs/decisions.md#adr-0038))
+/// proves that token's secret instead of the operator key, and the relay looks
+/// it up by `access_id`. It is not bound here: the handshake owns that, and an
+/// invite may be used before the guest's first handshake.
+///
+/// Returns whether the caller's token is read-only. A static key and an open
+/// relay are never read-only.
+pub(crate) async fn admitted(
+    state: &AppState,
+    invite: &str,
+    access_id: Option<&str>,
+    proof: Option<&str>,
+) -> Result<bool> {
+    let refused = || {
         state.metrics.access_refused();
-    })
+        RelayError::AccessRequired
+    };
+    let Some(token_id) = access_id else {
+        // A token-only relay takes no key, so an invite call without a token
+        // has nothing to prove and must not fall open.
+        if state.device_tokens && !state.access.gated() {
+            return Err(refused());
+        }
+        // Neither configured is open; a key relay checks the static proof.
+        return state
+            .access
+            .check_invite(invite, proof)
+            .map(|()| false)
+            .inspect_err(|_| {
+                state.metrics.access_refused();
+            });
+    };
+    if !state.device_tokens {
+        return Err(refused());
+    }
+    let Some(row) = state.live_access_token(token_id).await? else {
+        return Err(refused());
+    };
+    let invite = InviteId::decode(invite)
+        .map_err(|_| RelayError::BadRequest("malformed invite id".into()))?;
+    let proof = proof.ok_or_else(refused)?;
+    if !RelayAccess::from_bytes(row.secret).verifies_invite(&invite, proof) {
+        return Err(refused());
+    }
+    Ok(row.read_only)
 }
 
 fn expires_in(invite: &Invite, now: i64) -> u64 {
@@ -127,7 +166,16 @@ pub async fn create(
     Json(req): Json<CreateInvite>,
 ) -> Result<(StatusCode, Json<CreatedInvite>)> {
     invite_id(&req.invite)?;
-    admitted(&state, &req.invite, req.access.as_deref())?;
+    let read_only = admitted(
+        &state,
+        &req.invite,
+        req.access_id.as_deref(),
+        req.access.as_deref(),
+    )
+    .await?;
+    if read_only {
+        return Err(RelayError::ReadOnly);
+    }
     let token_hash = hash32(&req.token_hash, "token hash")?;
     let owner_hash = hash32(&req.owner_hash, "owner hash")?;
     if token_hash == owner_hash {
@@ -148,7 +196,7 @@ pub async fn create(
         return Err(RelayError::TooLarge);
     }
     let ttl = req.expires_in.clamp(1, INVITE_MAX_TTL_SECS);
-    let now = now();
+    let now = unix_now() as i64;
     let created = state
         .store
         .create_invite(
@@ -175,7 +223,7 @@ pub async fn join(
     Json(req): Json<JoinInvite>,
 ) -> Result<Json<JoinedInvite>> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     let payload = b64(&req.payload, "payload")?;
     if payload.len() > MAX_INVITE_PAYLOAD_BYTES {
         return Err(RelayError::TooLarge);
@@ -187,7 +235,7 @@ pub async fn join(
 
     match state
         .store
-        .add_invite_request(&id, &req.request, &payload, now())
+        .add_invite_request(&id, &req.request, &payload, unix_now() as i64)
         .await?
     {
         AddRequest::Added | AddRequest::Again => {
@@ -214,7 +262,7 @@ pub async fn poll(
     Json(req): Json<PollInvite>,
 ) -> Result<Json<PolledRequest>> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     let invite = as_guest(&state, &id, &req.token).await?;
     let found = invite
         .requests
@@ -230,7 +278,7 @@ pub async fn poll(
             RequestState::Pending => invite.pre_grant.as_ref().map(|g| URL_SAFE_NO_PAD.encode(g)),
             _ => None,
         },
-        expires_in: expires_in(&invite, now()),
+        expires_in: expires_in(&invite, unix_now() as i64),
     }))
 }
 
@@ -241,9 +289,9 @@ pub async fn list(
     Json(req): Json<OwnInvite>,
 ) -> Result<Json<InviteListing>> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     let invite = as_owner(&state, &id, &req.owner).await?;
-    let now = now();
+    let now = unix_now() as i64;
     Ok(Json(InviteListing {
         open: invite.open && invite.expires_at > now,
         expires_in: expires_in(&invite, now),
@@ -266,7 +314,7 @@ pub async fn answer(
     Json(req): Json<AnswerInvite>,
 ) -> Result<StatusCode> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     let grant = match &req.grant {
         Some(g) => {
             let raw = b64(g, "grant")?;
@@ -280,7 +328,7 @@ pub async fn answer(
     as_owner(&state, &id, &req.owner).await?;
     match state
         .store
-        .answer_invite_request(&id, &request, grant.as_deref(), now())
+        .answer_invite_request(&id, &request, grant.as_deref(), unix_now() as i64)
         .await?
     {
         Answered::Done => Ok(StatusCode::NO_CONTENT),
@@ -299,7 +347,7 @@ pub async fn set_grant(
     Json(req): Json<SetPreGrant>,
 ) -> Result<StatusCode> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     let sealed = b64(&req.pre_grant, "pre-grant")?;
     if sealed.len() > MAX_INVITE_PRE_GRANT_BYTES {
         return Err(RelayError::TooLarge);
@@ -307,7 +355,7 @@ pub async fn set_grant(
     as_owner(&state, &id, &req.owner).await?;
     match state
         .store
-        .set_invite_pre_grant(&id, &sealed, now())
+        .set_invite_pre_grant(&id, &sealed, unix_now() as i64)
         .await?
     {
         SetGrant::Done => Ok(StatusCode::NO_CONTENT),
@@ -323,7 +371,7 @@ pub async fn withdraw(
     Json(req): Json<OwnInvite>,
 ) -> Result<StatusCode> {
     invite_id(&id)?;
-    admitted(&state, &id, req.access.as_deref())?;
+    admitted(&state, &id, req.access_id.as_deref(), req.access.as_deref()).await?;
     as_owner(&state, &id, &req.owner).await?;
     state.store.withdraw_invite(&id).await?;
     Ok(StatusCode::NO_CONTENT)

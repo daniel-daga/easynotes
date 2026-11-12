@@ -127,6 +127,21 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
                   enabled: true,
                   onTap: _connected ? _createAccount : _connectServer,
                 ),
+                if (!_hasAccount && widget.library is AccountTransfers) ...[
+                  const SizedBox(height: 8),
+                  ListTile(
+                    key: const Key('account-transfer'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.qr_code_scanner),
+                    title: const Text('Add this device'),
+                    subtitle: const Text(
+                      'Scan the one-time QR code from a device that already '
+                      'has your account.',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openTransfer,
+                  ),
+                ],
               ],
               _SectionTitle('Sync server'),
               ListTile(
@@ -180,7 +195,11 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openAccount,
                 ),
-                if (widget.library is AccountTransfers)
+                // Only a device that has a relay to send the account through
+                // can add another one. An account with no server yet is a
+                // transfer that has not finished, and a QR code could not
+                // move it anywhere.
+                if (widget.library is AccountTransfers && _connected)
                   ListTile(
                     key: const Key('account-transfer'),
                     contentPadding: EdgeInsets.zero,
@@ -350,8 +369,8 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
     final library = widget.library;
     if (library is! AccountTransfers) return;
     final transfers = library as AccountTransfers;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
+    final moved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
         builder: (_) => AccountTransferScreen(
           library: transfers,
           profile: _profile,
@@ -363,6 +382,7 @@ class _SyncDevicesScreenState extends State<SyncDevicesScreen> {
         ),
       ),
     );
+    _leaveIfChanged(moved);
     if (mounted) setState(() {});
   }
 

@@ -70,9 +70,14 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
       _transfers.add(_lastTransfers);
     }, onError: _transfers.addError);
     if (_db != null) {
-      _drain = Timer.periodic(writeInterval, (_) => _writeOut());
-      // And once more the moment the tab goes away, because [writeInterval] is
-      // a window in which an edit is on the screen and nowhere else.
+      _storageWatch = _library.watchStorage().listen(
+        (_) => _writeOut(),
+        // A watcher that dies stops the drain, not the edits: the queue is
+        // still emptied when the page is hidden or the library is closed.
+        onError: (Object _) {},
+      );
+      // And once more the moment the tab goes away: a tick that arrives just
+      // after it is a write left in memory.
       _stopWatchingPage = page.whenPageHidden(_writeOut);
     }
   }
@@ -140,16 +145,21 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// can be switched off outright. Everything above the store is the same Rust
   /// the native build runs.
   ///
+  /// [storageError] is why there is no store. The tab is not keeping anything,
+  /// and the "Not saved" banner has to say so from the first edit rather than
+  /// let a reload be the thing that tells someone.
+  ///
   /// [canJoin] is false here and nowhere else: a tab like this can reach a
   /// relay perfectly well, but a list joined into it would be gone on the next
   /// reload, and a share that evaporates is worse than a button that is not
   /// there.
-  static Future<RustNoteLibrary> openEphemeral() async {
+  static Future<RustNoteLibrary> openEphemeral({String? storageError}) async {
     await RustNoteCore.ensureInitialized();
-    return RustNoteLibrary._(
+    final library = RustNoteLibrary._(
       rust.Library.openEphemeral(),
       canJoin: false,
-    )._loaded();
+    ).._storageError = storageError;
+    return library._loaded();
   }
 
   /// Read in every note the core has not read yet, so that [notes] has the
@@ -160,27 +170,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     return this;
   }
 
-  /// How often the writes the core has queued are handed to the browser.
-  ///
-  /// The cost of being wrong in each direction is not symmetric, and neither is
-  /// large: too long and a tab closed in the gap loses the last edits, too short
-  /// and a timer that mostly finds an empty queue runs more often. Fifty
-  /// milliseconds is below what anyone notices and well under the time a person
-  /// takes to close a tab after typing. The native store has no equivalent gap —
-  /// it fsyncs before `append` returns — and [ADR 0011](../../../docs/decisions.md#adr-0011) says why a browser cannot.
-  ///
-  /// The window is narrower than this number, because a page being hidden
-  /// empties the queue too rather than waiting for the next tick. It is not
-  /// closed: what the browser then has is a transaction it has been asked to
-  /// run, and nothing in `visibilitychange` can wait for one to finish.
-  static const writeInterval = Duration(milliseconds: 50);
-
   final rust.Library _library;
 
   /// Where this browser keeps the notes, or null on a device with a disk and in
   /// a tab whose notes are only in memory.
   final BrowserStore? _db;
-  Timer? _drain;
+
+  /// Told by the core when a write is queued. The queue is still emptied when
+  /// the page is hidden or the library closes, not only on a tick.
+  StreamSubscription<int>? _storageWatch;
 
   /// Stops the `visibilitychange` listener, and does nothing off the web.
   void Function()? _stopWatchingPage;
@@ -301,18 +299,33 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// also forgets the invite. So one caller can finish a join the other is
   /// still asking about: two checks at once would answer the relay twice, and a
   /// check after the join would find no invite to report it from. A check
-  /// that starts while another is out gets that one's result, and a join,
-  /// being final, stays here for whoever asks next.
+  /// that starts while another is out gets that one's result.
   final _checks = <String, Future<InviteStatus>>{};
+
+  /// Joins already reported, for whoever asks again after the core forgot the
+  /// invite. Bounded: a device joins a handful of notes in a tab's life, and
+  /// keeping every one of them for ever is a leak.
+  ///
+  /// shortcut: the oldest answer is forgotten after [maxRememberedJoins],
+  /// raise it if a caller can still ask about an older join.
+  static const maxRememberedJoins = 8;
+  final _joined = <String, InviteStatus>{};
 
   @override
   Future<InviteStatus> checkInvite(String inviteId) {
+    final joined = _joined[inviteId];
+    if (joined != null) return Future.value(joined);
     final known = _checks[inviteId];
     if (known != null) return known;
     final check = _checks[inviteId] = _checkInvite(inviteId);
     check.then(
       (status) {
-        if (status.joined == null) _checks.remove(inviteId);
+        _checks.remove(inviteId);
+        if (status.joined == null) return;
+        _joined[inviteId] = status;
+        while (_joined.length > maxRememberedJoins) {
+          _joined.remove(_joined.keys.first);
+        }
       },
       onError: (Object _) {
         _checks.remove(inviteId);
@@ -442,14 +455,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<void> forgetNote(String noteId) async {
     await _library.forgetNote(id: noteId);
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    // A tab with no store has no write to lose: this is memory, and the deletion
+    // is as good as its notes. Only a store that refused one is worth throwing.
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
   }
 
   @override
   Future<int> emptyTrash() async {
     final count = await _library.emptyTrash();
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
     return count;
   }
 
@@ -481,7 +496,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   Future<int> forgetNotes(List<String> noteIds) async {
     final count = await _library.forgetNotes(ids: noteIds);
     await flush();
-    if (_storageError != null) throw StateError(_storageError!);
+    if (_db != null && _storageError != null) throw StateError(_storageError!);
     return count;
   }
 
@@ -508,6 +523,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   Future<void> setTickedShown(bool shown) =>
       _library.setTickedShown(shown: shown);
+
+  @override
+  bool get suggestionsEnabled => _library.suggestionsEnabled();
+
+  @override
+  Future<void> setSuggestionsEnabled(bool enabled) =>
+      _library.setSuggestionsEnabled(enabled: enabled);
+
+  @override
+  Future<int> forgetSuggestions() => _library.forgetSuggestions();
 
   @override
   bool get hasAccount => _library.hasAccount();
@@ -597,18 +622,19 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   );
 
   @override
-  Future<void> connect(String url, {String? access}) {
+  Future<void> connect(String url, {String? access}) async {
     // Sync is a server and an account, one decision (ADR 0031). Nothing is
     // uploaded before the account exists, because a relay copy whose note keys
     // never left this device is not a copy anyone can use.
     if (!hasAccount) {
-      return Future.error(
-        StateError('Sync needs an account. Set up sync first.'),
-      );
+      throw StateError('Sync needs an account. Set up sync first.');
     }
+    // Remembered only once the bridge has taken it: the resume path reconnects
+    // with these, and a relay that refused this device must not be retried
+    // forever by a device that has forgotten how to reach the one that worked.
+    await _library.connect(relay: url, access: access);
     _relay = url;
     _access = access;
-    return _library.connect(relay: url, access: access);
   }
 
   @override
@@ -641,11 +667,17 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
         }
       }
       if (generation != _lifecycleGeneration || !_foreground) return;
-      if (_suspended && _relay != null) {
+      if (_suspended) {
+        // A local-only profile has no relay, but it was still paused by the
+        // hide, and nothing else will clear that: the Rust core has no sync
+        // device to report from. Clear it here in every case, and reconnect
+        // only when there is somewhere to reconnect to.
         _suspended = false;
         _paused = false;
         _sync.add(RustNoteCore.toStatus(_library.syncStatus()));
-        await _library.connect(relay: _relay!, access: _access);
+        if (_relay != null) {
+          await _library.connect(relay: _relay!, access: _access);
+        }
       }
       return;
     }
@@ -840,15 +872,16 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     // core and would otherwise keep applying updates to notes nothing is
     // watching.
     await _library.disconnect();
+    _stopWatchingPage?.call();
+    // Stop the watchers before the store goes, so no tick can try to write to a
+    // closed database. Cancelling an upstream subscription waits for that
+    // stream to close, and none closes on its own.
+    await _library.stopWatching();
+    await _storageWatch?.cancel();
     // Whatever is still queued, before anything stops: this is the last chance
     // those bytes have to reach the browser.
-    _drain?.cancel();
-    _stopWatchingPage?.call();
     await flush();
     await _db?.close();
-    // Then stop the Rust watchers: cancelling an upstream subscription waits for
-    // that stream to close, and neither closes on its own.
-    await _library.stopWatching();
     await _upstream.cancel();
     await _syncUpstream.cancel();
     await _transfersUpstream.cancel();

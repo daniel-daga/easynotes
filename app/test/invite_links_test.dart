@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:easynotes/core/invite_links.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -7,6 +9,9 @@ void main() {
   const relay = 'https://sync.example.com';
   const access = 'Zm9vYmFyLXJlbGF5LWtleQ';
   const withRelay = 'easynotes://join#relay=$relay;access=$access#$secret';
+  final token =
+      '${base64Url.encode(List<int>.filled(16, 3)).replaceAll('=', '')}'
+      '.${base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '')}';
 
   test('a web link keeps its second # and drops the page query', () {
     final link = inviteLinkForSharing(
@@ -45,6 +50,23 @@ void main() {
     expect(relayFromInvite(link), (url: relay, access: access));
     // The core still reads the secret: it is after the last #.
     expect(link.substring(link.lastIndexOf('#') + 1), secret);
+  });
+
+  test('a device token is carried as it is', () {
+    final link = inviteLinkWithRelay(native, (url: relay, access: token));
+    expect(link, 'easynotes://join#relay=$relay;access=$token#$secret');
+    expect(relayFromInvite(link), (url: relay, access: token));
+    expect(link.substring(link.lastIndexOf('#') + 1), secret);
+  });
+
+  test('a device token survives the web handoff', () {
+    final link = inviteLinkForSharing(
+      native,
+      webOrigin: 'https://app.example',
+      relay: (url: relay, access: token),
+      web: true,
+    );
+    expect(relayFromInvite(link), (url: relay, access: token));
   });
 
   test('a web link carries the relay before its secret', () {

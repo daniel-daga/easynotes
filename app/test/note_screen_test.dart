@@ -7,8 +7,9 @@ library;
 
 import 'dart:async';
 
-import 'package:easynotes/core/fake_note_core.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'package:easynotes/core/app_visibility.dart';
+import 'support/fake_note_core.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
@@ -25,6 +26,7 @@ Future<void> pumpScreen(
   FakeNoteLibrary? invites,
   String? relayUrl,
   String? relayAccess,
+  bool seedBlankItem = true,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -35,6 +37,7 @@ Future<void> pumpScreen(
         invites: invites ?? (FakeNoteLibrary()..setUpSharing()),
         relayUrl: relayUrl,
         relayAccess: relayAccess,
+        seedBlankItem: seedBlankItem,
       ),
     ),
   );
@@ -285,6 +288,163 @@ void main() {
     expect(focusedFieldText(tester), isNull);
   });
 
+  testWidgets('a title typed before the app is hidden is still saved', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(items: const ['milk']);
+    await pumpScreen(tester, core);
+    addTearDown(() => appIsForeground.value = true);
+
+    await tester.enterText(find.byKey(const Key('title-field')), 'Groceries');
+    await tester.pumpAndSettle();
+    // The title waits for submit or focus loss, so nothing has gone yet.
+    expect(core.edits, isEmpty);
+
+    // What main.dart's AppLifecycleListener.onHide does before the system may
+    // reclaim the app. A screen test installs no lifecycle listener, so the
+    // notifier the screen listens to is the seam here.
+    appIsForeground.value = false;
+    await tester.pumpAndSettle();
+
+    expect(core.edits, ['setTitle(Groceries)']);
+    expect(core.current.title, 'Groceries');
+    // The hide commits the title only: the list is where it was.
+    expect(visibleItems(tester), ['milk']);
+  });
+
+  testWidgets('a remote rename leaves a title being typed alone', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller;
+
+    // The other person renames the note while this title is still being typed.
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+
+    // The typed title is still there, under the same caret: the peer's rename
+    // replaced neither the text nor the field under it.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Weekly shop');
+    expect(focusedFieldText(tester), 'Weekly shop');
+
+    // And it is what this person's title becomes once they are done.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(core.edits, ['setTitle(Weekly shop)']);
+    expect(core.current.title, 'Weekly shop');
+  });
+
+  testWidgets('tapping away from an untouched title shows a remote rename', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+    // The caret is in the field, so the rename waits rather than moving the
+    // text under it.
+    expect(tester.widget<TextField>(field).controller!.text, 'Groceries');
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+
+    // Nothing was typed here, so nothing is sent and the peer's title stands
+    // rather than being reverted to the one this field opened with.
+    expect(tester.widget<TextField>(field).controller!.text, 'Shopping');
+    expect(core.edits, isEmpty);
+  });
+
+  testWidgets('a title that is still being written is not reverted', (
+    tester,
+  ) async {
+    final core = _SlowTitleCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    core.gate = Completer<void>();
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+
+    // Submitted: the write is on its way and nothing has come back yet.
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(core.current.title, 'Groceries');
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+
+    // A peer's change to an item rebuilds the screen with the title this field
+    // opened with. That is not a rename and must not undo what was sent.
+    core.pushRemote(NoteView(title: 'Groceries', items: core.current.items));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+
+    // And the write coming back says what is already shown.
+    core.gate!.complete();
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, 'Weekly shop');
+    expect(core.current.title, 'Weekly shop');
+  });
+
+  testWidgets('an attachment arriving leaves a title being typed alone', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.enterText(field, 'Weekly shop');
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(field).controller;
+
+    // A picture lands, drawing a row above the title.
+    await core.importAttachment(
+      'kitchen.png',
+      Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4]),
+    );
+    await tester.pumpAndSettle();
+    expect(core.current.attachments, hasLength(1));
+
+    // The title is the same field, still holding what is being typed there.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Weekly shop');
+    expect(focusedFieldText(tester), 'Weekly shop');
+  });
+
+  testWidgets('a remote rename is shown when the title is not being typed in', (
+    tester,
+  ) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    await pumpScreen(tester, core);
+    final field = find.byKey(const Key('title-field'));
+    final controller = tester.widget<TextField>(field).controller;
+
+    core.pushRemote(NoteView(title: 'Shopping', items: core.current.items));
+    await tester.pumpAndSettle();
+
+    // The same field now showing what the note says: no stale title, and no
+    // new controller for the person's next tap to land in.
+    expect(tester.widget<TextField>(field).controller, same(controller));
+    expect(controller!.text, 'Shopping');
+    expect(find.text('Groceries'), findsNothing);
+    expect(
+      core.edits,
+      isEmpty,
+      reason: 'showing a remote rename must not echo an edit back',
+    );
+  });
+
   testWidgets('an empty checklist starts with one focused blank item', (
     tester,
   ) async {
@@ -300,6 +460,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(core.current.items, hasLength(1));
     expect(core.edits.where((edit) => edit == 'addItem()'), hasLength(1));
+  });
+
+  testWidgets('a joined note is not seeded with a blank item', (tester) async {
+    // Its items are on the relay and about to arrive; a blank made here would
+    // sync out to everyone on the list.
+    final core = FakeNoteCore();
+    await pumpScreen(tester, core, seedBlankItem: false);
+
+    expect(core.edits, isEmpty);
+    expect(visibleItems(tester), isEmpty);
+    expect(find.byKey(const Key('add-list-entry')), findsOneWidget);
   });
 
   testWidgets(
@@ -423,8 +594,60 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(NoteScreen), findsNothing);
-    expect(core.edits, contains('removeItem($id)'));
+    // Dropped, not deleted: text a peer typed into it meanwhile is kept.
+    expect(core.edits, contains('dropIfBlank($id)'));
+    expect(core.edits, isNot(contains('removeItem($id)')));
     expect(core.current.items, isEmpty);
+  });
+
+  testWidgets('a note deleted while it is open leaves the screen', (
+    tester,
+  ) async {
+    // The real core answers UnknownNote once the library has forgotten the
+    // note, and this screen still has the blank row an empty checklist opens
+    // with. Back in that window must not leave the screen stuck.
+    final core = _GoneCore();
+    final library = FakeNoteLibrary(notes: {'this-note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            key: const Key('open'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => NoteScreen(
+                  core: core,
+                  storage: FakeStorageHealth(),
+                  noteId: 'this-note',
+                  invites: library,
+                  library: library,
+                ),
+              ),
+            ),
+            child: const Text('notes'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open')));
+    await tester.pumpAndSettle();
+    expect(core.current.items, hasLength(1));
+
+    // Removed from the account, and Back arrives before the list's answer
+    // has rebuilt this screen.
+    core.gone = true;
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(NoteScreen), findsNothing);
+    expect(find.text('notes'), findsOneWidget);
+
+    // The list's answer arrives after this screen has left, and does not take
+    // the list away with it.
+    await library.forgetNote('this-note');
+    await tester.pumpAndSettle();
+    expect(find.text('notes'), findsOneWidget);
   });
 
   testWidgets('checking an item sends an edit and strikes the text through', (
@@ -1281,6 +1504,41 @@ void main() {
     expect(visibleItems(tester), ['three', 'one', 'two']);
   });
 
+  testWidgets('dragging beside a folded section never lands inside it', (
+    tester,
+  ) async {
+    // Rows this device folded away are not drawn, so they are not places a
+    // drop can land: counting them as targets is how a dragged row used to
+    // vanish into the fold instead of appearing where it was dropped.
+    final core = FakeNoteCore(items: const ['bread']);
+    final dairy = await core.addHeading('Dairy');
+    await core.addItem('milk');
+    await core.addItem('cheese');
+    await core.addHeading('Produce');
+    await core.addItem('apples');
+    await core.setCollapsed(dairy, true);
+    await pumpScreen(tester, core);
+    expect(visibleItems(tester), ['bread', 'apples']);
+
+    final list = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    // The drawn rows are bread, Dairy, Produce, apples; below apples is the
+    // third slot in the list without bread.
+    list.onReorderItem!(0, 3);
+    await tester.pumpAndSettle();
+
+    expect(visibleItems(tester), ['apples', 'bread']);
+    expect(core.current.items.map((item) => item.text), [
+      'Dairy',
+      'milk',
+      'cheese',
+      'Produce',
+      'apples',
+      'bread',
+    ], reason: 'bread is after the folded run, not inside it');
+  });
+
   testWidgets('says so when an edit could not be kept', (tester) async {
     // The screen a person is typing into is the one that has to say it: a
     // warning only the note list draws is a warning they see after the edit
@@ -1488,6 +1746,232 @@ void main() {
       expect(controller.selection, const TextSelection.collapsed(offset: 13));
     });
   });
+
+  group('sections', () {
+    /// A list with one section and two rows in it.
+    Future<(FakeNoteCore, String)> sections(WidgetTester tester) async {
+      final core = FakeNoteCore(items: const []);
+      final heading = await core.addHeading('Dairy');
+      await core.addItem('milk');
+      await core.addItem('cheese');
+      await pumpScreen(tester, core);
+      return (core, heading);
+    }
+
+    testWidgets('a heading is drawn without a checkbox and counts its rows', (
+      tester,
+    ) async {
+      final (_, heading) = await sections(tester);
+
+      expect(
+        find.byKey(Key('heading-text:$heading')),
+        findsOneWidget,
+        reason: 'the heading is a row like any other',
+      );
+      expect(find.byType(Checkbox), findsNWidgets(2));
+      expect(find.text('0 of 2'), findsOneWidget);
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('folding a section hides its rows on this device only', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('fold:$heading')));
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), isEmpty);
+      expect(find.byKey(Key('heading-text:$heading')), findsOneWidget);
+      // The fold reached the core, which is what keeps it across a relaunch;
+      // it is a local row, so nothing about it is an edit to the note.
+      expect(await core.collapsed(), {heading});
+      expect(
+        core.edits.where((edit) => edit.startsWith('setHeading')),
+        isEmpty,
+      );
+
+      await tester.tap(find.byKey(Key('fold:$heading')));
+      await tester.pumpAndSettle();
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('typing a hash and a space turns a row into a heading', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        '# Dairy',
+      );
+      // Leaving the row is what settles a line.
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      final item = core.current.items.first;
+      expect(item.heading, isTrue);
+      expect(item.text, 'Dairy');
+      expect(core.edits, contains('setHeading(${item.id}, true)'));
+    });
+
+    testWidgets('removing a heading keeps the rows under it', (tester) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('heading-menu:$heading')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove heading'));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.map((i) => i.text), ['milk', 'cheese']);
+      expect(core.current.items.any((i) => i.heading), isFalse);
+      expect(visibleItems(tester), ['milk', 'cheese']);
+    });
+
+    testWidgets('turning a heading into an item keeps it where it was', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+
+      await tester.tap(find.byKey(Key('heading-menu:$heading')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Turn into item'));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.first.text, 'Dairy');
+      expect(core.current.items.first.heading, isFalse);
+      expect(visibleItems(tester), ['Dairy', 'milk', 'cheese']);
+    });
+
+    testWidgets('a row crossed off says which section it came from', (
+      tester,
+    ) async {
+      final (core, heading) = await sections(tester);
+      await tester.tap(find.byKey(Key('check:${core.current.items[1].id}')));
+      await tester.pumpAndSettle();
+      await showCrossedOff(tester);
+
+      // The section is folded open, so the crossed-off row is drawn with it.
+      expect(visibleItems(tester), ['cheese', 'milk']);
+      expect(
+        find.byKey(const ValueKey('crossed-section:Dairy')),
+        findsOneWidget,
+      );
+      expect(find.text('Crossed off items (1)'), findsOneWidget);
+      expect(find.byKey(Key('count:$heading')), findsOneWidget);
+      expect(find.text('1 of 2'), findsOneWidget);
+    });
+
+    testWidgets('the section row adds a heading, focused', (tester) async {
+      final core = FakeNoteCore(items: const ['milk']);
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('add-section')));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.last.heading, isTrue);
+      expect(focusedFieldText(tester), '');
+      expect(
+        find.byKey(Key('heading-text:${core.current.items.last.id}')),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('what this person adds over and over', () {
+    testWidgets('a blank row offers back what this list keeps needing', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await core.rememberItem('Bread');
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsOneWidget);
+      expect(find.byKey(const Key('suggestion:Milk')), findsOneWidget);
+      expect(find.byKey(const Key('suggestion:Bread')), findsOneWidget);
+    });
+
+    testWidgets('tapping a suggestion fills the row and remembers it', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(const Key('suggestion:Milk')));
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.map((i) => i.text), ['Milk', '']);
+      expect(visibleItems(tester), ['Milk', '']);
+      // What is on the list is no longer offered.
+      expect(find.byKey(const Key('suggestion:Milk')), findsNothing);
+      // And the row that was filled is the one that was already there.
+      expect(core.edits, isNot(contains('addItem(Milk)')));
+    });
+
+    testWidgets('typing the first letter takes the strip away', (tester) async {
+      final core = FakeNoteCore(items: const []);
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+      expect(find.byKey(const ValueKey('suggestions')), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        'M',
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('a list with nothing to offer draws no strip', (tester) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('a text note offers nothing', (tester) async {
+      final core = FakeNoteCore(kind: NoteKind.text, body: 'milk');
+      await core.rememberItem('Milk');
+      await pumpScreen(tester, core);
+
+      expect(find.byKey(const ValueKey('suggestions')), findsNothing);
+    });
+
+    testWidgets('leaving a row remembers what was typed into it', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const []);
+      await pumpScreen(tester, core);
+
+      await tester.enterText(
+        find.byKey(Key('text:${core.current.items.single.id}')),
+        'Oat milk',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(core.history['Oat milk'], 1);
+    });
+
+    testWidgets('opening a row and leaving it remembers nothing', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk']);
+      await pumpScreen(tester, core);
+
+      await tester.tap(find.byKey(Key('text:${core.current.items.single.id}')));
+      await tester.pumpAndSettle();
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+
+      expect(core.history, isEmpty, reason: 'nothing was added');
+    });
+  });
 }
 
 /// The text of whichever item field has the keyboard, or null.
@@ -1496,6 +1980,32 @@ String? focusedFieldText(WidgetTester tester) => tester
     .where((field) => field.focusNode?.hasFocus ?? false)
     .map((field) => field.controller?.text)
     .firstOrNull;
+
+/// A core whose title write comes back later, so a test can look at the field
+/// while its own edit is still on its way.
+class _SlowTitleCore extends FakeNoteCore {
+  _SlowTitleCore({super.title, super.items});
+
+  Completer<void>? gate;
+
+  @override
+  Future<void> setTitle(String title) async {
+    await gate?.future;
+    await super.setTitle(title);
+  }
+}
+
+/// A core whose note has left the device, as the real one answers once the
+/// library has forgotten it.
+class _GoneCore extends FakeNoteCore {
+  bool gone = false;
+
+  @override
+  NoteView get current {
+    if (gone) throw StateError('unknown note');
+    return super.current;
+  }
+}
 
 /// A core that makes items only when told to, so a test can type into the
 /// time it takes.

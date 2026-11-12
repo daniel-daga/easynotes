@@ -153,6 +153,45 @@ async fn refresh_marker_follows_the_captured_subscription_head() {
     }
 }
 
+/// The app has two independent id counters, so two refreshes can be in flight
+/// at once; both must be answered, each at the head it captured.
+#[tokio::test]
+async fn every_refresh_id_in_flight_is_answered() {
+    let (relay, log) = relay().await;
+    let (note, envelope) = an_envelope(32);
+    let history = (BACKLOG_CHUNK * 4) as i64;
+    for _ in 0..history {
+        log.append(&note.encode(), &envelope).await.unwrap();
+    }
+
+    let mut sync = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
+        .await
+        .unwrap();
+    sync.subscribe(note, 0).await.unwrap();
+    // Both go out before the backlog has drained, so both are pending at once.
+    sync.refresh("refresh-1").await.unwrap();
+    sync.refresh("refresh-2").await.unwrap();
+
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        match tokio::time::timeout(PATIENCE, sync.next())
+            .await
+            .expect("the relay went quiet with a refresh unanswered")
+            .unwrap()
+            .expect("the relay closed the socket")
+        {
+            Routed::Refresh { id, note: n, seq } if n == note => {
+                assert_eq!(seq, history);
+                answered.push(id);
+            }
+            Routed::Note(_, _) => {}
+            _ => panic!("unexpected message while catching up"),
+        }
+    }
+    answered.sort();
+    assert_eq!(answered, ["refresh-1", "refresh-2"]);
+}
+
 /// The point of the change: twenty notes, one socket, one token.
 #[tokio::test]
 async fn twenty_notes_are_one_socket_and_one_handshake() {
@@ -378,8 +417,20 @@ async fn a_long_backlog_does_not_hold_up_another_note() {
 /// fan-out. When it reads again it gets everything, once each, in order.
 #[tokio::test]
 async fn a_socket_that_stops_reading_loses_nothing() {
+    a_socket_that_stops_reading_loses_nothing_sending(4096, 2_000).await;
+}
+
+/// The same, with envelopes large enough to reach the session's byte budget as
+/// well as its message count, so the refusal and the chunked replay are driven
+/// end to end. What the budget counts is pinned by the unit tests in `sync.rs`.
+#[tokio::test]
+async fn a_socket_that_stops_reading_is_bounded_by_envelope_bytes() {
+    a_socket_that_stops_reading_loses_nothing_sending(128 * 1024, 200).await;
+}
+
+async fn a_socket_that_stops_reading_loses_nothing_sending(padding: usize, busy: usize) {
     let (relay, _log) = relay().await;
-    let (note, envelope) = an_envelope(4096);
+    let (note, envelope) = an_envelope(padding);
 
     let mut slow = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
         .await
@@ -392,7 +443,6 @@ async fn a_socket_that_stops_reading_loses_nothing() {
 
     // Far past the fan-out's buffer and the socket's, while `slow` reads
     // nothing: several megabytes, so it cannot all sit in the kernel.
-    let busy = 2_000;
     let mut writer = DeviceSync::connect(&relay.ws_base(), &token(&relay).await)
         .await
         .unwrap();

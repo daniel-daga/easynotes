@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 /// in `tests/protocol.rs` fails if the two ever drift.
 pub const MAX_ENVELOPE_BYTES: usize = 1 << 20;
 
+/// The largest message a device may send over `/v1/sync`. A full envelope in
+/// base64 is 1.33 MiB; a compact adds its live-media list — up to
+/// `easynotes_core::compaction::MAX_LIVE_OBJECTS` ids of 22 characters, 98 KiB —
+/// and the JSON around it all, so half as much again covers every legal message
+/// while staying far below the 64 MiB a frame may be by default.
+pub const MAX_MESSAGE_BYTES: usize = MAX_ENVELOPE_BYTES * 3 / 2;
+
 /// The protocol versions this relay speaks ([ADR 0029](../../docs/decisions.md#adr-0029)). A client
 /// names its own in `?p=` on every request; one outside this range is refused
 /// with `426` before anything else runs.
@@ -72,6 +79,10 @@ pub struct TokenRequest {
     /// gated relay, ignored on an open one.
     #[serde(default)]
     pub access: Option<String>,
+    /// The ID of a billed device token ([ADR 0038](../../docs/decisions.md#adr-0038)),
+    /// when the device holds one. Absent for a legacy operator key.
+    #[serde(default)]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,8 +112,10 @@ pub const RELAY_FULL: &str = "relay_full";
 /// ([ADR 0026](../../docs/decisions.md#adr-0026)).
 pub const GONE: &str = "gone";
 
-/// What an append is refused with past the address's write budget ([ADR 0028](../../docs/decisions.md#adr-0028)). The relay closes
-/// the socket after saying so, and the client backs off before it reconnects.
+/// What any message on the sync socket is refused with past the address's
+/// write budget ([ADR 0028](../../docs/decisions.md#adr-0028)). The relay
+/// closes the socket after saying so, and the client backs off before it
+/// reconnects.
 pub const RATE_LIMITED: &str = "rate_limited";
 
 /// How many notes one socket may be subscribed to at once. A device's notes,
@@ -243,6 +256,11 @@ pub struct CreateInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
     /// The note key sealed for whoever claims the link, base64url. Optional:
     /// an older client sends none, and the join then waits for the owner's
     /// device as it always did.
@@ -271,6 +289,11 @@ pub struct JoinInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -290,6 +313,11 @@ pub struct PollInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +349,11 @@ pub struct SetPreGrant {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
     /// The sealed pre-grant, base64url.
     pub pre_grant: String,
 }
@@ -333,6 +366,11 @@ pub struct OwnInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -360,6 +398,11 @@ pub struct AnswerInvite {
     /// a gated relay, ignored on an open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The ID of the billed device token whose secret made that proof
+    /// ([ADR 0038](../../docs/decisions.md#adr-0038)), when the caller holds
+    /// one. Absent for a legacy operator key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

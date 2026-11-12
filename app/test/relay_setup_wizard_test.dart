@@ -8,6 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:easynotes/core/relay_profiles.dart';
+import 'package:easynotes/core/relay_session.dart';
 import 'package:easynotes/ui/relay_setup_wizard.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -235,6 +236,74 @@ void main() {
     expect(result, isTrue);
   });
 
+  /// What the access-key field holds right now.
+  String? accessFieldText(WidgetTester tester) => tester
+      .widget<TextFormField>(find.byKey(const Key('relay-setup-access')))
+      .controller
+      ?.text;
+
+  testWidgets('a key does not follow the address to another server', (
+    tester,
+  ) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://a.example/#access=$key');
+    expect(accessFieldText(tester), key);
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'https://b.example');
+
+    expect(accessFieldText(tester), isEmpty);
+    await enterAccess(tester);
+    expect(verified, ['https://b.example']);
+    expect(result, isTrue);
+  });
+
+  testWidgets('another spelling of the same server keeps the key', (
+    tester,
+  ) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://a.example/#access=$key');
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'wss://A.Example/');
+
+    expect(accessFieldText(tester), key);
+    await enterAccess(tester);
+    expect(verified, ['https://a.example with $key']);
+  });
+
+  testWidgets('a new link replaces the key already in the field', (
+    tester,
+  ) async {
+    final other = base64Url.encode(List<int>.filled(32, 4)).replaceAll('=', '');
+    await pump(tester);
+    await enterUrl(tester, 'https://relay.example/#access=$key');
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await enterUrl(tester, 'https://relay.example/#access=$other');
+
+    expect(accessFieldText(tester), other);
+    await enterAccess(tester);
+    expect(verified, ['https://relay.example with $other']);
+  });
+
+  testWidgets('the key is obscured while it is typed', (tester) async {
+    await pump(tester);
+    await enterUrl(tester, 'https://relay.example');
+
+    final field = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byKey(const Key('relay-setup-access')),
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(field.obscureText, isTrue);
+    expect(field.enableSuggestions, isFalse);
+  });
+
   testWidgets('a relay that cannot be reached says so and can be retried', (
     tester,
   ) async {
@@ -383,10 +452,28 @@ void main() {
       expect(result, isTrue);
     });
 
-    testWidgets('a move that fails after it was written is not retried', (
+    testWidgets('a move that fails before it is written can be retried', (
       tester,
     ) async {
       moveFails = StateError(
+        'Some changes could not be saved. Your notes have not moved.',
+      );
+      await pump(tester, offerMove: true);
+      await enterUrl(tester, 'https://relay.example');
+      await enterAccess(tester);
+      await tapKey(tester, 'move-local-notes');
+
+      expect(find.byKey(const Key('relay-setup-failed')), findsOneWidget);
+      expect(find.textContaining('have not moved'), findsOneWidget);
+      expect(find.byKey(const Key('relay-setup-retry')), findsOneWidget);
+      expect(find.byKey(const Key('relay-setup-close')), findsNothing);
+      expect(result, isNull);
+    });
+
+    testWidgets('a move that fails after it was written is not retried', (
+      tester,
+    ) async {
+      moveFails = const SyncNotStartedAfterMove(
         'Your collection has moved to https://relay.example and is available '
         'offline. Sync could not start: no network',
       );

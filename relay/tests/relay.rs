@@ -504,6 +504,57 @@ async fn refuses_an_oversized_envelope() {
     assert!(store.all_envelopes().is_empty());
 }
 
+/// The socket cap is sized on a full envelope's base64, and it is applied by
+/// the upgrade, so an oversized frame is refused before the relay buffers or
+/// decodes it.
+#[tokio::test]
+async fn admits_a_full_envelope_and_refuses_an_oversized_frame() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // A full-size envelope's base64 is admitted: the relay reads and decodes
+    // it, and answers the append rather than hanging up.
+    let raw = vec![0u8; easynotes_relay::protocol::MAX_ENVELOPE_BYTES];
+    let legal = format!(
+        r#"{{"type":"append","note":"{}","envelope":"{}"}}"#,
+        NoteId::random().encode(),
+        b64_encode(&raw),
+    );
+    socket.send(Message::text(legal)).await.unwrap();
+    let reply = loop {
+        match socket.next().await.unwrap().unwrap() {
+            Message::Text(text) => break text.to_string(),
+            _ => continue,
+        }
+    };
+    assert!(reply.contains("not subscribed"), "got: {reply}");
+
+    // One byte past the cap is refused at the frame header, so the socket ends
+    // with no reply at all.
+    let _ = socket
+        .send(Message::text(
+            "x".repeat(easynotes_relay::protocol::MAX_MESSAGE_BYTES + 1),
+        ))
+        .await;
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("the relay kept reading an oversized frame");
+    // A close frame is the refusal as much as a dropped socket: what must not
+    // happen is a text reply carrying the oversized message.
+    assert!(
+        matches!(next, Some(Err(_)) | None | Some(Ok(Message::Close(_)))),
+        "the relay answered an oversized frame: {}",
+        next.is_some()
+    );
+}
+
 #[tokio::test]
 async fn refuses_a_blob_that_is_not_an_envelope() {
     let (relay, store) = relay().await;
@@ -818,9 +869,12 @@ async fn ready_reports_the_version_while_the_store_answers() {
 /// the one state monitoring has to tell apart from a healthy relay.
 #[tokio::test]
 async fn ready_fails_when_the_store_does_not_answer() {
-    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
+    let relay = Relay::serve(
+        Arc::new(Unreachable::default()),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
     let ready = reqwest::get(format!("{}/v1/ready", relay.http_base()))
         .await
         .unwrap();
@@ -836,8 +890,37 @@ async fn ready_fails_when_the_store_does_not_answer() {
     assert!(health.status().is_success());
 }
 
+/// A burst of probes costs the store one check, not one each: `/v1/ready` is
+/// public and unlimited, so a per-request `SELECT 1` lets an anonymous loop
+/// hold the pool and fail the relay's own probe.
+#[tokio::test]
+async fn a_burst_of_readiness_probes_asks_the_store_once() {
+    let store = Arc::new(Unreachable::default());
+    let relay = Relay::serve(store.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    for _ in 0..50 {
+        let r = http
+            .get(format!("{}/v1/ready", relay.http_base()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let checks = store.checks.load(std::sync::atomic::Ordering::SeqCst);
+    // Fifty local requests are well inside the one-second cache; two leaves
+    // room for a slow CI box crossing the boundary once.
+    assert!(checks <= 2, "50 probes asked the store {checks} times");
+}
+
 /// A store whose database has gone away: every call fails.
-struct Unreachable;
+#[derive(Default)]
+struct Unreachable {
+    /// How many times `/v1/ready` asked it, so a test can tell a burst from a
+    /// per-request check.
+    checks: std::sync::atomic::AtomicUsize,
+}
 
 /// The value of one series in an exposition, named with its labels exactly as
 /// the relay prints them.
@@ -994,9 +1077,12 @@ async fn metrics_count_what_the_relay_does() {
 /// failed scrape that looks the same as a relay that is down.
 #[tokio::test]
 async fn metrics_say_when_the_store_does_not_answer() {
-    let relay = Relay::serve(Arc::new(Unreachable), "127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
+    let relay = Relay::serve(
+        Arc::new(Unreachable::default()),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
     let text = easynotes_relay::metrics::render(&relay.state).await;
     assert_eq!(metric(&text, "easynotes_relay_store_up"), Some(0));
     assert_eq!(metric(&text, "easynotes_relay_notes"), None);
@@ -1200,6 +1286,43 @@ impl RelayStore for Unreachable {
     async fn withdraw_invite(&self, _: &str) -> easynotes_relay::error::Result<()> {
         gone()
     }
+    async fn create_access_token(
+        &self,
+        _: &str,
+        _: &[u8; 32],
+        _: Option<i64>,
+    ) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn access_token(
+        &self,
+        _: &str,
+    ) -> easynotes_relay::error::Result<Option<easynotes_relay::store::AccessToken>> {
+        gone()
+    }
+    async fn bind_access_token(
+        &self,
+        _: &str,
+        _: &[u8; 32],
+    ) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn set_access_token_read_only(
+        &self,
+        _: &str,
+        _: bool,
+    ) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn unbind_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<()> {
+        gone()
+    }
+    async fn revoke_access_token(&self, _: &str, _: i64) -> easynotes_relay::error::Result<bool> {
+        gone()
+    }
+    async fn purge_revoked_access_tokens(&self, _: i64) -> easynotes_relay::error::Result<u64> {
+        gone()
+    }
     async fn purge(
         &self,
         _: &str,
@@ -1243,6 +1366,8 @@ impl RelayStore for Unreachable {
         gone()
     }
     async fn check(&self) -> easynotes_relay::error::Result<()> {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         gone()
     }
 }
@@ -1267,4 +1392,143 @@ fn b64_decode(s: &str) -> Vec<u8> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(s)
         .unwrap()
+}
+
+/// Two instances over one store, as a rolling deploy runs them. Each fans out
+/// only what it appended itself, so a subscriber on one must not take a later
+/// number from its own instance as the next one: it would move its cursor past
+/// the append the other instance took, and never be sent it.
+#[tokio::test]
+async fn an_append_through_another_instance_is_not_skipped() {
+    let store = MemoryStore::new();
+    let config = || RelayConfig {
+        token_signing_key: [9; 32],
+        ..RelayConfig::default()
+    };
+    let serve = || {
+        Relay::serve_with(
+            Arc::new(store.clone()),
+            "127.0.0.1:0".parse().unwrap(),
+            config(),
+        )
+    };
+    let (a, b) = (serve().await.unwrap(), serve().await.unwrap());
+    let device = DeviceIdentity::generate();
+    let note = NoteId::random();
+    let key = NoteKey::random();
+    let token = easynotes_core::sync::authenticate(&a.http_base(), None, &device)
+        .await
+        .unwrap();
+
+    let mut reader = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_a = NoteSocket::connect(&a.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    let mut on_b = NoteSocket::connect(&b.ws_base(), &token, note, 0)
+        .await
+        .unwrap();
+    for socket in [&mut reader, &mut on_a, &mut on_b] {
+        assert!(drain(socket).await.is_empty());
+    }
+
+    let first = envelope(&device, note, &key, 0, b"through B");
+    on_b.append(&first).await.unwrap();
+    take(&mut on_b, 1).await;
+    let second = envelope(&device, note, &key, 1, b"through A");
+    on_a.append(&second).await.unwrap();
+
+    assert_eq!(take(&mut reader, 2).await, vec![first, second]);
+    assert_eq!(reader.last_seq, 2);
+}
+
+/// A client that asks for a great deal and then stops reading must not hold
+/// the relay's stop. Its socket's queue fills, and neither the session nor
+/// the task writing to it may wait on that queue for ever: the session is
+/// closed when the relay stops, whatever is still unsent.
+#[tokio::test]
+async fn a_client_that_stops_reading_does_not_hold_up_a_stop() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let (relay, _store) = relay().await;
+    let device = DeviceIdentity::generate();
+    let token = easynotes_core::sync::authenticate(&relay.http_base(), None, &device)
+        .await
+        .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    for _ in 0..64 {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    // Let every subscription catch up, so a refresh is answered at once
+    // rather than after a backlog.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // One refresh answered once per subscription, each answer carrying its
+    // megabyte id: far more than a socket buffers, and this client never
+    // reads any of it.
+    let id = "i".repeat(1 << 20);
+    for _ in 0..4 {
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"refresh","id":"{id}"}}"#
+            )))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    let drained = relay.shutdown(std::time::Duration::from_secs(10)).await;
+    assert!(drained, "the stop waited out its whole drain period");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    drop(socket);
+}
+
+/// A subscribe holds memory for as long as its socket is open, so it costs
+/// the write budget more than a message that only reads: two fit in a budget
+/// of ten thousand bytes, and the third is refused and the socket closed.
+#[tokio::test]
+async fn a_subscribe_spends_the_write_budget() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let relay = relay_with(RelayConfig {
+        writes: RateLimit::new(1, 10_000),
+        ..RelayConfig::default()
+    })
+    .await;
+    let token =
+        easynotes_core::sync::authenticate(&relay.http_base(), None, &DeviceIdentity::generate())
+            .await
+            .unwrap();
+    let url = format!("{}/v1/sync?p=2&token={token}", relay.ws_base());
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // One at a time, each answered before the next is sent: a refusal closes
+    // the session, and backlogs not yet sent go with it.
+    for expected in ["\"type\":\"caught\"", "\"type\":\"caught\"", "rate_limited"] {
+        let note = NoteId::random().encode();
+        socket
+            .send(Message::text(format!(
+                r#"{{"type":"subscribe","note":"{note}","since":0}}"#
+            )))
+            .await
+            .unwrap();
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("no answer")
+                .unwrap()
+                .unwrap();
+            if let Message::Text(text) = message {
+                assert!(text.contains(expected), "wanted {expected}, got {text}");
+                break;
+            }
+        }
+    }
 }

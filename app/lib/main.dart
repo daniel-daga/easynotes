@@ -19,13 +19,14 @@ import 'core/local_notifications.dart';
 import 'core/master_key.dart';
 import 'core/note_library.dart';
 import 'core/profile_library.dart';
+import 'core/recording_output.dart';
 import 'core/reminder_scheduler.dart';
 import 'core/relay_profiles.dart';
 import 'core/relay_session.dart';
 import 'core/rust_note_library.dart';
 import 'core/shared_text.dart';
 import 'ui/account_screen.dart';
-import 'ui/about_screen.dart' show registerBundledLicenses;
+import 'ui/about_screen.dart' show registerBundledLicenses, supportContact;
 import 'ui/invites.dart' show joinAlerts;
 import 'ui/note_list_screen.dart';
 import 'ui/onboarding_screen.dart';
@@ -112,7 +113,31 @@ bool get _hasNativeShares =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await runStartup(_startUp);
+}
+
+/// Run [start], and draw the screen that says why if it throws.
+///
+/// Separate from [main] so a test can hand it a startup that fails the way the
+/// real one can — with a corrupt keychain value, say — without a device or a
+/// native library. The web placeholder is [start]'s, so a failure after it is
+/// still caught and replaces it.
+Future<void> runStartup(Future<void> Function() start) async {
+  try {
+    await start();
+  } on Object catch (error, stack) {
+    // Nothing has drawn yet on a device, and a browser is still on the
+    // placeholder. Either would be a dead end without these words.
+    debugPrint('could not start: $error\n$stack');
+    runApp(_StartupErrorScreen(error: '$error'));
+  }
+}
+
+Future<void> _startUp() async {
   registerBundledLicenses();
+  // A run killed mid-recording leaves a plain WAV behind, so the first frame
+  // does not wait on the sweep that removes it.
+  unawaited(sweepStaleRecordings());
   final initialInvite = kIsWeb
       ? inviteLinkFrom(Uri.base.toString())
       : _hasNativeDeepLinks
@@ -160,6 +185,78 @@ Future<void> main() async {
   );
 }
 
+/// What a launch that could not finish shows instead of a blank screen.
+///
+/// It names the error, because the alternative is a person reinstalling over
+/// notes that are still there. There is one way forward, and it is not a
+/// button: a repair here would be code resetting the settings that hold the
+/// only key to the store.
+class _StartupErrorScreen extends StatelessWidget {
+  const _StartupErrorScreen({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'EasyNotes',
+      debugShowCheckedModeBanner: false,
+      theme: _easyNotesTheme(Brightness.light),
+      darkTheme: _easyNotesTheme(Brightness.dark),
+      home: Builder(
+        builder: (context) {
+          final theme = Theme.of(context);
+          return Scaffold(
+            body: SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'EasyNotes could not start',
+                        style: theme.textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'EasyNotes stopped before opening your notes.',
+                      ),
+                      const SizedBox(height: 12),
+                      SelectableText(
+                        error,
+                        key: const Key('startup-error'),
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Close EasyNotes and open it again. If that does not '
+                        'help, update it. If it still will not start, ask for '
+                        "support before reinstalling or clearing this site's "
+                        'data in the browser: either can throw away the notes '
+                        'stored here.',
+                        key: Key('startup-advice'),
+                      ),
+                      if (supportContact.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        SelectableText(
+                          'Support: $supportContact',
+                          key: const Key('startup-support'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 /// Open this device's notes, and start syncing them.
 Future<NoteLibrary> openLibrary(
   RelayProfile profile, {
@@ -189,25 +286,42 @@ Future<NoteLibrary> openLibrary(
 ///
 /// A browser that will not give the app a database is not an error worth
 /// refusing to start over: some private-browsing modes do not, and it can be
-/// switched off outright. The notes go in memory for that tab, which is what
-/// every tab had before this, and the app runs.
+/// switched off outright. The notes go in memory for that tab, with the "Not
+/// saved" banner saying so, and the app runs. A store that *does* open is a
+/// different matter: a key that cannot read its rows, or a row that cannot be
+/// read, is notes that are there and unreadable, and an empty tab over them
+/// would lose whatever is typed next on the next reload. That is an error, and
+/// it goes to whoever opened this library.
 Future<NoteLibrary> openInBrowser(
   RelayProfile profile, {
   bool connect = true,
   bool allowEphemeral = true,
+  Future<BrowserStore> Function(String name) openStore = openBrowserStore,
 }) async {
-  NoteLibrary library;
+  late NoteLibrary library;
   BrowserStore? db;
+  // Only the database itself may fall back to memory. The opening is a
+  // parameter so a test can stand in a browser that will not give one.
   try {
     // Own the database before reading or minting the shared master key too.
-    db = await openBrowserStore('$browserDatabase-${profile.id}');
-    final masterKey = await MasterKeyStore().forBrowser(profileId: profile.id);
-    library = await RustNoteLibrary.openInBrowser(db, masterKey);
+    db = await openStore('$browserDatabase-${profile.id}');
   } on Object catch (error) {
-    await db?.close();
     if (!allowEphemeral) rethrow;
     debugPrint('keeping this tab\'s notes in memory only: $error');
-    library = await RustNoteLibrary.openEphemeral();
+    library = await RustNoteLibrary.openEphemeral(storageError: '$error');
+  }
+  // The key and the rows are not something to paper over. Both throw, and the
+  // store is closed on the way out because nothing here will use it again.
+  if (db != null) {
+    try {
+      library = await RustNoteLibrary.openInBrowser(
+        db,
+        await MasterKeyStore().forBrowser(profileId: profile.id),
+      );
+    } on Object {
+      await db.close();
+      rethrow;
+    }
   }
   // As on a device: a profile is a server and the account that belongs to it
   // (ADR 0031). Without the account there is nothing to sync, so a profile
@@ -359,8 +473,9 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
       try {
         await _session.connectCurrent();
       } on Object {
-        // The status card says why sync is not running; the setup itself is
-        // complete and stays that way.
+        // Sync did not start, so the setup is not complete and must not be
+        // marked as such.
+        return;
       }
       if (!mounted) return;
       setState(() {
@@ -404,7 +519,7 @@ class _EasyNotesAppState extends State<EasyNotesApp> {
     final reminders = ReminderScheduler(library);
     _reminders = reminders;
     unawaited(reminders.start());
-    joinAlerts = SystemJoinAlerts(library);
+    joinAlerts = SystemJoinAlerts();
     _lifecycle = AppLifecycleListener(
       onHide: () {
         appIsForeground.value = false;

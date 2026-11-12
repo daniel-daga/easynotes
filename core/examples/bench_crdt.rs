@@ -121,6 +121,7 @@ fn measure<D: NoteDoc>() -> Measurements {
             id,
             text: format!("item {i}"),
             order: order.clone(),
+            heading: false,
         })
         .unwrap();
         last_key = Some(order);
@@ -194,6 +195,7 @@ fn measure<D: NoteDoc>() -> Measurements {
             id: ItemId::random(),
             text: "milk".into(),
             order: append_key(last_key.as_deref()),
+            heading: false,
         })
         .unwrap()
         .len();
@@ -213,6 +215,7 @@ fn measure<D: NoteDoc>() -> Measurements {
                     id,
                     text: format!("item {i}"),
                     order: order.clone(),
+                    heading: false,
                 })
                 .unwrap();
             key = Some(order);
@@ -243,6 +246,7 @@ fn measure<D: NoteDoc>() -> Measurements {
                     id,
                     text: format!("item {i}"),
                     order: order.clone(),
+                    heading: false,
                 })
                 .unwrap(),
         );

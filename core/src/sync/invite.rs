@@ -15,7 +15,7 @@ use crate::crypto::AuthorKey;
 use crate::error::{CoreError, Result};
 use crate::ids::NoteId;
 use crate::invite::{self, InviteSecret, JoinRequest, OwnerSecret};
-use crate::relay_access::RelayAccess;
+use crate::relay_access::RelayToken;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -93,7 +93,7 @@ fn unb64(raw: &str) -> Result<Vec<u8>> {
 /// may be less than asked for.
 pub async fn open(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     expires_in: u64,
@@ -107,6 +107,7 @@ pub async fn open(
             owner_hash: &owner.hash(),
             expires_in,
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await?;
@@ -118,7 +119,7 @@ pub async fn open(
 /// and the relay gives it back rather than finding the link used.
 pub async fn request(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     member: &AuthorKey,
     sealed_request: &[u8],
@@ -131,6 +132,7 @@ pub async fn request(
             request: &invite::request_name(secret, member),
             payload: &payload,
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await?;
@@ -148,7 +150,7 @@ pub async fn request(
 /// guest waiting for the owner's device as before.
 pub async fn set_pre_grant(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     sealed: &[u8],
@@ -160,6 +162,7 @@ pub async fn set_pre_grant(
             owner: &owner.encode(),
             pre_grant: &encoded,
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await
@@ -186,7 +189,7 @@ pub enum Answer {
 /// Ask how a request went, and open the answer if there is one.
 pub async fn poll(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     member: &MemberIdentity,
     request: &str,
@@ -196,6 +199,7 @@ pub async fn poll(
         &wire::PollInvite {
             token: &secret.token(),
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await?;
@@ -240,7 +244,7 @@ pub struct Listing {
 /// Every request on an invite, opened.
 pub async fn list(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
 ) -> Result<Listing> {
@@ -249,6 +253,7 @@ pub async fn list(
         &wire::OwnInvite {
             owner: &owner.encode(),
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await?;
@@ -275,7 +280,7 @@ pub async fn list(
 /// lets the person in is on the relay.
 pub async fn approve(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
@@ -289,7 +294,7 @@ pub async fn approve(
 /// invite has been claimed either way, and nobody else can ask on it.
 pub async fn decline(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
@@ -299,7 +304,7 @@ pub async fn decline(
 
 async fn answer(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
     request: &str,
@@ -315,6 +320,7 @@ async fn answer(
             owner: &owner.encode(),
             grant,
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await
@@ -324,7 +330,7 @@ async fn answer(
 /// Take an invite down. Anyone holding the link is told it does not exist.
 pub async fn withdraw(
     http_base: &str,
-    access: Option<&RelayAccess>,
+    access: Option<&RelayToken>,
     secret: &InviteSecret,
     owner: &OwnerSecret,
 ) -> Result<()> {
@@ -333,6 +339,7 @@ pub async fn withdraw(
         &wire::OwnInvite {
             owner: &owner.encode(),
             access: access.map(|key| key.invite_proof(&secret.id())),
+            access_id: access.and_then(|token| token.id.as_deref()),
         },
     )
     .await

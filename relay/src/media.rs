@@ -31,9 +31,11 @@
 //!
 //! Writes to one object are serialised under a per-process lock. Several
 //! instances over one directory stay correct where it matters — the metadata
-//! is transactional, files are renamed into place, and a commit that misses a
-//! chunk racing it on another instance says so and is retried — but can leave
-//! a stray chunk behind an assembled object.
+//! is transactional, files are renamed into place, an assemble deletes only
+//! the chunks it hashed and never an assembled object, and a commit that
+//! misses a chunk racing it on another instance says so and is retried — but
+//! the lock narrows the races between instances rather than closing them, and
+//! one can leave a stray chunk behind an assembled object.
 
 use crate::app::AppState;
 use crate::error::{RelayError, Result};
@@ -61,9 +63,15 @@ pub const MIN_CHUNK_SIZE: u32 = 64 << 10;
 /// The largest sealed chunk a `PUT` may carry.
 pub const MAX_PART_BYTES: usize = MAX_CHUNK_SIZE as usize + CHUNK_OVERHEAD;
 
+/// The largest sealed object an attachment can be: its plaintext ceiling plus
+/// the overhead of its chunks at the smallest chunk the relay takes. Bounds
+/// `sealed_len` before [`Geometry::chunks`] narrows it to `u32`.
+const MAX_SEALED_BYTES: u64 =
+    MAX_AUDIO_BYTES + MAX_AUDIO_BYTES.div_ceil(MIN_CHUNK_SIZE as u64) * CHUNK_OVERHEAD as u64;
+
 /// How much one topic's objects, and all of them together, may hold, and how
 /// long an upload may sit unfinished.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MediaLimits {
     /// Reserved and committed bytes in one topic, doomed ones left out. Above
     /// the 200 MB a note may have live at once, with room for the uploads in
@@ -73,6 +81,15 @@ pub struct MediaLimits {
     /// `None`. Doomed bytes count here until they are deleted, because they
     /// are on the disk until then.
     pub ceiling: Option<u64>,
+    /// Reserved bytes not yet committed, in one topic. A reservation is free
+    /// to make, so what is reserved and not yet uploaded is held apart from
+    /// what is stored: enough for several of the largest attachments going up
+    /// at once, and no more.
+    pub staging_note_bytes: u64,
+    /// Reserved bytes not yet committed, in every topic together, or `None`.
+    /// Uploads in progress may hold this much of the ceiling and no more, so
+    /// reservations that are never uploaded cannot fill it.
+    pub staging_ceiling: Option<u64>,
     /// An uncommitted reservation with no chunk for this long is dropped, and
     /// stops counting.
     pub staging_ttl_secs: i64,
@@ -90,6 +107,8 @@ impl Default for MediaLimits {
         Self {
             note_bytes: 1 << 30,
             ceiling: None,
+            staging_note_bytes: DEFAULT_STAGING_PER_NOTE,
+            staging_ceiling: None,
             staging_ttl_secs: 24 * 60 * 60,
             fresh_secs: 24 * 60 * 60,
             doomed_ttl_secs: 7 * 24 * 60 * 60,
@@ -99,6 +118,14 @@ impl Default for MediaLimits {
 
 /// Where a public relay stops reserving new media unless told otherwise.
 pub const DEFAULT_MEDIA_CEILING: u64 = 64 << 30;
+
+/// What uploads in progress may hold in one topic: five of the largest
+/// attachments at once.
+pub const DEFAULT_STAGING_PER_NOTE: u64 = 5 * MAX_AUDIO_BYTES;
+
+/// What uploads in progress may hold on a public relay unless told
+/// otherwise: an eighth of [`DEFAULT_MEDIA_CEILING`].
+pub const DEFAULT_STAGING_CEILING: u64 = DEFAULT_MEDIA_CEILING / 8;
 
 /// Media storage for a relay: the bytes, and the limits on them. `blobs` is
 /// `None` on a relay that keeps its log in Postgres and was given nowhere
@@ -153,6 +180,9 @@ impl Geometry {
         if self.sealed_len == 0 {
             return bad("an empty object");
         }
+        if self.sealed_len > MAX_SEALED_BYTES {
+            return bad("larger than any attachment");
+        }
         let chunks = self.chunks() as u64;
         let (_, last) = self.part(self.chunks() - 1);
         if last <= CHUNK_OVERHEAD as u64 {
@@ -187,6 +217,11 @@ pub enum Reserved {
     NoteFull,
     RelayFull,
     Gone,
+    /// Uploads in progress already hold [`MediaLimits::staging_note_bytes`]
+    /// in this topic.
+    NoteStaging,
+    /// Uploads in progress already hold [`MediaLimits::staging_ceiling`].
+    RelayStaging,
 }
 
 /// What became of a chunk.
@@ -205,9 +240,14 @@ pub enum Assembled {
     Done,
     /// These chunks have not arrived.
     Missing(Vec<u32>),
-    /// Every chunk was there and together they are not the digest. They have
-    /// been dropped, so the upload can be sent again.
-    Mismatch,
+    /// Every chunk was there and together they are not the digest, and any
+    /// chunks have been dropped so they are sent again. `assembled` is whether
+    /// an object was already on disk: that one is not this upload's to delete,
+    /// because a commit on another instance may be recording it as this answer
+    /// is read, and no lock spans the instances (#22).
+    Mismatch {
+        assembled: bool,
+    },
 }
 
 /// Where an object's bytes are kept.
@@ -324,8 +364,9 @@ impl Blobs for MemoryBlobs {
             if <[u8; 32]>::from(Sha256::digest(whole)) == digest {
                 return Ok(Assembled::Done);
             }
-            held.whole = None;
-            return Ok(Assembled::Mismatch);
+            // Left alone, as on disk: nothing here can tell whether a commit
+            // on another instance is recording it (see `Assembled::Mismatch`).
+            return Ok(Assembled::Mismatch { assembled: true });
         }
         let missing: Vec<u32> = (0..chunks)
             .filter(|i| !held.parts.contains_key(i))
@@ -338,7 +379,7 @@ impl Blobs for MemoryBlobs {
             .collect();
         held.parts.clear();
         if <[u8; 32]>::from(Sha256::digest(&whole)) != digest {
-            return Ok(Assembled::Mismatch);
+            return Ok(Assembled::Mismatch { assembled: false });
         }
         held.whole = Some(whole);
         Ok(Assembled::Done)
@@ -458,10 +499,11 @@ impl DirBlobs {
             if <[u8; 32]>::from(Sha256::digest(&whole)) == digest {
                 return Ok(Assembled::Done);
             }
-            // Assembled for a commit that never recorded, and not what this
-            // one names: drop it, as unassembled chunks would be.
-            not_found_ok(std::fs::remove_file(&to))?;
-            return Ok(Assembled::Mismatch);
+            // Assembled for a commit that never recorded, or for one this
+            // process has not heard of. Leave it: dropping it is not this
+            // upload's to do, and no lock over the other instances could make
+            // the check safe (#22).
+            return Ok(Assembled::Mismatch { assembled: true });
         }
         let missing: Vec<u32> = (0..chunks)
             .filter(|i| !parts.join(i.to_string()).exists())
@@ -487,7 +529,7 @@ impl DirBlobs {
         if <[u8; 32]>::from(hash.finalize()) != digest {
             let _ = std::fs::remove_file(&tmp);
             not_found_ok(std::fs::remove_dir_all(&parts))?;
-            return Ok(Assembled::Mismatch);
+            return Ok(Assembled::Mismatch { assembled: false });
         }
         std::fs::create_dir_all(to.parent().expect("an object has a directory")).map_err(io)?;
         std::fs::rename(&tmp, &to).map_err(io)?;
@@ -632,17 +674,21 @@ pub struct CommitRequest {
 }
 
 /// The device a request's bearer token names, or 401.
-fn authorise(state: &AppState, headers: &HeaderMap) -> Result<()> {
+fn authorise(state: &AppState, headers: &HeaderMap) -> Result<crate::auth::Device> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(RelayError::Unauthorized)?;
-    state
-        .auth
-        .device_for(token)
-        .map(|_| ())
-        .ok_or(RelayError::Unauthorized)
+    state.auth.device_for(token).ok_or(RelayError::Unauthorized)
+}
+
+/// [`authorise`], and refuse a read-only device's uploads (ADR 0038).
+fn authorise_write(state: &AppState, headers: &HeaderMap) -> Result<()> {
+    if authorise(state, headers)?.read_only {
+        return Err(RelayError::ReadOnly);
+    }
+    Ok(())
 }
 
 fn ids(note: &str, object: &str) -> Result<()> {
@@ -696,7 +742,11 @@ pub(crate) async fn expire(state: &Arc<AppState>, blobs: &Arc<dyn Blobs>) -> Res
         // Under the object's lock, after its row is gone: a chunk being
         // written as it expired lands first and is removed with the rest.
         let _object = state.append_lock(&lock_key(&note, &object)).await;
-        blobs.remove(&note, &object).await?;
+        if let Err(e) = blobs.remove(&note, &object).await {
+            // The row is gone, so nothing can name these bytes again: say
+            // which, and take the rest rather than strand every later one.
+            tracing::warn!(%note, %object, %e, "could not remove expired media");
+        }
     }
     Ok(())
 }
@@ -707,7 +757,7 @@ pub(crate) async fn reserve(
     headers: HeaderMap,
     Json(request): Json<ReserveRequest>,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let geometry = Geometry {
@@ -735,6 +785,16 @@ pub(crate) async fn reserve(
             Err(RelayError::RelayFull)
         }
         Reserved::Gone => Err(RelayError::TopicGone),
+        // Full for now rather than for good: the uploads holding the room
+        // either commit, and count against the ceiling, or expire.
+        Reserved::NoteStaging => {
+            state.metrics.refused(crate::metrics::Refused::MediaStaging);
+            Err(RelayError::NoteFull)
+        }
+        Reserved::RelayStaging => {
+            state.metrics.refused(crate::metrics::Refused::MediaStaging);
+            Err(RelayError::RelayFull)
+        }
     }
 }
 
@@ -745,7 +805,7 @@ pub(crate) async fn put_chunk(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     // Charged before anything is written, and for a retry of a chunk already
     // stored too: the budget is on what a client sends, which is what a flood
@@ -775,6 +835,10 @@ pub(crate) async fn put_chunk(
     }
     match blobs.put_part(&note, &object, index, body).await? {
         PartPut::Stored => {
+            // A purge may have deleted the row between the read above and
+            // this write. Its directory sweep may already have run, so remove
+            // what this request just recreated.
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.touch_media(&note, &object, now()).await?;
             Ok(StatusCode::CREATED)
         }
@@ -783,19 +847,42 @@ pub(crate) async fn put_chunk(
     }
 }
 
+/// After writing bytes, drop them again if the topic was purged meanwhile.
+///
+/// Purge deletes the row before it removes the directory, so either this sees
+/// a live row and the purge's later sweep takes the bytes, or it sees none and
+/// cleans up after itself. Without this, a write racing a purge recreates a
+/// path the purge has already passed.
+async fn discard_if_gone(
+    state: &Arc<AppState>,
+    blobs: &Arc<dyn Blobs>,
+    note: &str,
+    object: &str,
+) -> Result<()> {
+    if state.store.media(note, object).await?.is_none() {
+        blobs.remove(note, object).await?;
+        return Err(RelayError::NotFound);
+    }
+    Ok(())
+}
+
 pub(crate) async fn status(
     State(state): State<Arc<AppState>>,
     Path((note, object)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<MediaStatus>> {
-    authorise(&state, &headers)?;
+    let device = authorise(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let row = row(&state, &note, &object).await?;
     // Asked about, so wanted: an upload resuming, or a device about to
     // publish what it uploaded. A committed object is fresh again, and one a
-    // compaction doomed is not doomed any more (ADR 0027).
-    state.store.touch_media(&note, &object, now()).await?;
+    // compaction doomed is not doomed any more (ADR 0027). A read-only device
+    // cannot upload, so its question must not count as wanting: otherwise a
+    // lapsed household could keep an unreferenced object alive by polling.
+    if !device.read_only {
+        state.store.touch_media(&note, &object, now()).await?;
+    }
     Ok(Json(match row.committed {
         Some(_) => MediaStatus {
             committed: true,
@@ -814,7 +901,7 @@ pub(crate) async fn commit(
     headers: HeaderMap,
     Json(request): Json<CommitRequest>,
 ) -> Result<StatusCode> {
-    authorise(&state, &headers)?;
+    authorise_write(&state, &headers)?;
     ids(&note, &object)?;
     let blobs = blobs(&state)?;
     let digest: [u8; 32] = URL_SAFE_NO_PAD
@@ -838,6 +925,9 @@ pub(crate) async fn commit(
         .await?
     {
         Assembled::Done => {
+            // The object may have been assembled after a purge removed its
+            // row and swept the directory; drop it rather than leave it.
+            discard_if_gone(&state, blobs, &note, &object).await?;
             state.store.commit_media(&note, &object, digest).await?;
             // Committed now: fresh for a day from now, not from its last
             // chunk, so its descriptor has the whole day to arrive.
@@ -845,7 +935,14 @@ pub(crate) async fn commit(
             Ok(StatusCode::OK)
         }
         Assembled::Missing(_) => Err(RelayError::Conflict("chunks are missing")),
-        Assembled::Mismatch => Err(RelayError::Conflict(
+        // Nothing is deleted here, whatever the row says now: the bytes may be
+        // the object a commit on another instance is recording as this answer
+        // is read, and re-reading the row only narrows that race (#22). The
+        // chunks are dropped by `assemble`, which needs no metadata.
+        Assembled::Mismatch { assembled: true } => Err(RelayError::Conflict(
+            "that object is already assembled under another digest",
+        )),
+        Assembled::Mismatch { assembled: false } => Err(RelayError::Conflict(
             "the chunks are not that digest; send them again",
         )),
     }
@@ -859,8 +956,14 @@ fn range(headers: &HeaderMap, len: u64) -> Option<Option<(u64, u64)>> {
     };
     let spec = raw.to_str().ok()?.strip_prefix("bytes=")?;
     let (from, to) = spec.split_once('-')?;
-    let from: u64 = from.trim().parse().ok()?;
-    let to: u64 = match to.trim() {
+    let (from, to) = (from.trim(), to.trim());
+    if from.is_empty() {
+        // `bytes=-n` is the last n bytes, not a malformed start.
+        let n: u64 = to.parse().ok()?;
+        return (n > 0 && len > 0).then(|| Some((len.saturating_sub(n), n.min(len))));
+    }
+    let from: u64 = from.parse().ok()?;
+    let to: u64 = match to {
         "" => len.checked_sub(1)?,
         to => to.parse::<u64>().ok()?.min(len.checked_sub(1)?),
     };
@@ -894,7 +997,26 @@ pub(crate) async fn fetch(
         )
             .into_response());
     };
-    let (at, count) = wanted.unwrap_or((0, len));
+    let (at, count) = match wanted {
+        // At most one chunk's worth, wherever it starts: an open range such
+        // as `bytes=0-` would otherwise read the whole object into memory,
+        // which is what refusing a rangeless read is for. A shorter 206 than
+        // asked for is allowed (RFC 9110 §14.4) and says what it holds; the
+        // core asks for exactly one chunk, so it never sees one.
+        Some((at, count)) => (at, count.min(row.geometry.full())),
+        // The core always asks for one chunk. A whole read would hold the
+        // object in memory, up to the media ceiling, for every request.
+        // shortcut: rangeless reads above one chunk are refused, not streamed;
+        // stream when a client needs whole objects.
+        None if len > row.geometry.full() => {
+            return Ok((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{len}"))],
+            )
+                .into_response());
+        }
+        None => (0, len),
+    };
     let bytes = blobs
         .read(&note, &object, at, count)
         .await?
@@ -963,6 +1085,17 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_length_that_would_wrap_the_chunk_count_is_refused() {
+        // `chunks()` narrows to `u32`; this used to wrap to 0 and then
+        // underflow below.
+        let g = Geometry {
+            sealed_len: u64::MAX,
+            chunk_size: 1 << 20,
+        };
+        assert!(g.check().is_err());
+    }
+
+    #[test]
     fn ranges() {
         let with = |v: &str| {
             let mut h = HeaderMap::new();
@@ -975,6 +1108,26 @@ mod tests {
         assert_eq!(range(&with("bytes=8-99"), 10), Some(Some((8, 2))));
         assert_eq!(range(&with("bytes=10-"), 10), None);
         assert_eq!(range(&with("bytes=5-2"), 10), None);
-        assert_eq!(range(&with("bytes=-5"), 10), None);
+        assert_eq!(range(&with("bytes=-5"), 10), Some(Some((5, 5))));
+        assert_eq!(range(&with("bytes=-99"), 10), Some(Some((0, 10))));
+        assert_eq!(range(&with("bytes=-0"), 10), None);
+        assert_eq!(range(&with("bytes=-"), 10), None);
+    }
+
+    #[tokio::test]
+    async fn a_write_after_purge_removes_its_bytes() {
+        let mut config = crate::app::RelayConfig::default();
+        let state = AppState::configured(Arc::new(crate::store::MemoryStore::new()), &mut config);
+        let blobs: Arc<dyn Blobs> = Arc::new(MemoryBlobs::default());
+        blobs
+            .put_part("note", "object", 0, Bytes::from_static(b"x"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            discard_if_gone(&state, &blobs, "note", "object").await,
+            Err(RelayError::NotFound)
+        ));
+        assert!(blobs.parts("note", "object").await.unwrap().is_empty());
     }
 }

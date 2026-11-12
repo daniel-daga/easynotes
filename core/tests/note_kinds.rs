@@ -1,11 +1,11 @@
 //! Text notes, and the switch between text and checklist.
 //!
-//! A checklist's item text is a register: two people retyping one item at the
-//! same moment lose one of the two, and for a grocery list that is the right
-//! trade (ADR 0001, D3). A text note's body is not allowed that trade, because a
-//! shared note is where two people really do type into one paragraph. So the
-//! claim tested first is that concurrent typing in one body keeps both people's
-//! characters.
+//! A text note's body is a text object, so two people typing in one paragraph at
+//! the same moment both keep their characters. An item's text is one too, since
+//! 2026-10-29, when two devices typing a word each into one blank item lost one
+//! of them ([ADR 0036](../../docs/decisions.md#adr-0036)). So the claim tested
+//! first is that concurrent typing in one body keeps both people's characters,
+//! and `tests/convergence.rs` holds the same for an item.
 //!
 //! The second is the one the switch makes: converting moves content, and a merge
 //! never hides it. A peer who was typing into the side a conversion emptied must

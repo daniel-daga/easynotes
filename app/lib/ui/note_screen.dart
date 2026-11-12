@@ -41,6 +41,7 @@ class NoteScreen extends StatefulWidget {
     required this.noteId,
     required this.invites,
     this.autofocusBody = false,
+    this.seedBlankItem = true,
     this.library,
     this.onLabels,
     this.onReminders,
@@ -70,6 +71,11 @@ class NoteScreen extends StatefulWidget {
 
   /// Put the cursor in the body when opening a freshly created text note.
   final bool autofocusBody;
+
+  /// Whether an empty checklist gets one blank item to type into when it
+  /// opens. Off for a note that was just joined: its items are on the relay and
+  /// on their way, and a blank made here would sync out to everyone on it.
+  final bool seedBlankItem;
 
   /// The note's personal placement and appearance controls. Optional for small
   /// isolated screen previews; the app supplies it when opening a note.
@@ -116,6 +122,18 @@ class _NoteScreenState extends State<NoteScreen> {
   /// Read once from the person's setting, then written back on every tap, so
   /// the next note (on any of their devices) opens the way this one was left.
   late bool _crossedOffExpanded = widget.library?.tickedShown ?? false;
+
+  /// The section headings folded on **this device**, read from the note's local
+  /// row when it opens. Folding is how one person is reading one list, not a
+  /// fact about it, so it is not in the note and not in the account document
+  /// either ([ADR 0037]).
+  Set<String> _folded = const {};
+
+  /// The blank row somebody is about to type in, and the lines this note offers
+  /// back for it. Asked for when a blank row takes focus and dropped as soon as
+  /// anything is typed, so the strip is only ever beside an empty row.
+  String? _focusedBlank;
+  List<String> _suggestions = const [];
   bool _deletionPopScheduled = false;
 
   /// How long the app bar's stack of people may go without asking the core
@@ -163,10 +181,22 @@ class _NoteScreenState extends State<NoteScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_startEmptyChecklist());
+      if (mounted && widget.seedBlankItem) unawaited(_startEmptyChecklist());
     });
     _viewWatch = widget.core.watch().listen((note) {
       _refreshPending();
+      // The strip is for an empty row. The first letter typed is the answer to
+      // it, and the row it belonged to is no longer blank.
+      final blank = _focusedBlank;
+      if (blank != null &&
+          note.items.any(
+            (item) => item.id == blank && item.text.trim().isNotEmpty,
+          )) {
+        setState(() {
+          _focusedBlank = null;
+          _suggestions = const [];
+        });
+      }
       final id = _playingAttachment;
       if (id != null && !note.attachments.any((a) => a.id == id)) {
         unawaited(_stopPlayback());
@@ -183,6 +213,7 @@ class _NoteScreenState extends State<NoteScreen> {
       _refreshPending();
     });
     _people = _readPeople() ?? _people;
+    unawaited(_loadFolded());
     appIsForeground.addListener(_onForeground);
     _peoplePoll = Timer.periodic(_peopleRefresh, (_) {
       if (appIsForeground.value) _loadPeople();
@@ -206,7 +237,17 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   void _onForeground() {
-    if (appIsForeground.value) _loadPeople();
+    if (appIsForeground.value) {
+      _loadPeople();
+    } else {
+      // The title commits on focus loss, and the system may reclaim the app
+      // before anything here is popped. Losing focus is what saves it; any
+      // other field losing it in the same round trip is deliberate.
+      FocusManager.instance.primaryFocus?.unfocus();
+      // Now rather than next microtask, so the title is written before
+      // setForeground's flush.
+      FocusManager.instance.applyFocusChangesIfNeeded();
+    }
   }
 
   Future<void> _refreshPending() async {
@@ -566,6 +607,118 @@ class _NoteScreenState extends State<NoteScreen> {
     );
   }
 
+  // -- sections ------------------------------------------------------------
+
+  /// The headings this device folded away, as the note's local row last said.
+  ///
+  /// A failure is nothing to interrupt anyone over: the list draws open, which
+  /// is what a note that has never been folded looks like.
+  Future<void> _loadFolded() async {
+    try {
+      final folded = await widget.core.collapsed();
+      if (mounted) setState(() => _folded = folded);
+    } catch (_) {
+      // Drawing open is the answer to a row that cannot be read.
+    }
+  }
+
+  void _toggleFold(String heading) {
+    final folded = !_folded.contains(heading);
+    setState(() {
+      _folded = folded
+          ? {..._folded, heading}
+          : ({..._folded}..remove(heading));
+    });
+    unawaited(widget.core.setCollapsed(heading, folded).catchError((_) {}));
+  }
+
+  /// Make [item] a heading, or take that back. The row keeps its text and its
+  /// place either way; the rows under it simply follow it, or join the section
+  /// above.
+  Future<void> _setHeading(ItemView item, bool heading) async {
+    try {
+      await widget.core.setHeading(item.id, heading);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text("That section couldn't be changed.")),
+      );
+    }
+  }
+
+  // -- what this person adds over and over ---------------------------------
+
+  /// A row took or lost the caret. Only an empty row asks for suggestions: a
+  /// half-typed line is not what the strip is for.
+  void _onRowFocus(ItemView item, bool focused) {
+    if (!focused) {
+      if (_focusedBlank == item.id) {
+        setState(() {
+          _focusedBlank = null;
+          _suggestions = const [];
+        });
+      }
+      return;
+    }
+    final blank = item.text.trim().isEmpty ? item.id : null;
+    setState(() {
+      _focusedBlank = blank;
+      _suggestions = const [];
+    });
+    if (blank != null) unawaited(_refreshSuggestions());
+  }
+
+  Future<void> _refreshSuggestions() async {
+    final blank = _focusedBlank;
+    if (blank == null) return;
+    try {
+      final lines = await widget.core.suggestions('', limit: 4);
+      if (!mounted || _focusedBlank != blank) return;
+      setState(() => _suggestions = lines);
+    } catch (_) {
+      // Suggestions are a convenience; a note that cannot read its history is
+      // a note with no suggestions, not a note with a problem.
+    }
+  }
+
+  /// Fill the blank row with one of the offered lines, and open the next one.
+  ///
+  /// The row is filled rather than a second row added, so the list ends up with
+  /// exactly what was asked for and the caret stays where the next thing goes.
+  Future<void> _acceptSuggestion(String text) async {
+    final blank = _focusedBlank;
+    if (blank == null) return;
+    await widget.core.setItemText(blank, text);
+    await widget.core.rememberItem(text);
+    if (!mounted) return;
+    setState(() {
+      _focusedBlank = null;
+      _suggestions = const [];
+    });
+    await _addListEntry();
+  }
+
+  /// A row was left with [text] in it. This is where a line is remembered, and
+  /// where a `# ` at the start turns the row into a section heading.
+  ///
+  /// Committing is the only moment the core can be told about: an item is made
+  /// blank and typed into a keystroke at a time, so nothing below this can tell
+  /// a finished line from a half-typed one.
+  Future<void> _itemCommitted(ItemView item, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    if (trimmed.startsWith('# ')) {
+      final rest = trimmed.substring(2).trim();
+      if (rest.isEmpty) return;
+      // As an edit, not a write: a partner who typed in the same line while
+      // this was being typed keeps their words.
+      await widget.core.editItemText(item.id, text, rest);
+      await widget.core.setHeading(item.id, true);
+      return;
+    }
+    await widget.core.rememberItem(trimmed);
+  }
+
   FocusNode _focusForItem(String id) =>
       _itemFocusNodes.putIfAbsent(id, FocusNode.new);
 
@@ -587,14 +740,19 @@ class _NoteScreenState extends State<NoteScreen> {
       await _itemWritesDone?.future;
     }
     if (!mounted) return;
-    for (final id in _newBlankItems.toList()) {
-      final item = widget.core.current.items
-          .where((item) => item.id == id)
-          .firstOrNull;
-      if (item != null && item.text.trim().isEmpty) {
-        await widget.core.removeItem(id);
-        _itemRowKeys.remove(id);
+    try {
+      for (final id in _newBlankItems.toList()) {
+        final item = widget.core.current.items
+            .where((item) => item.id == id)
+            .firstOrNull;
+        if (item != null && item.text.trim().isEmpty) {
+          await widget.core.dropIfBlank(id);
+          _itemRowKeys.remove(id);
+        }
       }
+    } catch (_) {
+      // The note left while this screen was being closed: there is nothing
+      // left to tidy, and the pop still has to happen.
     }
     _newBlankItems.clear();
     setState(() => _allowPop = true);
@@ -703,6 +861,8 @@ class _NoteScreenState extends State<NoteScreen> {
     onWriteStateChanged: _itemWriteStateChanged,
     onDelete: () async => _removeItem(await _resolve(item.id)),
     onSettled: widget.library?.sendHeldEdits,
+    onFocusChanged: (focused) => _onRowFocus(item, focused),
+    onCommit: (text) => _itemCommitted(item, text),
     onBackspaceEmpty: () async {
       final id = await _resolve(item.id);
       final items = widget.core.current.items;
@@ -827,9 +987,9 @@ class _NoteScreenState extends State<NoteScreen> {
   }
 
   _BodyField _bodyField(NoteView note, {bool expands = false}) => _BodyField(
-    // Not keyed on the text, unlike the title: the field keeps its own
-    // controller across remote edits so the caret stays where the person left
-    // it. See [_BodyFieldState.didUpdateWidget].
+    // Keyed on the field, not on the text: the field keeps its own controller
+    // across remote edits so the caret stays where the person left it. See
+    // [_BodyFieldState.didUpdateWidget].
     key: const Key('body-field'),
     body: note.body,
     rev: note.rev,
@@ -866,21 +1026,14 @@ class _NoteScreenState extends State<NoteScreen> {
   );
 
   /// A checklist, with any body a merge left on it above the items.
+  ///
+  /// A heading owns the rows under it until the next heading, so this is one
+  /// ordered list cut into runs — never a tree, and never a container that could
+  /// disagree with the rows it holds. A folded run is left out of the drawing
+  /// and stays in the note; the crossed-off block at the bottom is unchanged,
+  /// and says which section each tick came from.
   Widget _checklist(NoteView note) {
-    final active = _withPending(
-      note,
-      note.items.where((item) => !item.checked).toList(),
-    );
-    final crossedOff = note.items.where((item) => item.checked).toList();
-    final addIndex = active.length;
-    final crossedHeaderIndex = addIndex + 1;
-    final checkedStartIndex = crossedHeaderIndex + 1;
-    final itemCount =
-        addIndex +
-        1 +
-        (crossedOff.isEmpty
-            ? 0
-            : 1 + (_crossedOffExpanded ? crossedOff.length : 0));
+    final rows = _listRows(note);
 
     return ReorderableListView.builder(
       buildDefaultDragHandles: false,
@@ -892,89 +1045,310 @@ class _NoteScreenState extends State<NoteScreen> {
               child: _bodyField(note),
             ),
       footer: _audioRows(note),
-      itemCount: itemCount,
-      // Only unchecked rows have drag handles. Convert the target position in
-      // that visible group back to the core's complete item order.
-      onReorderItem: (oldIndex, newIndex) {
-        if (oldIndex >= active.length) return;
-        final moving = active[oldIndex];
-        if (_pending.isNotEmpty) return;
-        final remaining = note.items
-            .where((item) => item.id != moving.id)
-            .toList();
-        final remainingActive = remaining
-            .where((item) => !item.checked)
-            .toList();
-        if (remainingActive.isEmpty) return;
-        final target = newIndex.clamp(0, remainingActive.length).toInt();
-        final coreIndex = target < remainingActive.length
-            ? remaining.indexWhere(
-                (item) => item.id == remainingActive[target].id,
-              )
-            : remaining.indexWhere(
-                    (item) => item.id == remainingActive.last.id,
-                  ) +
-                  1;
-        widget.core.moveItem(moving.id, coreIndex);
-      },
+      itemCount: rows.length,
+      onReorderItem: (oldIndex, newIndex) =>
+          _reordered(note, rows, oldIndex, newIndex),
       itemBuilder: (context, index) {
-        if (index < active.length) {
-          final item = active[index];
-          return _row(
-            item,
-            rev: note.rev,
-            reorderIndex: index,
-            onSubmitted: () => _insertItemAfter(item.id),
-          );
-        }
-        if (index == addIndex) {
-          return KeyedSubtree(
-            key: const ValueKey('add-list-entry-row'),
-            child: ListTile(
-              key: const Key('add-list-entry'),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-              minLeadingWidth: 0,
-              // Same density as _ItemRow, so the label lines up with the text
-              // field: compact trims the tile's horizontal inset by 4.
-              dense: true,
-              visualDensity: VisualDensity.compact,
-              leading: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(width: 40),
-                  SizedBox(width: 48, height: 48, child: Icon(Icons.add)),
-                ],
+        final row = rows[index];
+        final item = row.item;
+        switch (row.kind) {
+          case _ListRowKind.heading:
+            return _HeadingRow(
+              key: ValueKey('heading:${item!.id}'),
+              item: item,
+              focusNode: _focusForItem(item.id),
+              folded: row.folded,
+              done: row.done,
+              total: row.total,
+              core: widget.core,
+              onFold: () => _toggleFold(item.id),
+              onTurnIntoItem: () => _setHeading(item, false),
+              onRemove: () => _removeItem(item.id),
+            );
+          case _ListRowKind.item:
+            return _row(
+              item!,
+              rev: note.rev,
+              reorderIndex: row.reorderIndex,
+              onSubmitted: () => _insertItemAfter(item.id),
+            );
+          case _ListRowKind.suggestions:
+            return _suggestionStrip();
+          case _ListRowKind.add:
+            return _addRow();
+          case _ListRowKind.addSection:
+            return _addSectionRow();
+          case _ListRowKind.crossedHeader:
+            return ListTile(
+              key: const ValueKey('crossed-off-items'),
+              title: Text('Crossed off items (${row.total})'),
+              trailing: Icon(
+                _crossedOffExpanded ? Icons.expand_less : Icons.expand_more,
               ),
-              title: const Text('Checklist item'),
-              onTap: _addListEntry,
-            ),
-          );
+              onTap: _toggleCrossedOff,
+            );
+          case _ListRowKind.crossedItem:
+            final crossed = _row(item!, rev: note.rev);
+            final section = row.section;
+            if (section == null) {
+              return KeyedSubtree(
+                key: ValueKey('crossed:${item.id}'),
+                child: crossed,
+              );
+            }
+            return _CrossedInSection(
+              key: ValueKey('crossed:${item.id}'),
+              section: section,
+              child: crossed,
+            );
         }
-        if (crossedOff.isNotEmpty && index == crossedHeaderIndex) {
-          return ListTile(
-            key: const ValueKey('crossed-off-items'),
-            title: Text('Crossed off items (${crossedOff.length})'),
-            trailing: Icon(
-              _crossedOffExpanded ? Icons.expand_less : Icons.expand_more,
-            ),
-            onTap: _toggleCrossedOff,
-          );
-        }
-        final item = crossedOff[index - checkedStartIndex];
-        return _row(
-          item,
-          rev: note.rev,
-          onSubmitted: () => _insertItemAfter(item.id),
-        );
       },
     );
+  }
+
+  /// The rows the list draws, in the order it draws them.
+  ///
+  /// One pass over the note's items, cutting a new section at each heading and
+  /// skipping the runs this device has folded away. Rows Enter has made that
+  /// the core has not placed yet follow the row they were made from, so they
+  /// land inside its section rather than at the foot of the note.
+  List<_ListRow> _listRows(NoteView note) {
+    final visible = _withPending(
+      note,
+      note.items.where((item) => !item.checked && !item.heading).toList(),
+    );
+    final known = {for (final item in note.items) item.id};
+
+    final trailing = <String, List<ItemView>>{};
+    for (final row in visible) {
+      if (known.contains(row.id)) continue;
+      final pending = _pending
+          .where((p) => (_answered[p.key] ?? p.key) == row.id)
+          .firstOrNull;
+      if (pending == null) continue;
+      final anchor = _answered[pending.after] ?? pending.after;
+      trailing.putIfAbsent(anchor, () => []).add(row);
+    }
+
+    final rows = <_ListRow>[];
+    var folded = false;
+
+    void follow(String anchor) {
+      for (final extra in trailing.remove(anchor) ?? const <ItemView>[]) {
+        if (!folded) rows.add(_ListRow(_ListRowKind.item, item: extra));
+        // Enter pressed twice before the core has answered twice: the second
+        // row is made after the first one's stand-in, not after a real item.
+        follow(extra.id);
+      }
+    }
+
+    for (var i = 0; i < note.items.length; i++) {
+      final item = note.items[i];
+      if (item.heading) {
+        folded = _folded.contains(item.id);
+        final run = _sectionItems(note, i);
+        rows.add(
+          _ListRow(
+            _ListRowKind.heading,
+            item: item,
+            folded: folded,
+            done: run.where((each) => each.checked).length,
+            total: run.length,
+          ),
+        );
+        follow(item.id);
+        continue;
+      }
+      if (item.checked || folded) continue;
+      if (!visible.any((row) => row.id == item.id)) continue;
+      rows.add(
+        _ListRow(_ListRowKind.item, item: item, reorderIndex: rows.length),
+      );
+      follow(item.id);
+    }
+    // Made after a row that is not drawn — Enter in a crossed-off item, say —
+    // so it goes where the core will put a new unchecked item: last.
+    for (final extras in trailing.values) {
+      for (final extra in extras) {
+        rows.add(_ListRow(_ListRowKind.item, item: extra));
+      }
+    }
+
+    if (_suggestions.isNotEmpty) {
+      rows.add(const _ListRow(_ListRowKind.suggestions));
+    }
+    rows.add(const _ListRow(_ListRowKind.add));
+    rows.add(const _ListRow(_ListRowKind.addSection));
+
+    final crossed = [
+      for (final item in note.items)
+        if (item.checked && !item.heading) item,
+    ];
+    if (crossed.isNotEmpty) {
+      rows.add(_ListRow(_ListRowKind.crossedHeader, total: crossed.length));
+      if (_crossedOffExpanded) {
+        for (final item in crossed) {
+          rows.add(
+            _ListRow(
+              _ListRowKind.crossedItem,
+              item: item,
+              section: _sectionOf(note, item),
+            ),
+          );
+        }
+      }
+    }
+    return rows;
+  }
+
+  /// The rows under the heading at [at], up to the next heading.
+  List<ItemView> _sectionItems(NoteView note, int at) {
+    final items = <ItemView>[];
+    for (var i = at + 1; i < note.items.length; i++) {
+      final item = note.items[i];
+      if (item.heading) break;
+      items.add(item);
+    }
+    return items;
+  }
+
+  /// The heading [item] is under, if any.
+  String? _sectionOf(NoteView note, ItemView item) {
+    String? section;
+    for (final candidate in note.items) {
+      if (candidate.id == item.id) return section;
+      if (candidate.heading) section = candidate.text;
+    }
+    return null;
+  }
+
+  /// A drag landed. `newIndex` counts slots in the list without the row that is
+  /// moving, so the drop is placed beside the row drawn at that slot. A folded
+  /// run is not drawn, so no drop can land between its rows.
+  void _reordered(
+    NoteView note,
+    List<_ListRow> rows,
+    int oldIndex,
+    int newIndex,
+  ) {
+    if (oldIndex < 0 || oldIndex >= rows.length) return;
+    final moving = rows[oldIndex].item;
+    if (moving == null || moving.checked) return;
+    if (_pending.isNotEmpty) return;
+
+    final without = [
+      for (var i = 0; i < rows.length; i++)
+        if (i != oldIndex) rows[i],
+    ];
+    // A drop lands beside a drawn row: before the first item or heading at the
+    // slot, or after the last one when the slot is past them all. Rows folded
+    // away are not drawn, so they are not places a drop can land between.
+    bool place(_ListRow row) =>
+        row.item != null &&
+        (row.kind == _ListRowKind.item || row.kind == _ListRowKind.heading);
+    final below = without
+        .skip(newIndex.clamp(0, without.length))
+        .where(place)
+        .firstOrNull;
+    final anchor = below?.item ?? without.where(place).lastOrNull?.item;
+    if (anchor == null) return;
+
+    final remaining = note.items.where((item) => item.id != moving.id).toList();
+    final at = remaining.indexWhere((item) => item.id == anchor.id);
+    if (at < 0) return;
+    widget.core.moveItem(moving.id, below == null ? at + 1 : at);
+  }
+
+  /// The lines this note offers back, beside the blank row about to be typed
+  /// in. Gone the moment anything is typed, and empty when the list has nothing
+  /// to offer.
+  Widget _suggestionStrip() => SizedBox(
+    key: const ValueKey('suggestions'),
+    height: 48,
+    child: ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      children: [
+        for (final line in _suggestions)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: ActionChip(
+              key: Key('suggestion:$line'),
+              label: Text(line),
+              onPressed: () => _acceptSuggestion(line),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  /// The row that makes the next item.
+  Widget _addRow() => ListTile(
+    key: const Key('add-list-entry'),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+    minLeadingWidth: 0,
+    // Same density as _ItemRow, so the label lines up with the text field:
+    // compact trims the tile's horizontal inset by 4.
+    dense: true,
+    visualDensity: VisualDensity.compact,
+    leading: const Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(width: 40),
+        SizedBox(width: 48, height: 48, child: Icon(Icons.add)),
+      ],
+    ),
+    title: const Text('Checklist item'),
+    onTap: _addListEntry,
+  );
+
+  /// The row that makes the next section heading, laid out like the one above
+  /// so the icon lines up with the checkboxes and the label with the lines.
+  Widget _addSectionRow() => ListTile(
+    key: const Key('add-section'),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+    minLeadingWidth: 0,
+    dense: true,
+    visualDensity: VisualDensity.compact,
+    leading: const Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(width: 40),
+        SizedBox(width: 48, height: 48, child: Icon(Icons.format_size)),
+      ],
+    ),
+    title: const Text('Section heading'),
+    onTap: _addSection,
+  );
+
+  /// A new heading row, with the caret in it.
+  Future<void> _addSection() async {
+    _itemWriteStateChanged(true);
+    try {
+      final id = await widget.core.addHeading('');
+      _newBlankItems.add(id);
+      if (mounted) _focusForItem(id).requestFocus();
+    } finally {
+      _itemWriteStateChanged(false);
+    }
+  }
+
+  /// The view to draw before the stream answers. The note can leave the device
+  /// between the list card and this screen, and a core that has forgotten it
+  /// has nothing to answer with.
+  NoteView get _initialView {
+    try {
+      return widget.core.current;
+    } catch (_) {
+      return const NoteView.empty();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
       stream: widget.core.watch(),
-      initialData: widget.core.current,
+      initialData: _initialView,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
         final library = widget.library;
@@ -996,7 +1370,8 @@ class _NoteScreenState extends State<NoteScreen> {
                       content: Text('This note was deleted from your account.'),
                     ),
                   );
-                  Navigator.of(context).maybePop();
+                  // Nothing is left to tidy: the note is gone.
+                  Navigator.of(context).pop();
                 });
               }
               return const Scaffold(
@@ -1057,9 +1432,11 @@ class _NoteScreenState extends State<NoteScreen> {
                 ),
               ),
             Padding(
+              // Keyed on the field, not on the title, so the field and its
+              // caret survive both a rename and the rows that appear above it.
+              key: const ValueKey('title-area'),
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
               child: _TitleField(
-                key: ValueKey('title:${note.title}'),
                 title: note.title,
                 hint: isText ? 'Title' : 'Untitled checklist',
                 onChanged: widget.core.setTitle,
@@ -1429,9 +1806,15 @@ class _ColourChoice extends StatelessWidget {
 /// The note title. Commits on submit or on losing focus rather than per
 /// keystroke, so typing a title does not put one update per character on the
 /// relay.
+///
+/// The field keeps its own controller across rebuilds rather than being keyed
+/// on the title, so a peer's rename cannot take the text someone is typing out
+/// from under them. A rename is shown while nobody is typing here, and a title
+/// typed here is committed on losing focus; while the field has the keyboard an
+/// arriving title waits, because the caret is in the way and the commit at the
+/// end is this person's answer to it.
 class _TitleField extends StatefulWidget {
   const _TitleField({
-    super.key,
     required this.title,
     required this.hint,
     required this.onChanged,
@@ -1449,12 +1832,60 @@ class _TitleFieldState extends State<_TitleField> {
   late final _controller = TextEditingController(text: widget.title);
   late final _focus = FocusNode()..addListener(_onFocusChange);
 
+  /// The title this field's text came from: what it last showed, or what was
+  /// last sent. Text that differs from it is this person's, unsent. Set here
+  /// rather than lazily, which would read whatever title the widget had by the
+  /// time it was first used.
+  late String _shown;
+
+  @override
+  void initState() {
+    super.initState();
+    _shown = widget.title;
+  }
+
+  /// A title that arrived while the field had the keyboard, to show when it
+  /// leaves rather than under the caret.
+  bool _deferred = false;
+
   void _onFocusChange() {
     if (!_focus.hasFocus) _commit();
   }
 
   void _commit() {
-    if (_controller.text != widget.title) widget.onChanged(_controller.text);
+    if (_controller.text != _shown) {
+      _shown = _controller.text;
+      // This person's text is the answer to any title that arrived.
+      _deferred = false;
+      widget.onChanged(_controller.text);
+    } else if (!_focus.hasFocus && _deferred) {
+      _deferred = false;
+      _show(widget.title);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_TitleField old) {
+    super.didUpdateWidget(old);
+    // Only a title that actually changed is news. A rebuild with the title this
+    // field opened with — a peer's edit to an item, a status change — must not
+    // undo a title on its way to the core, which has not come back yet.
+    if (old.title == widget.title) return;
+    if (_focus.hasFocus) {
+      // Arrives now, shown when the caret leaves: adopting it here would move
+      // the text being typed. See [_commit].
+      _deferred = true;
+    } else {
+      _deferred = false;
+      _show(widget.title);
+    }
+  }
+
+  /// Show [title], keeping the caret where it was relative to the text around
+  /// it.
+  void _show(String title) {
+    _shown = title;
+    adoptText(_controller, title);
   }
 
   @override
@@ -1681,6 +2112,8 @@ class _ItemRow extends StatefulWidget {
     required this.onBackspaceEmpty,
     this.onSettled,
     this.onSubmitted,
+    this.onFocusChanged,
+    this.onCommit,
   });
 
   final ItemView item;
@@ -1705,6 +2138,14 @@ class _ItemRow extends StatefulWidget {
   final VoidCallback? onSettled;
   final Future<void> Function()? onSubmitted;
 
+  /// The caret came to this row, or left it. What a suggestion strip waits for:
+  /// an empty row with the caret in it is somebody about to add something.
+  final ValueChanged<bool>? onFocusChanged;
+
+  /// The row settled with [text] in it: what is remembered for suggestions, and
+  /// where a leading `# ` turns the row into a section heading.
+  final Future<void> Function(String text)? onCommit;
+
   @override
   State<_ItemRow> createState() => _ItemRowState();
 }
@@ -1715,6 +2156,11 @@ class _ItemRowState extends State<_ItemRow> {
   /// The text the core was last told this row holds, or last told this row it
   /// holds: what leaving it would send.
   late String _lastWritten = widget.item.text;
+
+  /// What was last handed to [onCommit]. Typing writes as it goes, so leaving a
+  /// row usually has nothing left to send — and would still be the moment the
+  /// line counts as added.
+  late String _committed = widget.item.text;
 
   /// The newest revision this row has accounted for: the revision its own last
   /// write landed at, or the revision of the newest view it has taken. Every
@@ -1742,6 +2188,7 @@ class _ItemRowState extends State<_ItemRow> {
 
   void _onFocusChange() {
     if (mounted) setState(() {});
+    widget.onFocusChanged?.call(_focus.hasFocus);
     if (!_focus.hasFocus && !_submitting) {
       unawaited(_commit());
       // Leaving a row is the end of typing on it, so what was held for a pause
@@ -1798,6 +2245,14 @@ class _ItemRowState extends State<_ItemRow> {
     } else if (text != _lastWritten) {
       await _write(text);
     }
+    // Only a line that changed here is news. Opening a row and leaving it again
+    // must not count as adding what was already in it, or every glance at a
+    // list would make its suggestions louder.
+    if (!mounted || _lastWritten == _committed) return;
+    // After the write, so what is remembered is what the core holds rather than
+    // a line that was on its way.
+    _committed = _lastWritten;
+    await widget.onCommit?.call(text);
   }
 
   Future<void> _submit() async {
@@ -2063,4 +2518,249 @@ class _PendingItem {
 
   /// Moved into place in the core, so the core's view will show it there.
   bool placed = false;
+}
+
+/// What one drawn row of a checklist is.
+enum _ListRowKind {
+  /// A section heading: no checkbox, and the rows under it belong to it.
+  heading,
+
+  /// Something still to do.
+  item,
+
+  /// The lines this note offers back, above the row that makes the next item.
+  suggestions,
+
+  /// The row that makes the next item.
+  add,
+
+  /// The row that makes the next section heading.
+  addSection,
+
+  /// The foldable block of items already crossed off.
+  crossedHeader,
+
+  /// One crossed-off item, on its way to the block.
+  crossedItem,
+}
+
+/// One row of a checklist, as [_NoteScreenState._listRows] worked it out.
+class _ListRow {
+  const _ListRow(
+    this.kind, {
+    this.item,
+    this.folded = false,
+    this.done = 0,
+    this.total = 0,
+    this.reorderIndex,
+    this.section,
+  });
+
+  final _ListRowKind kind;
+  final ItemView? item;
+
+  /// Whether the heading's section is folded away on this device.
+  final bool folded;
+
+  /// How many of the section's rows are crossed off, and how many there are.
+  final int done;
+  final int total;
+
+  /// The row's place among the list's children, for the drag handle. Null on
+  /// rows that cannot be dragged.
+  final int? reorderIndex;
+
+  /// The heading a crossed-off row came from, for the block at the bottom.
+  final String? section;
+}
+
+/// A section heading: a bold, editable line with a fold and a counter, and the
+/// rows under it are its own until the next heading.
+///
+/// It is an ordinary item with a flag ([ADR 0037]../../docs/decisions.md#adr-0037),
+/// so it is not drawn by [_ItemRow] only because what the checkbox does is
+/// different here: folding, not ticking.
+class _HeadingRow extends StatefulWidget {
+  const _HeadingRow({
+    super.key,
+    required this.item,
+    required this.focusNode,
+    required this.folded,
+    required this.done,
+    required this.total,
+    required this.core,
+    required this.onFold,
+    required this.onTurnIntoItem,
+    required this.onRemove,
+  });
+
+  final ItemView item;
+
+  /// The screen's node for this row, so that "make a section and put the caret
+  /// in it" reaches the field the row is drawn with. The screen disposes them.
+  final FocusNode focusNode;
+  final bool folded;
+  final int done;
+  final int total;
+  final NoteCore core;
+  final VoidCallback onFold;
+  final VoidCallback onTurnIntoItem;
+  final VoidCallback onRemove;
+
+  @override
+  State<_HeadingRow> createState() => _HeadingRowState();
+}
+
+class _HeadingRowState extends State<_HeadingRow> {
+  late final _controller = TextEditingController(text: widget.item.text);
+  FocusNode get _focus => widget.focusNode;
+
+  /// The text the core was last told this heading holds, or last told it holds.
+  late String _last = widget.item.text;
+  bool _writing = false;
+  String? _queued;
+
+  @override
+  void didUpdateWidget(_HeadingRow old) {
+    super.didUpdateWidget(old);
+    // Somebody else renamed it while this screen was not typing in it.
+    if (_writing || _focus.hasFocus) return;
+    if (widget.item.text == _last) return;
+    _last = widget.item.text;
+    _controller.text = _last;
+  }
+
+  Future<void> _write(String text) async {
+    if (_writing) {
+      _queued = text;
+      return;
+    }
+    _writing = true;
+    try {
+      String? next = text;
+      while (next != null) {
+        _queued = null;
+        try {
+          // An edit, not a write: a partner typing in the same heading keeps
+          // their words.
+          await widget.core.editItemText(widget.item.id, _last, next);
+        } on UnknownItemException {
+          // The heading was removed while this was on its way.
+          _queued = null;
+          break;
+        }
+        _last = next;
+        next = _queued;
+      }
+    } finally {
+      _writing = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    // The node is the screen's, and the screen disposes it with the others.
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final complete = widget.total > 0 && widget.done == widget.total;
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+      minLeadingWidth: 0,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(width: 40),
+          IconButton(
+            key: Key('fold:${widget.item.id}'),
+            icon: Icon(widget.folded ? Icons.expand_more : Icons.expand_less),
+            tooltip: widget.folded ? 'Show section' : 'Hide section',
+            onPressed: widget.onFold,
+          ),
+        ],
+      ),
+      title: TextField(
+        key: Key('heading-text:${widget.item.id}'),
+        controller: _controller,
+        focusNode: _focus,
+        decoration: const InputDecoration(
+          border: InputBorder.none,
+          isDense: true,
+        ),
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w600,
+          color: complete ? theme.disabledColor : null,
+        ),
+        onChanged: _write,
+        onSubmitted: (_) => _write(_controller.text),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${widget.done} of ${widget.total}',
+            key: Key('count:${widget.item.id}'),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          PopupMenuButton<VoidCallback>(
+            key: Key('heading-menu:${widget.item.id}'),
+            icon: const Icon(Icons.more_horiz, size: 20),
+            onSelected: (action) => action(),
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                key: Key('turn-into-item:${widget.item.id}'),
+                value: widget.onTurnIntoItem,
+                child: const Text('Turn into item'),
+              ),
+              PopupMenuItem(
+                key: Key('remove-heading:${widget.item.id}'),
+                value: widget.onRemove,
+                child: const Text('Remove heading'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A crossed-off row, labelled with the section it was crossed off in, so a
+/// tick does not lose the aisle it came from.
+class _CrossedInSection extends StatelessWidget {
+  const _CrossedInSection({
+    super.key,
+    required this.section,
+    required this.child,
+  });
+
+  final String section;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(56, 4, 16, 0),
+        child: Text(
+          section,
+          key: ValueKey('crossed-section:$section'),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+      child,
+    ],
+  );
 }

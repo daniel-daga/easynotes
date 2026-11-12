@@ -1,5 +1,5 @@
-import 'package:easynotes/core/fake_note_core.dart';
-import 'package:easynotes/core/fake_note_library.dart';
+import 'support/fake_note_core.dart';
+import 'support/fake_note_library.dart';
 import 'package:easynotes/ui/label_manager_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

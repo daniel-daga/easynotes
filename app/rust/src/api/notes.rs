@@ -38,7 +38,7 @@ use crate::media::{Home, Store};
 use easynotes_core::attachment::storage::{ImportHints, MediaStorage, Staged, ThumbnailInput};
 use easynotes_core::attachment::{AttachmentKind, AttachmentState, Media, Variant};
 use easynotes_core::ids::AttachmentId;
-use easynotes_core::relay_access::RelayAccess;
+use easynotes_core::relay_access::RelayToken;
 use easynotes_core::sync::transfers::{
     Direction, Reach, TransferPeer, TransferQueue, TransferRunner, TransferState,
 };
@@ -66,6 +66,9 @@ pub struct ItemView {
     pub text: String,
     pub checked: bool,
     pub order: String,
+    /// A section heading rather than something to tick off. Its rows until the
+    /// next heading belong to it; see `easynotes_core::crdt::ItemView`.
+    pub heading: bool,
 }
 
 /// One note, as Dart sees it. Items arrive already in display order.
@@ -183,8 +186,8 @@ pub struct TransferView {
 }
 
 /// The attachment queue that is running: the relay it runs with (`None` for
-/// none), that relay's access key, and the queue.
-type RunningTransfers = (Option<String>, Option<RelayAccess>, TransferQueue);
+/// none), that relay's access token, and the queue.
+type RunningTransfers = (Option<String>, Option<RelayToken>, TransferQueue);
 
 fn transfer_views(map: &easynotes_core::sync::transfers::TransferMap) -> Vec<TransferView> {
     let mut views: Vec<TransferView> = map
@@ -264,6 +267,7 @@ impl From<easynotes_core::note::NoteViewAt> for NoteView {
                     text: i.text,
                     checked: i.checked,
                     order: i.order,
+                    heading: i.heading,
                 })
                 .collect(),
             attachments: v
@@ -821,8 +825,21 @@ impl Statuses {
         .unwrap_or(false)
     }
 
+    /// One note's status now, or `None` if it has no channel.
+    fn snapshot(&self, note: NoteId) -> Option<SyncStatus> {
+        self.existing(note, |status| status.tx.get())
+    }
+
+    /// The per-note map, read through a poison. A panic while it was held is
+    /// one bug; making every later status report panic too would end every
+    /// background task that reports one. The map is still usable: its writes
+    /// are short and have no invariant that a panic could leave half written.
+    fn locked(&self) -> std::sync::MutexGuard<'_, HashMap<NoteId, NoteStatus>> {
+        crate::lock::lock(&self.per_note).unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn entry<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> T {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         f(per_note.entry(note).or_insert_with(|| NoteStatus {
             tx: Arc::new(StatusCell::new(SyncStatus::offline())),
             epoch: 0,
@@ -832,7 +849,7 @@ impl Statuses {
     /// The same, for a note that must already have a channel. `None` means it
     /// does not — which, since [`Statuses::forget`], means the note is gone.
     fn existing<T>(&self, note: NoteId, f: impl FnOnce(&mut NoteStatus) -> T) -> Option<T> {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         per_note.get_mut(&note).map(f)
     }
 
@@ -881,14 +898,14 @@ impl Statuses {
     /// here is dropped, and its channel goes with it so that the device's status
     /// stops counting a note that does not exist toward what is pending.
     fn forget(&self, note: NoteId) {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         per_note.remove(&note);
         drop(per_note);
         self.refresh();
     }
 
     fn refresh(&self) {
-        let per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let per_note = self.locked();
         let each: Vec<SyncStatus> = per_note.values().map(|status| status.tx.get()).collect();
         drop(per_note);
         self.overall.send_replace(SyncStatus::combined(each.iter()));
@@ -898,7 +915,7 @@ impl Statuses {
     /// whose last word may not arrive before their tasks are gone — and whose
     /// last word is now ignored, because ending an epoch is what this is.
     fn all_offline(&self) {
-        let mut per_note = crate::lock::lock(&self.per_note).expect("status lock poisoned");
+        let mut per_note = self.locked();
         for status in per_note.values_mut() {
             status.epoch += 1;
             status.tx.send_replace(SyncStatus::offline());
@@ -940,8 +957,28 @@ pub(crate) struct Peer {
     device: Weak<Shared>,
 }
 
+/// Marks a code on a bridge error. A character no message uses, so Dart can
+/// read the code without guessing from the words that follow.
+const BRIDGE_CODE: char = '\u{1}';
+
+/// A refusal Dart has to recognise by kind. The code comes first so that
+/// rewording the message cannot silently change what the app does.
+fn coded(code: &str, message: impl std::fmt::Display) -> String {
+    format!("{BRIDGE_CODE}{code}{BRIDGE_CODE}{message}")
+}
+
 fn closed() -> String {
-    "the library is closed".to_string()
+    coded("library_closed", "the library is closed")
+}
+
+/// A core error as the bridge hands it over, with a code for the kinds Dart
+/// acts on.
+fn core_text(error: CoreError) -> String {
+    match &error {
+        CoreError::TransferGone => coded("transfer_gone", &error),
+        CoreError::UnknownItem(_) => coded("unknown_item", &error),
+        _ => error.to_string(),
+    }
 }
 
 impl Peer {
@@ -1015,6 +1052,16 @@ impl easynotes_core::sync::SyncPeer for Peer {
         Ok(self.open()?.is_deleted_note(note))
     }
 
+    /// The relay says this topic was purged. Remember it, so no later
+    /// connection asks again; keep everything local.
+    fn is_gone(&self, note: NoteId) -> easynotes_core::error::Result<bool> {
+        self.open()?.is_gone(note)
+    }
+
+    fn gone(&self, note: NoteId) -> easynotes_core::error::Result<()> {
+        self.open()?.mark_gone(note)
+    }
+
     fn apply_remote(&self, note: NoteId, envelope: &[u8]) -> easynotes_core::error::Result<()> {
         let mut core = self.open()?;
         // One of these connections is not a note. The account document reaches
@@ -1048,6 +1095,18 @@ impl easynotes_core::sync::SyncPeer for Peer {
         after: Option<u64>,
     ) -> easynotes_core::error::Result<Vec<(u64, Vec<u8>)>> {
         self.open()?.unsent(note, after)
+    }
+
+    /// Fold a held burst into as few envelopes as will do, as the core's own
+    /// peer does. Without this the trait's default sends the burst exactly as
+    /// it came in, one envelope per keystroke, which is what the relay then
+    /// stores and every peer replays (ADR 0016).
+    fn squash(
+        &self,
+        note: NoteId,
+        envelopes: Vec<Vec<u8>>,
+    ) -> easynotes_core::error::Result<Vec<Vec<u8>>> {
+        self.open()?.squash(note, &envelopes)
     }
 
     /// The relay asked for a base, and the engine found this device caught up
@@ -1113,10 +1172,10 @@ pub(crate) struct Shared {
     /// The relay to sync with, once [`Library::connect`] has named one. Kept so
     /// that a note created or joined later can be connected on the spot.
     relay: Mutex<Option<String>>,
-    /// The relay's access key, if its operator gave this device one ([ADR 0028](../../../../docs/decisions.md#adr-0028)). Named
+    /// The relay's access token, if its operator gave this device one ([ADR 0028](../../../../docs/decisions.md#adr-0028)). Named
     /// with the relay by [`Library::connect`], and not part of its address:
     /// changing it is the same relay, reconnected.
-    access: Mutex<Option<RelayAccess>>,
+    access: Mutex<Option<RelayToken>>,
     /// The relay this library belongs to: the canonical address of the first
     /// one it was connected to. It is kept across [`Library::disconnect`] and
     /// never changes, because everything in the store — the account, the
@@ -1165,8 +1224,8 @@ impl Shared {
     }
 
     /// The relay's HTTP address, for the calls that are not a socket, and
-    /// its access key if it has one.
-    fn http_base(&self) -> Result<(String, Option<RelayAccess>), String> {
+    /// its access token if it has one.
+    fn http_base(&self) -> Result<(String, Option<RelayToken>), String> {
         let relay = crate::lock::lock(&self.relay).map_err(|_| "relay lock poisoned")?;
         let relay = relay
             .as_ref()
@@ -1365,7 +1424,7 @@ impl Shared {
         self: &Arc<Self>,
         store: Arc<Store>,
         relay: Option<String>,
-        access: Option<RelayAccess>,
+        access: Option<RelayToken>,
     ) {
         let mut held = match crate::lock::lock(&self.statuses.transfers) {
             Ok(held) => held,
@@ -1794,7 +1853,7 @@ impl From<&PendingJoin> for PendingJoinView {
         Self {
             invite: join.secret.id().encode(),
             name: join.name.clone(),
-            note: None,
+            note: join.note.map(|id| id.encode()),
         }
     }
 }
@@ -2105,6 +2164,31 @@ impl Library {
     #[frb(sync)]
     pub fn unwritten_batches(&self) -> u32 {
         self.pending.len()
+    }
+
+    /// A tick whenever a write is queued for the browser's store, and one at
+    /// the start so that anything queued before this was listening is drained
+    /// too. The tick says only that there is something to take; taking it stays
+    /// [`Library::take_storage_batches`].
+    pub fn watch_storage(&self, sink: StreamSink<u32>) -> Result<(), String> {
+        let mut queued = self.pending.subscribe();
+        let stop = self.stop.clone();
+        crate::relay::spawn(async move {
+            if sink.add(*queued.borrow_and_update() as u32).is_err() {
+                return;
+            }
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            loop {
+                if queued.changed().await.is_err() || stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                if sink.add(*queued.borrow_and_update() as u32).is_err() {
+                    return;
+                }
+            }
+        })
     }
 
     fn wrap_with(
@@ -2828,6 +2912,30 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    /// Whether this device offers back the lines this person adds over and over.
+    #[frb(sync)]
+    pub fn suggestions_enabled(&self) -> Result<bool, String> {
+        Ok(self.shared.locked()?.suggestions_enabled())
+    }
+
+    pub fn set_suggestions_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_suggestions_enabled(enabled)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forget what this person has added everywhere, and say how many lists
+    /// there was something to forget for.
+    pub fn forget_suggestions(&self) -> Result<u32, String> {
+        let cleared = self
+            .shared
+            .locked()?
+            .forget_all_history()
+            .map_err(|e| e.to_string())?;
+        Ok(cleared as u32)
+    }
+
     // -- the person ---------------------------------------------------------
     //
     // Twelve words, and what they unlock. There is no server-side account here:
@@ -2860,7 +2968,9 @@ impl Library {
                 .map_err(|e| e.to_string())?
                 .word_list()
         };
-        self.shared.connect_new_documents()?;
+        // Not fatal: the phrase is unrecoverable if this call fails, and
+        // Library::connect retries. A storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         Ok(words)
     }
 
@@ -2903,7 +3013,9 @@ impl Library {
             .locked()?
             .adopt_account(&phrase)
             .map_err(|e| e.to_string())?;
-        self.shared.connect_new_documents()?;
+        // Not fatal: the account is adopted and Library::connect retries. A
+        // storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         Ok(())
     }
 
@@ -2936,7 +3048,7 @@ impl Library {
             public_key: URL_SAFE_NO_PAD.encode(keypair.public_key()),
         };
         let open = easynotes_core::sync::pairing::open(http, access, id.clone(), guest, owner, 300);
-        on_network(async move { open.await.map(|_| ()).map_err(|e| e.to_string()) }).await?;
+        on_network(async move { open.await.map(|_| ()).map_err(core_text) }).await?;
         let qr = serde_json::to_string(&offer).map_err(|e| e.to_string())?;
         *self
             .transfer_owner
@@ -2967,8 +3079,7 @@ impl Library {
         };
         let request_id = id.clone();
         let result = easynotes_core::sync::pairing::poll_request(http, id, owner);
-        let (public, _) =
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let (public, _) = on_network(async move { result.await.map_err(core_text) }).await?;
         let Some(public) = public else {
             return Ok(None);
         };
@@ -3015,7 +3126,14 @@ impl Library {
             .seal(&public, id.as_bytes(), &root, &relay, access.as_deref())
             .map_err(|e| e.to_string())?;
         let result = easynotes_core::sync::pairing::send_response(http, id, owner, encrypted);
-        on_network(async move { result.await.map_err(|e| e.to_string()) }).await
+        on_network(async move { result.await.map_err(core_text) }).await?;
+        // The approval is spent: the tokens, keypair and relay access must not
+        // outlive it. Only after the send, so a failure stays retryable. A
+        // poisoned lock still holds the state, and dropping it is the point.
+        let mut state = crate::lock::lock(&self.transfer_owner)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = state.take();
+        Ok(())
     }
 
     pub async fn cancel_account_transfer(&self) -> Result<(), String> {
@@ -3029,7 +3147,7 @@ impl Library {
             let id = state.offer.id;
             let owner = state.owner;
             let result = easynotes_core::sync::pairing::close(http, id, owner);
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+            on_network(async move { result.await.map_err(core_text) }).await?;
         }
         *self
             .transfer_guest
@@ -3074,7 +3192,7 @@ impl Library {
             offer.guest.clone(),
             key,
         );
-        on_network(async move { request.await.map_err(|e| e.to_string()) }).await?;
+        on_network(async move { request.await.map_err(core_text) }).await?;
         *self
             .transfer_guest
             .lock()
@@ -3110,8 +3228,7 @@ impl Library {
         let token = state.offer.guest.clone();
         let transfer_id = id.clone();
         let result = easynotes_core::sync::pairing::poll_response(endpoint.http_base, id, token);
-        let (encrypted, _) =
-            on_network(async move { result.await.map_err(|e| e.to_string()) }).await?;
+        let (encrypted, _) = on_network(async move { result.await.map_err(core_text) }).await?;
         let Some(encrypted) = encrypted else {
             return Ok(None);
         };
@@ -3146,7 +3263,9 @@ impl Library {
             .locked()?
             .adopt_account_root(transfer.root)
             .map_err(|e| e.to_string())?;
-        self.shared.connect_new_documents()?;
+        // Not fatal: the account is adopted and Library::connect retries. A
+        // storage failure here stays invisible.
+        let _ = self.shared.connect_new_documents();
         *self
             .transfer_guest
             .lock()
@@ -3252,19 +3371,32 @@ impl Library {
                 Ok(listing) => listing,
                 Err((gone, message)) => {
                     if gone {
+                        // The relay cannot say whether anybody claimed the
+                        // link, so treat it as if one had: a rotation on a
+                        // dead invite costs a key change and nothing else.
+                        self.rotate_if_pre_granted(&outgoing);
                         self.shared.forget_invite(&outgoing)?;
                     }
                     return Err(message);
                 }
             };
             expires_in = listing.expires_in;
+            let said = !listing.requests.is_empty();
+            // A claim stays worth answering after the link closes: the person
+            // may have read the note already, and a member the owner can see
+            // and remove is better than one nobody knows about.
             let claimed = listing
                 .requests
                 .into_iter()
-                .find(|r| r.state == RequestState::Pending)
-                .filter(|_| listing.open);
+                .find(|r| r.state == RequestState::Pending);
             let Some(claimed) = claimed else {
                 if !listing.open {
+                    // A request already answered — a decline applied just
+                    // before this device stopped, say — still handed the key
+                    // out, and a key nobody rotates here is one nobody can.
+                    if said {
+                        self.rotate_if_pre_granted(&outgoing);
+                    }
                     self.shared.forget_invite(&outgoing)?;
                 }
                 return Ok(InviteStatusView {
@@ -3349,17 +3481,46 @@ impl Library {
 
     /// Answer a request with nothing, and forget its invite.
     ///
-    /// When the invite carried a pre-grant, the note's key is changed as well:
-    /// whoever held the link may have read the note already, and a rotation is
-    /// the only thing that stops them reading it any further (ADR 0030). It is
-    /// deliberately after the decline: the link is spent either way, and the
-    /// rotation must not be lost because the relay call failed.
+    /// When the invite carried a pre-grant, the note's key is changed as well
+    /// ([`Library::rotate_if_pre_granted`]), after the decline. A terminal
+    /// relay answer still rotates and forgets; a failure that is not an answer
+    /// keeps the invite, and the rotation, for the next poll.
     async fn turn_away(&self, outgoing: &OutgoingInvite, request: String) -> Result<(), String> {
         let (http, access) = self.shared.http_base()?;
         let (secret, owner) = (outgoing.secret.clone(), outgoing.owner.clone());
-        // Both of the checks below are best effort: the link is spent either
-        // way, and a device that cannot read its own invite row must not turn a
-        // decline into a failure the guest is told about.
+        let declined = on_network(async move {
+            Ok(
+                invite::decline(&http, access.as_ref(), &secret, &owner, &request)
+                    .await
+                    .map_err(|e| (matches!(e, CoreError::Invite(_)), e.to_string())),
+            )
+        })
+        .await?;
+        match declined {
+            // An invite the relay no longer has, or has closed, cannot take
+            // the decline — but it is already answered, and a claim on it can
+            // never be let in. Rotate and forget either way, or the invite
+            // stays here and fails on every poll.
+            Ok(()) | Err((true, _)) => {
+                self.rotate_if_pre_granted(outgoing);
+                self.shared.forget_invite(outgoing)
+            }
+            Err((false, message)) => Err(message),
+        }
+    }
+
+    /// Change the note's key when this invite handed it out before it was
+    /// answered, and send the change the way an edit goes out.
+    ///
+    /// Whoever held the link may have read the note already, and a rotation is
+    /// the only thing that stops them reading it any further
+    /// ([ADR 0030](../../../../docs/decisions.md#adr-0030)). Best effort on
+    /// purpose: the invite is spent either way, and a device that cannot read
+    /// its own invite row must not turn a decline or a withdrawal into a
+    /// failure the person is told about. The grant is sealed when the link is
+    /// made, so an invite nobody opened may rotate too — a key change and
+    /// nothing else.
+    fn rotate_if_pre_granted(&self, outgoing: &OutgoingInvite) {
         let pre_granted = self
             .shared
             .locked()
@@ -3367,27 +3528,21 @@ impl Library {
             .and_then(|core| core.pre_grant(outgoing.secret.id()).ok())
             .flatten()
             .is_some();
-        on_network(async move {
-            invite::decline(&http, access.as_ref(), &secret, &owner, &request)
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await?;
-        if pre_granted {
-            let note = outgoing.note;
-            let rotated = self
-                .shared
-                .locked()
-                .ok()
-                .and_then(|mut core| core.rotate_key(note).ok())
-                .flatten();
-            if let Some(rotated) = rotated {
-                for envelope in rotated.envelopes {
-                    self.shared.send_edit(note, envelope, false);
-                }
+        if !pre_granted {
+            return;
+        }
+        let note = outgoing.note;
+        let rotated = self
+            .shared
+            .locked()
+            .ok()
+            .and_then(|mut core| core.rotate_key(note).ok())
+            .flatten();
+        if let Some(rotated) = rotated {
+            for envelope in rotated.envelopes {
+                self.shared.send_edit(note, envelope, false);
             }
         }
-        self.shared.forget_invite(outgoing)
     }
 
     /// Answer a request that has been let in, once the package letting them
@@ -3433,6 +3588,11 @@ impl Library {
 
     /// Take an invite down, on the relay and here. Anyone holding the link is
     /// told it does not exist.
+    ///
+    /// When the invite carried a pre-grant, the note's key is changed as well:
+    /// the person holding the link may have read the note, and a rotation is
+    /// what stops them reading later edits ([ADR
+    /// 0030](../../../../docs/decisions.md#adr-0030)).
     pub async fn withdraw_invite(&self, invite: String) -> Result<(), String> {
         let outgoing = self.shared.outgoing(&invite)?;
         let (http, access) = self.shared.http_base()?;
@@ -3445,7 +3605,10 @@ impl Library {
         .await?;
         match withdrawn {
             // Already gone from the relay is as good as withdrawn.
-            Ok(()) | Err((true, _)) => self.shared.forget_invite(&outgoing),
+            Ok(()) | Err((true, _)) => {
+                self.rotate_if_pre_granted(&outgoing);
+                self.shared.forget_invite(&outgoing)
+            }
             Err((false, message)) => Err(message),
         }
     }
@@ -3470,7 +3633,7 @@ impl Library {
                 .map_err(|e| e.to_string())
         })
         .await?;
-        let join = PendingJoin {
+        let mut join = PendingJoin {
             secret,
             request,
             name,
@@ -3486,18 +3649,15 @@ impl Library {
             None => None,
         };
         if let Some(note) = note {
+            join.note = Some(note);
             // The row stays: the request is still answered later, and a
             // decline has to be able to take the note away again.
-            let mut opened = join.clone();
-            opened.note = Some(note);
             self.shared
                 .locked()?
-                .remember_join(&opened)
+                .remember_join(&join)
                 .map_err(|e| e.to_string())?;
         }
-        let mut view = PendingJoinView::from(&join);
-        view.note = note.map(|id| id.encode());
-        Ok(view)
+        Ok(PendingJoinView::from(&join))
     }
 
     /// The join requests this device is waiting on.
@@ -3675,8 +3835,8 @@ impl Library {
     /// already has is left as it was. Moving to another relay is opening
     /// another library, which is what the app's relay profiles do.
     ///
-    /// `access` is the relay's access key, base64url, for a relay whose
-    /// operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
+    /// `access` is the relay's access key or a device token, base64url, for a
+    /// relay whose operator lets in only the people they gave it to ([ADR 0028](../../../../docs/decisions.md#adr-0028)); `None`
     /// for an open relay. Connecting again with another key is how a changed
     /// key takes effect.
     pub async fn connect(&self, relay: String, access: Option<String>) -> Result<(), String> {
@@ -3686,8 +3846,8 @@ impl Library {
         let access = match access.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(raw) => Some(
-                RelayAccess::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                RelayToken::decode(raw)
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         {
@@ -3778,8 +3938,8 @@ impl Library {
         let access = match access.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(raw) => Some(
-                RelayAccess::decode(raw)
-                    .map_err(|_| "That is not a relay access key.".to_string())?,
+                RelayToken::decode(raw)
+                    .map_err(|_| "That is not a relay access key or token.".to_string())?,
             ),
         };
         let endpoint = easynotes_core::sync::RelayEndpoint::parse(&relay)
@@ -3820,6 +3980,22 @@ impl Library {
         Ok(())
     }
 
+    /// Nothing of this device's is left to send for the note, or the note is
+    /// gone because the owner acted on the leave record. A forgotten status
+    /// alone is not enough: a retired connection can forget it while the note
+    /// is still here and the leave still unsent, so only a note this device
+    /// can no longer open counts as settled.
+    fn flushed(&self, note: NoteId) -> bool {
+        match self.shared.statuses.snapshot(note) {
+            Some(status) => status.state == SyncState::Synced && status.pending == 0,
+            None => self
+                .shared
+                .locked()
+                .map(|core| !core.can_open(note))
+                .unwrap_or(false),
+        }
+    }
+
     /// Send what is waiting for `notes`, wait for the relay to deliver it back,
     /// and wait until none of it is unacknowledged.
     ///
@@ -3841,7 +4017,10 @@ impl Library {
             .keys()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        if !notes.iter().all(|note| connected.contains(note)) {
+        if notes
+            .iter()
+            .any(|note| !connected.contains(note) && !self.flushed(*note))
+        {
             return Err(
                 "This device is not connected to the sync server. Reconnect, then delete \
                  the account again."
@@ -3866,10 +4045,7 @@ impl Library {
         let mut status = self.shared.statuses.overall.subscribe();
         let wait = async {
             loop {
-                if notes
-                    .iter()
-                    .all(|note| self.shared.statuses.acknowledged(*note))
-                {
+                if notes.iter().all(|note| self.flushed(*note)) {
                     return Ok(());
                 }
                 status
@@ -3881,8 +4057,20 @@ impl Library {
         tokio::time::timeout(std::time::Duration::from_secs(30), wait)
             .await
             .map_err(|_| {
-                "The sync server did not acknowledge the last changes within 30 seconds."
-                    .to_string()
+                let stuck: Vec<String> = notes
+                    .iter()
+                    .map(|note| match self.shared.statuses.snapshot(*note) {
+                        Some(status) => {
+                            format!("{note}: {:?}, pending {}", status.state, status.pending)
+                        }
+                        None => format!("{note}: no status"),
+                    })
+                    .collect();
+                format!(
+                    "The sync server did not acknowledge the last changes within 30 seconds \
+                     ({}).",
+                    stuck.join("; ")
+                )
             })?
     }
 
@@ -3986,6 +4174,7 @@ impl Library {
         self.stop.store(true, Ordering::SeqCst);
         self.shared.statuses.overall.resend();
         self.shared.statuses.transfer_views.send_modify(|_| {});
+        self.pending.resend();
         // The note list watcher is parked on its own channel and needs the same
         // wake. Re-sending the list it already has changes nothing and moves it.
         //
@@ -4284,6 +4473,89 @@ impl Note {
         Ok(id.encode())
     }
 
+    /// Add a section heading: a row with no checkbox that owns the rows under it
+    /// until the next one. One edit, so a peer never sees it flash from item to
+    /// heading.
+    pub fn add_heading(&self, text: String) -> Result<String, String> {
+        let (id, envelope) = {
+            let mut core = self.shared.locked()?;
+            core.add_heading(self.id, text).map_err(|e| e.to_string())?
+        };
+        self.send(envelope, false);
+        Ok(id.encode())
+    }
+
+    /// Whether a row is a heading. `false` back means it already was one, which
+    /// is what a screen asks for when it turns a heading back into an item.
+    pub fn set_heading(&self, item: String, heading: bool) -> Result<bool, String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.set_heading(self.id, item_id(&item)?, heading)
+                .map_err(|e| e.to_string())?
+        };
+        match envelope {
+            Some(envelope) => {
+                self.send(envelope, false);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    // -- what this person adds over and over --------------------------------
+    //
+    // Local bookkeeping: nothing here is an envelope, and nothing here is
+    // reachable from another device or from the relay. `now` is unix seconds
+    // from Dart's clock, because this crate also compiles for the browser where
+    // there is no `SystemTime` (see `easynotes_core::suggestions`).
+
+    /// Remember one line this person committed into a row. Called when a row
+    /// settles, because the core cannot tell a finished line from a half-typed
+    /// one.
+    pub fn remember_item(&self, text: String, now: i64) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .remember_item(self.id, &text, now)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The lines to offer back, best first. `prefix` is what has been typed so
+    /// far; anything already on the list is left out.
+    pub fn suggestions(&self, prefix: String, limit: u32, now: i64) -> Result<Vec<String>, String> {
+        self.shared
+            .locked()?
+            .suggestions(self.id, &prefix, limit as usize, now)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Forget what this person has added to this note.
+    pub fn forget_history(&self) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .forget_history(self.id)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The headings this device has folded away on this note.
+    pub fn collapsed(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .shared
+            .locked()?
+            .collapsed(self.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|item| item.encode())
+            .collect())
+    }
+
+    /// Fold or unfold one section of this note, on this device only.
+    pub fn set_collapsed(&self, item: String, collapsed: bool) -> Result<(), String> {
+        self.shared
+            .locked()?
+            .set_collapsed(self.id, item_id(&item)?, collapsed)
+            .map_err(|e| e.to_string())
+    }
+
     /// Returns the revision the edit landed at: the field that sent it records
     /// that and adopts only views newer than it, so its own echo cannot wind
     /// the line back.
@@ -4295,7 +4567,9 @@ impl Note {
                 .map_err(|e| e.to_string())?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
-        self.send(envelope, true);
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
         Ok(rev)
     }
 
@@ -4311,10 +4585,12 @@ impl Note {
             let mut core = self.shared.locked()?;
             let envelope = core
                 .edit_item_text(self.id, item_id(&item)?, &from, &to)
-                .map_err(|e| e.to_string())?;
+                .map_err(core_text)?;
             (envelope, core.rev(self.id).map_err(|e| e.to_string())?)
         };
-        self.send(envelope, true);
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
         Ok(rev)
     }
 
@@ -4342,6 +4618,18 @@ impl Note {
         let envelope = {
             let mut core = self.shared.locked()?;
             core.remove_item(self.id, item_id(&item)?)
+                .map_err(|e| e.to_string())?
+        };
+        self.send(envelope, false);
+        Ok(())
+    }
+
+    /// A blank item a screen is tidying away as it closes. Hidden, not deleted:
+    /// text from a peer that typed into it meanwhile brings it back (ADR 0036).
+    pub fn drop_if_blank(&self, item: String) -> Result<(), String> {
+        let envelope = {
+            let mut core = self.shared.locked()?;
+            core.drop_if_blank(self.id, item_id(&item)?)
                 .map_err(|e| e.to_string())?
         };
         self.send(envelope, false);
@@ -4661,4 +4949,125 @@ fn spawn_watch_status(
             let _ = error_sink.add_error(error);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use easynotes_core::account::RecoveryPhrase;
+
+    /// Make the next connect fail the way it does when the sync lock is
+    /// poisoned. The account is minted or adopted either side of this, so
+    /// whatever it locks is untouched.
+    fn break_sync(library: &Library) {
+        std::thread::scope(|scope| {
+            let poisoned = scope
+                .spawn(|| {
+                    let _held = crate::lock::lock(&library.shared.connections).unwrap();
+                    panic!("poison the sync connection lock");
+                })
+                .join();
+            assert!(poisoned.is_err(), "the connection lock must be poisoned");
+        });
+    }
+
+    #[test]
+    fn a_pending_join_reports_the_note_its_pre_grant_opened() {
+        let note = NoteId::random();
+        let join = PendingJoin {
+            secret: InviteSecret::random(),
+            request: "req".into(),
+            name: "Olga".into(),
+            note: Some(note),
+        };
+        assert_eq!(
+            PendingJoinView::from(&join).note,
+            Some(note.encode()),
+            "a pre-granted join must name the note it opened"
+        );
+    }
+
+    #[test]
+    fn a_note_with_no_status_is_not_settled_until_it_is_gone() {
+        let library = Library::open_ephemeral().unwrap();
+        let note = note_id(&library.create_note(NoteKindView::Checklist).unwrap()).unwrap();
+
+        assert!(!library.flushed(note), "an open note is not settled");
+        library.forget_note(note.encode()).unwrap();
+        assert!(
+            library.flushed(note),
+            "a gone note has nothing left to flush"
+        );
+    }
+
+    #[test]
+    fn a_poisoned_status_lock_does_not_panic_every_later_report() {
+        let statuses = Statuses::new();
+        let note = NoteId::random();
+        std::thread::scope(|scope| {
+            let poisoned = scope
+                .spawn(|| {
+                    let _held = crate::lock::lock(&statuses.per_note).unwrap();
+                    panic!("poison the status map");
+                })
+                .join();
+            assert!(poisoned.is_err(), "the status map must be poisoned");
+        });
+
+        // Each of these used to unwrap the poison and panic in the task that
+        // reported a status.
+        statuses.entry(note, |status| status.epoch);
+        assert!(statuses.existing(note, |status| status.epoch).is_some());
+        statuses.refresh();
+        statuses.all_offline();
+        statuses.forget(note);
+    }
+
+    #[test]
+    fn create_account_returns_the_phrase_when_connect_fails() {
+        let library = Library::open_ephemeral().unwrap();
+        break_sync(&library);
+        let words = library
+            .create_account()
+            .expect("a failed connect must not lose the phrase");
+        assert_eq!(words.len(), 12);
+        let phrase = RecoveryPhrase::parse(&words.join(" ")).unwrap();
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
+
+    #[test]
+    fn adopt_account_succeeds_when_connect_fails() {
+        let phrase = RecoveryPhrase::generate();
+        let library = Library::open_ephemeral().unwrap();
+        break_sync(&library);
+        library
+            .adopt_account(phrase.words())
+            .expect("a failed connect must not report adoption as failed");
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
+
+    #[test]
+    fn adopt_account_transfer_succeeds_when_connect_fails() {
+        let phrase = RecoveryPhrase::generate();
+        let library = Library::open_ephemeral().unwrap();
+        *library.transfer_result.lock().unwrap() = Some(OpenedTransfer {
+            root: phrase.root(),
+            relay_url: "wss://relay.example".into(),
+            relay_access: None,
+        });
+        break_sync(&library);
+        library
+            .adopt_account_transfer()
+            .expect("a failed connect must not report the transfer as failed");
+        assert_eq!(
+            library.shared.locked().unwrap().account_id(),
+            Some(phrase.root().document_id())
+        );
+    }
 }

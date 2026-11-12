@@ -10,15 +10,18 @@
 /// both set it.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:easynotes/core/browser_store.dart';
 import 'package:easynotes/core/master_key.dart';
 import 'package:easynotes/core/note_core.dart';
 import 'package:easynotes/core/note_library.dart';
+import 'package:easynotes/core/relay_profiles.dart';
 import 'package:easynotes/core/rust_note_core.dart';
 import 'package:easynotes/core/rust_note_library.dart';
 import 'package:easynotes/core/sync_status.dart';
+import 'package:easynotes/main.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:easynotes/src/rust/api/notes.dart'
     show Library, NoteKindView, StorageArea, StorageBatch, StorageRow;
@@ -97,6 +100,48 @@ void main() {
           await library.dispose();
         },
       );
+      test(
+        'a local-only device comes back from being hidden unpaused',
+        () async {
+          // Nothing here has a relay or an account, so the core has no sync
+          // device of its own to report a status from. The hide still pauses
+          // it, and the resume has to clear that without waiting for one.
+          final library = await openLibraryInTempDir();
+          await library.setForeground(false);
+          // The pause is after the grace a briefly hidden tab never reaches.
+          await Future<void>.delayed(const Duration(seconds: 16));
+          expect(library.syncStatus.state, SyncState.paused);
+
+          final resumed = library
+              .watchSync()
+              .firstWhere((status) => status.state != SyncState.paused);
+          await library.setForeground(true);
+          await resumed.timeout(
+            const Duration(seconds: 10),
+            onTimeout: () => fail('the status stayed paused after resume'),
+          );
+          expect(library.syncStatus.state, isNot(SyncState.paused));
+        },
+      );
+      test(
+        'a connect the bridge refused is not the relay resume reconnects to',
+        () async {
+          // Resume after the suspension grace period reconnects to whatever the
+          // last connect remembered. A refusal recorded on the way out would be
+          // retried there forever, so what this asserts is that the resume does
+          // not try the address the bridge already threw out.
+          final library = await openLibraryInTempDir();
+          await library.createAccount();
+          await expectLater(
+            library.connect('this is not a relay address'),
+            throwsA(anything),
+          );
+
+          await library.setForeground(false);
+          await Future<void>.delayed(const Duration(seconds: 16));
+          await expectLater(library.setForeground(true), completes);
+        },
+      );
       test('an empty note starts empty', () async {
         final core = await openInTempDir();
         expect(core.current.title, isEmpty);
@@ -130,6 +175,40 @@ void main() {
         // may or may not be delivered. The last one may not be skipped.
         await arrived;
       });
+
+      test('a heading crosses the bridge as a heading', () async {
+        final core = await openInTempDir();
+        final heading = await core.addHeading('Dairy');
+        await core.addItem('milk');
+
+        final view = core.current;
+        expect(view.items.first.heading, isTrue);
+        expect(view.items.first.text, 'Dairy');
+        expect(view.items.last.heading, isFalse);
+
+        // And it is still a row, so turning it back is one call.
+        expect(await core.setHeading(heading, false), isTrue);
+        expect(core.current.items.first.heading, isFalse);
+        expect(await core.setHeading(heading, false), isFalse);
+      });
+
+      test(
+        'a fold stays on this device and a suggestion history with it',
+        () async {
+          final core = await openInTempDir();
+          final heading = await core.addHeading('Dairy');
+          await core.addItem('milk');
+
+          await core.setCollapsed(heading, true);
+          expect(await core.collapsed(), {heading});
+
+          await core.rememberItem('Butter');
+          await core.rememberItem('Butter');
+          expect(await core.suggestions('but', limit: 4), ['Butter']);
+          await core.forgetHistory();
+          expect(await core.suggestions('but', limit: 4), isEmpty);
+        },
+      );
 
       test('items keep the order they were added in', () async {
         final core = await openInTempDir();
@@ -856,6 +935,25 @@ void main() {
         expect(reopened.current.items.map((i) => i.text), ['asparagus']);
       });
 
+      test('a write reaches the store without a flush', () async {
+        final db = MemoryBrowserStore();
+        final library = await openTab(db, MasterKeyStore.newKey());
+        final note = await library.openNote(await library.createNote());
+        addTearDown(note.dispose);
+        // Everything up to opening the note is written, so what grows below
+        // can only be the title.
+        await library.flush();
+        final before = (await db.rows(StorageArea.notes)).length;
+
+        await note.setTitle('Kept without a flush');
+
+        for (var i = 0; i < 100; i++) {
+          if ((await db.rows(StorageArea.notes)).length > before) return;
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        fail('the title never reached the browser store');
+      });
+
       test('the device keeps its identity across a tab', () async {
         // A tab that minted a new identity every launch would look like a
         // forger to every peer it already shares a list with, and its own log
@@ -1138,6 +1236,42 @@ void main() {
           RustNoteLibrary.openInBrowser(db, MasterKeyStore.newKey()),
           throwsA(anything),
         );
+      });
+
+      test('only a browser with no database falls back to memory', () async {
+        // The store opens; the key the keychain hands back is not the one the
+        // rows were sealed with. That is not a browser refusing to keep notes:
+        // the notes are there and cannot be read, and an empty tab over them is
+        // how what is typed next is lost.
+        final db = MemoryBrowserStore();
+        final stored = await openTab(db, MasterKeyStore.newKey());
+        await stored.createNote();
+        await stored.dispose();
+
+        FlutterSecureStorage.setMockInitialValues({
+          'easynotes.master-key': base64Encode(MasterKeyStore.newKey()),
+        });
+        addTearDown(() => FlutterSecureStorage.setMockInitialValues({}));
+
+        const profile = RelayProfile(id: 'default', url: null);
+        await expectLater(
+          openInBrowser(profile, openStore: (_) async => db),
+          throwsA(anything),
+        );
+
+        // A browser that will not give the app a database still runs, with its
+        // notes in memory — and the banner has something to say about it.
+        final memory = await openInBrowser(
+          profile,
+          openStore: (_) async => throw UnsupportedError('no database here'),
+        );
+        addTearDown(memory.dispose);
+        expect(memory.canJoin, isFalse);
+        expect(memory.storageError, contains('no database here'));
+        // A tab keeping nothing can still throw a note away: the banner is
+        // about the store being missing, not about this delete being lost.
+        await memory.forgetNote(await memory.createNote());
+        expect(memory.notes, isEmpty);
       });
     },
     skip: libPath == null
