@@ -92,6 +92,22 @@ class RustNoteCore implements NoteCore {
       _note.editBody(from: from, to: to);
 
   @override
+  Future<int?> editBodySplice(
+    int at,
+    int removed,
+    String inserted,
+    int baseRev,
+  ) async {
+    final result = await _note.editBodySplice(
+      at: at,
+      removed: removed,
+      inserted: inserted,
+      baseRev: baseRev,
+    );
+    return result.applied ? result.rev : null;
+  }
+
+  @override
   Future<void> setKind(NoteKind kind) => _note.setKind(kind: toRustKind(kind));
 
   @override

@@ -80,6 +80,27 @@ class FakeNoteCore implements NoteCore {
     return _emit().rev;
   }
 
+  @override
+  Future<int?> editBodySplice(
+    int at,
+    int removed,
+    String inserted,
+    int baseRev,
+  ) async {
+    if (baseRev != _rev) return null;
+    final chars = _body.runes.toList();
+    chars.replaceRange(
+      at.clamp(0, chars.length),
+      (at + removed).clamp(0, chars.length),
+      inserted.runes,
+    );
+    final text = String.fromCharCodes(chars);
+    if (text == _body) return _rev;
+    edits.add('editBodySplice($at, $removed, $inserted)');
+    _body = text;
+    return _emit().rev;
+  }
+
   /// The same carrying-across the real core does, so a screen test sees what a
   /// person would: lines with something on them become unchecked items after
   /// any items already there, and items become lines after any body.

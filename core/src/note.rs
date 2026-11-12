@@ -24,6 +24,7 @@ use crate::index::IndexEntry;
 use crate::order;
 use crate::store::{Keyring, OpStore};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::watch;
 
@@ -520,10 +521,14 @@ pub struct NoteCore<D: NoteDoc, S: OpStore, K: Keyring> {
     /// opening the note — on the first launch that finds one missing or stale.
     /// See [`crate::index`].
     index: HashMap<NoteId, IndexEntry>,
-    /// The list of notes, for whoever is showing one. Recomputed from `open`
-    /// every time a view changes, which is cheap because a summary is four
-    /// fields off a document that is already in memory.
+    /// The list of notes, for whoever is showing one.
     library: watch::Sender<Vec<NoteSummary>>,
+    /// The same list as last published. An edit and the screen that asked for
+    /// the list right after it used to build it twice.
+    summary_cache: RefCell<Option<Vec<NoteSummary>>>,
+    /// How many callers are holding list publication back, so an import that
+    /// makes a thousand edits publishes once.
+    batching: usize,
     /// Where a local account-document envelope goes. `None` until something
     /// asks for them, which on a device is the library wiring up its sync.
     account_sink: Option<AccountEnvelopeSink>,
@@ -579,6 +584,8 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             placements,
             index: HashMap::new(),
             library: watch::channel(Vec::new()).0,
+            summary_cache: RefCell::new(None),
+            batching: 0,
             account_sink: None,
             removals: Vec::new(),
             switched: HashMap::new(),
@@ -1487,15 +1494,51 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         self.summaries()
     }
 
+    /// One note's cover descriptor, straight out of the sealed index.
+    pub fn cover(&self, id: NoteId) -> Option<(AttachmentId, crate::attachment::Media)> {
+        self.index.get(&id).and_then(|entry| entry.cover.clone())
+    }
+
+    /// Hold list publication until the matching [`NoteCore::end_batch`].
+    pub fn begin_batch(&mut self) {
+        self.batching += 1;
+    }
+
+    /// Publish the list once after the last holder ends its batch.
+    pub fn end_batch(&mut self) {
+        if self.batching == 0 {
+            return;
+        }
+        self.batching -= 1;
+        if self.batching == 0 {
+            self.refresh_library();
+        }
+    }
+
     fn refresh_library(&self) {
+        if self.batching > 0 {
+            *self.summary_cache.borrow_mut() = None;
+            return;
+        }
         // `send_replace`, not `send`: the latter refuses when nothing is
         // subscribed yet and leaves the channel holding a list that is already
         // wrong. A screen that subscribes after the first edit would then be
         // handed that stale list as its opening frame.
-        self.library.send_replace(self.summaries());
+        let summaries = self.compute_summaries();
+        *self.summary_cache.borrow_mut() = Some(summaries.clone());
+        self.library.send_replace(summaries);
     }
 
     fn summaries(&self) -> Vec<NoteSummary> {
+        if let Some(cached) = self.summary_cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let computed = self.compute_summaries();
+        *self.summary_cache.borrow_mut() = Some(computed.clone());
+        computed
+    }
+
+    fn compute_summaries(&self) -> Vec<NoteSummary> {
         let mut summaries: Vec<NoteSummary> = self
             .index
             .iter()
@@ -2901,6 +2944,34 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
         let current = self.view(id)?.body;
         let body = crate::text::rebase(from, to, &current);
         self.set_body(id, body)
+    }
+
+    /// Apply one splice, if the screen made it at [`NoteCore::rev`] `base_rev`.
+    ///
+    /// `(false, None)` means the body moved on, and the caller must replay the
+    /// whole edit through [`NoteCore::edit_body`] instead. When it has not
+    /// moved, the offsets need no diff — which is the normal case several times
+    /// per keystroke.
+    pub fn edit_body_splice(
+        &mut self,
+        id: NoteId,
+        at: usize,
+        removed: usize,
+        inserted: &str,
+        base_rev: u32,
+    ) -> Result<(bool, Option<Vec<u8>>)> {
+        self.ensure_open(id)?;
+        if self.rev(id)? != base_rev {
+            return Ok((false, None));
+        }
+        let mut chars: Vec<char> = self.view(id)?.body.chars().collect();
+        let at = at.min(chars.len());
+        let end = at.saturating_add(removed).min(chars.len());
+        chars.splice(at..end, inserted.chars());
+        Ok((
+            true,
+            self.set_body(id, chars.into_iter().collect::<String>())?,
+        ))
     }
 
     /// Switch a note between text and checklist, carrying its content across —

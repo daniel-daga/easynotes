@@ -20,40 +20,54 @@ class KeepImportResult {
 }
 
 /// Create every note in [import] on this device.
+///
+/// [onProgress] counts finished notes, including ones that were skipped.
+/// [isCancelled] is read before each note; the ones already made stay.
 Future<KeepImportResult> applyKeepImport(
   NoteLibrary library,
-  KeepImport import,
-) async {
+  KeepImport import, {
+  void Function(int done, int total)? onProgress,
+  bool Function()? isCancelled,
+}) async {
   final skipped = [...import.skipped];
   var imported = 0;
-  for (final note in import.notes) {
-    String? id;
-    try {
-      id = await library.createNote(kind: note.kind);
-      await _fill(library, id, note);
-      if (note.colour case final colour?) await library.setColour(id, colour);
-      for (final label in note.labels) {
-        await library.addTag(id, label);
-      }
-      if (note.archived) await library.setArchived(id, true);
-      imported++;
-    } on Object catch (error) {
-      // A note left at the first few edits reads as a real note, so it goes to
-      // the trash where it can be recovered rather than being deleted.
-      if (id != null) {
-        try {
-          await library.setTrashed(id, true);
-        } on Object {
-          // The failure worth reporting is the one that stopped the note.
+  onProgress?.call(0, import.notes.length);
+  await library.beginBatch();
+  try {
+    for (var i = 0; i < import.notes.length; i++) {
+      if (isCancelled?.call() ?? false) break;
+      final note = import.notes[i];
+      String? id;
+      try {
+        id = await library.createNote(kind: note.kind);
+        await _fill(library, id, note);
+        if (note.colour case final colour?) await library.setColour(id, colour);
+        for (final label in note.labels) {
+          await library.addTag(id, label);
         }
+        if (note.archived) await library.setArchived(id, true);
+        imported++;
+      } on Object catch (error) {
+        // A note left at the first few edits reads as a real note, so it goes
+        // to the trash where it can be recovered rather than being deleted.
+        if (id != null) {
+          try {
+            await library.setTrashed(id, true);
+          } on Object {
+            // The failure worth reporting is the one that stopped the note.
+          }
+        }
+        skipped.add(
+          KeepSkipped(
+            file: note.title.isEmpty ? 'Untitled note' : note.title,
+            reason: 'Could not import: $error',
+          ),
+        );
       }
-      skipped.add(
-        KeepSkipped(
-          file: note.title.isEmpty ? 'Untitled note' : note.title,
-          reason: 'Could not import: $error',
-        ),
-      );
+      onProgress?.call(i + 1, import.notes.length);
     }
+  } finally {
+    await library.endBatch();
   }
   return KeepImportResult(imported: imported, skipped: skipped);
 }

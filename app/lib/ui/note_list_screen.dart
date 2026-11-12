@@ -263,11 +263,18 @@ class _NoteListScreenState extends State<NoteListScreen> {
           ? 'Search Trash'
           : 'Search notes and archive');
 
+  /// One subscription for the whole screen. Building a new stream per frame
+  /// started a Rust watcher per frame.
+  late final Stream<List<NoteSummary>> _noteStream = widget.library
+      .watchNotes()
+      .asBroadcastStream();
+  late final List<NoteSummary> _initialNotes = widget.library.notes;
+
   @override
   void initState() {
     super.initState();
     _shareSubscription = widget.sharedTexts?.listen(_noteFromShare);
-    _removalSubscription = widget.library.watchNotes().listen((notes) {
+    _removalSubscription = _noteStream.listen((notes) {
       _forgetGoneCards(notes);
       _sayRemovals();
     });
@@ -892,7 +899,20 @@ class _NoteListScreenState extends State<NoteListScreen> {
     final skipped = <KeepSkipped>[];
     for (final file in picked) {
       try {
-        final one = parseKeepFile(file.name, await file.readAsBytes());
+        final size = file.lengthSync() ?? await file.length() ?? 0;
+        if (size > keepImportFileLimit) {
+          skipped.add(
+            KeepSkipped(
+              file: file.name,
+              reason: 'Larger than the import limit; extract the JSON first.',
+            ),
+          );
+          continue;
+        }
+        final one = await parseKeepFileInBackground(
+          file.name,
+          await file.readAsBytes(),
+        );
         notes.addAll(one.notes);
         skipped.addAll(one.skipped);
       } on Object catch (error) {
@@ -905,10 +925,60 @@ class _NoteListScreenState extends State<NoteListScreen> {
       }
     }
 
-    final result = await applyKeepImport(
-      widget.library,
-      KeepImport(notes: notes, skipped: skipped),
-    );
+    if (!mounted) return;
+    final progress = ValueNotifier<(int, int)>((0, notes.length));
+    var cancelled = false;
+    BuildContext? dialogContext;
+    final dialog = notes.isEmpty
+        ? null
+        : showDialog<void>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) {
+              dialogContext = context;
+              return AlertDialog(
+                title: const Text('Importing Google Keep'),
+                content: ValueListenableBuilder<(int, int)>(
+                  valueListenable: progress,
+                  builder: (context, value, _) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      LinearProgressIndicator(
+                        value: value.$2 == 0 ? null : value.$1 / value.$2,
+                      ),
+                      const SizedBox(height: 12),
+                      Text('${value.$1} of ${value.$2}'),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => cancelled = true,
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              );
+            },
+          );
+    KeepImportResult result;
+    try {
+      // Let the dialog mount before the first note lands, so Cancel is there
+      // from the start and the pop below has a context.
+      if (dialog != null) await Future<void>.delayed(Duration.zero);
+      result = await applyKeepImport(
+        widget.library,
+        KeepImport(notes: notes, skipped: skipped),
+        onProgress: (done, total) => progress.value = (done, total),
+        isCancelled: () => cancelled,
+      );
+    } finally {
+      final importDialog = dialogContext;
+      if (importDialog != null && importDialog.mounted) {
+        Navigator.of(importDialog).pop();
+      }
+      if (dialog != null) await dialog;
+      progress.dispose();
+    }
     if (!mounted) return;
     final skippedFiles = result.skipped;
     await showDialog<void>(
@@ -1347,8 +1417,8 @@ class _NoteListScreenState extends State<NoteListScreen> {
 
   Widget _list(BuildContext context) {
     return StreamBuilder<List<NoteSummary>>(
-      stream: widget.library.watchNotes(),
-      initialData: widget.library.notes,
+      stream: _noteStream,
+      initialData: _initialNotes,
       builder: (context, snapshot) {
         final all = snapshot.data ?? const <NoteSummary>[];
         final notes = all.where(_where.holds).toList();

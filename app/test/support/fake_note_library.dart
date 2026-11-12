@@ -120,7 +120,7 @@ class FakeNoteLibrary implements NoteLibrary {
   }
 
   @override
-  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
+  Stream<List<Reminder>> watchReminders() => watchReminderChanges(this);
 
   @override
   Future<String> createReminder({
@@ -155,6 +155,12 @@ class FakeNoteLibrary implements NoteLibrary {
     _reminders.remove(reminderId);
     _emit();
   }
+
+  @override
+  Future<void> beginBatch() async => calls.add('beginBatch()');
+
+  @override
+  Future<void> endBatch() async => calls.add('endBatch()');
 
   @override
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) async {

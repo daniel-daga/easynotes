@@ -231,13 +231,22 @@ class _AttachmentImageState extends State<AttachmentImage> {
         ),
       );
     }
-    return Image.memory(
-      bytes,
-      fit: widget.fit,
-      gaplessPlayback: true,
-      excludeFromSemantics: true,
-      errorBuilder: (_, _, _) =>
-          Center(child: Icon(Icons.broken_image_outlined, color: colour)),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final cacheWidth = width.isFinite && width > 0
+            ? (width * MediaQuery.devicePixelRatioOf(context)).round()
+            : null;
+        return Image.memory(
+          bytes,
+          fit: widget.fit,
+          cacheWidth: cacheWidth,
+          gaplessPlayback: true,
+          excludeFromSemantics: true,
+          errorBuilder: (_, _, _) =>
+              Center(child: Icon(Icons.broken_image_outlined, color: colour)),
+        );
+      },
     );
   }
 }
@@ -727,15 +736,51 @@ class CoverScope extends StatefulWidget {
 }
 
 class _CoverScopeState extends State<CoverScope> {
+  static const _budget = 8 << 20;
+
   StreamSubscription<List<AttachmentTransfer>>? _watch;
   int _revision = 0;
+  final _covers = <String, Uint8List>{};
+  var _coverBytes = 0;
+  late final Future<Uint8List?> Function(String) _read = _readCover;
 
   @override
   void initState() {
     super.initState();
     _watch = widget.transfers.listen((transfers) {
-      if (mounted) setState(() => _revision = Object.hashAll(transfers));
+      if (!mounted) return;
+      // A transfer can replace a cover; a stale thumbnail is worse than
+      // reading it again.
+      _covers.clear();
+      _coverBytes = 0;
+      setState(() => _revision = Object.hashAll(transfers));
     });
+  }
+
+  Future<Uint8List?> _readCover(String noteId) async {
+    final cached = _covers.remove(noteId);
+    if (cached != null) {
+      _covers[noteId] = cached;
+      return cached;
+    }
+    final bytes = await widget.read(noteId);
+    if (bytes == null) return null;
+    _covers[noteId] = bytes;
+    _coverBytes += bytes.lengthInBytes;
+    while (_coverBytes > _budget && _covers.length > 1) {
+      final oldest = _covers.keys.first;
+      _coverBytes -= _covers.remove(oldest)!.lengthInBytes;
+    }
+    return bytes;
+  }
+
+  @override
+  void didUpdateWidget(CoverScope old) {
+    super.didUpdateWidget(old);
+    if (old.read != widget.read) {
+      _covers.clear();
+      _coverBytes = 0;
+    }
   }
 
   @override
@@ -745,11 +790,8 @@ class _CoverScopeState extends State<CoverScope> {
   }
 
   @override
-  Widget build(BuildContext context) => CoverScopeData(
-    read: widget.read,
-    revision: _revision,
-    child: widget.child,
-  );
+  Widget build(BuildContext context) =>
+      CoverScopeData(read: _read, revision: _revision, child: widget.child);
 }
 
 /// What a [CoverScope] hands the cards under it.

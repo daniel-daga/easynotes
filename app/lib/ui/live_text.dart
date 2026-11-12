@@ -47,6 +47,37 @@ bool isOwnEcho({
   required String shown,
 }) => rev < mine || (rev == mine && text == shown);
 
+/// The one splice that turns [from] into [to], in Unicode scalar values.
+typedef BodySplice = ({int at, int removed, String inserted});
+
+BodySplice bodySplice(String from, String to) {
+  var at = commonPrefix(from, to);
+  final tail = commonSuffix(from, to, at);
+  // Never cut a surrogate pair: the core counts characters, not UTF-16 units.
+  if (at > 0 && at < from.length && _isTrail(from.codeUnitAt(at))) at--;
+  var oldEnd = from.length - tail;
+  if (oldEnd > at &&
+      oldEnd < from.length &&
+      _isTrail(from.codeUnitAt(oldEnd))) {
+    oldEnd--;
+  }
+  return (
+    at: _runesBetween(from, 0, at),
+    removed: _runesBetween(from, at, oldEnd),
+    inserted: to.substring(at, to.length - tail),
+  );
+}
+
+bool _isTrail(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
+
+int _runesBetween(String text, int start, int end) {
+  var count = 0;
+  for (var i = start; i < end; i++) {
+    if (!_isTrail(text.codeUnitAt(i))) count++;
+  }
+  return count;
+}
+
 /// Show [text] in [controller], keeping the selection where it was relative to
 /// the text around the change.
 void adoptText(TextEditingController controller, String text) {

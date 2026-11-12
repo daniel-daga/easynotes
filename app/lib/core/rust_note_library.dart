@@ -43,10 +43,11 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
     // cancelling its subscription has to wait for the Rust side to wake, and a
     // widget disposing would hang. [dispose] is the one place that talks to Rust
     // about stopping.
-    _upstream = _library.watchNotes().listen(
-      (notes) => _notes.add(notes.map(_toSummary).toList()),
-      onError: _notes.addError,
-    );
+    _upstream = _library.watchNotes().listen((notes) {
+      final converted = notes.map(_toSummary).toList();
+      _lastNotes = converted;
+      _notes.add(converted);
+    }, onError: _notes.addError);
     _syncUpstream = _library.watchSync().listen((status) {
       final converted = RustNoteCore.toStatus(status);
       if (converted.state == SyncState.connecting &&
@@ -166,7 +167,8 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   /// whole list from the first frame. On a Web Worker in a browser, for the
   /// reason [openNote] is asynchronous; [notes] after this only reads.
   Future<RustNoteLibrary> _loaded() async {
-    await _library.notes();
+    final notes = await _library.notes();
+    _lastNotes = notes.map(_toSummary).toList();
     return this;
   }
 
@@ -189,6 +191,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   final _storage = StreamController<String?>.broadcast();
   final _notes = StreamController<List<NoteSummary>>.broadcast();
   late final StreamSubscription<List<rust.NoteSummaryView>> _upstream;
+  List<NoteSummary> _lastNotes = const [];
   final _sync = StreamController<SyncStatus>.broadcast();
   late final StreamSubscription<rust.SyncStatus> _syncUpstream;
 
@@ -203,15 +206,15 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   final bool canJoin;
 
-  /// Read straight through to Rust rather than caching. A cached copy is only
-  /// fresh while something is listening to [watchNotes], and a caller that reads
-  /// this without subscribing would silently get a stale list.
+  /// Read through to Rust. A cached copy would be stale for a caller that
+  /// mutates and then reads, which is a contract several tests and screens rely
+  /// on; the screens cache their opening list once instead.
   @override
   List<NoteSummary> get notes => _library.listed().map(_toSummary).toList();
 
   @override
   Stream<List<NoteSummary>> watchNotes() async* {
-    yield notes;
+    yield _lastNotes;
     yield* _notes.stream;
   }
 
@@ -221,7 +224,7 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   ];
 
   @override
-  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
+  Stream<List<Reminder>> watchReminders() => watchReminderChanges(this);
 
   @override
   Future<String> createReminder({
@@ -252,6 +255,12 @@ class RustNoteLibrary implements NoteLibrary, AccountTransfers {
   @override
   Future<String> createNote({NoteKind kind = NoteKind.checklist}) =>
       _library.createNote(kind: RustNoteCore.toRustKind(kind));
+
+  @override
+  Future<void> beginBatch() => _library.beginBatch();
+
+  @override
+  Future<void> endBatch() => _library.endBatch();
 
   // -- invites --------------------------------------------------------------
 

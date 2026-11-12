@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show compute;
 
 import 'note_view.dart';
 
@@ -110,12 +111,35 @@ KeepImport parseKeepExport(Map<String, String> files) {
   return KeepImport(notes: notes, skipped: skipped);
 }
 
+/// The largest picked file this reads. Takeout keeps images beside the JSON;
+/// an archive over this is extracted first.
+const keepImportFileLimit = 200 << 20;
+
+/// The largest one deflated JSON record this accepts.
+const keepImportEntryLimit = 5 << 20;
+
 /// Parse one file a person picked: a `.zip` straight from Takeout, or one of
 /// the extracted `.json` records.
 ///
 /// A zip is read in memory. That is the smallest thing that works for a
 /// Takeout download; a multi-gigabyte archive should be extracted first.
-KeepImport parseKeepFile(String name, Uint8List bytes) {
+KeepImport parseKeepFile(
+  String name,
+  Uint8List bytes, {
+  int maxFileBytes = keepImportFileLimit,
+  int maxEntryBytes = keepImportEntryLimit,
+}) {
+  if (bytes.lengthInBytes > maxFileBytes) {
+    return KeepImport(
+      notes: const [],
+      skipped: [
+        KeepSkipped(
+          file: name,
+          reason: 'Larger than the import limit; extract the JSON first.',
+        ),
+      ],
+    );
+  }
   if (!_isZip(name, bytes)) {
     return parseKeepExport({name: utf8.decode(bytes, allowMalformed: true)});
   }
@@ -137,10 +161,24 @@ KeepImport parseKeepFile(String name, Uint8List bytes) {
   }
 
   final files = <String, String>{};
+  final skipped = <KeepSkipped>[];
   for (final file in archive.files) {
     if (!file.isFile || !_isKeepJson(file.name)) continue;
+    if (file.size > maxEntryBytes) {
+      skipped.add(
+        KeepSkipped(file: file.name, reason: 'Larger than the import limit.'),
+      );
+      continue;
+    }
     try {
-      files[file.name] = utf8.decode(file.content, allowMalformed: true);
+      final content = file.content;
+      if (content.lengthInBytes > maxEntryBytes) {
+        skipped.add(
+          KeepSkipped(file: file.name, reason: 'Larger than the import limit.'),
+        );
+        continue;
+      }
+      files[file.name] = utf8.decode(content, allowMalformed: true);
     } on Object {
       files[file.name] = '';
     }
@@ -148,16 +186,30 @@ KeepImport parseKeepFile(String name, Uint8List bytes) {
   if (files.isEmpty) {
     return KeepImport(
       notes: const [],
-      skipped: [
-        KeepSkipped(
-          file: name,
-          reason: 'No Google Keep JSON records in the archive.',
-        ),
-      ],
+      skipped: skipped.isEmpty
+          ? [
+              KeepSkipped(
+                file: name,
+                reason: 'No Google Keep JSON records in the archive.',
+              ),
+            ]
+          : skipped,
     );
   }
-  return parseKeepExport(files);
+  final parsed = parseKeepExport(files);
+  return KeepImport(
+    notes: parsed.notes,
+    skipped: [...skipped, ...parsed.skipped],
+  );
 }
+
+/// [parseKeepFile] off the UI isolate on native. On the web `compute` runs on
+/// the page's thread, but it is still one entry point for both.
+Future<KeepImport> parseKeepFileInBackground(String name, Uint8List bytes) =>
+    compute(_parsePickedKeepFile, (name, bytes));
+
+KeepImport _parsePickedKeepFile((String, Uint8List) picked) =>
+    parseKeepFile(picked.$1, picked.$2);
 
 bool _isZip(String name, Uint8List bytes) =>
     name.toLowerCase().endsWith('.zip') ||

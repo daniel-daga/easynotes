@@ -71,6 +71,36 @@ void main() {
     },
   );
 
+  test('an import is one batch, reports progress, and can stop', () async {
+    final library = FakeNoteLibrary();
+    addTearDown(library.dispose);
+    final seen = <(int, int)>[];
+    var stop = false;
+
+    final result = await applyKeepImport(
+      library,
+      const KeepImport(
+        notes: [
+          KeepNote(title: 'One', body: '', kind: NoteKind.text),
+          KeepNote(title: 'Two', body: '', kind: NoteKind.text),
+          KeepNote(title: 'Three', body: '', kind: NoteKind.text),
+        ],
+        skipped: [],
+      ),
+      onProgress: (done, total) {
+        seen.add((done, total));
+        if (done == 1) stop = true;
+      },
+      isCancelled: () => stop,
+    );
+
+    expect(result.imported, 1);
+    expect(seen.first, (0, 3));
+    expect(seen.last, (1, 3));
+    expect(library.calls.first, 'beginBatch()');
+    expect(library.calls.last, 'endBatch()');
+  });
+
   test('a failed note is reported and the next one still goes in', () async {
     final library = _FailingLibrary();
     addTearDown(library.dispose);

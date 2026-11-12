@@ -101,6 +101,13 @@ pub struct NoteView {
     pub attachments: Vec<AttachmentView>,
 }
 
+/// What one splice did: whether the revision it was made against was still
+/// current, and the revision the edit landed at.
+pub struct BodyEditView {
+    pub applied: bool,
+    pub rev: u32,
+}
+
 /// Whether an attachment is drawn or played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKindView {
@@ -2271,6 +2278,18 @@ impl Library {
             .collect())
     }
 
+    /// Hold list publication while a batch of edits lands.
+    pub fn begin_batch(&self) -> Result<(), String> {
+        self.shared.locked()?.begin_batch();
+        Ok(())
+    }
+
+    /// Publish the list once the batch is done.
+    pub fn end_batch(&self) -> Result<(), String> {
+        self.shared.locked()?.end_batch();
+        Ok(())
+    }
+
     /// The note list now, and every version of it after that.
     ///
     /// Every edit reaches it, whether it was made here or arrived from another
@@ -4252,16 +4271,8 @@ impl Library {
     /// unless a download has to be.
     pub async fn read_cover(&self, note: String) -> Result<Option<Vec<u8>>, String> {
         let note = note_id(&note)?;
-        let cover = {
-            // `listed`, which only reads: this runs on a page's main thread
-            // in a tab, where telling the list's watchers anything may not.
-            self.shared
-                .locked()?
-                .listed()
-                .into_iter()
-                .find(|s| s.id == note)
-                .and_then(|s| s.cover)
-        };
+        // By ID: looking through `listed` cloned the whole list per card.
+        let cover = self.shared.locked()?.cover(note);
         let Some((id, media)) = cover else {
             return Ok(None);
         };
@@ -4448,6 +4459,33 @@ impl Note {
             self.send(envelope, true);
         }
         Ok(rev)
+    }
+
+    /// Apply one splice when the field is still at `base_rev`. On a stale
+    /// revision nothing is written: the field sends the whole edit instead,
+    /// which is the path that can rebase onto a peer's change.
+    pub fn edit_body_splice(
+        &self,
+        at: u32,
+        removed: u32,
+        inserted: String,
+        base_rev: u32,
+    ) -> Result<BodyEditView, String> {
+        let (applied, envelope, rev) = {
+            let mut core = self.shared.locked()?;
+            let (applied, envelope) = core
+                .edit_body_splice(self.id, at as usize, removed as usize, &inserted, base_rev)
+                .map_err(|e| e.to_string())?;
+            (
+                applied,
+                envelope,
+                core.rev(self.id).map_err(|e| e.to_string())?,
+            )
+        };
+        if let Some(envelope) = envelope {
+            self.send(envelope, true);
+        }
+        Ok(BodyEditView { applied, rev })
     }
 
     /// Switch the note between text and checklist, carrying its content across:

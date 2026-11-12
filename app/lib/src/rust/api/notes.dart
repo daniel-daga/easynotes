@@ -74,6 +74,9 @@ abstract class Library implements RustOpaqueInterface {
   /// waits for approval.
   Future<String> beginAccountTransferFromQr({required String qr});
 
+  /// Hold list publication while a batch of edits lands.
+  Future<void> beginBatch();
+
   Future<void> cancelAccountTransfer();
 
   /// Stop waiting on a join request. The relay keeps the request until the
@@ -195,6 +198,9 @@ abstract class Library implements RustOpaqueInterface {
 
   /// Forget every note in the trash. Returns how many there were.
   Future<int> emptyTrash();
+
+  /// Publish the list once the batch is done.
+  Future<void> endBatch();
 
   /// Permanently delete a note from this person's account and synced devices.
   ///
@@ -594,6 +600,16 @@ abstract class Note implements RustOpaqueInterface {
   /// views newer than it.
   Future<int> editBody({required String from, required String to});
 
+  /// Apply one splice when the field is still at `base_rev`. On a stale
+  /// revision nothing is written: the field sends the whole edit instead,
+  /// which is the path that can rebase onto a peer's change.
+  Future<BodyEditView> editBodySplice({
+    required int at,
+    required int removed,
+    required String inserted,
+    required int baseRev,
+  });
+
   /// Set an item's text from the field's own edit: the text it was showing
   /// and the text it shows now. Replayed onto what the item says by the time
   /// it arrives, so typing in the same item as somebody else keeps both
@@ -810,6 +826,26 @@ class AttachmentView {
           thumbnailWidth == other.thumbnailWidth &&
           thumbnailHeight == other.thumbnailHeight &&
           pending == other.pending;
+}
+
+/// What one splice did: whether the revision it was made against was still
+/// current, and the revision the edit landed at.
+class BodyEditView {
+  final bool applied;
+  final int rev;
+
+  const BodyEditView({required this.applied, required this.rev});
+
+  @override
+  int get hashCode => applied.hashCode ^ rev.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BodyEditView &&
+          runtimeType == other.runtimeType &&
+          applied == other.applied &&
+          rev == other.rev;
 }
 
 class CollaboratorView {

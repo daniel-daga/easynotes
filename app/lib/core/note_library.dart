@@ -21,6 +21,31 @@ import 'sync_status.dart';
 export 'invites.dart';
 export 'note_view.dart' show NoteColour, NoteKind;
 
+/// [NoteLibrary.watchReminders] for both implementations: a note edit only
+/// reaches the scheduler when it actually changed a reminder, or moved its note
+/// into or out of the trash.
+Stream<List<Reminder>> watchReminderChanges(NoteLibrary library) {
+  List<(Reminder, bool)> snapshot() {
+    final trashed = {for (final note in library.notes) note.id: note.trashed};
+    return [
+      for (final reminder in library.reminders)
+        (reminder, trashed[reminder.noteId] ?? false),
+    ];
+  }
+
+  return library
+      .watchNotes()
+      .map((_) => snapshot())
+      .distinct(
+        (a, b) =>
+            a.length == b.length &&
+            Iterable.generate(
+              a.length,
+            ).every((i) => a[i].$1 == b[i].$1 && a[i].$2 == b[i].$2),
+      )
+      .map((snapshot) => [for (final entry in snapshot) entry.$1]);
+}
+
 /// Whether the note list is a masonry grid or one column. A view setting, and so
 /// a personal one: it lives in the account document beside the colours.
 enum NoteLayout { grid, list }
@@ -310,7 +335,11 @@ abstract class NoteLibrary implements StorageHealth, Invites {
   /// generator waiting in `await for` does not see a cancel until the next
   /// note event, so cancelling it on a quiet library never completed, and
   /// switching relay hung in the reminder scheduler's `dispose`.
-  Stream<List<Reminder>> watchReminders() => watchNotes().map((_) => reminders);
+  ///
+  /// Only a change to the reminders themselves gets through. Every note edit
+  /// reaches [watchNotes], and rescheduling every alarm on every keystroke is
+  /// battery spent on nothing.
+  Stream<List<Reminder>> watchReminders() => watchReminderChanges(this);
 
   /// Make one reminder for [noteId] and return its stable account-document ID.
   Future<String> createReminder({
@@ -328,6 +357,12 @@ abstract class NoteLibrary implements StorageHealth, Invites {
 
   /// Make a new, empty note of [kind] and return its ID.
   Future<String> createNote({NoteKind kind = NoteKind.checklist});
+
+  /// Hold the note list back while a batch of edits lands, then publish it
+  /// once. Paired calls may nest.
+  Future<void> beginBatch();
+
+  Future<void> endBatch();
 
   /// Whether this device can join someone else's list.
   ///

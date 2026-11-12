@@ -141,6 +141,37 @@ fn two_devices_converge_with_their_own_counters<D: NoteDoc>() {
     assert!(b.rev(id).unwrap() > 1);
 }
 
+/// A splice at the current revision needs no diff and lands; one made against
+/// a revision that has moved is refused so the caller can rebase the whole
+/// edit.
+fn a_body_splice_applies_only_at_its_base_revision<D: NoteDoc>() {
+    let mut a = core::<D>();
+    let id = a.create_note(NoteKind::Text).unwrap();
+    a.set_body(id, "milk").unwrap();
+    let base = a.rev(id).unwrap();
+
+    let (applied, envelope) = a.edit_body_splice(id, 4, 0, " and eggs", base).unwrap();
+    assert!(applied);
+    assert!(envelope.is_some());
+    assert_eq!(a.view(id).unwrap().body, "milk and eggs");
+
+    let stale = a.edit_body_splice(id, 0, 0, "not this", base).unwrap();
+    assert!(!stale.0);
+    assert!(stale.1.is_none());
+    assert_eq!(a.view(id).unwrap().body, "milk and eggs");
+}
+
+/// Offsets are characters, so a splice after a non-ASCII line does not split
+/// it.
+fn a_body_splice_counts_characters<D: NoteDoc>() {
+    let mut a = core::<D>();
+    let id = a.create_note(NoteKind::Text).unwrap();
+    a.set_body(id, "café 😀").unwrap();
+    let base = a.rev(id).unwrap();
+    a.edit_body_splice(id, 6, 0, "!", base).unwrap();
+    assert_eq!(a.view(id).unwrap().body, "café 😀!");
+}
+
 /// The watcher's first value is the current view at the current revision, and
 /// everything after it is strictly newer.
 #[test]
@@ -190,6 +221,14 @@ macro_rules! backend_suite {
             #[test]
             fn two_devices_converge_with_their_own_counters() {
                 super::two_devices_converge_with_their_own_counters::<$backend>()
+            }
+            #[test]
+            fn a_body_splice_applies_only_at_its_base_revision() {
+                super::a_body_splice_applies_only_at_its_base_revision::<$backend>()
+            }
+            #[test]
+            fn a_body_splice_counts_characters() {
+                super::a_body_splice_counts_characters::<$backend>()
             }
         }
     };

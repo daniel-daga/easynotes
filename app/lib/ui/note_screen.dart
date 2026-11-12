@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/attachment_files.dart';
+import '../core/audio_playback.dart';
 import '../core/app_visibility.dart';
 import '../core/content_interchange.dart';
 import '../core/content_sharing.dart';
@@ -149,6 +150,10 @@ class _NoteScreenState extends State<NoteScreen> {
 
   late final Stream<List<NoteSummary>>? _noteSummaries = widget.library
       ?.watchNotes();
+  late final List<NoteSummary>? _initialSummaries = widget.library?.notes;
+  late final Stream<NoteView> _noteViewStream = widget.core
+      .watch()
+      .asBroadcastStream();
 
   // -- attachments ----------------------------------------------------------
 
@@ -166,6 +171,7 @@ class _NoteScreenState extends State<NoteScreen> {
   StreamSubscription<List<AttachmentTransfer>>? _transferWatch;
   StreamSubscription<NoteView>? _viewWatch;
   AudioPlayer? _audioPlayer;
+  Future<void> Function()? _releasePlayback;
   StreamSubscription<PlayerState>? _playerStateWatch;
   StreamSubscription<Duration>? _playerPositionWatch;
   StreamSubscription<Duration?>? _playerDurationWatch;
@@ -183,7 +189,7 @@ class _NoteScreenState extends State<NoteScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && widget.seedBlankItem) unawaited(_startEmptyChecklist());
     });
-    _viewWatch = widget.core.watch().listen((note) {
+    _viewWatch = _noteViewStream.listen((note) {
       _refreshPending();
       // The strip is for an empty row. The first letter typed is the answer to
       // it, and the row it belonged to is no longer blank.
@@ -524,6 +530,8 @@ class _NoteScreenState extends State<NoteScreen> {
         _playbackDuration = Duration(milliseconds: audio.durationMs ?? 0);
       });
       await player.stop();
+      await _releasePlayback?.call();
+      _releasePlayback = null;
       final bytes = await widget.core.readAttachment(audio.id);
       if (!mounted) return;
       if (bytes == null) {
@@ -536,11 +544,15 @@ class _NoteScreenState extends State<NoteScreen> {
         _loadingAttachment = audio.id;
         _playbackIsPlaying = false;
       });
-      await player.play(BytesSource(bytes, mimeType: audio.mime));
+      final prepared = await prepareAudio(bytes, audio.mime);
+      _releasePlayback = prepared.dispose;
+      await player.play(prepared.source);
       if (mounted && _loadingAttachment == audio.id) {
         setState(() => _loadingAttachment = null);
       }
     } on Object catch (e) {
+      await _releasePlayback?.call();
+      _releasePlayback = null;
       if (!mounted) return;
       setState(() {
         _playingAttachment = null;
@@ -578,6 +590,8 @@ class _NoteScreenState extends State<NoteScreen> {
     } on Object {
       // The note may be closing while its platform player is stopping.
     }
+    await _releasePlayback?.call();
+    _releasePlayback = null;
   }
 
   @override
@@ -590,6 +604,7 @@ class _NoteScreenState extends State<NoteScreen> {
     unawaited(_playerCompleteWatch?.cancel());
     _peoplePoll?.cancel();
     appIsForeground.removeListener(_onForeground);
+    unawaited(_releasePlayback?.call());
     if (_audioPlayer case final player?) unawaited(player.dispose());
     // A set: an item Enter made is under its stand-in ID and its own.
     for (final focus in _itemFocusNodes.values.toSet()) {
@@ -999,6 +1014,7 @@ class _NoteScreenState extends State<NoteScreen> {
     expands: expands,
     autofocus: widget.autofocusBody && note.kind == NoteKind.text,
     onEdit: widget.core.editBody,
+    onSplice: widget.core.editBodySplice,
   );
 
   /// A text note: the body, and under it any items a merge left on it — drawn,
@@ -1336,7 +1352,9 @@ class _NoteScreenState extends State<NoteScreen> {
   /// The view to draw before the stream answers. The note can leave the device
   /// between the list card and this screen, and a core that has forgotten it
   /// has nothing to answer with.
-  NoteView get _initialView {
+  late final NoteView _initialView = _readInitialView();
+
+  NoteView _readInitialView() {
     try {
       return widget.core.current;
     } catch (_) {
@@ -1347,7 +1365,7 @@ class _NoteScreenState extends State<NoteScreen> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<NoteView>(
-      stream: widget.core.watch(),
+      stream: _noteViewStream,
       initialData: _initialView,
       builder: (context, snapshot) {
         final note = snapshot.data ?? const NoteView.empty();
@@ -1355,7 +1373,7 @@ class _NoteScreenState extends State<NoteScreen> {
         if (library == null) return _screen(note, null);
         return StreamBuilder<List<NoteSummary>>(
           stream: _noteSummaries,
-          initialData: library.notes,
+          initialData: _initialSummaries,
           builder: (context, summaries) {
             final summary = summaries.data
                 ?.where((summary) => summary.id == widget.noteId)
@@ -1959,6 +1977,7 @@ class _BodyField extends StatefulWidget {
     this.expands = false,
     this.autofocus = false,
     required this.onEdit,
+    required this.onSplice,
   });
 
   final String body;
@@ -1970,6 +1989,8 @@ class _BodyField extends StatefulWidget {
   final bool expands;
   final bool autofocus;
   final Future<int> Function(String from, String to) onEdit;
+  final Future<int?> Function(int at, int removed, String inserted, int baseRev)
+  onSplice;
 
   @override
   State<_BodyField> createState() => _BodyFieldState();
@@ -2010,7 +2031,15 @@ class _BodyFieldState extends State<_BodyField> {
         _queued = null;
         final from = _base;
         _base = next;
-        final rev = await widget.onEdit(from, next);
+        final splice = bodySplice(from, next);
+        final rev =
+            await widget.onSplice(
+              splice.at,
+              splice.removed,
+              splice.inserted,
+              _mine,
+            ) ??
+            await widget.onEdit(from, next);
         if (rev > _mine) _mine = rev;
         next = _queued;
       }
