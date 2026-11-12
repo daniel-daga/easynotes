@@ -2980,10 +2980,9 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
     /// To a checklist, every non-blank line of the body becomes an item after
     /// whatever items the note already had. Markdown task markers preserve their
     /// checked state and a `# Heading` line becomes a section heading; other
-    /// lines become unchecked items. To text, every item becomes a line, checked
-    /// or not, after whatever the body already said — ticks are the one thing
-    /// that does not survive the trip, as in Keep, and a heading arrives as the
-    /// plain line of text it is.
+    /// lines become unchecked items. To text, every item becomes a Markdown task
+    /// line and every heading a `# Heading` line, after whatever the body already
+    /// said, so switching back preserves ticks and sections.
     /// "Already had" is not hypothetical: a merge can leave content on the side
     /// that was emptied (see [`NoteView`]), and converting is what tidies it up
     /// rather than what throws it away.
@@ -3015,12 +3014,18 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
                 Edit::ToChecklist { items }
             }
             NoteKind::Text => {
-                let mut lines: Vec<&str> = Vec::new();
+                let mut lines = Vec::new();
                 let kept = view.body.trim_end_matches('\n');
                 if !kept.is_empty() {
-                    lines.push(kept);
+                    lines.push(kept.to_owned());
                 }
-                lines.extend(view.items.iter().map(|i| i.text.as_str()));
+                lines.extend(view.items.iter().map(|i| {
+                    if i.heading {
+                        format!("# {}", i.text)
+                    } else {
+                        format!("[{}] {}", if i.checked { "x" } else { " " }, i.text)
+                    }
+                }));
                 Edit::ToText {
                     body: lines.join("\n"),
                     remove: view.items.iter().map(|i| i.id).collect(),
