@@ -1202,6 +1202,44 @@ void main() {
     );
   });
 
+  testWidgets('a shared note shows who else is on it on its card', (
+    tester,
+  ) async {
+    final library = twoLists();
+    library.setPeople(
+      'groceries',
+      const People(
+        shared: true,
+        canManage: true,
+        people: [
+          Person(member: 'me', invite: '', name: '', owner: true, me: true),
+          Person(member: 'olga', invite: 'i1', name: 'Olga Petrov'),
+        ],
+      ),
+    );
+    await pumpList(tester, library);
+
+    final stack = find.byKey(const Key('collaborators:groceries'));
+    expect(stack, findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('note:groceries')),
+        matching: find.text('OP'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.bySemanticsLabel(RegExp('Shared with Olga Petrov')),
+      findsOneWidget,
+      reason: 'a screen reader hears who the note is shared with',
+    );
+    expect(
+      find.byKey(const Key('collaborators:hardware')),
+      findsNothing,
+      reason: 'a note nobody else is on looks like any other',
+    );
+  });
+
   testWidgets('a pinned note goes to the top and says that it is pinned', (
     tester,
   ) async {

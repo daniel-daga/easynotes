@@ -35,6 +35,7 @@ import '../core/sync_status.dart';
 import 'about_screen.dart';
 import 'audio_note_recorder.dart';
 import 'attachments.dart';
+import 'collaborator_stack.dart';
 import 'sync_devices_screen.dart';
 import 'invites.dart';
 import 'motion.dart';
@@ -3772,6 +3773,26 @@ class _NoteCardFace extends StatelessWidget {
                         label: tag.name,
                       ),
                   ],
+                ),
+              ],
+              // Who else is on the note, as the note screen's Share action
+              // draws them: a shared list should look shared before it is
+              // opened. The summary never lists this person, so a note nobody
+              // else is on has nothing here.
+              if (note.collaborators.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: CollaboratorStack.collaborators(
+                    key: Key('collaborators:${note.id}'),
+                    people: note.collaborators,
+                    maxVisible: 4,
+                    radius: 11,
+                    ringColor:
+                        noteColourTint(context, note.colour) ??
+                        theme.cardTheme.color ??
+                        theme.colorScheme.surfaceContainerLow,
+                  ),
                 ),
               ],
               // Only when the match is not already on the card: a hit on the
