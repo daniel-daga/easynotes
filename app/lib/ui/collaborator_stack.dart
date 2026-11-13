@@ -8,6 +8,9 @@
 /// This person is never drawn, somebody on their way out is not drawn, and
 /// somebody who has been let in but whose access is still arriving is drawn
 /// faded. Live presence — marking who has the note open right now — is deferred.
+///
+/// The note list draws the same stack at the foot of a shared note's card,
+/// from the people the note summary carries ([CollaboratorStack.collaborators]).
 library;
 
 import 'package:flutter/material.dart';
@@ -49,17 +52,30 @@ class CollaboratorCircle {
 }
 
 class CollaboratorStack extends StatelessWidget {
-  const CollaboratorStack({
+  CollaboratorStack({
     super.key,
-    required this.people,
+    required People people,
     this.ringColor,
     this.maxVisible = 3,
     this.radius = 12,
-  }) : assert(maxVisible >= 1),
+  }) : circles = entriesFor(people),
+       assert(maxVisible >= 1),
        assert(radius > 0);
 
-  /// Everybody with access to the note, as the sharing screen lists them.
-  final People people;
+  /// The stack a note card draws: the people a note summary lists, which never
+  /// include this person.
+  CollaboratorStack.collaborators({
+    super.key,
+    required List<Collaborator> people,
+    this.ringColor,
+    this.maxVisible = 3,
+    this.radius = 12,
+  }) : circles = entriesForCollaborators(people),
+       assert(maxVisible >= 1),
+       assert(radius > 0);
+
+  /// Who the stack draws, in order.
+  final List<CollaboratorCircle> circles;
 
   /// What the circles are cut out of, normally the app bar behind them. Without
   /// it they are cut out of the theme's surface colour.
@@ -89,6 +105,19 @@ class CollaboratorStack extends StatelessWidget {
       ),
   ];
 
+  /// Who a card's stack shows: everybody the summary lists, in its order. The
+  /// summary has already left this person out.
+  static List<CollaboratorCircle> entriesForCollaborators(
+    List<Collaborator> people,
+  ) => [
+    for (final person in people)
+      CollaboratorCircle(
+        initials: person.initials,
+        seed: person.id,
+        name: person.displayName,
+      ),
+  ];
+
   /// What a screen reader is told the stack shows.
   static String describe(List<CollaboratorCircle> circles) {
     final names = [for (final circle in circles) circle.name];
@@ -102,7 +131,7 @@ class CollaboratorStack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final all = entriesFor(people);
+    final all = this.circles;
     if (all.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
