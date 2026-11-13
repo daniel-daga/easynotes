@@ -1,9 +1,9 @@
 # How EasyNotes works
 
 EasyNotes is a local-first notes and lists app for Android and the web. Every
-note is sealed on the device before it syncs, so the relay that stores it holds
-ciphertext and nothing else. Sharing a note sends a link, not an email
-invitation.
+note is sealed on the device before it syncs, so the relay stores encrypted
+content alongside the routing and access metadata described below. Sharing a
+note sends a link, not an email invitation.
 
 This page is the public overview. The decisions behind the details are indexed
 in [`decisions.md`](decisions.md); the security model and its limits are in
@@ -111,9 +111,11 @@ before a deletion still contains the ciphertext it contained.
 
 ## Security
 
-Every note has its own key, wrapped by a master key held in the OS keychain (or
-the browser's nearest equivalent). Every update is encrypted with
-XChaCha20-Poly1305 and signed with the author's Ed25519 device key. Receivers
+Every note has its own key, wrapped by a master key held in native OS secure
+storage. On the web, the master key is wrapped using WebCrypto and stored in
+the origin's localStorage alongside its wrapping key. This does not protect
+against malicious scripts running on that origin. Every update is encrypted
+with XChaCha20-Poly1305 and signed with the author's Ed25519 device key. Receivers
 verify the signature before decrypting, and the associated data binds the note,
 the author and a counter, so an envelope cannot be moved between notes or
 re-attributed ([ADR 0014](decisions.md#adr-0014),

@@ -1,107 +1,127 @@
-# iOS release checklist
+# iOS builds and releases
 
-**Date:** 2026-10-22 · App: `eu.fraisl.easynotes` · Team `86XL7XR5XV`
+iOS has build and TestFlight upload support, but device validation is incomplete.
+See [project status](../README.md#project-status). Building or uploading an IPA
+does not make it ready for distribution.
 
-The iOS build itself is in place and working: `.github/workflows/ios-testflight.yml`
-builds a signed IPA from the built-in Flutter iOS project, uploads it to App
-Store Connect, and waits for Apple's processing (last green run 2026-10-18).
-This page records what stands between that build and shipping it, and where each
-thing happens. It is the iOS counterpart of
-[`android-release.md`](android-release.md); the shared privacy, security and
-operational gate items are not repeated here.
+## Local builds
 
-## Done
+Use macOS with Xcode, its iOS SDK and command-line tools, and the Rust/Flutter
+setup in the [README](../README.md#getting-started). Run `flutter doctor` to
+check platform prerequisites, then from the repository root:
 
-- Signed TestFlight build uploads, with a per-run build number.
-- The About screen is wired to `EASYNOTES_VERSION`, `EASYNOTES_PRIVACY_URL` and
-  `EASYNOTES_SUPPORT`; the workflow now bakes all three in (was missing, so
-  early builds said "Development build" with no policy or contact).
-- In-app camera and microphone purpose strings, the `easynotes://` URL scheme,
-  deep-link handling, and the iOS share sheet (see `app/ios/Runner/`).
-- App icons at every size in `app/ios/Runner/Assets.xcassets`.
-- Store copy drafted under `fastlane/metadata/ios/en-US/` (name, subtitle,
-  keywords, description, privacy URL, release notes).
-
-## Still to do, in order
-
-### 1. Fill in the remaining App Store Connect fields
-
-`fastlane/metadata/ios/en-US/` has the copy, but two fields have no value in
-this repository and must be supplied by the operator:
-
-| Field | Where | Notes |
-| --- | --- | --- |
-| Support URL | App Store Connect → App Information | Must be an `http(s)://` URL, unlike the in-app contact (which may be an email). A page on `easynotes.fraisl.eu` is the natural home. |
-| Marketing URL | App Store Connect → App Information | Optional. |
-| App name (display) | App Store Connect | `Info.plist` says `CFBundleDisplayName = "Easynotes"` while the Android title is "EasyNotes". Pick one; the store name should match what users see. |
-| Category (primary/secondary) | App Store Connect | Suggest Productivity. |
-| Age rating | App Store Connect | Answer Apple's questionnaire (the app has no account sign-up and no user-generated public content, which keeps the rating low). |
-| Screenshots | App Store Connect | Required for review; take them from a release build. |
-
-The drafted copy is plain text because the App Store description does not
-render HTML, unlike Google Play's.
-
-### 2. Answer the export-compliance question
-
-The app is end-to-end encrypted, and the encryption it uses falls under Apple's
-exemption: standard TLS on the wire plus its own end-to-end note encryption,
-with nothing that Apple considers non-exempt. `Info.plist` therefore declares
-
-```xml
-<key>ITSAppUsesNonExemptEncryption</key>
-<false/>
+```sh
+rustup target add aarch64-apple-ios
+cd app
+flutter pub get
+flutter build ios --release --no-codesign
 ```
 
-so App Store Connect no longer asks the "Export Compliance" question for each
-upload. Without the key every build sat in **Missing Compliance** and was never
-distributed to testers, even though the upload itself succeeded.
+This builds without signing; it does not produce an installable App Store IPA.
+For a device development run, open `app/ios/Runner.xcworkspace` in Xcode,
+configure your signing team, and use `flutter run` from `app/` with a connected
+device. Forks need their own bundle ID, signing team and provisioning profile.
 
-This is a legal/export determination rather than a code change. If the
-cryptography ever stops qualifying for the exemption — a new non-exempt
-algorithm, or shipping third-party crypto outside TLS — flip the answer and file
-the declaration instead of leaving the question unanswered at submission.
+## TestFlight workflow
 
-Builds uploaded before the key existed still need their compliance answered by
-hand: App Store Connect → TestFlight → the build → **Manage Compliance**.
+The manually dispatched [iOS TestFlight workflow](../.github/workflows/ios-testflight.yml)
+builds a signed IPA, uploads it to App Store Connect and waits for processing.
+It does not add testers or submit for external beta or App Store review.
+The workflow pins the toolchains, bundle ID and Apple team; forks must change
+the app and workflow configuration to match their own Apple account.
 
-### 3. Complete App Privacy (App Store Connect)
+### Apple setup
 
-App Store Connect's **App Privacy** section needs the data-collection answers,
-mirroring Play's Data safety. The app has no analytics, advertising or crash
-reporting, but the relay sees IP addresses, a random device key, note IDs,
-timestamps and sizes (see the About screen and
-[ADR 0014](decisions.md#adr-0014)). Fill it from that list, and make
-sure it matches the published privacy policy.
+1. Create an **Apple Distribution** certificate and export it as a
+   password-protected `.p12`.
+2. Create an **App Store** provisioning profile for the configured bundle ID,
+   using that certificate. The workflow expects the profile name
+   `AppStore <bundle-id>`.
+3. Create an App Store Connect API key with **App Manager** access. Save the
+   `.p8` private key securely; Apple makes it available only once. Record the
+   key ID and issuer ID.
 
-### 4. External beta (TestFlight)
+### GitHub configuration
 
-The workflow uploads the build but does not add testers or start a beta review.
-To distribute externally:
+Under **Settings → Secrets and variables → Actions**, configure:
 
-- Add internal testers in App Store Connect.
-- For external testing, fill the TestFlight **test information** (what to test,
-  a contact email, review notes) and submit the build for Apple's beta review.
+| Repository variable | Purpose |
+| --- | --- |
+| `APPSTORE_ISSUER_ID` | App Store Connect issuer ID |
+| `APPSTORE_API_KEY_ID` | App Store Connect API key ID |
+| `EASYNOTES_PRIVACY_URL` | Published HTTPS privacy policy URL |
+| `EASYNOTES_SUPPORT` | Support and data-request contact shown in the app |
+| `EASYNOTES_BILLING` | Optional external token-service URL; leave unset for self-hosted builds |
 
-### 5. Run the hardware walkthrough on two iPhones
+| Repository secret | Purpose |
+| --- | --- |
+| `APPSTORE_API_PRIVATE_KEY` | Full contents of `AuthKey_*.p8` |
+| `APPSTORE_CERTIFICATES_FILE_BASE64` | Base64-encoded `.p12`, without line breaks |
+| `APPSTORE_CERTIFICATES_PASSWORD` | Certificate export password |
 
-The Android side is still owed the same thing. On **2026-10-26** one iPad
-completed share, join, the shared colour, attachment add/remove and revoke
-against a TLS relay, but live collaboration still needs polish, offline edits
-were not tried, and deleting the guest's account left it in the owner's People
-list. That is a useful partial data point, not the walkthrough. Repeat the
-release gate on two physical iPhones against a TLS relay:
+On macOS, encode the certificate with:
 
-share → join → concurrent and offline edits → revoke → attachment add and
-remove (camera, gallery, large file on mobile data, background kill mid-upload)
-→ reinstall → restore from recovery phrase → delete account. Record device, OS
-and build. The camera string in `Info.plist` currently mentions only the QR
-transfer, so confirm the attachment flows do not hit the camera without a
-matching purpose string (attachments use the document picker, not the camera).
-The 2026-10-26 Pixel + iPad run was a partial data point, not this walkthrough.
+```sh
+base64 -i distribution.p12 | tr -d '\n'
+```
 
-### 6. Publish
+Do not commit certificates, private keys or passwords. The workflow embeds the
+version, privacy URL, support contact and optional token-service URL in the
+app. The service contract is described in the
+[Android build guide](android-release.md#billing-for-a-hosted-relay).
 
-When everything above is recorded, submit the build for App Store review. iOS
-being built does not by itself make the product ready: the privacy policy,
-operator identity, support and security contacts, and the restore drill apply
-to every store.
+### Upload and distribute
+
+Open **Actions → iOS TestFlight → Run workflow** and select the branch or commit.
+The app version comes from `app/pubspec.yaml`; the workflow assigns a unique
+build number per run and rerun.
+
+After processing, find the matching version group in App Store Connect's
+**TestFlight** tab. Add the build to an internal tester group, or enable that
+group's automatic distribution. External testing additionally requires test
+information, a contact and Apple's beta review. TestFlight builds expire after
+90 days.
+
+The **App builds** workflow's iOS simulator check does not sign or upload a
+TestFlight build.
+
+## Before App Store submission
+
+### Store information and privacy
+
+- Complete the support URL, category, age rating, screenshots and review
+  information in App Store Connect. A marketing URL is optional.
+- Store metadata is in `fastlane/metadata/ios/en-US/`; check that it matches
+  the app's display name and current behaviour.
+- Review camera and microphone purpose strings in `app/ios/Runner/Info.plist`
+  against the features that use those permissions.
+- Complete **App Privacy** using the actual app, relay and any external
+  services in your build. See [SECURITY.md](../SECURITY.md) for relay metadata.
+- Publish a privacy policy appropriate to your deployment. The files in
+  `docs/public/` are drafts with operator-specific information still required.
+
+### Export compliance
+
+`app/ios/Runner/Info.plist` currently declares
+`ITSAppUsesNonExemptEncryption = false`. This is a configuration value, not a
+legal determination that every build or distribution qualifies for an exemption.
+The publisher must verify Apple's current export-compliance requirements and
+applicable law for the cryptography they distribute, and update the declaration
+or provide documentation when required.
+
+An older build with unanswered compliance questions may remain in **Missing
+Compliance**. Check the build's **Manage Compliance** page in App Store Connect.
+
+### Device validation
+
+Test the release build on physical iPhones against a TLS relay with disposable
+accounts. Cover share/join, concurrent and offline edits, revocation, reminder
+delivery, attachment add/remove and interrupted uploads, reinstall and recovery,
+and account deletion. Check deep links and the share sheet separately from
+simulator compilation. Record the build, devices, OS versions and relay setup.
+
+On iOS, recovery phrases and transfer QRs have no screenshot or Recents block;
+see [known security limitations](../SECURITY.md#scope).
+
+Only submit for review after the build, device checks, store information,
+privacy policy and support contacts have been verified.

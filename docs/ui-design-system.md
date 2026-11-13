@@ -67,9 +67,9 @@ appears.
 - Keep note actions in the same order and use the same wording and icons in
   each entry point. Hide actions that do not apply to the note's state; for
   example, pinning and archiving do not apply while a note is in Trash.
-- Keep personal placement actions (colour, pin, archive, trash) visually
-  distinct from editing the note's shared content. Make the distinction clear
-  in labels or placement when it affects what collaborators will see.
+- Keep personal placement actions (pin, archive, trash and labels) visually
+  distinct from changes everyone sees, including the note's colour and content.
+  Make the distinction clear in labels or placement.
 - Use a dialog when a person must make a considered choice or confirm an
   irreversible action. Say what will happen, identify consequences that matter,
   and offer a clear way to cancel.

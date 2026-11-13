@@ -5,6 +5,10 @@ static web app container. The relay listens on its Docker network; only the NAS
 itself can reach it at `127.0.0.1:18080`. DSM's reverse proxy provides the
 public HTTPS endpoint and WebSocket upgrade.
 
+For standalone setup and the full binary configuration reference, see
+[Running a relay](../../docs/relay.md). The settings below are specific to
+this Compose deployment.
+
 ## 1. Prepare the project on the NAS
 
 Install **Container Manager** from Package Center. Copy or clone the complete

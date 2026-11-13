@@ -1,21 +1,18 @@
 # Windows desktop
 
-Verified on 2026-09-26: the release x64 build succeeds with Flutter 3.47.5
-and Visual Studio 2022; all 40 first-launch and bridge tests pass against its
-bundled Rust DLL, and `flutter analyze` reports no issues. A separate-process
-smoke check also saved a note with a temporary key in Windows secure storage,
-reopened it from a second process, and removed its key. The dependency lock is
-unchanged. Native UI, reminders and two-device checks remain open.
+Windows has build support, but native UI, reminder delivery and multi-device
+validation remain incomplete. See [project status](../README.md#project-status).
 
 The Windows x64 runner is in `app/windows`. It bundles the Rust core through
 the existing Cargokit plugin, plus Flutter's secure-storage, timezone and local
 notification plugins. Build with Flutter and Visual Studio's **Desktop
 development with C++** workload (including CMake and the Windows SDK).
 
-On the project's Windows machine, make Rust available to Cargokit first:
+Install Rust and Flutter as described in the [README](../README.md#getting-started).
+Ensure `cargo` and `rustc` are on PATH so Cargokit can build the native core.
+From the repository root, in PowerShell:
 
 ```powershell
-$env:PATH = "$env:USERPROFILE\scoop\persist\rustup\.cargo\bin;" + $env:PATH
 cd app
 flutter pub get
 flutter build windows --release

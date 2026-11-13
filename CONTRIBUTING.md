@@ -17,27 +17,39 @@ the easiest place to start.
 ## Prerequisites
 
 - A stable Rust toolchain.
-- [Flutter](https://flutter.dev) for anything under `app/`.
+- [Flutter](https://flutter.dev) for anything under `app/`; use the version in
+  [CI](.github/workflows/ci.yml) (currently 3.47.5).
 - [`just`](https://github.com/casey/just).
 - Postgres 16 if you want the relay tests that need a database.
 
-The web build additionally needs a nightly toolchain and `wasm-pack`;
-`just setup-web` installs them plus `wasm-bindgen-cli`.
+For app dependency and bridge-generator setup, follow the
+[README](README.md#getting-started). The `just` recipes use a Unix-style shell
+(Git Bash on Windows). The web build additionally needs a nightly toolchain
+and `wasm-pack`; `just setup-web` installs them plus `wasm-bindgen-cli`.
 
 ## The quick loop
 
 ```sh
 just test-core        # the core and everything under it, no Flutter needed
-just test-all         # core, relay and app
+just test-app         # builds the native bridge and relay, then tests the app
 just lint             # cargo fmt, clippy (host and wasm32), flutter analyze
 just run-relay        # a relay on 127.0.0.1:8080, storing in memory
 just run-linux        # the app on Linux desktop, over the real core
 just --list           # everything else
 ```
 
-Set `DATABASE_URL` to run the relay on Postgres and include its tests. Without
-it those tests skip, and a green run without it is a run that skipped the tests
-that matter there.
+Set `DATABASE_URL` to a dedicated Postgres 16 test database and run relay tests
+serially, as CI does:
+
+```sh
+cargo test -p easynotes-relay -- --test-threads=1
+```
+
+Relay media sweeps can interfere with other tests sharing the same database.
+`just test-relay` and `just test-all` do not serialize them. Without
+`DATABASE_URL`, database tests skip; do not count skips as passes. For the
+full native suite with Postgres, run `just test-core`, the serial relay command,
+and `just test-app`.
 
 `just test-app` builds the Rust library and the relay binary first, because the
 bridge and two-device tests skip without them. A skipped test that reports green

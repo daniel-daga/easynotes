@@ -1,4 +1,4 @@
-# The offline gate, on two Android devices
+# Offline sync checks on two Android devices
 
 `offline_gate.py` drives the offline half of the two-device sharing gate on two
 Android devices. It is the scripted form of the seven manual steps:
@@ -12,9 +12,10 @@ Android devices. It is the scripted form of the seven manual steps:
 7. The same item is edited on both while offline, and must settle to the same
    value on both.
 
-The devices can be two emulators (as in the 2026-10-26 run) or two phones on
-`adb`. Emulators are evidence for the offline behaviour; **they are not the
-gate**, which asks for two physical Android phones. That gap is still open.
+The devices can be two emulators or two phones connected through `adb`.
+Emulator checks do not replace validation on physical devices with a signed
+release build and a TLS relay. See the
+[Android release checklist](../../docs/android-release.md#validate-before-publishing).
 
 ## Before the script
 
@@ -23,8 +24,9 @@ account and invite half by hand is deliberate: a recovery phrase needs a
 person to write it down. The one-time setup is:
 
 - Two devices or emulators with an accessibility service enabled. Without one
-  Flutter publishes no semantics and `uiautomator` sees an opaque canvas;
-  `docs/android-release.md` has the commands.
+  Flutter may expose an opaque canvas to `uiautomator`. In Android Settings,
+  open **Accessibility** and enable an installed service such as TalkBack on
+  each test device; turn it off afterwards if it was enabled only for this run.
 - A relay both devices can reach, and both devices pointed at it in Relay
   settings. A debug build may use plain `http://`; a release build may not.
   On an emulator the host is `10.0.2.2`.
@@ -52,26 +54,16 @@ non-zero if any check fails.
 
 ## Why it reads the card and reopens the note
 
-Two Flutter semantics quirks shape the script; both were found while building
-this:
+The script accounts for these UI/semantics behaviours:
 
-- A text field that received a **remote** edit can report only its first
-  character through semantics until the note is reopened ("bread" read back as
-  "b", 2026-10-26). Item text is therefore read after reopening the note from
-  the grid, where it is whole.
+- Remote field edits have previously exposed incomplete text through semantics.
+  The script reopens the note from the grid before checking text, so it does
+  not independently verify that an already-open editor updates correctly.
 - Ticked items are hidden under a **"Crossed off items (n)"** button, and the
   grid's card shows only the unticked ones. The script opens that section
   before listing items and their ticks.
 
-Deleting all of an item's text removes the row; if a field is emptied and then
-typed into, the app can log `Unhandled Exception: unknown item <id>` (a known
-bug). The script appends to existing text instead of clearing it, which is also
-what a person adding a word does.
-
-## Evidence from 2026-10-26
-
-Two Android 17 (API 37) emulators, debug build of `e51bd1d`, one list titled
-`Gate3`, a local plain-HTTP relay: all checks passed, including the
-force-stop/relaunch and the same-item conflict (`apples red` won over
-`apples green` on both devices). This is evidence for the offline behaviour, not
-the two-phone gate.
+The script appends to existing text rather than clearing and replacing it.
+It therefore does not cover deleting the last character or continuing to edit
+an emptied row; test those interactions separately. Historical failures in
+that path are not evidence that the current build still has the same bug.
