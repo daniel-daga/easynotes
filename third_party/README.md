@@ -40,10 +40,11 @@ and stacks on WASM. It does not change counts or suppress invalid releases, and
 the calls optimize away when the variable is absent. The browser harness and
 capture instructions are in [the smoke-test README](../tools/web-smoke/README.md).
 
-[ADR 0002](../docs/decisions.md#adr-0002) ("Not done, and honest about it") has the
-stack that showed it, and why the pool was patched rather than swapped for the
-`Nom` codec. That codec needs no lock, but it would turn the other open bridge
-failure, a double release, from a logged panic into a use-after-free.
+[ADR 0002](../docs/decisions.md#adr-0002) describes the shared native/WASM core.
+The patch retains the `Moi` codec's checked handle pool rather than switching
+to `Nom`: unchecked raw-pointer ownership would make a double release a
+potential use-after-free instead of a pool diagnostic. The lifetime harness
+above is for investigating this risk; a clean run is not proof of a fix.
 
 **On an upgrade.** Check the new release's `moi_arc.rs` first. If it no longer
 takes a blocking lock on the web **and** releases cached Arcs before decrementing

@@ -1,8 +1,8 @@
 # Building an Android release
 
-A release build is signed with the release key or not signed at all. It is
-never debug-signed any more: a debug-signed APK cannot be updated by a
-store-signed one, and it had been what `flutter build apk --release` produced.
+A release build is signed with a configured release key or left unsigned. It
+is not debug-signed. See the [project README](../README.md#getting-started) for
+the Rust and Flutter setup before following this guide.
 
 ## The signing key
 
@@ -49,9 +49,10 @@ flutter build appbundle --release \
     --dart-define=EASYNOTES_SUPPORT=support@example.org
 ```
 
-The two URLs are what *About and privacy* shows (`lib/ui/about_screen.dart`).
-A build without them says it was not published with a policy, which is right
-for a test build and wrong for a store.
+The privacy URL and support contact are shown in *About and privacy*
+(`app/lib/ui/about_screen.dart`). Replace the examples with your own published
+details. A build without them is a development build, not a store-ready release.
+Forks should also set `EASYNOTES_SOURCE_URL` to their corresponding source URL.
 
 ## Billing for a hosted relay
 
@@ -163,27 +164,23 @@ Publishing it, and uploading the bundle to Play's internal track, is a
 person's decision. The top of the workflow lists the secrets and variables it
 needs; it stops at its first step if any is missing.
 
-## What has been checked, and what has not
+## Validate before publishing
 
-Install, update over the previous release, the downgrade refusal, and a
-reinstall with a restore from the recovery phrase were checked on a **Pixel 10
-Pro running Android 16 on 2026-10-23**, with the signed `v0.1.5` draft over
-`v0.1.4` (`versionCode` 1005 over 1004). The note and its text survived the
-update, the certificate was unchanged, and the downgrade was refused.
+A successful build is not a validated release. Test the signed build on
+physical Android devices against a TLS relay, using disposable test accounts:
 
-The same install, update and downgrade sequence, from `0.1.0` through `0.1.2`,
-had run on the `Medium_Phone` x86_64 emulator (Android 16 / API 36) on
-2026-10-22.
+- Install, update from the previous version, verify signature continuity and
+  check that a downgrade is refused without losing notes.
+- Share and join a note; edit concurrently and offline; reconnect and check
+  convergence, including after a force-stop.
+- Add/remove attachments, revoke a collaborator, and verify that future edits
+  are not available to the removed account.
+- Reinstall and recover on the same relay, then delete the account and verify
+  the effects on owned notes, shared notes and other devices.
+- Check reminder permissions and delivery, and the published privacy/support
+  links. The pages in `docs/public/` are drafts, not ready-to-publish policies.
 
-A two-device sharing run on **2026-10-26** used a Pixel 10 Pro and an iPad.
-Share, join, the shared colour, attachment add/remove and revoke passed. Live
-collaboration still needs polish, offline edits were not tried, and deleting
-the guest's account left it in the owner's People list. The build, OS versions
-and relay operator were not recorded, and an iPad is not a second Android
-phone, so this is **not** gate item 2. The two-Android-phone rerun is open.
-
-This is not the whole app working. The sharing journey — share, join, offline
-edits, revoke, attachments and account deletion — still has to pass on two
-physical Android phones against a TLS relay, and no draft has been published or
-uploaded to Play. That is launch gate item 2; publishing and the Play upload
-are also still open.
+Record the build, devices, OS versions and relay configuration with the test
+results. The [offline test tool](../tools/android-gate/README.md) covers part
+of this journey; emulator checks do not replace hardware validation. See
+[project status](../README.md#project-status) for current support limits.

@@ -1,9 +1,9 @@
 # Architecture decisions
 
-This is the public index of the decisions that shape EasyNotes. The long-form
-records are maintained in the project's private engineering archive; this page
-records what was decided, so the code and the public docs have something to
-point at.
+This index summarises the technical decisions that shape EasyNotes. Entries
+describe the design, not a guarantee that a feature has been fully validated;
+see the [project status](../README.md#project-status) and
+[security policy](../SECURITY.md).
 
 Each entry has a stable anchor (`#adr-0001`, `#adr-0002`, and so on) used by
 comments throughout the repository.
@@ -289,24 +289,19 @@ sections and checked state when either collaborator switches it back. This uses
 the existing text body and parser, with no new stored fields or wire format.
 
 <a id="adr-0038"></a>
-## ADR 0038 — A paying household is a set of device tokens
+## ADR 0038 — Per-device relay access tokens
 
-**Accepted, amends ADR 0014, ADR 0021 and ADR 0028.** The hosted relay sells
-access per household but stores one random token per device. Billing keeps the
-household-to-token map and the relay never sees it, so a customer can be revoked
-by token ID without the relay being able to group a household's devices or link
-a payment to a note. A token binds to the device key on first use, and a lapsed
-household is read-only for 30 days before its tokens are revoked. The
-private-relay shared key is unchanged, and the relay still contains no billing
-code.
+**Accepted, amends ADR 0014, ADR 0021 and ADR 0028.** A relay can accept one
+random access token per device in addition to shared access keys. A token binds
+to the device key on first use and can be revoked, made read-only or unbound
+through a private admin API. External services manage any customer-to-token
+mapping; the relay has no billing logic. Self-hosters can manage tokens with
+the relay CLI. See the [relay guide](relay.md#device-access-tokens).
 
 <a id="adr-0039"></a>
-## ADR 0039 — A seven-day card-backed trial
+## ADR 0039 — Hosted-service policy stays outside the relay
 
-**Accepted, amends ADR 0035.** A hosted household can try the relay for seven
-days with a card and no charge until day seven, then the normal €3 a month (or
-€30 a year) plan starts automatically. One trial per household; everyone they
-share with is included and still pays nothing, and cancelling during the trial
-runs to day seven with no charge. A failed charge or a cancellation leaves the
-household read-only for 30 days before its tokens are revoked. The trial lives
-in billing; the relay stores no trial state and needs no change.
+Hosted-service commercial policy is outside the scope of this technical index.
+The relay stores no subscription or trial state; external services control
+access through the device-token API described in ADR 0038. This anchor is
+retained for existing references.

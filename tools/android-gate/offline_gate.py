@@ -16,8 +16,8 @@ needs a person to write it down.
     python3 tools/android-gate/offline_gate.py \
         --a emulator-5554 --b emulator-5556 --title Gate --host 10.0.2.2
 
-The devices must have an accessibility service enabled, as
-`docs/android-release.md` explains: without one Flutter publishes no
+The devices must have an accessibility service enabled, as the README in
+this directory explains: without one Flutter publishes no
 semantics and uiautomator sees a single opaque canvas.
 
 Everything asserted here is read from the list's card on the grid, not from

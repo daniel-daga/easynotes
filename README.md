@@ -1,282 +1,234 @@
 # EasyNotes
 
-**Keep, but nobody can read it.** EasyNotes is a Google Keep-style notes and
-lists app for Android and the web. Every note is sealed on the device before it
-syncs, so the relay that stores it holds ciphertext and nothing else. A shared
-note gets its second person in with a link, not an email address.
+**Local-first, end-to-end encrypted notes and checklists.**
 
 [![CI](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml/badge.svg)](https://github.com/daniel-daga/easynotes/actions/workflows/ci.yml)
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](COPYING.md)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-One Rust core handles crypto, CRDT merging, storage and sync. It drives a
-Flutter UI on Android and the web — the two platforms exercised on hardware and
-in browser tests — and builds for iOS, Linux and Windows without claiming them
-for this launch. It talks to a relay that stores and forwards ciphertext and
-nothing else.
+EasyNotes lets you write notes offline, sync them across devices, and share
+them through invite links without an email account. Note content is encrypted
+on your device before it reaches the sync server (the relay). You can also use
+the app locally without a relay, or host your own relay.
 
----
+The app uses a Flutter interface and a shared Rust core for encryption,
+storage, conflict resolution and sync.
 
-> **Status: not production-ready.** Android is exercised on a Pixel 10 Pro and
-> the web build passes its browser checks; attachments work on native and on the
-> web. A Pixel 10 Pro + iPad run passed share, join, shared colour, attachments
-> and revoke, but live collaboration still needs polish and the two-Android-phone
-> sharing journey is open. No store release has been published. iOS builds upload
-> to TestFlight but have not been walked through on a device; Linux and Windows
-> builds exist without a launch claim.
+## Project status
 
-> **Not audited.** There has been one internal review of the cryptography, and no
-> external audit. Do not rely on EasyNotes for anything where a flaw would put
-> someone at risk. See [`SECURITY.md`](SECURITY.md).
+**EasyNotes is under active development and is not production-ready.** No app
+store release has been published. Build from source to try it, and use test
+data rather than important notes.
 
-## How it compares
+- **Android and web** are the primary development targets, with device and
+  browser testing.
+- **iOS, Linux and Windows** have build support, but runtime validation is
+  incomplete. Build support is not a guarantee of feature parity.
+- Sharing and live collaboration are implemented, but still need usability
+  improvements and further multi-device testing.
 
-Three apps people actually consider, and the gap that matters.
-
-| App | What it gets right | Where it leaves a gap |
-| --- | --- | --- |
-| **Google Keep** | Free, instant, live shared lists, on Android and the web. | Google can read every note, and a Google account is required. |
-| **Apple Notes** | Fast, free, live shared notes. | End-to-end encryption needs Advanced Data Protection turned on; Apple devices only. |
-| **CryptPad** | Encrypted, live collaboration, self-hostable, and usable without an account. | A document suite, not a Keep-style list; no native mobile app. |
-
-EasyNotes is the one that keeps Keep's shape, encrypts by default, and gets the
-second person in with a link.
+**The project has not been externally security-audited.** Do not use it for
+information whose disclosure or loss could put someone at risk. See the
+[security policy and known limitations](SECURITY.md).
 
 ## Features
 
-- **Text notes and checklists**, offline-first: every action works without a
-  network and syncs later. Edits are batched (one envelope per pause, not per
-  keystroke — [ADR 0016](docs/decisions.md#adr-0016)) and ride a single
-  socket per device ([ADR 0017](docs/decisions.md#adr-0017)).
-- **End-to-end encryption** on every update: XChaCha20-Poly1305, signed with
-  each author's Ed25519 device key, verified before decryption.
-- **Live collaboration** through single-use, self-expiring invite links that
-  carry no note key ([ADR 0015](docs/decisions.md#adr-0015),
-  [ADR 0025](docs/decisions.md#adr-0025)).
-- **Sharing with people, not phones** — a collaborator is an account, so one
-  person's several devices are one entry, and revocation rotates the note key
-  ([ADR 0023](docs/decisions.md#adr-0023)). A rename reaches every note
-  the person is on, in either direction, because each member signs their own
-  name into the note ([ADR 0032](docs/decisions.md#adr-0032)).
-- **Personal placement**: labels, pins, archive and trash are private to each
-  device's account document; a colour is shared with everyone on the note, since
-  two people looking at one list should see it the same shade (see the 2026-10-24
-  amendment to [ADR 0008](docs/decisions.md#adr-0008)).
-- **Labels** that are things, not words — renamable, mergeable, and able to
-  outlive the notes that carry them.
-- **Local full-text search** over a sealed index, which also draws the note
-  grid ([ADR 0009](docs/decisions.md#adr-0009)).
-- **Attachments** — photos and audio files encrypted in chunks under their own
-  key, transferred over HTTP ([ADR 0027](docs/decisions.md#adr-0027)).
-- **Reminders** as synced account state, scheduled locally
-  ([ADR 0019](docs/decisions.md#adr-0019)).
-- **Two devices from twelve words** — a BIP-39 recovery phrase that derives the
-  account document ([ADR 0013](docs/decisions.md#adr-0013)).
-- **Sync is one decision** — a sync server and the account that belongs to it
-  are set up together; a local profile has neither. Without sync, notes stay on
-  the device and are not backed up ([ADR 0031](docs/decisions.md#adr-0031)).
-- **Permanent deletion** of notes from the log, snapshot, index and key
-  ([ADR 0010](docs/decisions.md#adr-0010)).
-- **Self-hostable relay** with storage quotas, per-address rate limits,
-  Prometheus metrics, graceful shutdown and an optional access-key gate.
+- **Offline notes and checklists** with automatic merging of concurrent edits.
+- **End-to-end encrypted sync**, using XChaCha20-Poly1305 encryption and
+  Ed25519 device signatures.
+- **Shared notes** through single-use invite links. Removing a collaborator
+  rotates the note key for future updates.
+- **Organisation** with labels, pins, colours, archive and trash. Labels and
+  placement are personal; a note's colour is shared with its collaborators.
+- **Local full-text search** backed by an encrypted index.
+- **Encrypted photo and audio attachments.**
+- **Reminders** stored as encrypted account state and scheduled locally.
+- **Multi-device recovery** with a twelve-word recovery phrase on the same
+  relay.
+- **Self-hosting** with a Rust relay, Postgres storage, access controls,
+  storage quotas and Prometheus metrics.
 
-## Architecture
+Local-only notes are not backed up by a relay. For synced accounts, keep the
+recovery phrase safe: the relay operator cannot recover your encryption keys.
+Sync is not a substitute for an independent backup.
 
-The app is local-first: each device holds its full data and merges changes with
-a CRDT; the relay stores and forwards encrypted updates.
+## Getting started
 
-```mermaid
-flowchart LR
-  A[Flutter UI] --> B[Rust core<br/>crypto · CRDT · store · sync]
-  B --> C[(Local encrypted store<br/>SQLite / IndexedDB)]
-  B -- encrypted updates --> D[Relay<br/>Rust/axum · WebSocket]
-  D --> E[(Postgres + media dir<br/>ciphertext only)]
-  D -- encrypted updates --> F[Other devices<br/>and collaborators]
-```
+### Prerequisites
 
-Each note is its own CRDT document. An edit becomes a CRDT update, is encrypted
-under that note's key, and is sent to the relay under an opaque note ID. The
-relay appends it to the note's log and forwards it to connected subscribers;
-offline devices fetch what they missed on reconnect. Clients periodically
-upload encrypted snapshots so the log can be compacted.
+- A stable [Rust toolchain](https://rustup.rs/).
+- [`just`](https://github.com/casey/just), the project's command runner.
+- For the app: [Flutter](https://docs.flutter.dev/get-started/install) and the
+  platform-specific build tools. CI currently uses Flutter **3.47.5**; see
+  [the CI configuration](.github/workflows/ci.yml) for the tested version.
+- For persistent relay storage and database tests: **Postgres 16**.
 
-**What is backed up.** Sync is a server and the account that belongs to it,
-made together. The relay keeps one encrypted replica; the twelve words are what
-make it readable on another device. The relay cannot read it, and neither can
-its operator. Without sync, a profile stays on this device and is not backed
-up. An operator's database dump is disaster recovery for the relay, not a user
-backup — without the account phrase it is ciphertext nobody can open. See
-[ADR 0031](docs/decisions.md#adr-0031) and
-[ADR 0013](docs/decisions.md#adr-0013).
-
-### Repository layout
-
-```
-core/    Rust: crypto, CRDT, local store, sync client. No Flutter, no platform policy.
-relay/   Rust (axum): WebSocket relay over Postgres. Ciphertext only.
-app/     Flutter app, plus the thin bridge crate in app/rust.
-compat/  What each release wrote, read back by every later build's tests (ADR 0029).
-docs/    Public architecture, decision summaries, build and deployment guides.
-tools/   Measurement helpers and build checks that are not part of the product.
-```
-
-`core` stays callable from a plain `cargo test` with no Flutter in the loop.
-That is what keeps the security-critical code auditable, and it is not
-negotiable.
-
-## Security
-
-Every note has its own key, wrapped by a master key held in the OS keychain (or
-the browser's nearest equivalent). The recovery phrase derives the account
-root, but **not** the note keys — those stay random and ride inside the account
-document's ciphertext, so they can be rotated and shared keys have somewhere to
-live. Every update is encrypted with XChaCha20-Poly1305 and signed with the
-author's Ed25519 device key; receivers verify the signature before they
-decrypt, and the AAD binds the note, the author and a counter so an envelope
-cannot be moved between notes or re-attributed.
-
-The relay holds no keys and never sees plaintext. It may check a token, a size,
-and that an envelope's note ID matches the note it was sent for — nothing else.
-`the_relay_never_sees_plaintext` enforces that against the actual bytes on the
-wire, and the same check runs against the local database and its write-ahead
-log. What the relay does learn is documented in
-[ADR 0014](docs/decisions.md#adr-0014).
-
-For scope, reporting, and the known limitations, see
-[`SECURITY.md`](SECURITY.md). An external audit is planned before 1.0 and
-nothing here should be relied on until then.
-
-## Prerequisites
-
-- A stable Rust toolchain
-- [Flutter](https://flutter.dev)
-- [`just`](https://github.com/casey/just)
-
-The web build additionally needs a nightly toolchain and `wasm-pack`;
-`just setup-web` installs them plus `wasm-bindgen-cli`.
-
-## Development
+The `just` recipes use a Unix-style shell; on Windows, use Git Bash for these
+commands. Native Windows build instructions are in
+[Windows desktop](docs/windows-desktop.md).
 
 ```sh
-just test-core        # the core and everything under it, no Flutter needed
-just test-all         # core, relay and app
-just run-relay        # a relay on 127.0.0.1:8080, storing in memory
-just run-linux        # the app on Linux desktop, over the real core
-just --list           # everything else
+git clone https://github.com/daniel-daga/easynotes.git
+cd easynotes
+just test-core
 ```
 
-Set `DATABASE_URL` to run the relay on Postgres and include its tests; without
-it they skip, and a green run without it is a run that skipped the tests that
-matter there.
+The Rust core can be built and tested without Flutter or a running relay.
 
-**Two-device demo:** run `just run-relay` in one terminal and `just run-linux`
-in another — twice for two devices. In each app, open the drawer's
-**Sync & devices → Switch server → Connect another server** and enter
-`http://127.0.0.1:8080`.
+### Run the app
 
-On a new install, notes start **On this device** until a relay is selected. An
-account and its recovery phrase let a second device find and unlock the same
-notes on the same relay. To share a list, open it and send the link the share
-button makes — the link carries no key: the first person to open it joins, and
-nobody after them can.
+Install the bridge generator for app recipes that regenerate the bindings,
+then fetch the Flutter dependencies:
+
+```sh
+cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
+cd app
+flutter pub get
+cd ..
+```
+
+Keep the generator version aligned with `flutter_rust_bridge` in
+[`app/pubspec.yaml`](app/pubspec.yaml). See
+[`third_party/README.md`](third_party/README.md) before upgrading the bridge.
+
+For a Linux desktop development build, install Flutter's Linux prerequisites
+and the `libsecret` development package, then run:
+
+```sh
+just run-linux
+```
+
+For Android, connect a device or start an emulator, then run `flutter run`
+from `app/`. Platform build guides are linked under [Documentation](#documentation).
+
+To try sync, start a development relay in a separate terminal:
+
+```sh
+just run-relay
+```
+
+Select the relay in the app's **Relay settings**. The default address is
+`http://127.0.0.1:8080`; a physical device needs an address it can reach on
+your development machine instead of its own loopback address.
+
+**The default development relay stores data in memory and loses it on exit.**
+Set `DATABASE_URL` for Postgres persistence. Do not expose the development
+configuration to the internet; see [Self-hosting](#self-hosting).
 
 ### Web build
 
+After the app setup above:
+
 ```sh
-just setup-web        # nightly toolchain, wasm-pack, wasm-bindgen-cli
-just build-web        # threaded-WASM web app
+just setup-web
+just build-web
+python3 tools/web-smoke/serve.py app/build/web 8099
 ```
 
-The web build needs `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp` when served, because the
-WebAssembly is threaded and will not start without cross-origin isolation.
+Open <http://127.0.0.1:8099>. `just setup-web` installs the additional Rust/WASM
+tooling. The included development server sets the cross-origin isolation
+headers required by threaded WebAssembly; a plain static server without those
+headers will not work.
 
-Four browser recipes exercise the result headlessly (each needs `just build-web`
-first): `just web-smoke`, `just web-sync-smoke`, `just web-converge` and
-`just web-storage-failure`. `just web-shared-text` verifies the incoming share
-route. `just bench-web` measures opening a device in a browser.
+## Development and tests
 
-## Running a relay
+Run commands from the repository root:
 
-The relay is a single binary, `easynotes-relay`. It stores in memory unless
-`DATABASE_URL` names a Postgres database. Configuration is by environment
-variable:
+```sh
+just test-core        # Rust core; no Flutter required
+just test-app         # Builds the native bridge and relay, then tests the app
+just lint             # Rust formatting, host/WASM Clippy and Flutter analysis
+just --list           # All available recipes
+```
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | unset (in-memory) | Postgres connection string |
-| `RELAY_ADDR` | `127.0.0.1:8080` | Listen address (the Docker image sets `0.0.0.0:8080`) |
-| `RELAY_ALLOWED_ORIGINS` | any | Browser origins allowed to handshake (comma-separated) |
-| `RELAY_TOKEN_SIGNING_KEY` | temporary process key | Base64url 32-byte Ed25519 seed for device tokens; keep stable across restarts and instances |
-| `RELAY_TOKEN_TTL_SECS` | `900` | Lifetime of a signed relay token, in whole seconds; a positive integer, and an invalid or zero value stops the relay. It is the upper bound on revocation and read-only changes reaching an open socket |
-| `RELAY_ACCESS_KEYS` | `open` | Who may write: base64url keys (comma-separated), or `open` for anyone ([ADR 0028](docs/decisions.md#adr-0028)) |
-| `RELAY_TOKENS` | unset (off) | `on` accepts a per-device access token, `<id>.<secret>`, at the handshake, checked against the relay's store ([ADR 0038](docs/decisions.md#adr-0038)); with no `RELAY_ACCESS_KEYS` it is the only way in |
-| `RELAY_ADMIN_ADDR` | unset | Private listener for billing's token API and `easynotes-relay token` (e.g. `127.0.0.1:9091`); keep it on loopback or a private network |
-| `RELAY_ADMIN_SECRET` | unset | Base64url 32-byte bearer secret for that listener; required with it, and never one of `RELAY_ACCESS_KEYS` |
-| `RELAY_WRITE_BURST` | 200 MiB | Bytes one client address may write at once |
-| `RELAY_WRITE_PER_HOUR` | 200 MiB/hr | Sustained write budget per address (`off` for none) |
-| `RELAY_STORAGE_CEILING` | 16 GiB | Total live-log bytes before the relay refuses new notes (`off` for none) |
-| `RELAY_MEDIA_DIR` | unset | Where attachment bytes live; back up with the database |
-| `RELAY_MEDIA_PER_NOTE` | 1 GiB | Attachment bytes one note may hold |
-| `RELAY_MEDIA_CEILING` | 64 GiB | Attachment bytes all notes may hold together (`off` for none) |
-| `RELAY_MEDIA_STAGING_CEILING` | 8 GiB | Of that, bytes uploads in progress may hold reserved and not yet committed (`off` for none) |
-| `RELAY_TRUSTED_PROXIES` | unset | Addresses/CIDRs to trust `X-Forwarded-For` from, so clients behind a proxy aren't one rate-limit bucket |
-| `RELAY_RATE_LIMIT` | on | `off` removes the rate limits, not the storage and media ceilings (development only) |
-| `RELAY_DRAIN_SECONDS` | 8 | Graceful-shutdown drain before exiting on `SIGTERM` |
-| `RELAY_METRICS_ADDR` | unset | Serves Prometheus `/metrics` on a separate listener (e.g. `0.0.0.0:9090`) |
+For relay tests, set `DATABASE_URL` to a dedicated Postgres 16 test database
+and run them serially, as CI does:
 
-Generate keys with `easynotes-relay access-key` for access keys, and
-`openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'` for the token signing
-key and the admin secret.
+```sh
+cargo test -p easynotes-relay -- --test-threads=1
+```
 
-A relay with `RELAY_TOKENS=on` also takes a per-device token,
-`<id>.<secret>`. `easynotes-relay token create` prints one for a relay link or
-QR, `token revoke <id>` ends it, `token read-only <id> [on|off]` makes it read
-without writing, and `token unbind <id>` returns it to an unclaimed link. Those
-commands call the private admin listener, so `RELAY_ADMIN_ADDR` and
-`RELAY_ADMIN_SECRET` must be the relay's own. The admin listener is never a
-public route.
+Without `DATABASE_URL`, database-dependent tests skip. Use `just test-app`
+rather than plain `flutter test` so real-core and sync tests have the binaries
+they need. Browser checks such as `just web-smoke` and `just web-converge`
+require a prior `just build-web`, Node.js, Python and Chromium. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
 
-The relay answers `/v1/health` (process up), `/v1/ready` (process up and
-database answering), and `/metrics`. `easynotes-relay check` asks `/v1/ready`
-and exits 0 or 1 — the container health check.
+## Architecture
 
-Account transfers are process-local: open pairings live in the relay's memory,
-not its database. One relay process must serve a transfer, and it must not be
-restarted mid-transfer. A restart or a second instance loses the pairing, and
-both devices need a new code.
+```mermaid
+flowchart LR
+  A[Flutter app] --> B[Rust core]
+  B --> C[(Encrypted local store)]
+  B <-->|Encrypted updates and attachments| D[Relay]
+  D --> E[(Postgres and media storage)]
+  D <-->|Encrypted updates and attachments| F[Other devices]
+```
 
-## Deployment
+Each note is a CRDT document. Devices merge edits locally, and the relay
+stores and forwards encrypted updates. The relay cannot read note content,
+but it sees metadata such as opaque note IDs, device public keys, message
+sizes, timing and connection addresses. Revoking access cannot erase copies
+a collaborator has already received.
 
-For a small private deployment on a Synology NAS — building the relay container,
-running Postgres with persistent storage, DSM's reverse proxy for HTTPS and
-WebSockets, backups, monitoring and key rotation — see
-[`deploy/synology/README.md`](deploy/synology/README.md).
+| Directory | Purpose |
+| --- | --- |
+| [`core/`](core/) | Rust encryption, CRDTs, local storage and sync client |
+| [`relay/`](relay/) | Rust/axum sync server and Postgres storage |
+| [`app/`](app/) | Flutter UI and Rust bridge in `app/rust/` |
+| [`compat/`](compat/) | Stored-format compatibility fixtures |
+| [`docs/`](docs/) | Architecture, decisions and platform guides |
+| [`deploy/`](deploy/) | Deployment instructions and monitoring configuration |
+| [`tools/`](tools/) | Build checks, browser tests and measurement tools |
 
-The container image is built from the root `Dockerfile` and runs the relay as a
-non-root user. Prometheus alert rules (at 80% of each ceiling, among others)
-are in [`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml).
+Read [How EasyNotes works](docs/architecture.md) for the data model, sharing
+and recovery flow, and [Architecture decisions](docs/decisions.md) for the
+design choices.
 
-Production relays should set `RELAY_TOKEN_SIGNING_KEY` to a stable key shared by
-every instance, and `RELAY_ACCESS_KEYS` to restrict writes. The Synology Compose
-file refuses to start without both.
+## Self-hosting
+
+The relay can run as a Rust binary or a container built from the root
+[`Dockerfile`](Dockerfile). Persistent deployments use Postgres and a media
+directory for encrypted attachments; back up both.
+
+The [relay guide](docs/relay.md) covers standalone setup, configuration and
+device-token management. The [Synology guide](deploy/synology/README.md) provides a reference
+deployment using Synology Container Manager, including configuration, HTTPS,
+WebSocket proxying, access keys, backups, updates and monitoring. The example
+settings are in [`.env.example`](.env.example). Use persistent storage, a stable
+token-signing key and restricted access before making a relay reachable over
+the network. Never expose the relay's admin listener publicly.
+
+Account transfers currently require a single relay process: pending pairings
+are held in memory and do not survive a restart or work across instances.
 
 ## Documentation
 
-- [How EasyNotes works](docs/architecture.md) — the data model, sync, sharing and security flow
-- [Decision index](docs/decisions.md) — what each architecture decision is, with the anchors the code links to
-- [Security policy](SECURITY.md) — scope, reporting and known limitations
-- [Self-hosting a relay](deploy/synology/README.md) — the reference deployment
-- [Windows desktop](docs/windows-desktop.md), [Android release](docs/android-release.md), [iOS release](docs/ios-release.md)
-- [Contributing](CONTRIBUTING.md)
+- [Architecture](docs/architecture.md)
+- [Architecture decisions](docs/decisions.md)
+- [Security policy](SECURITY.md)
+- [Relay configuration](docs/relay.md)
+- [Self-hosting guide](deploy/synology/README.md)
+- [Windows desktop](docs/windows-desktop.md)
+- [Android release builds](docs/android-release.md)
+- [iOS release builds](docs/ios-release.md)
 
-## Reporting a vulnerability
+## Contributing and reporting issues
 
-Please report privately through GitHub's **Security → Report a vulnerability**,
-not a public issue. See [`SECURITY.md`](SECURITY.md) for scope, expectations and
-safe harbour.
+Bug reports, documentation improvements, tests and code contributions are
+welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request
+and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## Licence
+For non-security bugs and feature requests, use
+[GitHub Issues](https://github.com/daniel-daga/easynotes/issues). Include steps
+to reproduce, the platform and the version or commit you tested. Do not
+include private notes, recovery phrases, keys or other sensitive data.
 
-EasyNotes is free software under the GNU Affero General Public License,
-version 3 or later ([`LICENSE`](LICENSE)). Bundled third-party components keep
-their own compatible licences; see [`COPYING.md`](COPYING.md).
+**Report vulnerabilities privately**, not through public issues or pull
+requests. Follow the reporting instructions in [SECURITY.md](SECURITY.md).
+
+## License
+
+EasyNotes is free software licensed under the
+[GNU Affero General Public License, version 3 or later](LICENSE)
+(`AGPL-3.0-or-later`). Bundled third-party components retain their own
+licenses; see [COPYING.md](COPYING.md).

@@ -1,7 +1,9 @@
 # EasyNotes privacy policy
 
-> **Draft for review.** Before publishing, replace every bracketed item and
-> confirm the website and email hosting details reflect the services you use.
+> **Template — not a published privacy policy.** Replace every bracketed item,
+> verify the data flows for the build and services you operate (including any
+> token or billing service), and review applicable legal requirements before
+> publication. This file does not establish another relay operator's policy.
 
 **Last updated: 17 October 2026**
 
@@ -118,7 +120,8 @@ Support emails are kept for the period stated above. Website logs are kept for
 
 You can use the app without creating an identity account. You can use it
 without a relay, delete notes, and delete your account in the app. See the
-[account deletion page](/account-deletion) for the steps and limits.
+[account deletion page](account-deletion.md) for the steps and limits. Adapt
+relative links to the final website routes when publishing these pages.
 
 For personal information handled by the website or support inbox, you may
 contact **[your full legal name or registered organisation]** at

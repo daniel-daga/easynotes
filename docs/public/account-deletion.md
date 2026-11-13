@@ -1,7 +1,9 @@
 # Deleting your EasyNotes account
 
-> **Draft for publication.** The support email and deletion steps should be
-> checked against the version of the app you publish.
+> **Template — not a published deletion policy.** Verify the support contact,
+> UI steps and deletion behaviour against the build and relay you publish.
+> If you operate an external token or billing service, document how to delete
+> that service's records and manage subscriptions separately from note deletion.
 
 **Last updated: 26 October 2026**
 
@@ -17,9 +19,9 @@ the app, by a device that holds your account, rather than by a request to us.
 
 ## Delete from the app
 
-1. Open EasyNotes, open the menu, and choose **Sync & devices**.
-2. Choose **Delete account** (on a device that is not synced, **Delete
-   everything on this device**).
+1. Open EasyNotes, open the menu, and choose **Sync & devices**, then
+   **Account** under **Account & devices**.
+2. Choose **Delete account**.
 3. Read what will happen, type `delete`, and confirm.
 
 The device must be online and connected to the relay your notes sync through.
@@ -28,10 +30,14 @@ again. Deleting the account also disconnects this device from that relay and
 forgets its address; the emptied collection stays on this device as the local
 one.
 
+These steps describe a synced account. Local-only profiles have no relay
+account; clearing app storage or uninstalling removes local notes without a
+server-side deletion request and without a recovery option.
+
 ## If you no longer have the app or the device
 
 Install EasyNotes on any device, choose the same relay in
-**Sync & devices → Sync server**, then use **Use recovery phrase** and enter
+**Sync & devices → Switch server**, then use **Use recovery phrase** and enter
 your recovery phrase. Once your notes have arrived, delete the account from
 that device as above.
 
@@ -80,5 +86,6 @@ phrase, password or note contents. Whoever operates your relay is named by its
 address in **Relay settings**; contact that operator about its logs and backup
 retention.
 
-See the [EasyNotes privacy policy](/privacy) for information about the app,
-relays and privacy requests.
+See the [privacy policy template](privacy.md) for information about the app,
+relays and privacy requests. Adapt relative links to the final website routes
+when publishing these pages.

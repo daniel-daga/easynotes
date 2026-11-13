@@ -59,6 +59,9 @@ Known and documented, so not a vulnerability on its own:
 
 - What the relay learns: note IDs, sizes, timing, the addresses devices connect
   from, and which device keys touch which notes ([ADR 0014](docs/decisions.md#adr-0014)).
+- Browser key storage does not protect against malicious scripts running on
+  the app's origin. The wrapped master key and its wrapping key are both held
+  in that origin's localStorage; see [the architecture](docs/architecture.md#security).
 - A relay can require an access key and budget writes per address
   ([ADR 0028](docs/decisions.md#adr-0028)); a relay open to strangers is not a
   supported mode yet.
