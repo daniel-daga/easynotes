@@ -8,8 +8,10 @@ library;
 import 'dart:async';
 
 import 'package:easynotes/core/app_visibility.dart';
+
 import 'support/fake_note_core.dart';
 import 'support/fake_note_library.dart';
+
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
@@ -170,6 +172,64 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
     expect(find.text('Share as checklist'), findsOneWidget);
+  });
+
+  Future<FakeNoteLibrary> pumpInLibrary(WidgetTester tester) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    final library = FakeNoteLibrary(notes: {'note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteScreen(
+          core: core,
+          storage: library,
+          noteId: 'note',
+          invites: library,
+          library: library,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return library;
+  }
+
+  testWidgets('pin is a button on the app bar, not in the overflow sheet', (
+    tester,
+  ) async {
+    final library = await pumpInLibrary(tester);
+    Finder pinIcon(IconData icon) => find.descendant(
+      of: find.byKey(const Key('note-pin')),
+      matching: find.byIcon(icon),
+    );
+
+    expect(find.byTooltip('Pin'), findsOneWidget);
+    expect(pinIcon(Icons.push_pin_outlined), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note-pin')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('setPinned(note, true)'));
+    // The button follows the note's summary rather than its own state.
+    expect(find.byTooltip('Unpin'), findsOneWidget);
+    expect(pinIcon(Icons.push_pin), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('note-pin')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('setPinned(note, false)'));
+    expect(find.byTooltip('Pin'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('note-more-menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('Pin'), findsNothing);
+    expect(find.text('Unpin'), findsNothing);
+    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Move to trash'), findsOneWidget);
+  });
+
+  testWidgets('a note in the trash offers no pin', (tester) async {
+    final library = await pumpInLibrary(tester);
+    await library.setTrashed('note', true);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note-pin')), findsNothing);
+    expect(find.byTooltip('Pin'), findsNothing);
   });
 
   testWidgets('a shared note draws the people on it instead of the add icon', (
