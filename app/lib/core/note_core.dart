@@ -91,6 +91,21 @@ abstract class NoteCore {
   /// words. Returns the revision it landed at, like [setItemText].
   Future<int> editItemText(String itemId, String from, String to);
 
+  /// Enter in the middle of an item: it keeps [head], as the field's own edit
+  /// from [from] like [editItemText], and a new unchecked item with [tail] goes
+  /// in right after it. Returns the new item's ID and the revision the split
+  /// landed at.
+  ///
+  /// The new item is placed in the edit that adds it, and it goes out before
+  /// the line is shortened, so a peer may see the tail twice for a moment but
+  /// never loses it.
+  Future<({String id, int rev})> splitItem(
+    String itemId,
+    String from,
+    String head,
+    String tail,
+  );
+
   Future<void> setChecked(String itemId, bool checked);
 
   /// Move an item so it lands at [toIndex] in the current display order.

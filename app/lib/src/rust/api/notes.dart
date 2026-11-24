@@ -705,6 +705,17 @@ abstract class Note implements RustOpaqueInterface {
 
   Future<void> setTitle({required String title});
 
+  /// Enter in the middle of an item: it keeps `head`, as an edit from
+  /// `from` like [`edit_item_text`](Self::edit_item_text), and a new item
+  /// right after it gets `tail`. Both edits are made under one lock and sent
+  /// in order, the new item first.
+  Future<SplitItemView> splitItem({
+    required String item,
+    required String from,
+    required String head,
+    required String tail,
+  });
+
   /// End this handle's watchers and let their tasks finish. The note stays
   /// open in the library, because another screen may be showing it.
   Future<void> stopWatching();
@@ -1432,6 +1443,26 @@ class SearchHitView {
           runtimeType == other.runtimeType &&
           note == other.note &&
           matched == other.matched;
+}
+
+/// What Enter in the middle of an item made: the new item with the words
+/// right of the caret, and the revision the split landed at.
+class SplitItemView {
+  final String id;
+  final int rev;
+
+  const SplitItemView({required this.id, required this.rev});
+
+  @override
+  int get hashCode => id.hashCode ^ rev.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SplitItemView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          rev == other.rev;
 }
 
 /// Which object store a batch is for. The log and the keys are kept apart in a

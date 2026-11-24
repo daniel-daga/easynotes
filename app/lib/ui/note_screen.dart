@@ -106,6 +106,10 @@ class _NoteScreenState extends State<NoteScreen> {
   /// drawn at once with the keyboard in it, under a stand-in ID; see
   /// [_insertItemAfter].
   final List<_PendingItem> _pending = [];
+
+  /// The stand-in IDs of rows made by splitting a line, whose caret starts in
+  /// front of the words they were given.
+  final Set<String> _splitRows = {};
   int _pendingCount = 0;
 
   /// Every stand-in ID the core has since answered for, and with what.
@@ -859,6 +863,7 @@ class _NoteScreenState extends State<NoteScreen> {
     required int rev,
     int? reorderIndex,
     Future<void> Function()? onSubmitted,
+    _Split? onSplit,
   }) => _ItemRow(
     key: _itemRowKeys.putIfAbsent(
       item.id,
@@ -891,6 +896,10 @@ class _NoteScreenState extends State<NoteScreen> {
       }
     },
     onSubmitted: onSubmitted,
+    onSplit: onSplit,
+    // A row Enter made from the middle of a line starts with the words that
+    // were right of the caret, and the caret goes in front of them.
+    caretAtStart: _splitRows.contains(_standInFor[item.id] ?? item.id),
   );
 
   Future<void> _removeItem(String id) async {
@@ -930,14 +939,7 @@ class _NoteScreenState extends State<NoteScreen> {
       final after = await _resolve(itemId);
       final id = await widget.core.addItem('');
       _newBlankItems.add(id);
-      _itemRowKeys[id] = _itemRowKeys.putIfAbsent(
-        pending.key,
-        () => GlobalKey<_ItemRowState>(debugLabel: 'item:$id'),
-      );
-      _itemFocusNodes[id] = _focusForItem(pending.key);
-      _answered[pending.key] = id;
-      _standInFor[id] = pending.key;
-      pending.id.complete(id);
+      _answer(pending, id);
       final current = widget.core.current.items;
       final index = current.indexWhere((item) => item.id == after);
       if (index >= 0) await widget.core.moveItem(id, index + 1);
@@ -950,6 +952,61 @@ class _NoteScreenState extends State<NoteScreen> {
       _itemWriteStateChanged(false);
     }
     if (mounted) setState(() {});
+  }
+
+  /// The core has answered for [pending] with [id]: the real item takes over
+  /// the stand-in's row key and focus node, so the keyboard does not move.
+  void _answer(_PendingItem pending, String id) {
+    _itemRowKeys[id] = _itemRowKeys.putIfAbsent(
+      pending.key,
+      () => GlobalKey<_ItemRowState>(debugLabel: 'item:$id'),
+    );
+    _itemFocusNodes[id] = _focusForItem(pending.key);
+    _answered[pending.key] = id;
+    _standInFor[id] = pending.key;
+    pending.id.complete(id);
+  }
+
+  /// Enter in the middle of an item: the words right of the caret move to a
+  /// new item after it.
+  ///
+  /// Like [_insertItemAfter], the new row is drawn and focused *now*, with
+  /// [tail] already in it so the words do not blink out while the core is
+  /// asked. What comes back is how to finish: the row that split calls it once
+  /// its own writes have landed, with the text the core was last told it holds
+  /// and the head it keeps, and gets the revision the split landed at.
+  ///
+  /// A split item has words in it, so unlike a blank one it is never tidied
+  /// away on the way out.
+  Future<int> Function(String from, String head) _splitItemAt(
+    String itemId,
+    String tail,
+  ) {
+    final pending = _PendingItem(
+      'pending:${_pendingCount++}',
+      itemId,
+      text: tail,
+    );
+    _splitRows.add(pending.key);
+    setState(() => _pending.add(pending));
+    _focusForItem(pending.key).requestFocus();
+    return (from, head) async {
+      _itemWriteStateChanged(true);
+      try {
+        final item = await _resolve(itemId);
+        final split = await widget.core.splitItem(item, from, head, tail);
+        _answer(pending, split.id);
+        pending.placed = true;
+        return split.rev;
+      } catch (e) {
+        if (!pending.id.isCompleted) pending.id.completeError(e);
+        if (mounted) setState(() => _pending.remove(pending));
+        rethrow;
+      } finally {
+        _itemWriteStateChanged(false);
+        if (mounted) setState(() {});
+      }
+    };
   }
 
   /// The unchecked rows as drawn: the core's, with each pending item after the
@@ -978,7 +1035,7 @@ class _NoteScreenState extends State<NoteScreen> {
         rows.add(
           ItemView(
             id: real ?? pending.key,
-            text: '',
+            text: pending.text,
             checked: false,
             order: '',
           ),
@@ -1087,6 +1144,7 @@ class _NoteScreenState extends State<NoteScreen> {
               rev: note.rev,
               reorderIndex: row.reorderIndex,
               onSubmitted: () => _insertItemAfter(item.id),
+              onSplit: (tail) => _splitItemAt(item.id, tail),
             );
           case _ListRowKind.suggestions:
             return _suggestionStrip();
@@ -1104,7 +1162,13 @@ class _NoteScreenState extends State<NoteScreen> {
               onTap: _toggleCrossedOff,
             );
           case _ListRowKind.crossedItem:
-            final crossed = _row(item!, rev: note.rev);
+            // No new row at the end of a crossed-off line, but the words right
+            // of the caret still split off, as something new to do.
+            final crossed = _row(
+              item!,
+              rev: note.rev,
+              onSplit: (tail) => _splitItemAt(item.id, tail),
+            );
             final section = row.section;
             if (section == null) {
               return KeyedSubtree(
@@ -2141,6 +2205,8 @@ class _ItemRow extends StatefulWidget {
     required this.onBackspaceEmpty,
     this.onSettled,
     this.onSubmitted,
+    this.onSplit,
+    this.caretAtStart = false,
     this.onFocusChanged,
     this.onCommit,
   });
@@ -2167,6 +2233,14 @@ class _ItemRow extends StatefulWidget {
   final VoidCallback? onSettled;
   final Future<void> Function()? onSubmitted;
 
+  /// Enter with words right of the caret: those words go to a new row after
+  /// this one. See [_NoteScreenState._splitItemAt].
+  final _Split? onSplit;
+
+  /// Where the caret starts when the row is first drawn: in front of its words
+  /// rather than after them, for the second half of a split line.
+  final bool caretAtStart;
+
   /// The caret came to this row, or left it. What a suggestion strip waits for:
   /// an empty row with the caret in it is somebody about to add something.
   final ValueChanged<bool>? onFocusChanged;
@@ -2180,7 +2254,14 @@ class _ItemRow extends StatefulWidget {
 }
 
 class _ItemRowState extends State<_ItemRow> {
-  late final _controller = TextEditingController(text: widget.item.text);
+  late final _controller = widget.caretAtStart
+      ? TextEditingController.fromValue(
+          TextEditingValue(
+            text: widget.item.text,
+            selection: const TextSelection.collapsed(offset: 0),
+          ),
+        )
+      : TextEditingController(text: widget.item.text);
 
   /// The text the core was last told this row holds, or last told this row it
   /// holds: what leaving it would send.
@@ -2198,6 +2279,10 @@ class _ItemRowState extends State<_ItemRow> {
   FocusNode get _focus => widget.focusNode;
   bool _submitting = false;
   bool _writing = false;
+
+  /// A split is on its way to the core: it is this row's write, so the others
+  /// wait behind it and no view is taken until it has landed.
+  bool _splitting = false;
   String? _queuedText;
   Completer<void>? _writeDone;
 
@@ -2228,7 +2313,7 @@ class _ItemRowState extends State<_ItemRow> {
   }
 
   Future<void> _write(String text) async {
-    if (_writing) {
+    if (_writing || _splitting) {
       _queuedText = text;
       return;
     }
@@ -2286,6 +2371,32 @@ class _ItemRowState extends State<_ItemRow> {
 
   Future<void> _submit() async {
     if (_submitting) return;
+    // Where the caret is at Enter, read before anything can move it. A
+    // selection is typed over, as any key would.
+    final value = _controller.value;
+    final text = value.text;
+    final selection = value.selection;
+    final start = selection.isValid
+        ? selection.start.clamp(0, text.length)
+        : text.length;
+    final end = selection.isValid
+        ? selection.end.clamp(0, text.length)
+        : text.length;
+    final head = text.substring(0, start);
+    final tail = text.substring(end);
+    if (tail.isNotEmpty && widget.onSplit != null) return _split(head, tail);
+    if (widget.onSubmitted == null) {
+      // A row that makes no new one at its end: Enter there is done, as it
+      // always was.
+      _focus.unfocus();
+      return;
+    }
+    if (head != text) {
+      _controller.value = TextEditingValue(
+        text: head,
+        selection: TextSelection.collapsed(offset: head.length),
+      );
+    }
     _submitting = true;
     try {
       // Not in turn: saving this row's text waits for its ID when it is one
@@ -2296,6 +2407,51 @@ class _ItemRowState extends State<_ItemRow> {
     } finally {
       _submitting = false;
     }
+  }
+
+  /// Enter with words right of the caret: this row keeps [head], and [tail]
+  /// goes to a new row after it, which has the keyboard from this moment on.
+  ///
+  /// The split is this row's write. It does not also go through [_write],
+  /// which would send the shortened line separately from the new item: it
+  /// waits for the writes already on their way, then sends the line as the
+  /// core was last told it, so the core can replay the cut onto whatever the
+  /// line says by then.
+  Future<void> _split(String head, String tail) async {
+    _submitting = true;
+    _splitting = true;
+    _controller.value = TextEditingValue(
+      text: head,
+      selection: TextSelection.collapsed(offset: head.length),
+    );
+    final finish = widget.onSplit!(tail);
+    widget.onWriteStateChanged(true);
+    try {
+      while (_writing) {
+        await _writeDone?.future;
+      }
+      final rev = await finish(_lastWritten, head);
+      if (rev > _mine) _mine = rev;
+      _lastWritten = head;
+    } on UnknownItemException {
+      // The row went while Enter was on its way; there is nothing to split.
+    } finally {
+      _splitting = false;
+      _submitting = false;
+      widget.onWriteStateChanged(false);
+    }
+    if (!mounted) return;
+    final queued = _queuedText;
+    if (queued != null) {
+      _queuedText = null;
+      await _write(queued);
+    } else {
+      _consider(widget.item.text, widget.rev);
+    }
+    // Enter is where a line counts as added, the same as leaving it.
+    if (!mounted || _lastWritten == _committed) return;
+    _committed = _lastWritten;
+    await widget.onCommit?.call(_lastWritten);
   }
 
   @override
@@ -2328,7 +2484,7 @@ class _ItemRowState extends State<_ItemRow> {
   /// older than what is in the field, and adopting it would wind the text back
   /// mid-word. [_write] looks again at the latest one when it finishes.
   void _consider(String text, int rev) {
-    if (_writing) return;
+    if (_writing || _splitting) return;
     if (isOwnEcho(rev: rev, mine: _mine, text: text, shown: _lastWritten)) {
       return;
     }
@@ -2417,13 +2573,17 @@ class _ItemRowState extends State<_ItemRow> {
                 )
               : null,
           onChanged: _write,
-          onSubmitted: widget.onSubmitted == null
+          onSubmitted: widget.onSubmitted == null && widget.onSplit == null
               ? (_) => _commit()
               : (_) => _submit(),
           // Enter moves the keyboard to the item it makes, and nowhere else.
           // Flutter's default for `next` would move it at once to whatever
-          // field happens to come next.
-          onEditingComplete: widget.onSubmitted == null ? null : () {},
+          // field happens to come next, and for `done` it would close the
+          // keyboard before a split could hand it to the new row.
+          onEditingComplete:
+              widget.onSubmitted == null && widget.onSplit == null
+              ? null
+              : () {},
         ),
       ),
       trailing: _focus.hasFocus
@@ -2533,15 +2693,25 @@ class _ContentShareDialogState extends State<_ContentShareDialog> {
   );
 }
 
+/// How a row asks for a split: given the words right of the caret, the screen
+/// draws the new row at once and hands back how to finish once the row's own
+/// writes have landed. See [_NoteScreenState._splitItemAt].
+typedef _Split =
+    Future<int> Function(String from, String head) Function(String tail);
+
 /// An item Enter has made, drawn before the core has answered for it.
 class _PendingItem {
-  _PendingItem(this.key, this.after);
+  _PendingItem(this.key, this.after, {this.text = ''});
 
   /// The stand-in ID the row is drawn under until the core's arrives.
   final String key;
 
   /// The item — or stand-in — it was made after.
   final String after;
+
+  /// What it starts with: nothing for Enter at the end of a line, the words
+  /// right of the caret for Enter in the middle of one.
+  final String text;
 
   final Completer<String> id = Completer<String>();
 

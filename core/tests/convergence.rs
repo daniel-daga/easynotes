@@ -235,6 +235,124 @@ fn an_item_edit_replays_onto_a_peer_line<D: NoteDoc>() {
     assert_eq!(text, b.view(id).unwrap().items[0].text, "diverged");
 }
 
+/// Enter in the middle of a line: the item keeps the words left of the caret
+/// and a new item right after it gets the rest, on both devices.
+fn a_split_keeps_both_halves_in_place<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let mut wire = Vec::new();
+    let mut ids = Vec::new();
+    for item in ["milk", "bread and butter", "eggs"] {
+        let (item, e) = a.add_item(id, item).unwrap();
+        ids.push(item);
+        wire.push(e);
+    }
+    deliver(&mut b, id, &wire);
+
+    let (new, envelopes) = a
+        .split_item(id, ids[1], "bread and butter", "bread", " and butter")
+        .unwrap();
+    assert_eq!(envelopes.len(), 2);
+    let view = a.view(id).unwrap();
+    assert_eq!(texts(&view), ["milk", "bread", " and butter", "eggs"]);
+    assert_eq!(view.items[2].id, new);
+    assert!(!view.items[2].checked);
+
+    // The new item goes first: a peer that has only it sees the tail twice for
+    // a moment, never nowhere.
+    b.apply_remote(id, &envelopes[0]).unwrap();
+    assert_eq!(
+        texts(&b.view(id).unwrap()),
+        ["milk", "bread and butter", " and butter", "eggs"]
+    );
+    b.apply_remote(id, &envelopes[1]).unwrap();
+    assert_eq!(b.view(id).unwrap(), view);
+}
+
+/// The caret at the start or at the end is the same split with one side empty.
+fn a_split_at_either_end<D: NoteDoc>() {
+    let (mut a, _, id) = pair::<D>();
+    let (first, _) = a.add_item(id, "milk").unwrap();
+    let (last, _) = a.add_item(id, "eggs").unwrap();
+
+    // At the start: the item empties and the new one takes every word.
+    let (_, envelopes) = a.split_item(id, first, "milk", "", "milk").unwrap();
+    assert_eq!(envelopes.len(), 2);
+    assert_eq!(texts(&a.view(id).unwrap()), ["", "milk", "eggs"]);
+
+    // At the end: nothing to take away, so the one edit that adds the item.
+    let (_, envelopes) = a.split_item(id, last, "eggs", "eggs", "").unwrap();
+    assert_eq!(envelopes.len(), 1);
+    assert_eq!(texts(&a.view(id).unwrap()), ["", "milk", "eggs", ""]);
+}
+
+/// A crossed-off line keeps its tick on the half that stays; the half that
+/// moves out is something new to do.
+fn a_split_of_a_crossed_off_item<D: NoteDoc>() {
+    let (mut a, _, id) = pair::<D>();
+    let (item, _) = a.add_item(id, "milk bread").unwrap();
+    a.set_checked(id, item, true).unwrap();
+
+    let (new, _) = a
+        .split_item(id, item, "milk bread", "milk", " bread")
+        .unwrap();
+    let view = a.view(id).unwrap();
+    assert!(view.item(item).unwrap().checked);
+    assert_eq!(view.item(item).unwrap().text, "milk");
+    assert!(!view.item(new).unwrap().checked);
+    assert_eq!(view.item(new).unwrap().text, " bread");
+}
+
+/// A split made against a line a peer has since changed keeps the peer's
+/// words: the head is a splice, replayed like any edit to the line.
+fn a_split_keeps_a_peer_edit_it_crossed<D: NoteDoc>() {
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "milk bread").unwrap();
+    b.apply_remote(id, &e).unwrap();
+
+    let from_b = b
+        .edit_item_text(id, item, "milk bread", "oat milk bread")
+        .unwrap()
+        .unwrap();
+    let (_, envelopes) = a
+        .split_item(id, item, "milk bread", "milk", " bread")
+        .unwrap();
+    a.apply_remote(id, &from_b).unwrap();
+    deliver(&mut b, id, &envelopes);
+
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap(), "diverged");
+    assert!(va.items[0].text.contains("oat"), "B's words are gone");
+    assert!(texts(&va).contains(&" bread".to_owned()));
+
+    // And in the other order: the peer's edit had already arrived here.
+    let (mut a, mut b, id) = pair::<D>();
+    let (item, e) = a.add_item(id, "milk bread").unwrap();
+    b.apply_remote(id, &e).unwrap();
+    let from_b = b
+        .edit_item_text(id, item, "milk bread", "oat milk bread")
+        .unwrap()
+        .unwrap();
+    a.apply_remote(id, &from_b).unwrap();
+    let (_, envelopes) = a
+        .split_item(id, item, "milk bread", "milk", " bread")
+        .unwrap();
+    deliver(&mut b, id, &envelopes);
+    let va = a.view(id).unwrap();
+    assert_eq!(va, b.view(id).unwrap(), "diverged");
+    assert_eq!(texts(&va), ["oat milk", " bread"]);
+}
+
+fn a_split_of_a_missing_item_is_refused<D: NoteDoc>() {
+    let (mut a, _, id) = pair::<D>();
+    let err = a
+        .split_item(id, ItemId::random(), "milk", "mi", "lk")
+        .unwrap_err();
+    assert!(
+        matches!(err, easynotes_core::CoreError::UnknownItem(_)),
+        "{err:?}"
+    );
+}
+
 /// The cheese/whiskey case: a blank item exists on both devices, and each types
 /// a word into it before the other's word arrives.
 fn concurrent_typing_in_one_item_keeps_both<D: NoteDoc>() {
@@ -723,6 +841,26 @@ macro_rules! backend_suite {
             #[test]
             fn a_concurrent_rename_and_check_both_survive() {
                 super::a_concurrent_rename_and_check_both_survive::<$backend>()
+            }
+            #[test]
+            fn a_split_keeps_both_halves_in_place() {
+                super::a_split_keeps_both_halves_in_place::<$backend>()
+            }
+            #[test]
+            fn a_split_at_either_end() {
+                super::a_split_at_either_end::<$backend>()
+            }
+            #[test]
+            fn a_split_of_a_crossed_off_item() {
+                super::a_split_of_a_crossed_off_item::<$backend>()
+            }
+            #[test]
+            fn a_split_keeps_a_peer_edit_it_crossed() {
+                super::a_split_keeps_a_peer_edit_it_crossed::<$backend>()
+            }
+            #[test]
+            fn a_split_of_a_missing_item_is_refused() {
+                super::a_split_of_a_missing_item_is_refused::<$backend>()
             }
             #[test]
             fn an_item_edit_replays_onto_a_peer_line() {
