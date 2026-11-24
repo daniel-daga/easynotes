@@ -1304,8 +1304,9 @@ class _NoteListScreenState extends State<NoteListScreen> {
   ///
   /// The actions follow the notes rather than the shelf, because a search can
   /// select from the grid and the archive at once. Thrown-away notes can only
-  /// be brought back or deleted for good; anything else can be coloured,
-  /// labelled, archived or thrown away.
+  /// be brought back or deleted for good; anything else can be pinned,
+  /// coloured and labelled from the bar, and archived or thrown away from
+  /// More.
   AppBar _selectionBar(List<NoteSummary> selected, List<NoteSummary> shown) {
     final count = selected.length;
     final trashed = selected.isNotEmpty && selected.every((n) => n.trashed);
@@ -1350,6 +1351,12 @@ class _NoteListScreenState extends State<NoteListScreen> {
             ]
           : [
               IconButton(
+                key: const Key('bulk-pin'),
+                icon: Icon(pin ? Icons.push_pin_outlined : Icons.push_pin),
+                tooltip: pin ? 'Pin' : 'Unpin',
+                onPressed: () => _pinSelected(selected),
+              ),
+              IconButton(
                 key: const Key('bulk-colour'),
                 icon: const Icon(Icons.palette_outlined),
                 tooltip: 'Colour',
@@ -1361,29 +1368,20 @@ class _NoteListScreenState extends State<NoteListScreen> {
                 tooltip: 'Labels',
                 onPressed: () => _labelSelected(selected),
               ),
-              IconButton(
-                key: const Key('bulk-archive'),
-                icon: Icon(
-                  archived ? Icons.unarchive_outlined : Icons.archive_outlined,
-                ),
-                tooltip: archived ? 'Unarchive' : 'Archive',
-                onPressed: () => _archiveSelected(selected, !archived),
-              ),
-              IconButton(
-                key: const Key('bulk-trash'),
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Move to trash',
-                onPressed: () => _trashSelected(selected, true),
-              ),
               PopupMenuButton<VoidCallback>(
                 key: const Key('selection-more'),
                 tooltip: 'More',
                 onSelected: (action) => action(),
                 itemBuilder: (context) => [
                   PopupMenuItem(
-                    key: const Key('bulk-pin'),
-                    value: () => _pinSelected(selected),
-                    child: Text(pin ? 'Pin' : 'Unpin'),
+                    key: const Key('bulk-archive'),
+                    value: () => _archiveSelected(selected, !archived),
+                    child: Text(archived ? 'Unarchive' : 'Archive'),
+                  ),
+                  PopupMenuItem(
+                    key: const Key('bulk-trash'),
+                    value: () => _trashSelected(selected, true),
+                    child: const Text('Move to trash'),
                   ),
                   // A reminder is a time for one note; several notes at the
                   // same minute is not something anybody has asked for.

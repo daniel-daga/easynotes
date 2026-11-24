@@ -1419,7 +1419,18 @@ class _NoteScreenState extends State<NoteScreen> {
         appBar: AppBar(
           backgroundColor: tint,
           title: null,
-          actions: [_shareAction(tint)],
+          actions: [
+            if (library != null && summary != null && !summary.trashed)
+              IconButton(
+                key: const Key('note-pin'),
+                icon: Icon(
+                  summary.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                ),
+                tooltip: summary.pinned ? 'Unpin' : 'Pin',
+                onPressed: () => library.setPinned(summary.id, !summary.pinned),
+              ),
+            _shareAction(tint),
+          ],
         ),
         body: Column(
           children: [
@@ -1567,15 +1578,6 @@ class _NoteToolbar extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!note.trashed)
-              ListTile(
-                leading: Icon(
-                  note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                ),
-                title: Text(note.pinned ? 'Unpin' : 'Pin'),
-                onTap: () =>
-                    run(() => library.setPinned(note.id, !note.pinned)),
-              ),
             if (!note.trashed && onLabels != null)
               ListTile(
                 leading: const Icon(Icons.label_outline),
