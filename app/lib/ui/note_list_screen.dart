@@ -2617,25 +2617,60 @@ class _NoteCollectionState extends State<_NoteCollection>
       ),
       child: KeyedSubtree(key: _keyFor(card.note.id), child: wrap(card)),
     );
+    // Pinned cards are drawn as a group of their own, with a faint line under
+    // them and the rest starting on a fresh row: in a staggered grid a short
+    // pinned card would otherwise let an unpinned one fill the space under it,
+    // and the two groups would blur into one. Only when there are both — a
+    // line under everything, or over nothing, separates nothing.
+    final pinned = [
+      for (final card in cards)
+        if (card.note.pinned) card,
+    ];
+    final others = [
+      for (final card in cards)
+        if (!card.note.pinned) card,
+    ];
+    final sections = pinned.isEmpty || others.isEmpty
+        ? [cards]
+        : [pinned, others];
     return widget.layout == NoteLayout.grid
         ? _MasonryGrid(
             wrap: position,
             draggedId: _draggedId,
             targetId: _targetId,
             dragOrder: _dragStartNotes,
-            children: cards,
+            sections: sections,
           )
         : ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
-              for (final card in cards)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: position(card),
-                ),
+              for (var i = 0; i < sections.length; i++) ...[
+                if (i > 0) const _PinSeparator(),
+                for (final card in sections[i])
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: position(card),
+                  ),
+              ],
             ],
           );
   }
+}
+
+/// The faint line between the pinned notes and the rest.
+///
+/// No label: the pin on each card already says what the group above is, and
+/// the line only has to say where it ends.
+class _PinSeparator extends StatelessWidget {
+  const _PinSeparator();
+
+  @override
+  Widget build(BuildContext context) => Divider(
+    key: const Key('pin-separator'),
+    height: 24,
+    thickness: 1,
+    color: Theme.of(context).colorScheme.outlineVariant,
+  );
 }
 
 /// A card that can be picked up, and that a picked-up card can be dropped on.
@@ -3323,19 +3358,22 @@ class _Swatch extends StatelessWidget {
 class _MasonryGrid extends StatelessWidget {
   const _MasonryGrid({
     required this.wrap,
-    required this.children,
+    required this.sections,
     this.draggedId,
     this.targetId,
     this.dragOrder,
   });
 
-  /// The cards, unwrapped, because the estimate below reads what is on them.
+  /// The cards, unwrapped, because the estimate below reads what is on them,
+  /// in groups that are each balanced on their own: the pinned notes and the
+  /// rest, or one group when there is nothing to tell apart. A group starts on
+  /// a fresh row below the whole of the one before it, with a line between.
   /// While a card is being carried this is the preview order: the carried card
   /// is in it, at the place it would land, and draws itself as a gap.
-  final List<_NoteCard> children;
+  final List<List<_NoteCard>> sections;
 
   /// What actually goes in the column: the card, or the card made draggable.
-  /// Kept apart from [children] so that balancing the columns stays a question
+  /// Kept apart from [sections] so that balancing the columns stays a question
   /// about a note's contents and not about what is wrapped around it.
   final Widget Function(_NoteCard) wrap;
 
@@ -3382,6 +3420,63 @@ class _MasonryGrid extends StatelessWidget {
     return columnOf;
   }
 
+  /// One group of cards as a row of balanced columns, its heights starting
+  /// from nothing.
+  Widget _section(int columns, List<_NoteCard> cards) {
+    final buckets = List.generate(columns, (_) => <Widget>[]);
+    Widget brick(_NoteCard card) =>
+        Padding(padding: const EdgeInsets.only(bottom: 8), child: wrap(card));
+
+    final dragged = draggedId;
+    final order = dragOrder;
+    if (dragged != null && order != null) {
+      // The columns this group's cards sat in when the drag began, worked out
+      // over this group alone, as it was balanced then.
+      final ids = {for (final card in cards) card.note.id};
+      final columnOf = _columnsAt(columns, [
+        for (final note in order)
+          if (ids.contains(note.id)) note,
+      ]);
+      final landing = targetId;
+      int columnFor(_NoteCard card) {
+        final id = card.note.id;
+        if (id != dragged) return (columnOf[id] ?? 0).clamp(0, columns - 1);
+        // The carried card goes where it would land, and the card it left
+        // behind closes up. Everyone else stays put.
+        final destination = landing == null ? null : columnOf[landing];
+        return (destination ?? columnOf[id] ?? 0).clamp(0, columns - 1);
+      }
+
+      for (final card in cards) {
+        buckets[columnFor(card)].add(brick(card));
+      }
+    } else {
+      final heights = List.filled(columns, 0.0);
+      for (final card in cards) {
+        var shortest = 0;
+        for (var i = 1; i < columns; i++) {
+          if (heights[i] < heights[shortest]) shortest = i;
+        }
+        buckets[shortest].add(brick(card));
+        heights[shortest] += _estimate(card.note, card.matched);
+      }
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < columns; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: buckets[i],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -3392,56 +3487,19 @@ class _MasonryGrid extends StatelessWidget {
         final columns = constraints.maxWidth < 600
             ? 2
             : (constraints.maxWidth / 260).floor().clamp(2, 4);
-        final buckets = List.generate(columns, (_) => <Widget>[]);
-        Widget brick(_NoteCard card) => Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: wrap(card),
-        );
-
-        final dragged = draggedId;
-        final order = dragOrder;
-        if (dragged != null && order != null) {
-          final columnOf = _columnsAt(columns, order);
-          final landing = targetId;
-          int columnFor(_NoteCard card) {
-            final id = card.note.id;
-            if (id != dragged) return (columnOf[id] ?? 0).clamp(0, columns - 1);
-            // The carried card goes where it would land, and the card it left
-            // behind closes up. Everyone else stays put.
-            final destination = landing == null ? null : columnOf[landing];
-            return (destination ?? columnOf[id] ?? 0).clamp(0, columns - 1);
-          }
-
-          for (final card in children) {
-            buckets[columnFor(card)].add(brick(card));
-          }
-        } else {
-          final heights = List.filled(columns, 0.0);
-          for (final card in children) {
-            var shortest = 0;
-            for (var i = 1; i < columns; i++) {
-              if (heights[i] < heights[shortest]) shortest = i;
-            }
-            buckets[shortest].add(brick(card));
-            heights[shortest] += _estimate(card.note, card.matched);
-          }
-        }
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (var i = 0; i < columns; i++) ...[
-                if (i > 0) const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: buckets[i],
-                  ),
+          child: sections.length == 1
+              ? _section(columns, sections.single)
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = 0; i < sections.length; i++) ...[
+                      if (i > 0) const _PinSeparator(),
+                      _section(columns, sections[i]),
+                    ],
+                  ],
                 ),
-              ],
-            ],
-          ),
         );
       },
     );

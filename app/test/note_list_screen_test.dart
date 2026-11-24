@@ -1112,6 +1112,109 @@ void main() {
     expect(find.byKey(const Key('selection-count')), findsNothing);
   });
 
+  group('the pin line', () {
+    /// Two pinned notes of very different heights and three that are not,
+    /// newest first: so the pinned ones are Short, then Tall.
+    Future<FakeNoteLibrary> pinnedAndNot(
+      WidgetTester tester, {
+      List<String> pin = const ['tall', 'short'],
+    }) async {
+      // Phone width, where the grid has two columns.
+      await tester.binding.setSurfaceSize(const Size(390, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final library = FakeNoteLibrary(
+        notes: {
+          'tall': FakeNoteCore(
+            title: 'Tall',
+            items: const ['one', 'two', 'three', 'four'],
+          ),
+          'short': FakeNoteCore(title: 'Short'),
+          'a': FakeNoteCore(title: 'A', items: const ['x']),
+          'b': FakeNoteCore(title: 'B', items: const ['y']),
+          'c': FakeNoteCore(title: 'C', items: const ['z']),
+        },
+      );
+      if (pin.isNotEmpty) await library.setPinnedMany(pin, true);
+      await pumpList(tester, library);
+      return library;
+    }
+
+    final separator = find.byKey(const Key('pin-separator'));
+    Rect card(WidgetTester tester, String id) =>
+        tester.getRect(find.byKey(Key('note:$id')));
+
+    void expectClearBreak(WidgetTester tester) {
+      expect(separator, findsOneWidget);
+      final line = tester.getRect(separator);
+      final lowestPinned = [
+        card(tester, 'tall').bottom,
+        card(tester, 'short').bottom,
+      ].reduce((a, b) => a > b ? a : b);
+      expect(line.bottom, greaterThanOrEqualTo(lowestPinned));
+      for (final id in ['a', 'b', 'c']) {
+        expect(
+          card(tester, id).top,
+          greaterThanOrEqualTo(line.bottom),
+          reason: '$id should start below every pinned card, not beside one',
+        );
+      }
+    }
+
+    testWidgets('the rest start on a fresh row below every pinned card', (
+      tester,
+    ) async {
+      await pinnedAndNot(tester);
+      // The two pinned cards sit side by side, so the short one leaves room
+      // under it that an unpinned card must not take.
+      expect(card(tester, 'short').top, card(tester, 'tall').top);
+      expect(
+        card(tester, 'short').bottom,
+        lessThan(card(tester, 'tall').bottom),
+      );
+      expectClearBreak(tester);
+    });
+
+    testWidgets('there is no line when nothing is pinned', (tester) async {
+      await pinnedAndNot(tester, pin: const []);
+      expect(separator, findsNothing);
+    });
+
+    testWidgets('there is no line when everything is pinned', (tester) async {
+      await pinnedAndNot(tester, pin: const ['tall', 'short', 'a', 'b', 'c']);
+      expect(separator, findsNothing);
+    });
+
+    testWidgets('the list layout has the line too', (tester) async {
+      await pinnedAndNot(tester);
+      await tester.tap(find.byKey(const Key('layout-toggle')));
+      await tester.pumpAndSettle();
+      expectClearBreak(tester);
+    });
+
+    testWidgets('a drag among the unpinned notes leaves its gap among them', (
+      tester,
+    ) async {
+      // Unpinned, newest first: C, B, A — C and B side by side, A under C.
+      final library = await pinnedAndNot(tester);
+      final b = card(tester, 'b');
+
+      final gesture = await tester.startGesture(card(tester, 'c').center);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+      await gesture.moveTo(b.center);
+      await tester.pumpAndSettle();
+
+      final gap = tester.getRect(find.byKey(const Key('drag-placeholder')));
+      expect(card(tester, 'b'), b, reason: 'the target should hold still');
+      expect(gap.left, b.left, reason: 'the gap is in the column it lands in');
+      expect(gap.top, greaterThan(b.top));
+      expect(gap.top, greaterThanOrEqualTo(tester.getRect(separator).bottom));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('moveNoteTo(c, b)'));
+    });
+  });
+
   testWidgets('a card dragged in the single column moves the same way', (
     tester,
   ) async {
@@ -1256,9 +1359,9 @@ void main() {
     expect(library.calls, contains('setPinnedMany(groceries; true)'));
     expect(find.byKey(const Key('pinned')), findsOneWidget);
     expect(
-      tester.getTopLeft(find.byKey(const Key('note:groceries'))).dx,
-      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dx),
-      reason: 'a pinned note belongs at the top',
+      tester.getBottomLeft(find.byKey(const Key('note:groceries'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dy),
+      reason: 'a pinned note belongs at the top, above the rest',
     );
   });
 
