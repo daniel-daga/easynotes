@@ -243,6 +243,24 @@ class FakeNoteCore implements NoteCore {
     return _emit().rev;
   }
 
+  @override
+  Future<({String id, int rev})> splitItem(
+    String itemId,
+    String from,
+    String head,
+    String tail,
+  ) async {
+    edits.add('splitItem($itemId, $head | $tail)');
+    final item = _find(itemId);
+    final split = _Item(id: _nextId(), text: tail, order: '');
+    _items.insert(_items.indexOf(item) + 1, split);
+    item.text = _replay(from, head, item.text);
+    for (var i = 0; i < _items.length; i++) {
+      _items[i].order = _key(i);
+    }
+    return (id: split.id, rev: _emit().rev);
+  }
+
   /// Somebody else's edit to an item, landing in the core the way one from the
   /// relay does: the line says [text] now, and a view follows. Not recorded in
   /// [edits], because this device did not make it.

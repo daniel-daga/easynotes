@@ -256,6 +256,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SearchHitView dco_decode_search_hit_view(dynamic raw);
 
   @protected
+  SplitItemView dco_decode_split_item_view(dynamic raw);
+
+  @protected
   StorageArea dco_decode_storage_area(dynamic raw);
 
   @protected
@@ -559,6 +562,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SearchHitView sse_decode_search_hit_view(SseDeserializer deserializer);
+
+  @protected
+  SplitItemView sse_decode_split_item_view(SseDeserializer deserializer);
 
   @protected
   StorageArea sse_decode_storage_area(SseDeserializer deserializer);
@@ -936,6 +942,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_search_hit_view(SearchHitView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_split_item_view(SplitItemView self, SseSerializer serializer);
 
   @protected
   void sse_encode_storage_area(StorageArea self, SseSerializer serializer);

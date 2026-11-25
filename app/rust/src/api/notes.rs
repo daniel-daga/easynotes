@@ -108,6 +108,13 @@ pub struct BodyEditView {
     pub rev: u32,
 }
 
+/// What Enter in the middle of an item made: the new item with the words
+/// right of the caret, and the revision the split landed at.
+pub struct SplitItemView {
+    pub id: String,
+    pub rev: u32,
+}
+
 /// Whether an attachment is drawn or played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKindView {
@@ -4630,6 +4637,33 @@ impl Note {
             self.send(envelope, true);
         }
         Ok(rev)
+    }
+
+    /// Enter in the middle of an item: it keeps `head`, as an edit from
+    /// `from` like [`edit_item_text`](Self::edit_item_text), and a new item
+    /// right after it gets `tail`. Both edits are made under one lock and sent
+    /// in order, the new item first.
+    pub fn split_item(
+        &self,
+        item: String,
+        from: String,
+        head: String,
+        tail: String,
+    ) -> Result<SplitItemView, String> {
+        let (id, envelopes, rev) = {
+            let mut core = self.shared.locked()?;
+            let (id, envelopes) = core
+                .split_item(self.id, item_id(&item)?, &from, &head, tail)
+                .map_err(core_text)?;
+            (id, envelopes, core.rev(self.id).map_err(|e| e.to_string())?)
+        };
+        for envelope in envelopes {
+            self.send(envelope, false);
+        }
+        Ok(SplitItemView {
+            id: id.encode(),
+            rev,
+        })
     }
 
     pub fn set_checked(&self, item: String, checked: bool) -> Result<(), String> {

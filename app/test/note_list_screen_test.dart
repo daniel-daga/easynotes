@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'support/fake_note_core.dart';
 import 'support/fake_note_library.dart';
+
 import 'package:easynotes/core/note_library.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/core/relay_profiles.dart';
@@ -787,7 +788,7 @@ void main() {
   }
 
   /// The selection bar's actions that live behind its "more" menu.
-  const overflow = {'bulk-pin', 'bulk-reminders'};
+  const overflow = {'bulk-archive', 'bulk-trash', 'bulk-reminders'};
 
   /// Take one of the selection bar's actions.
   Future<void> act(WidgetTester tester, String key) async {
@@ -818,20 +819,87 @@ void main() {
     expect(find.byKey(const Key('selection-count')), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     for (final action in [
+      'bulk-pin',
       'bulk-colour',
       'bulk-labels',
-      'bulk-archive',
-      'bulk-trash',
+      'selection-more',
     ]) {
       expect(find.byKey(Key(action)), findsOneWidget, reason: action);
     }
+    // Archive and trash wait behind More, so Pin has room on the bar.
+    expect(find.byKey(const Key('bulk-archive')), findsNothing);
+    expect(find.byKey(const Key('bulk-trash')), findsNothing);
     // Nothing is made while choosing what to do with what is there.
     expect(find.byKey(const Key('new-note-button')), findsNothing);
 
     await tester.tap(find.byKey(const Key('selection-more')));
     await tester.pumpAndSettle();
-    expect(find.text('Pin'), findsOneWidget);
+    expect(find.text('Pin'), findsNothing);
+    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Move to trash'), findsOneWidget);
     expect(find.text('Reminders'), findsOneWidget);
+  });
+
+  testWidgets('pin is on the selection bar and turns to unpin', (tester) async {
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await select(tester, 'groceries');
+    expect(find.byTooltip('Pin'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('bulk-pin')),
+        matching: find.byIcon(Icons.push_pin_outlined),
+      ),
+      findsOneWidget,
+    );
+    await act(tester, 'bulk-pin');
+    expect(library.calls, contains('setPinnedMany(groceries; true)'));
+
+    // Once everything chosen is pinned, the same button takes the pins out.
+    await select(tester, 'groceries');
+    expect(find.byTooltip('Unpin'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('bulk-pin')),
+        matching: find.byIcon(Icons.push_pin),
+      ),
+      findsOneWidget,
+    );
+    // With an unpinned note in the selection too, the button pins again.
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Pin'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note:hardware')));
+    await tester.pumpAndSettle();
+
+    library.calls.clear();
+    await act(tester, 'bulk-pin');
+    expect(library.calls, contains('setPinnedMany(groceries; false)'));
+  });
+
+  testWidgets('the selection bar fits a 320 px wide screen', (tester) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final library = twoLists();
+    await pumpList(tester, library);
+
+    await select(tester, 'groceries');
+
+    expect(tester.takeException(), isNull);
+    for (final action in [
+      'selection-close',
+      'bulk-pin',
+      'bulk-colour',
+      'bulk-labels',
+      'selection-more',
+    ]) {
+      final rect = tester.getRect(find.byKey(Key(action)));
+      expect(rect.left, greaterThanOrEqualTo(0), reason: action);
+      expect(rect.right, lessThanOrEqualTo(320), reason: action);
+    }
   });
 
   testWidgets('a tap adds to the selection and the last one out ends it', (
@@ -1112,6 +1180,109 @@ void main() {
     expect(find.byKey(const Key('selection-count')), findsNothing);
   });
 
+  group('the pin line', () {
+    /// Two pinned notes of very different heights and three that are not,
+    /// newest first: so the pinned ones are Short, then Tall.
+    Future<FakeNoteLibrary> pinnedAndNot(
+      WidgetTester tester, {
+      List<String> pin = const ['tall', 'short'],
+    }) async {
+      // Phone width, where the grid has two columns.
+      await tester.binding.setSurfaceSize(const Size(390, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final library = FakeNoteLibrary(
+        notes: {
+          'tall': FakeNoteCore(
+            title: 'Tall',
+            items: const ['one', 'two', 'three', 'four'],
+          ),
+          'short': FakeNoteCore(title: 'Short'),
+          'a': FakeNoteCore(title: 'A', items: const ['x']),
+          'b': FakeNoteCore(title: 'B', items: const ['y']),
+          'c': FakeNoteCore(title: 'C', items: const ['z']),
+        },
+      );
+      if (pin.isNotEmpty) await library.setPinnedMany(pin, true);
+      await pumpList(tester, library);
+      return library;
+    }
+
+    final separator = find.byKey(const Key('pin-separator'));
+    Rect card(WidgetTester tester, String id) =>
+        tester.getRect(find.byKey(Key('note:$id')));
+
+    void expectClearBreak(WidgetTester tester) {
+      expect(separator, findsOneWidget);
+      final line = tester.getRect(separator);
+      final lowestPinned = [
+        card(tester, 'tall').bottom,
+        card(tester, 'short').bottom,
+      ].reduce((a, b) => a > b ? a : b);
+      expect(line.bottom, greaterThanOrEqualTo(lowestPinned));
+      for (final id in ['a', 'b', 'c']) {
+        expect(
+          card(tester, id).top,
+          greaterThanOrEqualTo(line.bottom),
+          reason: '$id should start below every pinned card, not beside one',
+        );
+      }
+    }
+
+    testWidgets('the rest start on a fresh row below every pinned card', (
+      tester,
+    ) async {
+      await pinnedAndNot(tester);
+      // The two pinned cards sit side by side, so the short one leaves room
+      // under it that an unpinned card must not take.
+      expect(card(tester, 'short').top, card(tester, 'tall').top);
+      expect(
+        card(tester, 'short').bottom,
+        lessThan(card(tester, 'tall').bottom),
+      );
+      expectClearBreak(tester);
+    });
+
+    testWidgets('there is no line when nothing is pinned', (tester) async {
+      await pinnedAndNot(tester, pin: const []);
+      expect(separator, findsNothing);
+    });
+
+    testWidgets('there is no line when everything is pinned', (tester) async {
+      await pinnedAndNot(tester, pin: const ['tall', 'short', 'a', 'b', 'c']);
+      expect(separator, findsNothing);
+    });
+
+    testWidgets('the list layout has the line too', (tester) async {
+      await pinnedAndNot(tester);
+      await tester.tap(find.byKey(const Key('layout-toggle')));
+      await tester.pumpAndSettle();
+      expectClearBreak(tester);
+    });
+
+    testWidgets('a drag among the unpinned notes leaves its gap among them', (
+      tester,
+    ) async {
+      // Unpinned, newest first: C, B, A — C and B side by side, A under C.
+      final library = await pinnedAndNot(tester);
+      final b = card(tester, 'b');
+
+      final gesture = await tester.startGesture(card(tester, 'c').center);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 50));
+      await gesture.moveTo(b.center);
+      await tester.pumpAndSettle();
+
+      final gap = tester.getRect(find.byKey(const Key('drag-placeholder')));
+      expect(card(tester, 'b'), b, reason: 'the target should hold still');
+      expect(gap.left, b.left, reason: 'the gap is in the column it lands in');
+      expect(gap.top, greaterThan(b.top));
+      expect(gap.top, greaterThanOrEqualTo(tester.getRect(separator).bottom));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(library.calls, contains('moveNoteTo(c, b)'));
+    });
+  });
+
   testWidgets('a card dragged in the single column moves the same way', (
     tester,
   ) async {
@@ -1256,9 +1427,9 @@ void main() {
     expect(library.calls, contains('setPinnedMany(groceries; true)'));
     expect(find.byKey(const Key('pinned')), findsOneWidget);
     expect(
-      tester.getTopLeft(find.byKey(const Key('note:groceries'))).dx,
-      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dx),
-      reason: 'a pinned note belongs at the top',
+      tester.getBottomLeft(find.byKey(const Key('note:groceries'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('note:hardware'))).dy),
+      reason: 'a pinned note belongs at the top, above the rest',
     );
   });
 
@@ -1439,8 +1610,14 @@ void main() {
     await openShelf(tester, 'archive');
     await select(tester, 'groceries');
     expect(find.byKey(const Key('bulk-delete-forever')), findsNothing);
-    expect(find.byTooltip('Unarchive'), findsOneWidget);
-    await act(tester, 'bulk-archive');
+    // The archive's selection bar is laid out like the grid's, with the way
+    // back behind More.
+    expect(find.byKey(const Key('bulk-pin')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('selection-more')));
+    await tester.pumpAndSettle();
+    expect(find.text('Unarchive'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('bulk-archive')));
+    await tester.pumpAndSettle();
     expect(library.calls, contains('setArchivedMany(groceries; false)'));
 
     await openShelf(tester, 'trash');

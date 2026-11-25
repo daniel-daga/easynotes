@@ -8,8 +8,10 @@ library;
 import 'dart:async';
 
 import 'package:easynotes/core/app_visibility.dart';
+
 import 'support/fake_note_core.dart';
 import 'support/fake_note_library.dart';
+
 import 'package:easynotes/core/invites.dart';
 import 'package:easynotes/core/note_view.dart';
 import 'package:easynotes/ui/invites.dart';
@@ -170,6 +172,64 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('share-content-preview')), findsOneWidget);
     expect(find.text('Share as checklist'), findsOneWidget);
+  });
+
+  Future<FakeNoteLibrary> pumpInLibrary(WidgetTester tester) async {
+    final core = FakeNoteCore(title: 'Groceries', items: const ['milk']);
+    final library = FakeNoteLibrary(notes: {'note': core});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NoteScreen(
+          core: core,
+          storage: library,
+          noteId: 'note',
+          invites: library,
+          library: library,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return library;
+  }
+
+  testWidgets('pin is a button on the app bar, not in the overflow sheet', (
+    tester,
+  ) async {
+    final library = await pumpInLibrary(tester);
+    Finder pinIcon(IconData icon) => find.descendant(
+      of: find.byKey(const Key('note-pin')),
+      matching: find.byIcon(icon),
+    );
+
+    expect(find.byTooltip('Pin'), findsOneWidget);
+    expect(pinIcon(Icons.push_pin_outlined), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note-pin')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('setPinned(note, true)'));
+    // The button follows the note's summary rather than its own state.
+    expect(find.byTooltip('Unpin'), findsOneWidget);
+    expect(pinIcon(Icons.push_pin), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('note-pin')));
+    await tester.pumpAndSettle();
+    expect(library.calls, contains('setPinned(note, false)'));
+    expect(find.byTooltip('Pin'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('note-more-menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('Pin'), findsNothing);
+    expect(find.text('Unpin'), findsNothing);
+    expect(find.text('Archive'), findsOneWidget);
+    expect(find.text('Move to trash'), findsOneWidget);
+  });
+
+  testWidgets('a note in the trash offers no pin', (tester) async {
+    final library = await pumpInLibrary(tester);
+    await library.setTrashed('note', true);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('note-pin')), findsNothing);
+    expect(find.byTooltip('Pin'), findsNothing);
   });
 
   testWidgets('a shared note draws the people on it instead of the add icon', (
@@ -760,6 +820,245 @@ void main() {
       'jam!',
       reason: 'the keyboard never left the row it was typing into',
     );
+  });
+
+  group('enter in the middle of an item splits it at the caret', () {
+    /// Put the caret (or a selection) in [id]'s row and press Enter.
+    Future<void> enterAt(
+      WidgetTester tester,
+      String id,
+      String text,
+      TextSelection selection,
+    ) async {
+      await tester.showKeyboard(find.byKey(Key('text:$id')));
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(text: text, selection: selection),
+      );
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+    }
+
+    testWidgets('in the middle: the words right of the caret move down', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread and butter']);
+      await pumpScreen(tester, core);
+      final bread = core.current.items[1].id;
+
+      await enterAt(
+        tester,
+        bread,
+        'bread and butter',
+        const TextSelection.collapsed(offset: 6),
+      );
+      await tester.pump();
+      // Drawn at once, before the core has said anything: the words never
+      // blink out.
+      expect(visibleItems(tester), ['milk', 'bread ', 'and butter']);
+      expect(focusedFieldText(tester), 'and butter');
+      expect(
+        focusedSelection(tester),
+        const TextSelection.collapsed(offset: 0),
+      );
+      await tester.pumpAndSettle();
+
+      expect(core.current.items.map((item) => item.text), [
+        'milk',
+        'bread ',
+        'and butter',
+      ]);
+      expect(core.edits.where((edit) => edit.startsWith('splitItem')), [
+        'splitItem($bread, bread  | and butter)',
+      ]);
+      expect(
+        core.edits.where((edit) => edit.startsWith('addItem')),
+        isEmpty,
+        reason: 'one split, not an add and a move',
+      );
+      expect(focusedFieldText(tester), 'and butter');
+      expect(
+        focusedSelection(tester),
+        const TextSelection.collapsed(offset: 0),
+      );
+
+      // A letter typed straight away lands in front of the moved words.
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'xand butter',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(core.current.items.map((item) => item.text), [
+        'milk',
+        'bread ',
+        'xand butter',
+      ]);
+    });
+
+    testWidgets('at the start: the item empties and the new one has it all', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread']);
+      await pumpScreen(tester, core);
+      final milk = core.current.items[0].id;
+
+      await enterAt(
+        tester,
+        milk,
+        'milk',
+        const TextSelection.collapsed(offset: 0),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['', 'milk', 'bread']);
+      expect(core.current.items.map((item) => item.text), [
+        '',
+        'milk',
+        'bread',
+      ]);
+      expect(focusedFieldText(tester), 'milk');
+      expect(
+        focusedSelection(tester),
+        const TextSelection.collapsed(offset: 0),
+      );
+    });
+
+    testWidgets('at the end: a new empty item, as before', (tester) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread']);
+      await pumpScreen(tester, core);
+      final milk = core.current.items[0].id;
+
+      await enterAt(
+        tester,
+        milk,
+        'milk',
+        const TextSelection.collapsed(offset: 4),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['milk', '', 'bread']);
+      expect(core.edits.where((edit) => edit.startsWith('splitItem')), isEmpty);
+      expect(core.edits, contains('addItem()'));
+      expect(focusedFieldText(tester), '');
+    });
+
+    testWidgets('a selection is typed over, then the item splits', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['bread and butter']);
+      await pumpScreen(tester, core);
+      final bread = core.current.items[0].id;
+
+      await enterAt(
+        tester,
+        bread,
+        'bread and butter',
+        const TextSelection(baseOffset: 5, extentOffset: 9),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['bread', ' butter']);
+      expect(core.current.items.map((item) => item.text), ['bread', ' butter']);
+      expect(
+        focusedSelection(tester),
+        const TextSelection.collapsed(offset: 0),
+      );
+    });
+
+    testWidgets('a selection to the end is typed over, and the new item is '
+        'empty', (tester) async {
+      final core = FakeNoteCore(items: const ['bread and butter']);
+      await pumpScreen(tester, core);
+      final bread = core.current.items[0].id;
+
+      await enterAt(
+        tester,
+        bread,
+        'bread and butter',
+        const TextSelection(baseOffset: 5, extentOffset: 16),
+      );
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['bread', '']);
+      expect(core.current.items.map((item) => item.text), ['bread', '']);
+    });
+
+    testWidgets('a crossed-off item keeps its tick; the moved words are new', (
+      tester,
+    ) async {
+      final core = FakeNoteCore(items: const ['milk', 'bread and butter']);
+      await pumpScreen(tester, core);
+      final bread = core.current.items[1].id;
+      await tester.tap(find.byKey(Key('check:$bread')));
+      await tester.pumpAndSettle();
+      await showCrossedOff(tester);
+
+      await enterAt(
+        tester,
+        bread,
+        'bread and butter',
+        const TextSelection.collapsed(offset: 5),
+      );
+      await tester.pumpAndSettle();
+
+      final items = core.current.items;
+      final head = items.firstWhere((item) => item.id == bread);
+      final tail = items.firstWhere((item) => item.text == ' and butter');
+      expect(head.text, 'bread');
+      expect(head.checked, isTrue);
+      expect(tail.checked, isFalse);
+      expect(
+        visibleItems(tester),
+        containsAll(['milk', 'bread', ' and butter']),
+      );
+      expect(focusedFieldText(tester), ' and butter');
+    });
+
+    testWidgets('enter twice before the core answers keeps every word in '
+        'order', (tester) async {
+      final core = _SlowAddCore(items: const ['a b c', 'z']);
+      await pumpScreen(tester, core);
+      final abc = core.current.items[0].id;
+
+      core.gate = Completer<void>();
+      await enterAt(
+        tester,
+        abc,
+        'a b c',
+        const TextSelection.collapsed(offset: 1),
+      );
+      await tester.pump();
+      expect(visibleItems(tester), ['a', ' b c', 'z']);
+      expect(
+        focusedSelection(tester),
+        const TextSelection.collapsed(offset: 0),
+      );
+
+      // Again, in the new row, before the first split has come back.
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: ' b c',
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(visibleItems(tester), ['a', ' b', ' c', 'z']);
+
+      core.gate!.complete();
+      await tester.pumpAndSettle();
+
+      expect(visibleItems(tester), ['a', ' b', ' c', 'z']);
+      expect(core.current.items.map((item) => item.text), [
+        'a',
+        ' b',
+        ' c',
+        'z',
+      ]);
+      expect(focusedFieldText(tester), ' c');
+    });
   });
 
   testWidgets('deleting an item sends an edit', (tester) async {
@@ -2004,6 +2303,12 @@ String? focusedFieldText(WidgetTester tester) => tester
     .map((field) => field.controller?.text)
     .firstOrNull;
 
+TextSelection? focusedSelection(WidgetTester tester) => tester
+    .widgetList<TextField>(find.byType(TextField))
+    .where((field) => field.focusNode?.hasFocus ?? false)
+    .map((field) => field.controller?.selection)
+    .firstOrNull;
+
 /// A core whose title write comes back later, so a test can look at the field
 /// while its own edit is still on its way.
 class _SlowTitleCore extends FakeNoteCore {
@@ -2041,6 +2346,17 @@ class _SlowAddCore extends FakeNoteCore {
   Future<String> addItem(String text) async {
     await gate?.future;
     return super.addItem(text);
+  }
+
+  @override
+  Future<({String id, int rev})> splitItem(
+    String itemId,
+    String from,
+    String head,
+    String tail,
+  ) async {
+    await gate?.future;
+    return super.splitItem(itemId, from, head, tail);
   }
 
   /// A new text comes back later, as it does across the bridge — by when the

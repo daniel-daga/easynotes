@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 555881940;
+  int get rustContentHash => -140237066;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -576,6 +576,14 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiNotesNoteSetTitle({
     required Note that,
     required String title,
+  });
+
+  Future<SplitItemView> crateApiNotesNoteSplitItem({
+    required Note that,
+    required String item,
+    required String from,
+    required String head,
+    required String tail,
   });
 
   Future<void> crateApiNotesNoteStopWatching({required Note that});
@@ -4630,6 +4638,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<SplitItemView> crateApiNotesNoteSplitItem({
+    required Note that,
+    required String item,
+    required String from,
+    required String head,
+    required String tail,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNote(
+            that,
+            serializer,
+          );
+          sse_encode_String(item, serializer);
+          sse_encode_String(from, serializer);
+          sse_encode_String(head, serializer);
+          sse_encode_String(tail, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 112,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_split_item_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNotesNoteSplitItemConstMeta,
+        argValues: [that, item, from, head, tail],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNotesNoteSplitItemConstMeta => const TaskConstMeta(
+    debugName: "Note_split_item",
+    argNames: ["that", "item", "from", "head", "tail"],
+  );
+
+  @override
   Future<void> crateApiNotesNoteStopWatching({required Note that}) {
     return handler.executeNormal(
       NormalTask(
@@ -4642,7 +4693,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 112,
+            funcId: 113,
             port: port_,
           );
         },
@@ -4681,7 +4732,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 113,
+            funcId: 114,
             port: port_,
           );
         },
@@ -4715,7 +4766,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 114,
+            funcId: 115,
           )!;
         },
         codec: SseCodec(
@@ -4745,7 +4796,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 116,
           )!;
         },
         codec: SseCodec(
@@ -4778,7 +4829,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 116,
+              funcId: 117,
               port: port_,
             );
           },
@@ -4814,7 +4865,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 117,
+              funcId: 118,
               port: port_,
             );
           },
@@ -4845,7 +4896,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 118,
+            funcId: 119,
             port: port_,
           );
         },
@@ -4873,7 +4924,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 119,
+            funcId: 120,
           )!;
         },
         codec: SseCodec(
@@ -5493,6 +5544,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SearchHitView(
       note: dco_decode_note_summary_view(arr[0]),
       matched: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  SplitItemView dco_decode_split_item_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return SplitItemView(
+      id: dco_decode_String(arr[0]),
+      rev: dco_decode_u_32(arr[1]),
     );
   }
 
@@ -6423,6 +6486,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SplitItemView sse_decode_split_item_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_rev = sse_decode_u_32(deserializer);
+    return SplitItemView(id: var_id, rev: var_rev);
+  }
+
+  @protected
   StorageArea sse_decode_storage_area(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -7307,6 +7378,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_note_summary_view(self.note, serializer);
     sse_encode_String(self.matched, serializer);
+  }
+
+  @protected
+  void sse_encode_split_item_view(
+    SplitItemView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_u_32(self.rev, serializer);
   }
 
   @protected
@@ -8327,6 +8408,23 @@ class NoteImpl extends RustOpaque implements Note {
 
   Future<void> setTitle({required String title}) =>
       RustLib.instance.api.crateApiNotesNoteSetTitle(that: this, title: title);
+
+  /// Enter in the middle of an item: it keeps `head`, as an edit from
+  /// `from` like [`edit_item_text`](Self::edit_item_text), and a new item
+  /// right after it gets `tail`. Both edits are made under one lock and sent
+  /// in order, the new item first.
+  Future<SplitItemView> splitItem({
+    required String item,
+    required String from,
+    required String head,
+    required String tail,
+  }) => RustLib.instance.api.crateApiNotesNoteSplitItem(
+    that: this,
+    item: item,
+    from: from,
+    head: head,
+    tail: tail,
+  );
 
   /// End this handle's watchers and let their tasks finish. The note stays
   /// open in the library, because another screen may be showing it.

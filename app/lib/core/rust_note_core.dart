@@ -140,6 +140,29 @@ class RustNoteCore implements NoteCore {
   }
 
   @override
+  Future<({String id, int rev})> splitItem(
+    String itemId,
+    String from,
+    String head,
+    String tail,
+  ) async {
+    try {
+      final split = await _note.splitItem(
+        item: itemId,
+        from: from,
+        head: head,
+        tail: tail,
+      );
+      return (id: split.id, rev: split.rev);
+    } on String catch (message) {
+      if (bridgeErrorCode(message) == 'unknown_item') {
+        throw UnknownItemException(itemId);
+      }
+      rethrow;
+    }
+  }
+
+  @override
   Future<void> setChecked(String itemId, bool checked) =>
       _note.setChecked(item: itemId, checked: checked);
 

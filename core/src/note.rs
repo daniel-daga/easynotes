@@ -3151,6 +3151,54 @@ impl<D: NoteDoc, S: OpStore, K: Keyring> NoteCore<D, S, K> {
             .map(Some)
     }
 
+    /// Split an item in two at the caret: Enter in the middle of a line.
+    ///
+    /// `item` keeps `head` — given as an edit from `from`, the text the field
+    /// was showing, and replayed onto what the item says now, like
+    /// [`edit_item_text`](Self::edit_item_text) — and a new unchecked item with
+    /// `tail` goes in right after it. Returns the new item's ID and the
+    /// envelopes, to be sent in order.
+    ///
+    /// There is no batch edit, so this is two, and the order is chosen for a
+    /// peer who has the first and not yet the second: the new item comes first,
+    /// so for a moment the tail is there twice rather than nowhere. The new item
+    /// is placed in the same edit that adds it, so it never flashes at the end
+    /// of the list on its way to its place.
+    pub fn split_item(
+        &mut self,
+        id: NoteId,
+        item: ItemId,
+        from: &str,
+        head: &str,
+        tail: impl Into<String>,
+    ) -> Result<(ItemId, Vec<Vec<u8>>)> {
+        self.ensure_open(id)?;
+        let view = self.view(id)?;
+        let at = view
+            .items
+            .iter()
+            .position(|shown| shown.id == item)
+            .ok_or_else(|| CoreError::UnknownItem(item.encode()))?;
+        let current = view.items[at].text.clone();
+        let keys = view.order_keys();
+        let new_item = ItemId::random();
+        let order = order::key_for_index(&keys, at + 1);
+        let mut envelopes = vec![self.apply_local(
+            id,
+            Edit::AddItem {
+                id: new_item,
+                text: tail.into(),
+                order,
+                heading: false,
+            },
+        )?];
+        let text = crate::text::rebase(from, head, &current);
+        if text != current {
+            envelopes.push(self.apply_local(id, Edit::SetItemText { id: item, text })?);
+        }
+        Ok((new_item, envelopes))
+    }
+
     pub fn set_checked(&mut self, id: NoteId, item: ItemId, checked: bool) -> Result<Vec<u8>> {
         self.require_item(id, item)?;
         self.apply_local(id, Edit::SetChecked { id: item, checked })
